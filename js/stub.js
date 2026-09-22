@@ -6,4 +6,4 @@ import{setText,prettyJson}from"./ui.js";
  * JSON-serializable value. Protocol-specific validation and semantics belong
  * to the consuming repository, not web-ui.
  */
-export function bindStub({input="#query",run="#run",output="#output",handler}){const q=document.querySelector(input),b=document.querySelector(run);if(!q||!b)return;b.addEventListener("click",async()=>{b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result==="string"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}})}
+export function bindStub({input="#query",run="#run",output="#output",form="#stub-form",handler}){const q=document.querySelector(input),b=document.querySelector(run),f=document.querySelector(form);if(!q||!b)return;const execute=async event=>{event?.preventDefault();b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result==="string"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}};(f??b).addEventListener(f?"submit":"click",execute)}
