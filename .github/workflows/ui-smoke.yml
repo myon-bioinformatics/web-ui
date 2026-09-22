@@ -1,0 +1,32 @@
+name: UI smoke
+on:
+  push:
+  pull_request:
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python -m unittest discover -s tests -v
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npx --yes playwright@1.55.0 install --with-deps chromium
+      - name: Serve examples
+        run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
+      - name: Capture desktop and mobile
+        run: |
+          npx --yes playwright@1.55.0 screenshot --device="Desktop Chrome" --wait-for-timeout=500 http://127.0.0.1:8000/examples/index.html web-ui-desktop.png
+          npx --yes playwright@1.55.0 screenshot --device="iPhone 13" --wait-for-timeout=500 http://127.0.0.1:8000/examples/index.html web-ui-mobile.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-screenshots
+          path: web-ui-*.png
+          retention-days: 14
