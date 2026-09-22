@@ -21,6 +21,23 @@ jobs:
       - run: npx --yes playwright@1.55.0 install --with-deps chromium
       - name: Serve examples
         run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
+      - name: Wait for static server
+        run: |
+          python3 - <<'PY'
+          import time
+          import urllib.request
+
+          url = "http://127.0.0.1:8000/examples/index.html"
+          for attempt in range(50):
+              try:
+                  with urllib.request.urlopen(url, timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  if attempt == 49:
+                      raise
+                  time.sleep(0.1)
+          PY
       - name: Capture desktop and mobile with Chromium
         run: |
           npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" --wait-for-timeout=500 http://127.0.0.1:8000/examples/index.html web-ui-desktop.png
