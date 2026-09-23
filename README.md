@@ -48,6 +48,16 @@ contract evidence: `.ui-grid` collapses through the existing mobile component ru
 
 ## HTML contract v1
 
+The v1 compatibility surface is now frozen under
+[`contract/v1/`](./contract/v1/):
+
+- `contract.json` — machine-readable source of truth
+- `README.md` — normative compatibility rules
+- `example.html` — canonical structural fixture used by CI
+
+Within v1, stable classes may be extended but are not removed or semantically
+repurposed. Breaking semantic changes require v2.
+
 Consumers should treat the semantic HTML surface as the reusable contract:
 
 - shared presentation classes use the `ui-*` namespace
@@ -106,7 +116,7 @@ The first phase intentionally treats screenshots as observable test evidence rat
 - migrate Ironmate MCP Stub onto the shared contract
 - add API/MCP Stub patterns without moving domain logic into web-ui
 - expand themes beyond Modern and GitHub-like
-- stabilize an HTML contract that `markdown.py` and `ascii_artist` can target
+- keep HTML contract v1 stable while `markdown.py` and `ascii_artist` integrations adopt it
 
 See #1 for the bootstrap plan.
 
