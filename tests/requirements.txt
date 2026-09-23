@@ -1,0 +1,2 @@
+pytest>=8,<10
+stagehand>=4,<5
