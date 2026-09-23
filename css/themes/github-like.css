@@ -1,3 +1,4 @@
+/* GitHub-like prioritizes familiar light GitHub visual cues while remaining a generic light theme. */
 @layer theme{
 body[data-ui-theme="github-like"]{
   --ui-bg:#ffffff;
