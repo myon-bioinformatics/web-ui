@@ -28,6 +28,10 @@ Modern is the first theme, not the only theme. Components use semantic `ui-*` / 
 
 Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
 
+The generic Stub layer now covers request submission, text-safe result rendering,
+copy, clear-history, status text, and optional local request history. Consumers
+still supply the handler that defines protocol/API behavior.
+
 ## HTML contract v1
 
 Consumers should treat the semantic HTML surface as the reusable contract:
@@ -54,6 +58,22 @@ Modern theme usage:
 ```
 
 A future theme should be able to replace `modern.css` and the `data-ui-theme` value without changing the semantic component structure.
+
+## Generic Stub UI
+
+`js/stub.js` is deliberately protocol-neutral. `bindStub()` accepts a
+consumer handler and can wire:
+
+- form submission / run-button state
+- text-safe string or JSON output
+- status text
+- copy-result action
+- local request history and rerun
+- history clearing
+
+The API and MCP example pages use the same shared controls and differ only in
+their consumer-provided handler. Generic JS must not embed MCP methods, HTTP
+authorization semantics, or product-specific validation.
 
 ## Local preview
 
@@ -82,11 +102,15 @@ Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale
 
 The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
 
+The screenshot artifact also includes desktop/mobile captures of both
+`examples/api-stub.html` and `examples/mcp-stub.html`, so the generic Stub
+contract has visual evidence independent of any consuming repository.
+
 ## Roadmap
 
 - expand the component gallery
 - migrate Ironmate MCP Stub onto the shared contract
-- add API/MCP Stub patterns without moving domain logic into web-ui
+- keep API/MCP Stub behavior generic while consumers own domain logic
 - add more themes alongside Modern
 - stabilize an HTML contract that `markdown.py` and `ascii_artist` can target
 
