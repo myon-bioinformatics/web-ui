@@ -152,3 +152,20 @@ class StaticContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_pages_root_links_to_public_examples():
+    root = (ROOT / "index.html").read_text(encoding="utf-8")
+    assert "./examples/" in root
+    assert "./examples/mcp-stub.html" in root
+    assert "./examples/api-stub.html" in root
+    assert "./contract/v1/example.html" in root
+    assert "./examples/github-like.html" in root
+
+
+def test_output_surface_uses_neutral_high_contrast_palette():
+    css = (ROOT / "css" / "components.css").read_text(encoding="utf-8")
+    assert ".ui-output" in css
+    assert "background:#d8dee4" in css
+    assert "color:#161b22" in css
+    assert "pre.ui-output code{background:transparent}" in css
