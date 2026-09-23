@@ -53,5 +53,16 @@
     "grid sizing constants",
     "theme-internal selectors",
     "DOM element choice unless accessibility semantics require it"
-  ]
+  ],
+  "version_policy": {
+    "series": "1.x",
+    "additive_changes": "allowed within 1.x without redefining existing stable semantics",
+    "patch_numbers": "not used as a compatibility signal; contract/v1 is the stable lane",
+    "breaking_changes": "require contract/v2"
+  },
+  "validation_scope": {
+    "structural_contract": true,
+    "css_effectiveness": "browser smoke/screenshot evidence; not a full CSS cascade proof",
+    "fixture_role": "proof-of-presence, not a prescriptive layout template"
+  }
 }
