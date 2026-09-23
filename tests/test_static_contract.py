@@ -152,3 +152,12 @@ class StaticContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_pages_root_links_to_public_examples():
+    root = (ROOT / "index.html").read_text(encoding="utf-8")
+    assert "./examples/" in root
+    assert "./examples/mcp-stub.html" in root
+    assert "./examples/api-stub.html" in root
+    assert "./contract/v1/example.html" in root
+    assert "./examples/github-like.html" in root
