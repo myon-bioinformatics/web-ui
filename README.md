@@ -33,13 +33,18 @@ Generic JavaScript handles browser behavior and rendering helpers. MCP/API proto
 Current themes:
 
 - `modern` — terminal/monospace-oriented default
-- `github-like` — light GitHub-inspired presentation
+- `github-like` — generic light presentation intentionally using familiar GitHub visual cues
 
 Theme files are presentation-only. Consumers keep the same semantic HTML and
 switch `data-ui-theme` plus the loaded theme stylesheet.
 
 The alternate-theme example is available at
 `examples/github-like.html`, and CI captures desktop/mobile screenshots for it.
+
+Theme screenshot filenames follow
+`web-ui-<theme>-<viewport-name>.png`, for example
+`web-ui-github-like-mobile-390x844.png`. The 390x844 capture is the responsive
+contract evidence: `.ui-grid` collapses through the existing mobile component rule.
 
 ## HTML contract v1
 
