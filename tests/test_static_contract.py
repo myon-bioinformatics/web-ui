@@ -1,10 +1,12 @@
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import unittest
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
+CONTRACT = ROOT / "contract" / "v1"
 
 
 def _relative_luminance(hex_color):
@@ -43,6 +45,39 @@ class StaticContractTest(unittest.TestCase):
         parser = ContractParser()
         parser.feed(path.read_text(encoding="utf-8"))
         return parser
+
+    def test_html_contract_v1_manifest_matches_fixture_and_css(self):
+        manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
+        fixture = (CONTRACT / "example.html").read_text(encoding="utf-8")
+        css = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (ROOT / "css").rglob("*.css")
+        )
+
+        self.assertEqual(manifest["version"], "1.0.0")
+        self.assertEqual(manifest["status"], "stable")
+        self.assertIn(
+            f'data-ui-theme="{manifest["theme"]["default"]}"',
+            fixture,
+        )
+
+        stable = (
+            manifest["stable_classes"]["shared"]
+            + manifest["stable_classes"]["stub"]
+        )
+        for class_name in stable:
+            self.assertIn(class_name, fixture, f"fixture missing {class_name}")
+            self.assertIn(f".{class_name}", css, f"CSS missing {class_name}")
+
+    def test_html_contract_v1_declares_compatibility_boundary(self):
+        manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            manifest["extensions"]["removal_or_repurpose_requires"],
+            "v2",
+        )
+        self.assertIn("exact colors", manifest["non_contract"])
+        self.assertTrue(manifest["extensions"]["consumer_classes"])
+        self.assertTrue(manifest["extensions"]["consumer_data_attributes"])
 
     def test_examples_reference_shared_assets(self):
         for path in EXAMPLES.glob("*.html"):
