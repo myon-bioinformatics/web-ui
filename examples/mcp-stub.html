@@ -1,1 +1,44 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP Stub</title><link rel="stylesheet" href="../css/tokens.css"><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/components.css"><link rel="stylesheet" href="../css/stub.css"><link rel="stylesheet" href="../css/themes/modern.css"></head><body data-ui-theme="modern"><main class="ui-page"><h1 class="ui-title">MCP Stub Explorer</h1><p class="ui-muted">Protocol behavior stays with the consumer; web-ui supplies presentation and generic interaction.</p><section class="ui-panel"><form class="stub-toolbar" id="stub-form"><fieldset><legend>Stub request</legend><label for="query">Query</label><input class="ui-input" id="query" placeholder="tool or filter"><button class="ui-button" id="run" type="submit">Run</button></fieldset></form><div class="stub-meta"><span class="ui-tag">mcp</span><span class="ui-tag">example</span></div><pre class="ui-output" id="output" aria-live="polite">Ready.</pre></section></main><script type="module">import{bindStub}from"../js/stub.js";bindStub({handler:q=>({kind:"mcp",query:q,status:"stub"})})</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP Stub</title>
+<link rel="stylesheet" href="../css/tokens.css">
+<link rel="stylesheet" href="../css/base.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/stub.css">
+<link rel="stylesheet" href="../css/themes/modern.css">
+</head>
+<body data-ui-theme="modern">
+<main class="ui-page">
+<h1 class="ui-title">MCP Stub Explorer</h1>
+<p class="ui-muted">The shared browser behavior is generic; protocol behavior stays with the consumer.</p>
+<section class="ui-panel">
+<form class="stub-toolbar" id="stub-form">
+<fieldset>
+<legend>Stub request</legend>
+<label for="query">Query</label>
+<input class="ui-input" id="query" placeholder="tool or filter">
+<button class="ui-button" id="run" type="submit">Run</button>
+</fieldset>
+</form>
+<p class="ui-muted stub-status" id="status" aria-live="polite">Ready.</p>
+<div class="stub-actions">
+<button class="ui-button" id="copy-output" type="button">Copy result</button>
+<button class="ui-button" id="clear-history" type="button">Clear history</button>
+</div>
+<pre class="ui-output" id="output" aria-live="polite">Ready.</pre>
+<h2>Recent requests</h2>
+<div class="stub-history" id="history"></div>
+</section>
+</main>
+<script type="module">
+import{bindStub}from"../js/stub.js";
+bindStub({
+  historyKey:"web-ui.example.mcp.history.v1",
+  handler:q=>({kind:"mcp",query:q,status:"stub"})
+});
+</script>
+</body>
+</html>
