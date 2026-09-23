@@ -111,6 +111,20 @@ Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale
 
 The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
 
+## Visual regression
+
+The deterministic Chromium screenshot lane now also runs
+`scripts/check_visual_regression.py`.
+
+The rollout is intentionally two-stage:
+
+1. candidate mode: screenshots are validated as PNGs and compared when a reviewed
+   baseline exists;
+2. enforcement mode: `--require-baseline` can be enabled once all stable
+   contract fixtures have reviewed baselines.
+
+Baseline updates are reviewed UI changes, not automatic CI output.
+
 ## Roadmap
 
 - expand the component gallery
