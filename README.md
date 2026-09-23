@@ -84,6 +84,34 @@ Modern theme usage:
 
 A future theme should be able to replace `modern.css` and the `data-ui-theme` value without changing the semantic component structure.
 
+### Stub workspace pattern
+
+`examples/mcp-stub.html` and `examples/api-stub.html` share the same
+responsive `stub-*` workspace. On wider viewports, the primary result pane
+sits beside a secondary evidence/history sidebar. At `max-width: 720px`, the
+workspace reflows to one column and the supporting region follows the result.
+
+`.stub-meta` is for compact status or capability badges associated with the
+tool page. `.stub-endpoint` is deliberately presentation-only: consumers
+replace the placeholder with their own endpoint or connection label, while
+request construction, protocol behavior, validation, history, evidence, and
+export behavior remain consumer-owned.
+
+For example:
+
+```html
+<div class="stub-meta">
+  <span class="ui-tag">mcp</span>
+  <span class="ui-tag">ready</span>
+</div>
+<p class="stub-status">
+  Endpoint: <span class="stub-endpoint">/consumer-owned-endpoint</span>
+</p>
+```
+
+The shared examples are structural fixtures, not reference implementations of
+MCP or API semantics.
+
 ## Local preview
 
 ```sh
