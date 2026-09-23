@@ -14,3 +14,19 @@ Current policy:
 
 The first stable target is `contract/v1/example.html`. Gallery/example pages
 may also receive baselines, but the frozen contract fixture has priority.
+
+
+## Candidate selection
+
+The checker intentionally includes every deterministic `web-ui-*.png`
+screenshot emitted by the UI smoke workflow. The frozen contract/v1 fixture is
+the first baseline priority, while gallery and theme screenshots remain visible
+candidate evidence rather than being silently ignored.
+
+The baseline directory is tracked by this README, so a separate `.gitkeep` is
+not required.
+
+## Python baseline
+
+CI runs the checker with Python 3.12. The implementation uses modern builtin
+generic type hints supported by the repository's current CI runtime.
