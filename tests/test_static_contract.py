@@ -135,6 +135,13 @@ class StaticContractTest(unittest.TestCase):
             self.assertTrue(parsed.labels_for)
             self.assertTrue(parsed.labels_for <= parsed.ids)
 
+    def test_stub_examples_share_tool_workspace_structure(self):
+        required = ("stub-shell", "stub-header", "stub-toolbar", "stub-workspace", "stub-result", "stub-evidence", "stub-history", "stub-actions")
+        for name in ("mcp-stub.html", "api-stub.html"):
+            text = (EXAMPLES / name).read_text(encoding="utf-8")
+            for class_name in required:
+                self.assertIn(class_name, text, f"{name}: missing {class_name}")
+
     def test_domain_protocols_not_in_generic_js(self):
         text = (ROOT / "js" / "stub.js").read_text(encoding="utf-8").lower()
         for term in ("tools/list", "tools/call", "json-rpc", "authorization:"):
