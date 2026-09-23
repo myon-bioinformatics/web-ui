@@ -15,6 +15,7 @@ import struct
 import sys
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+DEFAULT_PATTERN = "web-ui-*.png"
 
 
 def png_size(path: Path) -> tuple[int, int]:
@@ -28,10 +29,26 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def compare(candidate_dir: Path, baseline_dir: Path, require_baseline: bool) -> int:
-    candidates = sorted(candidate_dir.glob("web-ui-*.png"))
+def compare(
+    candidate_dir: Path,
+    baseline_dir: Path,
+    require_baseline: bool,
+    *,
+    pattern: str = DEFAULT_PATTERN,
+) -> int:
+    if not candidate_dir.exists():
+        print(f"candidate directory does not exist: {candidate_dir}", file=sys.stderr)
+        return 2
+    if not candidate_dir.is_dir():
+        print(f"candidate path is not a directory: {candidate_dir}", file=sys.stderr)
+        return 2
+
+    candidates = sorted(candidate_dir.glob(pattern))
     if not candidates:
-        print("no candidate screenshots found", file=sys.stderr)
+        print(
+            f"no PNG candidates matching {pattern!r} in {candidate_dir}",
+            file=sys.stderr,
+        )
         return 2
 
     failed = False
@@ -62,8 +79,14 @@ def main() -> int:
     parser.add_argument("--candidate-dir", type=Path, default=Path("."))
     parser.add_argument("--baseline-dir", type=Path, default=Path("tests/visual-baseline"))
     parser.add_argument("--require-baseline", action="store_true")
+    parser.add_argument("--pattern", default=DEFAULT_PATTERN)
     args = parser.parse_args()
-    return compare(args.candidate_dir, args.baseline_dir, args.require_baseline)
+    return compare(
+        args.candidate_dir,
+        args.baseline_dir,
+        args.require_baseline,
+        pattern=args.pattern,
+    )
 
 
 if __name__ == "__main__":
