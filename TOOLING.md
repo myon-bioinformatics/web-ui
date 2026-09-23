@@ -26,7 +26,7 @@ an agent session or requiring API keys. Live Stagehand tests should be opt-in.
 Install development dependencies:
 
 ```sh
-python -m pip install -r tool/python/requirements.txt
+python -m pip install -r tests/requirements.txt
 ```
 
 Run:
