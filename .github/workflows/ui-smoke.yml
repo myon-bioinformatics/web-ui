@@ -40,8 +40,8 @@ jobs:
           PY
       - name: Capture desktop and mobile with Chromium
         run: |
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile.png
+          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
+          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
       - uses: actions/upload-artifact@v4
         with:
           name: web-ui-screenshots
