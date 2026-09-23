@@ -1,10 +1,13 @@
 from html.parser import HTMLParser
+import json
 from pathlib import Path
+import re
 import unittest
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
+CONTRACT = ROOT / "contract" / "v1"
 
 
 def _relative_luminance(hex_color):
@@ -43,6 +46,49 @@ class StaticContractTest(unittest.TestCase):
         parser = ContractParser()
         parser.feed(path.read_text(encoding="utf-8"))
         return parser
+
+    def test_html_contract_v1_manifest_matches_fixture_and_css(self):
+        manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
+        fixture = (CONTRACT / "example.html").read_text(encoding="utf-8")
+        css_files = list((ROOT / "css").rglob("*.css"))
+        css = "\n".join(path.read_text(encoding="utf-8") for path in css_files)
+        selectors = set(re.findall(r"\.(ui-[A-Za-z0-9_-]+|stub-[A-Za-z0-9_-]+)", css))
+
+        self.assertEqual(manifest["version"], "1.0.0")
+        self.assertEqual(manifest["status"], "stable")
+        self.assertIn(
+            f'data-ui-theme="{manifest["theme"]["default"]}"',
+            fixture,
+        )
+
+        stable = (
+            manifest["stable_classes"]["shared"]
+            + manifest["stable_classes"]["stub"]
+        )
+        for class_name in stable:
+            self.assertIn(class_name, fixture, f"fixture missing {class_name}")
+            self.assertIn(class_name, selectors, f"CSS selector missing {class_name}")
+
+    def test_html_contract_v1_declares_compatibility_boundary(self):
+        manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            manifest["extensions"]["removal_or_repurpose_requires"],
+            "v2",
+        )
+        self.assertIn("exact colors", manifest["non_contract"])
+        self.assertTrue(manifest["extensions"]["consumer_classes"])
+        self.assertTrue(manifest["extensions"]["consumer_data_attributes"])
+        self.assertEqual(manifest["version_policy"]["breaking_changes"], "require contract/v2")
+        self.assertEqual(manifest["validation_scope"]["fixture_role"], "proof-of-presence, not a prescriptive layout template")
+
+    def test_html_contract_v1_declared_themes_exist_and_use_theme_layer(self):
+        manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
+        for theme in manifest["theme"]["values"]:
+            path = ROOT / "css" / "themes" / f"{theme}.css"
+            self.assertTrue(path.exists(), f"missing declared theme: {theme}")
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("@layer theme", text, f"{theme} must stay in @layer theme")
+            self.assertIn(f'data-ui-theme="{theme}"', text, f"{theme} selector must be scoped by data-ui-theme")
 
     def test_examples_reference_shared_assets(self):
         for path in EXAMPLES.glob("*.html"):
