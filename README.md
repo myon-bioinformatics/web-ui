@@ -28,6 +28,33 @@ Modern is the first theme, not the only theme. Components use semantic `ui-*` / 
 
 Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
 
+## HTML contract v1
+
+Consumers should treat the semantic HTML surface as the reusable contract:
+
+- shared presentation classes use the `ui-*` namespace
+- Stub-specific presentation classes use the `stub-*` namespace
+- themes are selected with `data-ui-theme` on `body`
+- consumers own content, protocol semantics, validation, and domain behavior
+- user-controlled text should be rendered as text, not interpreted as HTML
+
+Modern theme usage:
+
+```html
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/themes/modern.css">
+
+<body data-ui-theme="modern">
+  <main class="ui-page">
+    <section class="ui-panel">...</section>
+  </main>
+</body>
+```
+
+A future theme should be able to replace `modern.css` and the `data-ui-theme` value without changing the semantic component structure.
+
 ## Local preview
 
 ```sh
@@ -38,7 +65,20 @@ Open `http://localhost:8000/examples/index.html`.
 
 ## UI verification
 
-`python -m unittest discover -s tests -v` checks the static contract. GitHub Actions additionally opens the example with Playwright and captures desktop and mobile screenshots as the `web-ui-screenshots` artifact.
+Run the static contract checks locally:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+The `-v` output identifies the failing contract by test name. If a browser screenshot fails in CI, inspect the `UI smoke` job first; successful screenshot runs publish the `web-ui-screenshots` artifact.
+
+GitHub Actions captures Chromium screenshots at two explicit v1 viewports:
+
+- `desktop-1440x900`
+- `mobile-390x844`
+
+Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale variants should extend the descriptive suffix rather than replace the existing names, for example `web-ui-tablet-768x1024.png` or `web-ui-mobile-390x844-ja.png`.
 
 The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
 
