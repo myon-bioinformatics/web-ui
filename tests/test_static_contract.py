@@ -7,6 +7,17 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 
 
+def _relative_luminance(hex_color):
+    channels = [int(hex_color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_ratio(foreground, background):
+    light, dark = sorted((_relative_luminance(foreground), _relative_luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
 class ContractParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -37,7 +48,22 @@ class StaticContractTest(unittest.TestCase):
         for path in EXAMPLES.glob("*.html"):
             text = path.read_text(encoding="utf-8")
             self.assertIn("../css/tokens.css", text)
-            self.assertIn("../css/themes/modern.css", text)
+            self.assertIn("../css/base.css", text)
+            self.assertIn("../css/components.css", text)
+            self.assertIn("../css/themes/", text)
+
+    def test_theme_examples_keep_semantic_markup(self):
+        text = (EXAMPLES / "github-like.html").read_text(encoding="utf-8")
+        self.assertIn('data-ui-theme="github-like"', text)
+        self.assertIn("../css/themes/github-like.css", text)
+        # Extend this list when an alternate-theme example intentionally demonstrates
+        # additional semantic components; not every future ui-* class is mandatory.
+        for class_name in ("ui-page", "ui-panel", "ui-card", "ui-button", "ui-input", "ui-tag", "ui-output"):
+            self.assertIn(class_name, text)
+
+    def test_github_like_muted_text_meets_wcag_aa(self):
+        # Normal text requires at least 4.5:1 under WCAG AA.
+        self.assertGreaterEqual(_contrast_ratio("#59636e", "#ffffff"), 4.5)
 
     def test_examples_do_not_embed_css(self):
         for path in EXAMPLES.glob("*.html"):

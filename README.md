@@ -24,9 +24,27 @@ examples/
 tests/
 ```
 
-Modern is the first theme, not the only theme. Components use semantic `ui-*` / `stub-*` classes so future themes can reuse the same HTML contract.
+Modern is the default theme, not the only theme. `github-like` is the first alternate theme using the same semantic `ui-*` / `stub-*` contract.
 
 Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
+
+## Themes
+
+Current themes:
+
+- `modern` — terminal/monospace-oriented default
+- `github-like` — generic light presentation intentionally using familiar GitHub visual cues
+
+Theme files are presentation-only. Consumers keep the same semantic HTML and
+switch `data-ui-theme` plus the loaded theme stylesheet.
+
+The alternate-theme example is available at
+`examples/github-like.html`, and CI captures desktop/mobile screenshots for it.
+
+Theme screenshot filenames follow
+`web-ui-<theme>-<viewport-name>.png`, for example
+`web-ui-github-like-mobile-390x844.png`. The 390x844 capture is the responsive
+contract evidence: `.ui-grid` collapses through the existing mobile component rule.
 
 ## HTML contract v1
 
@@ -87,7 +105,7 @@ The first phase intentionally treats screenshots as observable test evidence rat
 - expand the component gallery
 - migrate Ironmate MCP Stub onto the shared contract
 - add API/MCP Stub patterns without moving domain logic into web-ui
-- add more themes alongside Modern
+- expand themes beyond Modern and GitHub-like
 - stabilize an HTML contract that `markdown.py` and `ascii_artist` can target
 
 See #1 for the bootstrap plan.
