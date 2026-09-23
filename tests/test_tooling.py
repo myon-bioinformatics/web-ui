@@ -1,3 +1,4 @@
+import re
 import shutil
 
 import pytest
@@ -12,8 +13,11 @@ def test_required_github_tooling_is_visible():
 
 def test_advisory_metadata_contains_repository_sha():
     metadata = collect()
-    assert metadata["repository"]["sha"]
-    assert metadata["repository"]["short_sha"]
+    sha = metadata["repository"]["sha"]
+    short_sha = metadata["repository"]["short_sha"]
+    assert re.fullmatch(r"[0-9a-f]{40}", sha)
+    assert re.fullmatch(r"[0-9a-f]{8}", short_sha)
+    assert sha.startswith(short_sha)
 
 
 def test_stagehand_v4_python_surface():
