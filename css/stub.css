@@ -1,5 +1,6 @@
 @layer components{
 .stub-shell{display:grid;gap:1rem}
+/* Keep title/description and metadata side-by-side when space permits; wrap rather than compress either region. */
 .stub-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap}
 .stub-toolbar{display:flex;gap:.5rem;flex-wrap:wrap}
 .stub-toolbar fieldset{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;width:100%;border:0;padding:0;margin:0}
