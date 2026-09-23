@@ -27,7 +27,9 @@ class ContractParser(HTMLParser):
         self.hrefs = []
         self.classes = []
         self.ids = set()
-        self.labels_for = set()\n        self.stack = []\n        self.class_parents = {}
+        self.labels_for = set()
+        self.stack = []
+        self.class_parents = {}
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
