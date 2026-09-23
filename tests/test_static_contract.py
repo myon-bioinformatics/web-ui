@@ -63,10 +63,27 @@ class StaticContractTest(unittest.TestCase):
             self.assertTrue(parsed.labels_for)
             self.assertTrue(parsed.labels_for <= parsed.ids)
 
+    def test_stub_examples_share_generic_controls(self):
+        required_ids = {"stub-form", "query", "run", "status", "copy-output", "clear-history", "output", "history"}
+        for path in EXAMPLES.glob("*stub.html"):
+            parsed = self.parsed(path)
+            self.assertTrue(required_ids <= parsed.ids, f"{path.name}: missing generic Stub control")
+
+    def test_stub_examples_use_shared_module(self):
+        for path in EXAMPLES.glob("*stub.html"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('../js/stub.js', text)
+            self.assertIn('historyKey:', text)
+
     def test_domain_protocols_not_in_generic_js(self):
         text = (ROOT / "js" / "stub.js").read_text(encoding="utf-8").lower()
-        for term in ("tools/list", "tools/call", "json-rpc", "authorization:"):
+        for term in ("tools/list", "tools/call", "json-rpc", "authorization:", "bearer ", "mcp"):
             self.assertNotIn(term, text)
+
+    def test_generic_stub_js_has_text_safe_helpers(self):
+        text = (ROOT / "js" / "stub.js").read_text(encoding="utf-8")
+        for symbol in ("formatStubValue", "createHistoryStore", "bindStub", "replaceChildren", "textContent"):
+            self.assertIn(symbol, text)
 
 
 if __name__ == "__main__":
