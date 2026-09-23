@@ -1,0 +1,31 @@
+name: Tooling smoke
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python verification tools
+        run: python -m pip install -r tool/python/requirements.txt
+      - name: Verify GitHub CLI
+        run: |
+          git --version
+          gh --version
+      - name: Run pytest
+        run: python -m pytest -v
+      - name: Capture advisory tooling metadata
+        run: python tool/tooling_meta.py > tooling-meta.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tooling-meta
+          path: tooling-meta.json
+          retention-days: 14
