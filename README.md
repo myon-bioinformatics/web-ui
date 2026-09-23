@@ -54,6 +54,7 @@ The v1 compatibility surface is now frozen under
 - `contract.json` — machine-readable source of truth
 - `README.md` — normative compatibility rules
 - `example.html` — canonical structural fixture used by CI
+- [`contract/COMPAT.md`](./contract/COMPAT.md) — version-lane coexistence policy
 
 Within v1, stable classes may be extended but are not removed or semantically
 repurposed. Breaking semantic changes require v2.
