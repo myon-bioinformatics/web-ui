@@ -37,7 +37,16 @@ class StaticContractTest(unittest.TestCase):
         for path in EXAMPLES.glob("*.html"):
             text = path.read_text(encoding="utf-8")
             self.assertIn("../css/tokens.css", text)
-            self.assertIn("../css/themes/modern.css", text)
+            self.assertIn("../css/base.css", text)
+            self.assertIn("../css/components.css", text)
+            self.assertIn("../css/themes/", text)
+
+    def test_theme_examples_keep_semantic_markup(self):
+        text = (EXAMPLES / "github-like.html").read_text(encoding="utf-8")
+        self.assertIn('data-ui-theme="github-like"', text)
+        self.assertIn("../css/themes/github-like.css", text)
+        for class_name in ("ui-page", "ui-panel", "ui-card", "ui-button", "ui-input", "ui-tag", "ui-output"):
+            self.assertIn(class_name, text)
 
     def test_examples_do_not_embed_css(self):
         for path in EXAMPLES.glob("*.html"):
