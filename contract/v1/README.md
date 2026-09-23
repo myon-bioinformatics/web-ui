@@ -11,6 +11,11 @@ Within v1, a stable class or required theme attribute MUST NOT be removed or
 repurposed. Additive classes and new themes are allowed. A removal or semantic
 repurpose requires a v2 contract.
 
+`contract/v1` is the compatibility lane. The `1.0.0` manifest value identifies
+the initial freeze; patch numbers are not used as a separate compatibility
+signal. Additive evolution stays within `contract/v1`; breaking evolution starts
+`contract/v2`.
+
 ## Required theme contract
 
 A themed page SHOULD place `data-ui-theme` on `<body>`.
@@ -65,3 +70,12 @@ implementation details.
 
 The machine-readable source of truth is [contract.json](./contract.json).
 [example.html](./example.html) is the canonical structural fixture used by CI.
+It is a proof-of-presence fixture, not a prescriptive application layout.
+
+CI structurally validates the declared classes/themes and browser smoke captures
+the rendered fixture. This is intentionally not a complete proof of the CSS
+cascade or every possible consumer override.
+
+Downstream consumers SHOULD pin a specific web-ui commit when reading
+`contract/v1/contract.json` or shared assets. They do not need to copy the
+manifest into their own repository unless they intentionally vendor it.
