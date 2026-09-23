@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "status": "stable",
+  "namespace": {
+    "shared": "ui-",
+    "stub": "stub-"
+  },
+  "theme": {
+    "attribute": "data-ui-theme",
+    "target": "body",
+    "values": [
+      "modern",
+      "github-like"
+    ],
+    "default": "modern"
+  },
+  "stable_classes": {
+    "shared": [
+      "ui-page",
+      "ui-panel",
+      "ui-card",
+      "ui-grid",
+      "ui-button",
+      "ui-input",
+      "ui-tag",
+      "ui-muted",
+      "ui-title",
+      "ui-output"
+    ],
+    "stub": [
+      "stub-toolbar",
+      "stub-status",
+      "stub-meta"
+    ]
+  },
+  "guarantees": [
+    "stable classes are not removed or semantically repurposed within v1",
+    "themes may change presentation but must not require consumer markup changes",
+    "consumer-owned content, protocol semantics, validation, and domain behavior stay outside web-ui",
+    "user-controlled values are rendered as text rather than interpreted as HTML"
+  ],
+  "extensions": {
+    "consumer_classes": true,
+    "consumer_data_attributes": true,
+    "additive_ui_classes": true,
+    "removal_or_repurpose_requires": "v2"
+  },
+  "non_contract": [
+    "exact colors",
+    "spacing values",
+    "border radius",
+    "box shadow",
+    "grid sizing constants",
+    "theme-internal selectors",
+    "DOM element choice unless accessibility semantics require it"
+  ]
+}
