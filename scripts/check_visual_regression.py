@@ -29,9 +29,28 @@ def digest(path: Path) -> str:
 
 
 def compare(candidate_dir: Path, baseline_dir: Path, require_baseline: bool) -> int:
+    if not candidate_dir.is_dir():
+        print(
+            f"candidate directory does not exist or is not a directory: {candidate_dir}",
+            file=sys.stderr,
+        )
+        return 2
+    if baseline_dir.exists() and not baseline_dir.is_dir():
+        print(
+            f"baseline path exists but is not a directory: {baseline_dir}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Policy: every deterministic web-ui-*.png capture participates. The frozen
+    # contract/v1 fixture has priority for reviewed baselines, but gallery/theme
+    # captures remain visible candidates instead of being silently excluded.
     candidates = sorted(candidate_dir.glob("web-ui-*.png"))
     if not candidates:
-        print("no candidate screenshots found", file=sys.stderr)
+        print(
+            f"no PNG files matching web-ui-*.png in candidate directory: {candidate_dir}",
+            file=sys.stderr,
+        )
         return 2
 
     failed = False
