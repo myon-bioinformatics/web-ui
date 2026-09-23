@@ -91,3 +91,8 @@ The first phase intentionally treats screenshots as observable test evidence rat
 - stabilize an HTML contract that `markdown.py` and `ascii_artist` can target
 
 See #1 for the bootstrap plan.
+
+
+## Development tooling
+
+Browser/UI verification keeps two separate lanes: deterministic Playwright/Chromium smoke tests and optional Stagehand v4 agent-oriented experiments. Git/gh and Python tool versions plus the exact repository SHA can be captured as advisory CI metadata. See [TOOLING.md](./TOOLING.md).
