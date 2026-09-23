@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -15,32 +16,39 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_TIMEOUT = float(os.environ.get("WEB_UI_TOOL_TIMEOUT", "10"))
 
 
 def _command_version(command: str, *args: str) -> str | None:
     executable = shutil.which(command)
     if not executable:
         return None
-    result = subprocess.run(
-        [executable, *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            [executable, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     text = (result.stdout or result.stderr).strip().splitlines()
     return text[0] if text else None
 
 
 def _git(*args: str) -> str | None:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     return result.stdout.strip() or None
 
 
