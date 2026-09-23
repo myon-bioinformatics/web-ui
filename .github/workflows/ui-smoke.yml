@@ -1,0 +1,49 @@
+name: UI smoke
+on:
+  push:
+  pull_request:
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python -m unittest discover -s tests -v
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npx --yes playwright@1.55.0 install --with-deps chromium
+      - name: Serve examples
+        run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
+      - name: Wait for static server
+        run: |
+          python3 - <<'PY'
+          import time
+          import urllib.request
+
+          url = "http://127.0.0.1:8000/examples/index.html"
+          for attempt in range(50):
+              try:
+                  with urllib.request.urlopen(url, timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  if attempt == 49:
+                      raise
+                  time.sleep(0.1)
+          PY
+      - name: Capture desktop and mobile with Chromium
+        run: |
+          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
+          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-screenshots
+          path: web-ui-*.png
+          retention-days: 14

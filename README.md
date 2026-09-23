@@ -1,2 +1,93 @@
 # web-ui
-web-ui provides shared CSS themes, UI components, and small JavaScript utilities for static web interfaces across myon-bioinformatics projects. It is build-free and dependency-light by design: repositories keep their domain logic, while presentation and reusable browser behavior can share a stable UI contract.
+
+Shared CSS themes, semantic UI components, and small JavaScript utilities for static interfaces across myon-bioinformatics projects.
+
+**Static-first · build-free runtime · dependency-light · cross-repository**
+
+## v1 foundation
+
+```text
+css/
+  tokens.css
+  base.css
+  components.css
+  stub.css
+  themes/
+    modern.css
+js/
+  ui.js
+  stub.js
+examples/
+  index.html
+  mcp-stub.html
+  api-stub.html
+tests/
+```
+
+Modern is the first theme, not the only theme. Components use semantic `ui-*` / `stub-*` classes so future themes can reuse the same HTML contract.
+
+Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
+
+## HTML contract v1
+
+Consumers should treat the semantic HTML surface as the reusable contract:
+
+- shared presentation classes use the `ui-*` namespace
+- Stub-specific presentation classes use the `stub-*` namespace
+- themes are selected with `data-ui-theme` on `body`
+- consumers own content, protocol semantics, validation, and domain behavior
+- user-controlled text should be rendered as text, not interpreted as HTML
+
+Modern theme usage:
+
+```html
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/themes/modern.css">
+
+<body data-ui-theme="modern">
+  <main class="ui-page">
+    <section class="ui-panel">...</section>
+  </main>
+</body>
+```
+
+A future theme should be able to replace `modern.css` and the `data-ui-theme` value without changing the semantic component structure.
+
+## Local preview
+
+```sh
+python -m http.server 8000
+```
+
+Open `http://localhost:8000/examples/index.html`.
+
+## UI verification
+
+Run the static contract checks locally:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+The `-v` output identifies the failing contract by test name. If a browser screenshot fails in CI, inspect the `UI smoke` job first; successful screenshot runs publish the `web-ui-screenshots` artifact.
+
+GitHub Actions captures Chromium screenshots at two explicit v1 viewports:
+
+- `desktop-1440x900`
+- `mobile-390x844`
+
+Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale variants should extend the descriptive suffix rather than replace the existing names, for example `web-ui-tablet-768x1024.png` or `web-ui-mobile-390x844-ja.png`.
+
+The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
+
+## Roadmap
+
+- expand the component gallery
+- migrate Ironmate MCP Stub onto the shared contract
+- add API/MCP Stub patterns without moving domain logic into web-ui
+- add more themes alongside Modern
+- stabilize an HTML contract that `markdown.py` and `ascii_artist` can target
+
+See #1 for the bootstrap plan.
