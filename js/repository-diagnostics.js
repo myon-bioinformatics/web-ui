@@ -18,6 +18,7 @@
   function validate(record) {
     if (!record || record.schema_version !== "1.0") throw new Error("unsupported metadata schema");
     if (!record.head || !record.repository || !record.measurements) throw new Error("incomplete metadata");
+    if (typeof record.repository.full_name !== "string" || !record.repository.full_name) throw new Error("invalid repository");
     if (record.head.short_sha !== record.head.sha.slice(0, 8)) throw new Error("invalid short sha");
     return record;
   }
@@ -33,6 +34,7 @@
     var m = record.measurements;
     return '<section class="repo-diagnostics" data-schema-version="' + esc(record.schema_version) + '">' +
       '<h2>Repository diagnostics</h2>' +
+      '<p class="repo-diagnostics__repository">' + esc(record.repository.full_name) + '</p>' +
       '<p class="repo-diagnostics__commit">' + esc(commitLine(record)) + '</p>' +
       '<dl class="repo-diagnostics__measurements">' +
       '<dt>GitHub reported</dt><dd>' + esc(bytes(m.github_reported_size_bytes)) + '</dd>' +
