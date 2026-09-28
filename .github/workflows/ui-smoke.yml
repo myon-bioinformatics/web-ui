@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - run: npx --yes playwright@1.55.0 install --with-deps chromium
+      - run: npx --yes playwright@1.63.0 install --with-deps chromium
       - name: Serve examples
         run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
       - name: Wait for static server
@@ -42,12 +42,12 @@ jobs:
           PY
       - name: Capture desktop and mobile with Chromium
         run: |
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-desktop-1440x900.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
-          npx --yes playwright@1.55.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-desktop-1440x900.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
+          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
       - name: Check visual regression candidates
         run: python3 scripts/check_visual_regression.py --candidate-dir .
 
