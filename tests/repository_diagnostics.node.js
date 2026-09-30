@@ -30,3 +30,16 @@ assert(escaped.includes("&lt;img src=x onerror=alert(1)&gt;"));
 const invalid = JSON.parse(JSON.stringify(record));
 invalid.measurements.working_tree_bytes = -5;
 assert.throws(() => renderer.render(invalid), /invalid byte measurement/);
+
+// Optional actual producer output exercises the same read-only renderer.
+if (process.argv[2]) {
+  const canonical = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  const head = canonical.head;
+  assert.strictEqual(renderer.commitLine(canonical),
+    `Commit ${head.short_sha} · ${head.branch} · ${head.timestamp} · ${head.subject}`);
+  const rendered = renderer.render(canonical);
+  assert(rendered.includes(canonical.repository.full_name));
+  assert.strictEqual((rendered.match(/not measured/g) || []).length, 3);
+  assert(!rendered.includes("<script>"));
+  assert(rendered.includes("&lt;script&gt;fixture&lt;/script&gt;"));
+}

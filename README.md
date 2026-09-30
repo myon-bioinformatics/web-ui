@@ -174,4 +174,4 @@ See #1 for the bootstrap plan.
 
 ## Development tooling
 
-Browser/UI verification keeps two separate lanes: deterministic Playwright/Chromium smoke tests and optional Stagehand v4 agent-oriented experiments. Git/gh and Python tool versions plus the exact repository SHA can be captured as advisory CI metadata. See [TOOLING.md](./TOOLING.md).
+Browser/UI verification keeps two separate lanes: deterministic Playwright/Chromium smoke tests and optional Stagehand v4 agent-oriented experiments. Git/gh and Python tool versions are captured as advisory CI metadata. Repository identity comes only from the pinned canonical Python producer, in separate JSON/JSONL artifacts. See [TOOLING.md](./TOOLING.md).
