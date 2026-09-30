@@ -1,2 +1,2 @@
-pytest>=8,<10
+pytest>=8
 stagehand>=4,<5
