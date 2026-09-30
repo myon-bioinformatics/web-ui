@@ -179,12 +179,11 @@ Browser/UI verification keeps two separate lanes: deterministic Playwright/Chrom
 ## Shared screenshot checks
 
 CI checks all six named Chromium desktop/mobile PNGs with browser-test-kit at
-`3a054c777a98300ee272e4458990b849c32a7ef0`, checked out separately in the screenshot job.
-See the [shared screenshot guide](https://github.com/myon-bioinformatics/browser-test-kit/blob/3a054c777a98300ee272e4458990b849c32a7ef0/docs/screenshot-evidence.md).
+`6a2e32a4bbe49be5268e6b30040d665a89eecf66`, checked out separately in the screenshot job.
+See the [shared screenshot guide](https://github.com/myon-bioinformatics/browser-test-kit/blob/6a2e32a4bbe49be5268e6b30040d665a89eecf66/docs/screenshot-evidence.md).
 The shared structural PNG checks supplement the existing local candidate/baseline
 comparison. Missing/invalid required captures fail CI; available PNGs are uploaded
-even after failure (14 days). This lane does not yet produce multi-capture receipts
-or measure Firefox/WebKit; image validity does not establish semantic correctness.
+even after failure (14 days). This lane does not measure Firefox/WebKit; image validity does not establish semantic correctness.
 
 The screenshot lane now seals a current-run multi-image receipt via pinned
 browser-test-kit, requires all six PNGs and their recorded SHA-256/size, and
