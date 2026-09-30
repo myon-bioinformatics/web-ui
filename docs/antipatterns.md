@@ -8,7 +8,7 @@ mode is equivalent; do not mint a local synonym only to make this list larger.
 
 | ID | Observed web-ui incident | Guard / preferred pattern |
 | --- | --- | --- |
-| `VISUAL_DIFF_TOO_EARLY` | PR #7 introduced exact PNG comparison in candidate mode because reviewed deterministic baselines were not yet complete. Making missing baselines blocking at that point would have made rollout noise look like regression signal. | Keep deterministic capture and candidate validation first. Promote a baseline to blocking only after it is reviewed and stable. The vocabulary owner is browser-test-kit. |
+| `VISUAL_DIFF_TOO_EARLY` | PR #7 introduced exact PNG comparison in candidate mode because reviewed deterministic baselines were not yet complete. Making missing baselines blocking at that point would have made rollout noise look like regression signal. | Keep deterministic capture and candidate validation first. Promote a baseline to blocking only after it is reviewed and stable. The vocabulary owner is [browser-test-kit](https://github.com/myon-bioinformatics/browser-test-kit/blob/d1907443583c8edd00377f1656f46f619d2addbd/docs/antipatterns.md). |
 
 ## Observed contract-boundary lesson
 
