@@ -17,6 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Check out pinned browser-test-kit validators
+        uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/browser-test-kit
+          ref: 3a054c777a98300ee272e4458990b849c32a7ef0
+          path: .browser-test-kit
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -48,10 +55,20 @@ jobs:
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
+      - name: Validate every required screenshot with shared PNG checks
+        run: |
+          python3 -S .browser-test-kit/scripts/check_png.py \
+            web-ui-desktop-1440x900.png \
+            web-ui-mobile-390x844.png \
+            web-ui-contract-v1-desktop-1440x900.png \
+            web-ui-contract-v1-mobile-390x844.png \
+            web-ui-github-like-desktop-1440x900.png \
+            web-ui-github-like-mobile-390x844.png
       - name: Check visual regression candidates
         run: python3 scripts/check_visual_regression.py --candidate-dir .
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: web-ui-screenshots
           path: web-ui-*.png
