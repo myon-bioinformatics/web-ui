@@ -185,3 +185,11 @@ The shared structural PNG checks supplement the existing local candidate/baselin
 comparison. Missing/invalid required captures fail CI; available PNGs are uploaded
 even after failure (14 days). This lane does not yet produce multi-capture receipts
 or measure Firefox/WebKit; image validity does not establish semantic correctness.
+
+The screenshot lane now seals a current-run multi-image receipt via pinned
+browser-test-kit, requires all six PNGs and their recorded SHA-256/size, and
+checks the explicit tested head SHA plus run ID/attempt. Output is cleared before
+capture. Failed receipts are preserved but cannot cover required success. CI also
+mutates isolated copies of the real bundle to prove rejection of missing images,
+wrong hashes, stale run IDs and failed receipts. These are integrity/run checks;
+they add no screen-content or pixel-regression assertions.

@@ -17,16 +17,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check out pinned browser-test-kit validators
         uses: actions/checkout@v7
         with:
           repository: myon-bioinformatics/browser-test-kit
-          ref: 3a054c777a98300ee272e4458990b849c32a7ef0
+          ref: 6a2e32a4bbe49be5268e6b30040d665a89eecf66
           path: .browser-test-kit
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Clear prior capture evidence
+        run: rm -rf screenshot-evidence web-ui-desktop-1440x900.png web-ui-mobile-390x844.png web-ui-contract-v1-desktop-1440x900.png web-ui-contract-v1-mobile-390x844.png web-ui-github-like-desktop-1440x900.png web-ui-github-like-mobile-390x844.png
       - run: npx --yes playwright@1.63.0 install --with-deps chromium
       - name: Serve examples
         run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
@@ -55,15 +59,37 @@ jobs:
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
           npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
-      - name: Validate every required screenshot with shared PNG checks
+      - name: Seal current-run capture receipt
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CAPTURE_STAGE: ${{ job.status == 'success' && 'complete' || 'failed' }}
         run: |
-          python3 -S .browser-test-kit/scripts/check_png.py \
-            web-ui-desktop-1440x900.png \
-            web-ui-mobile-390x844.png \
-            web-ui-contract-v1-desktop-1440x900.png \
-            web-ui-contract-v1-mobile-390x844.png \
-            web-ui-github-like-desktop-1440x900.png \
-            web-ui-github-like-mobile-390x844.png
+          mkdir -p screenshot-evidence
+          if [ -f web-ui-desktop-1440x900.png ]; then cp web-ui-desktop-1440x900.png screenshot-evidence/; fi
+          if [ -f web-ui-mobile-390x844.png ]; then cp web-ui-mobile-390x844.png screenshot-evidence/; fi
+          if [ -f web-ui-contract-v1-desktop-1440x900.png ]; then cp web-ui-contract-v1-desktop-1440x900.png screenshot-evidence/; fi
+          if [ -f web-ui-contract-v1-mobile-390x844.png ]; then cp web-ui-contract-v1-mobile-390x844.png screenshot-evidence/; fi
+          if [ -f web-ui-github-like-desktop-1440x900.png ]; then cp web-ui-github-like-desktop-1440x900.png screenshot-evidence/; fi
+          if [ -f web-ui-github-like-mobile-390x844.png ]; then cp web-ui-github-like-mobile-390x844.png screenshot-evidence/; fi
+          python3 -S .browser-test-kit/scripts/write_capture_evidence.py screenshot-evidence --project chromium --captures web-ui-desktop-1440x900.png,web-ui-mobile-390x844.png,web-ui-contract-v1-desktop-1440x900.png,web-ui-contract-v1-mobile-390x844.png,web-ui-github-like-desktop-1440x900.png,web-ui-github-like-mobile-390x844.png --sha "$EXPECTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --stage "$CAPTURE_STAGE"
+      - name: Require all captures, hashes and current run identity
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -S .browser-test-kit/scripts/check_capture_evidence.py screenshot-evidence --expect chromium --captures web-ui-desktop-1440x900.png,web-ui-mobile-390x844.png,web-ui-contract-v1-desktop-1440x900.png,web-ui-contract-v1-mobile-390x844.png,web-ui-github-like-desktop-1440x900.png,web-ui-github-like-mobile-390x844.png --sha "$EXPECTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Prove rejection using copies of actual evidence
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -S .browser-test-kit/scripts/probe_capture_rejections.py screenshot-evidence --expect chromium --captures web-ui-desktop-1440x900.png,web-ui-mobile-390x844.png,web-ui-contract-v1-desktop-1440x900.png,web-ui-contract-v1-mobile-390x844.png,web-ui-github-like-desktop-1440x900.png,web-ui-github-like-mobile-390x844.png --sha "$EXPECTED_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Preserve complete or failed receipts and images
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: capture-receipts
+          path: screenshot-evidence
+          retention-days: 14
+
       - name: Check visual regression candidates
         run: python3 scripts/check_visual_regression.py --candidate-dir .
 
