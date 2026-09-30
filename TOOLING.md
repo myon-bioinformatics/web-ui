@@ -45,16 +45,27 @@ Run:
 ```sh
 python -m pytest -v
 python tool/tooling_meta.py
+python -S tool/vendor/repository_metadata_generator.py --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 
-`tooling_meta.py` reports the current repository SHA/short SHA, UTC generation
-time, Python/package versions, and availability/version strings for Git, GitHub
-CLI, Node and npx. This is **advisory evidence**, not a strict freshness gate.
+`tooling_meta.py` reports UTC observation time, Python/package versions, and
+availability/version strings for Git, GitHub CLI, Node and npx. It does not
+collect repository identity. Command probes default to a 10 second timeout;
+slow environments may override it with `WEB_UI_TOOL_TIMEOUT`.
 
-CI stores the same JSON as an artifact so a successful run can be traced back to
-the exact commit and tool environment. Command probes default to a 10 second
-timeout; unusually slow environments may override it with
-`WEB_UI_TOOL_TIMEOUT`.
+Repository identity is generated exclusively by Ironmate's stdlib producer,
+pinned with its contract at `0aee64da2f8d0119a3ef9b955e5c3818f28aaf92`.
+`tool/vendor/provenance.json` records source paths, Git blob IDs and SHA-256
+hashes; both Python files are unchanged upstream bytes, with the upstream MIT
+license included. To refresh, retrieve both files from one reviewed upstream
+commit and update all provenance fields together; verify byte hashes before use.
+
+CI's existing `tooling-meta` artifact contains three separate files:
+`tooling-meta.json` (advisory observations), `repository-metadata.json`, and
+`repository-metadata.jsonl` (the same canonical record). Measurements remain
+`null` unless measured. `js/repository-diagnostics.js` only reads/renders the
+canonical record; it never recollects Git identity. Portable tooling consolidation
+is deferred to Ironmate #49; existing observation semantics remain unchanged.
 
 ### What can fail CI
 
