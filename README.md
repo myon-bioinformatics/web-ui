@@ -175,3 +175,13 @@ See #1 for the bootstrap plan.
 ## Development tooling
 
 Browser/UI verification keeps two separate lanes: deterministic Playwright/Chromium smoke tests and optional Stagehand v4 agent-oriented experiments. Git/gh and Python tool versions are captured as advisory CI metadata. Repository identity comes only from the pinned canonical Python producer, in separate JSON/JSONL artifacts. See [TOOLING.md](./TOOLING.md).
+
+## Shared screenshot checks
+
+CI checks all six named Chromium desktop/mobile PNGs with browser-test-kit at
+`3a054c777a98300ee272e4458990b849c32a7ef0`, checked out separately in the screenshot job.
+See the [shared screenshot guide](https://github.com/myon-bioinformatics/browser-test-kit/blob/3a054c777a98300ee272e4458990b849c32a7ef0/docs/screenshot-evidence.md).
+The shared structural PNG checks supplement the existing local candidate/baseline
+comparison. Missing/invalid required captures fail CI; available PNGs are uploaded
+even after failure (14 days). This lane does not yet produce multi-capture receipts
+or measure Firefox/WebKit; image validity does not establish semantic correctness.
