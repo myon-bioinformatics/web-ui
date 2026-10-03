@@ -3,17 +3,98 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      vendor-mode:
+        description: Public vendor placement mode for this CI run
+        type: choice
+        options: [update, locked]
+        default: update
 
 jobs:
+  resolve-vendor:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Fetch pinned shared vendor tool
+        uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/myon-bioinformatics
+          ref: 90bc069c33901bd4b5373eb02311026e0acf2e2e
+          path: .vendor-sync-tools
+          persist-credentials: false
+      - name: Verify checked-in vendor copies
+        run: python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
+      - name: Recreate locked vendor files from GitHub
+        shell: bash
+        run: |
+          python -S - <<'PY'
+          import json
+          from pathlib import Path
+          for entry in json.loads(Path('vendor.lock.json').read_text(encoding='utf-8'))['files']:
+              Path(entry['destination']).unlink()
+          PY
+          python -S .vendor-sync-tools/vendor_sync.py materialize --manifest vendor.lock.json
+          python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
+      - name: Update public vendor files for this run
+        shell: bash
+        if: inputs.vendor-mode != 'locked'
+        run: |
+          python -S .vendor-sync-tools/vendor_sync.py update --manifest vendor.lock.json
+          python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
+      - name: Refresh legacy provenance from the verified lock
+        run: python -S tool/sync_vendor_provenance.py
+      - name: Preserve resolved vendor snapshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vendor-snapshot
+          path: |
+            vendor.lock.json
+            tool/vendor/repository_metadata_contract.py
+            tool/vendor/repository_metadata_generator.py
+            tool/vendor/LICENSE
+            tool/vendor/provenance.json
+          if-no-files-found: error
+          retention-days: 14
+
   tooling:
+    permissions:
+      contents: read
+    needs: resolve-vendor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Fetch pinned shared vendor tool
+        uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/myon-bioinformatics
+          ref: 90bc069c33901bd4b5373eb02311026e0acf2e2e
+          path: .vendor-sync-tools
+          persist-credentials: false
+      - name: Download resolved vendor snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: vendor-snapshot
+          path: .
+      - name: Verify resolved vendor snapshot
+        shell: bash
+        run: |
+          python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
+          python -S tool/sync_vendor_provenance.py
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -38,4 +119,18 @@ jobs:
             tooling-meta.json
             repository-metadata.json
             repository-metadata.jsonl
+          retention-days: 14
+
+      - name: Preserve vendor lock used by this run
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vendor-lock-py3.12
+          path: |
+            vendor.lock.json
+            tool/vendor/repository_metadata_contract.py
+            tool/vendor/repository_metadata_generator.py
+            tool/vendor/LICENSE
+            tool/vendor/provenance.json
+          if-no-files-found: error
           retention-days: 14
