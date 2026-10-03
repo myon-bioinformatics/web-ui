@@ -3,7 +3,6 @@
 No source acquisition, importing candidate modules, tokens or repository writes.
 """
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -11,7 +10,6 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-BINDINGS = []
 EXPECTED = {('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
  ('myon-bioinformatics/Ironmate',
   'repository_metadata_contract.py',
@@ -41,20 +39,6 @@ def records(root):
 
 def project(root):
     entries = records(root)  # Verify every source/LICENSE before writing any metadata.
-    pending = {}
-    for path, destination, fields in BINDINGS:
-        record = json.loads((root / path).read_text(encoding="utf-8"))
-        entry = entries[destination]
-        old_commit = record.get("commit")
-        for target, source in fields.items():
-            record[target] = "https://github.com/" + entry["repository"] if source == "repository_url" else entry[source]
-        if "date" in record and old_commit != record["commit"]:
-            record["date"] = datetime.now(timezone.utc).date().isoformat()
-        if "license" in record:
-            license_entry = next(e for e in entries.values() if e["repository"] == entry["repository"] and e["source"] == "LICENSE")
-            record["license"] = {"source_path": "LICENSE", "vendored_path": license_entry["destination"],
-                                 "blob_sha": license_entry["blob_sha"], "sha256": license_entry["sha256"]}
-        pending[path] = record
     record = json.loads((root / "tool/vendor/provenance.json").read_text(encoding="utf-8"))
     selected = [entries["tool/vendor/" + name] for name in record["files"]]
     if len({e["commit"] for e in selected}) != 1:
@@ -63,9 +47,8 @@ def project(root):
     for name in record["files"]:
         entry = entries["tool/vendor/" + name]
         record["files"][name] = {"source_path": entry["source"], "git_blob_sha": entry["blob_sha"], "sha256": entry["sha256"]}
-    pending["tool/vendor/provenance.json"] = record
-    for path, record in pending.items():
-        (root / path).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    (root / "tool/vendor/provenance.json").write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

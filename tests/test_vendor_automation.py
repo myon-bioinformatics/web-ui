@@ -124,12 +124,14 @@ def test_updated_lock_projects_exact_identity_and_keeps_reader_formats(tmp_path)
     projector.project(tmp_path)
     assert before == {name:(tmp_path / name).read_bytes() for name in SNAPSHOT}
     records = projector.records(tmp_path)
-    for path,destination,fields in projector.BINDINGS:
-        projected = json.loads((tmp_path / path).read_text(encoding='utf-8'))
-        entry = records[destination]
-        for target,source in fields.items():
-            assert projected[target] == ('https://github.com/'+entry['repository'] if source == 'repository_url' else entry[source])
-    assert json.loads((tmp_path / 'tool/vendor/provenance.json').read_text(encoding='utf-8'))['source_commit'] == 'a' * 40
+    projected = json.loads((tmp_path / 'tool/vendor/provenance.json').read_text(encoding='utf-8'))
+    assert projected == {
+        'source_repository': 'myon-bioinformatics/Ironmate',
+        'source_commit': 'a' * 40,
+        'files': {Path(destination).name: {
+            'source_path': entry['source'], 'git_blob_sha': entry['blob_sha'], 'sha256': entry['sha256']}
+            for destination, entry in records.items()}}
+
 
 
 @pytest.mark.parametrize('license_file', [False, True])
@@ -155,3 +157,16 @@ def test_projection_cli_help_and_unknown_options_do_not_need_or_write_sources(tm
         assert result.returncode == expected
         assert 'usage:' in (result.stdout + result.stderr).lower()
         assert set(tmp_path.rglob('*')) == {helper.parent, helper}
+
+
+def test_grouped_provenance_rejects_mixed_commits_before_writing(tmp_path):
+    _copy_snapshot(tmp_path)
+    path = tmp_path / 'tool/vendor/provenance.json'
+    before = path.read_bytes()
+    lock_path = tmp_path / 'vendor.lock.json'
+    lock = json.loads(lock_path.read_text(encoding='utf-8'))
+    lock['files'][0]['commit'] = 'a' * 40
+    lock_path.write_text(json.dumps(lock), encoding='utf-8')
+    with pytest.raises(ValueError, match='one source commit'):
+        _projector().project(tmp_path)
+    assert path.read_bytes() == before
