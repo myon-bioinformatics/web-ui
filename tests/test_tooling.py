@@ -11,6 +11,12 @@ import pytest
 from tool.tooling_meta import collect
 
 
+def _locked(destination):
+    root = Path(__file__).resolve().parents[1]
+    lock = json.loads((root / "vendor.lock.json").read_text(encoding="utf-8"))
+    return next(e for e in lock["files"] if e["destination"] == destination)
+
+
 def test_required_github_tooling_is_visible():
     assert shutil.which("git")
     assert shutil.which("gh")
@@ -70,20 +76,20 @@ def test_canonical_vendor_provenance():
     vendor = ROOT / "tool/vendor"
     provenance = json.loads((vendor / "provenance.json").read_text())
     assert provenance["source_repository"] == "myon-bioinformatics/Ironmate"
-    assert provenance["source_commit"] == "0aee64da2f8d0119a3ef9b955e5c3818f28aaf92"
+    assert provenance["source_commit"] == _locked('tool/vendor/repository_metadata_contract.py')['commit']
 
     expected = {
         "repository_metadata_contract.py": {
-            "git_blob_sha": "a61a2949e58a42635b0830289e368b4125b1274b",
-            "sha256": "c8093d806756925b68978b5a40a218e4acd5daf43f2d7fc2e358cabf8dc39e9a",
+            "git_blob_sha": _locked('tool/vendor/repository_metadata_contract.py')['blob_sha'],
+            "sha256": _locked('tool/vendor/repository_metadata_contract.py')['sha256'],
         },
         "repository_metadata_generator.py": {
-            "git_blob_sha": "eef572ce64e92bfecf0451235f884aa208044587",
-            "sha256": "a2edc91cc0a269d8b2fc6a9be1cfa0edbfae18604d53a1b9ebdcb72004be9a06",
+            "git_blob_sha": _locked('tool/vendor/repository_metadata_generator.py')['blob_sha'],
+            "sha256": _locked('tool/vendor/repository_metadata_generator.py')['sha256'],
         },
         "LICENSE": {
-            "git_blob_sha": "4ec4989b801bf1a3df6184d21f79e6e7ed5931f6",
-            "sha256": "15f66204c4a6a1ce0c94f0ed4319ff9400f872e85fd32c95f21695c2f231af59",
+            "git_blob_sha": _locked('tool/vendor/LICENSE')['blob_sha'],
+            "sha256": _locked('tool/vendor/LICENSE')['sha256'],
         },
     }
     assert set(provenance["files"]) == set(expected)
