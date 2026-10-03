@@ -30,7 +30,7 @@ ALM agents can use the same mechanism in a disposable checkout:
 
 ```bash
 git clone https://github.com/myon-bioinformatics/myon-bioinformatics.git .vendor-sync-tools
-git -C .vendor-sync-tools checkout --detach 90bc069c33901bd4b5373eb02311026e0acf2e2e
+git -C .vendor-sync-tools checkout --detach 37f30d5acdc1906d4acbd103ce6f652bc13ca7eb
 python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
 python -S .vendor-sync-tools/vendor_sync.py materialize --manifest vendor.lock.json
 python -S .vendor-sync-tools/vendor_sync.py update --manifest vendor.lock.json
@@ -66,9 +66,9 @@ Updates happen only when the existing workflow/change filters select the run.
 There is no upstream-only scheduler. Separate push and pull-request events are
 separate runs and can each resolve upstream once.
 
-The pinned shared tool's public-Git rate-limit fallback applies to `update`.
-Locked `materialize` currently fails nonzero on raw HTTP 403/429; it does not
-silently accept the baseline or bypass digest verification.
+The pinned shared tool uses anonymous public Git fallback for both `update`
+and locked `materialize` on HTTP 403/429. Locked placement preserves each entry's
+exact commit and verifies Git blob/SHA-256 before writing; other errors remain nonzero.
 
 The small projection adapter is consumer-owned because existing provenance
 schemas differ. Acquisition and verification stay in the shared pinned tool;
