@@ -48,13 +48,22 @@ python tool/tooling_meta.py
 python -S tool/vendor/repository_metadata_generator.py --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 
-`tooling_meta.py` reports UTC observation time, Python/package versions, and
-availability/version strings for Git, GitHub CLI, Node and npx. It does not
-collect repository identity. Command probes default to a 10 second timeout;
-slow environments may override it with `WEB_UI_TOOL_TIMEOUT`.
+`tooling_meta.py` delegates Python runtime, Git/GitHub CLI/Node/npx versions,
+and the explicitly allowlisted `pytest`/`stagehand` distributions to Ironmate's
+`collect_portable_tooling()`. The consumer only timestamps and projects those
+observations into the existing `runtime`, `commands`, and `packages` JSON groups.
+It does not collect repository identity or add app/render/build measurements.
+
+Available values are canonical normalized short version strings (for example,
+Git `2.45.1`, rather than `git version 2.45.1`). Missing, failed, malformed or
+unmeasured observations are **omitted**, never replaced with `null` or `unknown`.
+Empty groups remain `{}`; consumers must handle absent keys. Duplicate canonical
+owners are errors even when a tool is unavailable. No consumer values are merged
+over canonical keys. Command probes use the producer's 5 second timeout;
+`WEB_UI_TOOL_TIMEOUT` is no longer used.
 
 Repository identity is generated exclusively by Ironmate's stdlib producer,
-pinned with its contract at `0aee64da2f8d0119a3ef9b955e5c3818f28aaf92`.
+pinned with its contract at `73157cb7fed236a4a941722a6dcddd69a33ab95a`.
 `tool/vendor/provenance.json` records source paths, Git blob IDs and SHA-256
 hashes; both Python files are unchanged upstream bytes, with the upstream MIT
 license included. To refresh, retrieve both files from one reviewed upstream
@@ -64,8 +73,9 @@ CI's existing `tooling-meta` artifact contains three separate files:
 `tooling-meta.json` (advisory observations), `repository-metadata.json`, and
 `repository-metadata.jsonl` (the same canonical record). Measurements remain
 `null` unless measured. `js/repository-diagnostics.js` only reads/renders the
-canonical record; it never recollects Git identity. Portable tooling consolidation
-is deferred to Ironmate #49; existing observation semantics remain unchanged.
+canonical record; it never recollects Git identity. This is the first consumer
+slice of Ironmate #49; Flutter and other consumers remain separate follow-ups.
+The repository-metadata v1 schema and JSON/JSONL identity path are unchanged.
 
 ### What can fail CI
 

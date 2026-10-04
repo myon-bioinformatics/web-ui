@@ -21,19 +21,19 @@ def test_tooling_probe_child_keeps_exit_status_with_junit(tmp_path):
     fixture = tmp_path / "test_probe.py"
     fixture.write_text('''
 import pytest
-from tool.tooling_meta import _command_version
+from tool.tooling_meta import canonical
 
 @pytest.fixture
 def unavailable(monkeypatch):
-    monkeypatch.setattr("tool.tooling_meta.shutil.which", lambda _: None)
+    monkeypatch.setattr(canonical.shutil, "which", lambda _: None)
 
 def test_unavailable_command(unavailable):
-    assert _command_version("synthetic-missing") is None
+    assert canonical.observe_command_version("git") is None
 
 @pytest.mark.parametrize("command", ["PARAMETER_SENTINEL"], ids=["PARAMETER_SENTINEL"])
 def test_wrong_probe_expectation(unavailable, command):
     print("STDOUT_SENTINEL")
-    assert _command_version(command) == "ASSERTION_SENTINEL"
+    assert canonical.observe_command_version("git") == "ASSERTION_SENTINEL", command
 
 @pytest.fixture
 def broken_setup():
