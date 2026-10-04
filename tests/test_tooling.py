@@ -61,15 +61,16 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
     # Advisory collection can probe git --version, but never head/branch identity.
     from tool import tooling_meta
     probes = []
-    def observe(command, *args):
-        probes.append((command, args))
-        return "fixture version"
-    monkeypatch.setattr(tooling_meta, "_command_version", observe)
+    def observe(command):
+        probes.append(command)
+        return "1.2.3"
+    monkeypatch.setattr(tooling_meta.canonical, "observe_command_version", observe)
+    monkeypatch.setattr(tooling_meta.canonical, "observe_package_version", lambda _: "4.1.0")
     metadata = collect()
     assert set(metadata) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert metadata["runtime"]["python"]
     assert set(metadata["packages"]) == {"pytest", "stagehand"}
-    assert probes == [(name, ("--version",)) for name in ("git", "gh", "node", "npx")]
+    assert probes == ["git", "gh", "node", "npx"]
 
 
 def test_canonical_vendor_provenance():
