@@ -6,11 +6,16 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_tooling_probe_child_keeps_exit_status_with_junit(tmp_path):
+    importer = ROOT / ".junit-tools" / "xprobe.py"
+    if not importer.is_file() and os.environ.get("GITHUB_ACTIONS") != "true" and not os.environ.get("WEB_UI_FAILURE_EVIDENCE"):
+        pytest.skip("optional local JUnit regression: fetch the pinned importer (docs/junit-evidence.md)")
+    assert importer.is_file(), "CI must provision the pinned test-only JUnit importer"
     evidence = Path(os.environ.get("WEB_UI_FAILURE_EVIDENCE", tmp_path / "evidence")).resolve()
     evidence.mkdir(parents=True, exist_ok=True)
     fixture = tmp_path / "test_probe.py"
@@ -49,8 +54,7 @@ def test_skip():
                               capture_output=True, text=True, timeout=60)
     (evidence / "exit.json").write_text(json.dumps({"without_junit": plain.returncode,
                                                 "with_junit": reported.returncode}), encoding="utf-8")
-    assert plain.returncode == reported.returncode == 1, reported.stdout + reported.stderr
-    importer = ROOT / ".junit-tools" / "xprobe.py"
+    assert plain.returncode == reported.returncode == 1, plain.stdout + plain.stderr + reported.stdout + reported.stderr
     data = importer.read_bytes()
     assert hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() == "dbc5b7d55005d6288c072a7612584d6170c216f4"
     spec = importlib.util.spec_from_file_location("probe_junit_xprobe", importer)
