@@ -17,8 +17,12 @@ SNAPSHOT = ['vendor.lock.json',
  'tool/vendor/repository_metadata_contract.py',
  'tool/vendor/repository_metadata_generator.py',
  'tool/vendor/LICENSE',
+ 'tool/vendor/gh_identity.py',
+ 'tool/vendor/gh_identity-LICENSE',
  'tool/vendor/provenance.json']
-EXPECTED = {('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
+EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
+ ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
+ ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
  ('myon-bioinformatics/Ironmate',
   'repository_metadata_contract.py',
   'tool/vendor/repository_metadata_contract.py'),
@@ -154,7 +158,8 @@ def test_updated_lock_projects_exact_identity_and_keeps_reader_formats(tmp_path)
         'source_commit': 'a' * 40,
         'files': {Path(destination).name: {
             'source_path': entry['source'], 'git_blob_sha': entry['blob_sha'], 'sha256': entry['sha256']}
-            for destination, entry in records.items()}}
+            for destination, entry in records.items()
+            if entry['repository'] == 'myon-bioinformatics/Ironmate'}}
 
 
 
