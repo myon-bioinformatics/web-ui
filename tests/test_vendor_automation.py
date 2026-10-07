@@ -20,7 +20,8 @@ SNAPSHOT = ['vendor.lock.json',
  'tool/vendor/gh_identity.py',
  'tool/vendor/gh_identity-LICENSE',
  'tool/vendor/provenance.json']
-UPDATE_SNAPSHOT = SNAPSHOT + ['vendor-promotion.json']
+RECEIPT_PATH = "${{ inputs.vendor-mode != 'locked' && 'vendor-promotion.json' || '' }}"
+UPDATE_SNAPSHOT = SNAPSHOT + [RECEIPT_PATH]
 EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
  ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
  ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
@@ -133,7 +134,7 @@ def test_failed_update_does_not_reach_successful_check(tmp_path):
                   if s.get('name') == 'Update public vendor files for this run')
     tool = tmp_path / '.vendor-sync-tools/vendor_sync.py'
     tool.parent.mkdir()
-    tool.write_text("import pathlib, sys\nif sys.argv[1] == 'update': sys.exit(2)\npathlib.Path('check-reached').touch()\n", encoding='utf-8')
+    tool.write_text("import pathlib, sys\nif sys.argv[1] == 'promote': sys.exit(2)\npathlib.Path('check-reached').touch()\n", encoding='utf-8')
     script = tmp_path / 'update.sh'
     script.write_text(update['run'].replace('python -S ', shlex.quote(sys.executable)+' -S '), encoding='utf-8')
     result = subprocess.run([shutil.which('bash'),'--noprofile','--norc','-e','-o','pipefail',str(script)],
