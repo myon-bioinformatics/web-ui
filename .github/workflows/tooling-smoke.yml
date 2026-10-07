@@ -74,8 +74,8 @@ jobs:
             tool/vendor/repository_metadata_contract.py
             tool/vendor/repository_metadata_generator.py
             tool/vendor/LICENSE
-          tool/vendor/gh_identity.py
-          tool/vendor/gh_identity-LICENSE
+            tool/vendor/gh_identity.py
+            tool/vendor/gh_identity-LICENSE
             tool/vendor/provenance.json
           if-no-files-found: error
           retention-days: 14
@@ -173,8 +173,8 @@ jobs:
             tool/vendor/repository_metadata_contract.py
             tool/vendor/repository_metadata_generator.py
             tool/vendor/LICENSE
-          tool/vendor/gh_identity.py
-          tool/vendor/gh_identity-LICENSE
+            tool/vendor/gh_identity.py
+            tool/vendor/gh_identity-LICENSE
             tool/vendor/provenance.json
           if-no-files-found: error
           retention-days: 14
