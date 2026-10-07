@@ -10,7 +10,9 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED = {('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
+EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
+ ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
+ ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
  ('myon-bioinformatics/Ironmate',
   'repository_metadata_contract.py',
   'tool/vendor/repository_metadata_contract.py'),
