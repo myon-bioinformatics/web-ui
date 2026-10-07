@@ -20,6 +20,8 @@ SNAPSHOT = ['vendor.lock.json',
  'tool/vendor/gh_identity.py',
  'tool/vendor/gh_identity-LICENSE',
  'tool/vendor/provenance.json']
+RECEIPT_PATH = "${{ inputs.vendor-mode != 'locked' && 'vendor-promotion.json' || '' }}"
+UPDATE_SNAPSHOT = SNAPSHOT + [RECEIPT_PATH]
 EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
  ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
  ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
@@ -72,7 +74,8 @@ def test_public_vendor_ci_updates_without_repository_writes():
     assert update["shell"] == "bash"
     assert 'continue-on-error' not in update
     assert update['run'].splitlines() == [
-        'python -S .vendor-sync-tools/vendor_sync.py update --manifest vendor.lock.json',
+        'python -S .vendor-sync-tools/vendor_sync.py promote --manifest vendor.lock.json | tee vendor-promotion.json',
+        'python -S -m json.tool vendor-promotion.json > /dev/null',
         'python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json']
     recreate = next(s for s in resolve if s.get("name") == "Recreate locked vendor files from GitHub")
     assert recreate["shell"] == "bash"
@@ -96,7 +99,7 @@ def test_public_vendor_ci_updates_without_repository_writes():
     assert ci['on']['workflow_dispatch']['inputs']['vendor-mode']['default'] == 'update'
     needs = jobs[TEST_JOB]['needs']
     assert 'resolve-vendor' in ([needs] if isinstance(needs, str) else needs)
-    assert sum('vendor_sync.py update' in s.get('run', '') for steps in (resolve,test) for s in steps) == 1
+    assert sum('vendor_sync.py promote' in s.get('run', '') for steps in (resolve,test) for s in steps) == 1
     download = next(i for i,s in enumerate(test) if s.get('name') == 'Download resolved vendor snapshot')
     verify = next(i for i,s in enumerate(test) if s.get('name') == 'Verify resolved vendor snapshot')
     tests = [i for i,s in enumerate(test) if 'pytest ' in s.get('run','')]
@@ -112,10 +115,10 @@ def test_public_vendor_ci_updates_without_repository_writes():
         upload = next(s for s in steps if s.get('name') == name)
         assert upload['if'] == 'always()'
         assert upload['with']['if-no-files-found'] == 'error'
-        assert set(upload['with']['path'].splitlines()) == set(SNAPSHOT)
+        assert set(upload['with']['path'].splitlines()) == set(UPDATE_SNAPSHOT)
     pins = [s['with']['ref'] for steps in (resolve,test) for s in steps
             if s.get('with',{}).get('repository') == 'myon-bioinformatics/myon-bioinformatics']
-    assert pins == ['37f30d5acdc1906d4acbd103ce6f652bc13ca7eb'] * 2
+    assert pins == ['08dc3757deeb930c950bdcc6bd55ec3112ba49fc'] * 2
     for steps in (resolve,test):
         for step in steps:
             if step.get('uses','').startswith('actions/checkout@'):
@@ -131,7 +134,7 @@ def test_failed_update_does_not_reach_successful_check(tmp_path):
                   if s.get('name') == 'Update public vendor files for this run')
     tool = tmp_path / '.vendor-sync-tools/vendor_sync.py'
     tool.parent.mkdir()
-    tool.write_text("import pathlib, sys\nif sys.argv[1] == 'update': sys.exit(2)\npathlib.Path('check-reached').touch()\n", encoding='utf-8')
+    tool.write_text("import pathlib, sys\nif sys.argv[1] == 'promote': sys.exit(2)\npathlib.Path('check-reached').touch()\n", encoding='utf-8')
     script = tmp_path / 'update.sh'
     script.write_text(update['run'].replace('python -S ', shlex.quote(sys.executable)+' -S '), encoding='utf-8')
     result = subprocess.run([shutil.which('bash'),'--noprofile','--norc','-e','-o','pipefail',str(script)],
@@ -268,7 +271,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     matrix = job.get('strategy', {}).get('matrix', {})
     assert all(len(values) == 1 for values in matrix.values())
     steps = job['steps']
-    assert not any('vendor_sync.py update' in s.get('run', '') for s in steps)
+    assert not any('vendor_sync.py promote' in s.get('run', '') for s in steps)
     assert not any(s.get('uses', '').startswith('actions/download-artifact@') for s in steps)
     verify = next(i for i,s in enumerate(steps) if s.get('name') == 'Verify checked-in vendor copies')
     recreate = next(i for i,s in enumerate(steps) if s.get('name') == 'Recreate locked vendor files from GitHub')
@@ -279,7 +282,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
                     if s.get('name') == 'Recreate locked vendor files from GitHub')
     assert steps[recreate] == original
     tool = next(s for s in steps if s.get('name') == 'Fetch pinned shared vendor tool')
-    assert tool['with']['ref'] == '37f30d5acdc1906d4acbd103ce6f652bc13ca7eb'
+    assert tool['with']['ref'] == '08dc3757deeb930c950bdcc6bd55ec3112ba49fc'
     for step in steps:
         assert 'continue-on-error' not in step
         if step.get('uses', '').startswith('actions/checkout@'):
