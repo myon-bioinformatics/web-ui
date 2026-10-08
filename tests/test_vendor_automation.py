@@ -287,3 +287,38 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
             assert step['with']['if-no-files-found'] == 'error'
     lock = next(s for s in steps if s.get('name') == 'Preserve vendor lock used by this run')
     assert lock['with']['path'] == 'build/vendor-evidence-locked'
+
+
+@pytest.mark.parametrize("receipt", [False, True])
+def test_stage_shell_parses_and_selects_receipt(tmp_path, receipt):
+    import os
+    ci = _workflow()
+    stage_steps = [
+        next(step for step in ci["jobs"][job]["steps"]
+             if step.get("name") == "Stage canonical vendor evidence")
+        for job in ("resolve-vendor", "tooling", "test-locked")
+    ]
+    for step in stage_steps:
+        assert step["if"] == "always()"
+        assert ".vendor-sync-tools/vendor_stage.py" in step["run"]
+        parsed = subprocess.run(["bash", "-n"], input=step["run"], text=True,
+                                capture_output=True, timeout=10)
+        assert parsed.returncode == 0, parsed.stderr
+    assert "--kind locked" in stage_steps[2]["run"]
+    assert "--runtime-evidence" not in stage_steps[2]["run"]
+    if receipt:
+        (tmp_path / "vendor-promotion.json").write_text("{}")
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    shim = binary / "python"
+    shim.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> calls.txt\n')
+    shim.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(binary) + os.pathsep + env["PATH"]
+    for step in stage_steps[:2]:
+        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+                                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+    assert len(calls) == 2
+    assert all(("--runtime-evidence vendor-promotion.json" in call) == receipt for call in calls)
