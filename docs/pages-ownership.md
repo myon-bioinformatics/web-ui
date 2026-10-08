@@ -16,6 +16,11 @@ own protocol operations, transformations, authorization, and evidence semantics.
 Vendored helpers are usable at build/test time; publishing Python under a Pages
 URL does not cause the browser or Pages to execute it.
 
+Python/pytest may wrap layout generation and existing `node` checks as
+one-liners. Optional lightweight JS links follow the acceptance bar in
+[lightweight-js.md](./lightweight-js.md). Live DOM snapshots of published pages
+belong to an agent `/js` verification lane, not to Pages execution.
+
 ## Future visitor-triggered experiment
 
 A useful future experiment could select a bounded test case with a recorded seed

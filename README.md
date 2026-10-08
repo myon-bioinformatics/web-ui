@@ -199,34 +199,43 @@ Public source placement and automatic Python CI updates: [vendor automation](doc
 
 `web_ui.py` is a portable, stdlib-only HTML emitter for Python 3.10+. It accepts
 text or explicitly authored HTML and CSS. It neither downloads assets nor needs
-Node, npm, Deno, a browser, or an installed Python package. JavaScript is not
-added to generated documents.
+npm, Deno, a browser, or an installed Python package. Layout output is meant for
+Python/`pytest` one-liners. JavaScript is omitted by default; shared modules may
+be linked explicitly. `run_node()` wraps existing Node checks for the same
+pytest lane.
 
 ```sh
+python -S -c 'from web_ui import render_document; print(render_document("Hello"))'
 printf 'Hello <world>' | python -S web_ui.py --title Demo > demo.html
 printf '<main class="ui-page">Demo</main>' | python -S web_ui.py --trusted-html --css palette.css > demo.html
 printf 'Result' | python -S web_ui.py --asset-base ./vendor/web-ui --theme github-like > demo.html
+printf 'Result' | python -S web_ui.py --asset-base . --with-scripts ui.js > demo.html
 ```
 
-The first example escapes input as text. `--trusted-html` and `--css` accept
+The first examples escape input as text. `--trusted-html` and `--css` accept
 caller-authored source, not untrusted content; this wrapper is not a sanitizer.
 Embedded CSS produces a self-contained document when the supplied HTML/CSS have
 no external references. Shared asset links need the existing `css/` directory
 copied alongside the output or an explicit HTTPS asset base pinned by the
 consumer to a full commit SHA. A mutable URL is not a recommended baseline.
 `--stub` additionally links `css/stub.css` and requires `--asset-base`.
+`--with-scripts` requires `--asset-base` and emits module `src` links only.
 
 ```python
-from web_ui import render_document, shared_stylesheets
+from web_ui import render_document, run_node, shared_scripts, shared_stylesheets
 print(render_document("Hello", title="Demo", stylesheets=shared_stylesheets("./vendor/web-ui")))
+print(render_document("Hello", scripts=shared_scripts("./vendor/web-ui")))
+assert run_node("tests/repository_diagnostics.node.js").returncode == 0
 # Caller-supplied CSS can also be passed directly: render_document("Hello", css="body {color:#000}")
 ```
 
 Existing `ui.js` text/clipboard helpers, `stub.js` form binding, and
 `repository-diagnostics.js` rendering remain in use by examples or consumers.
-They remain optional browser utilities; Python cannot replace browser-side
-interaction merely by generating HTML. The wrapper preserves the v1 classes
-and theme attributes without changing those existing assets.
+They remain optional browser utilities under the lightweight JS bar in
+[docs/lightweight-js.md](docs/lightweight-js.md). Python cannot replace
+browser-side interaction merely by generating HTML. Live DOM checks of published
+pages stay on an agent `/js` lane documented there. The wrapper preserves the v1
+classes and theme attributes without changing those existing assets.
 
 See [Pages ownership and execution](docs/pages-ownership.md) for the separation
 between static discovery and execution evidence.
