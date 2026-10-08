@@ -66,6 +66,7 @@ jobs:
           --summary-output "$GITHUB_STEP_SUMMARY"
           --update-outcome "$VENDOR_UPDATE_OUTCOME"
       - name: Stage canonical vendor evidence
+        if: always()
         run: python -S tool/stage_vendor_evidence.py --kind candidate --output build/vendor-evidence-candidate
       - name: Preserve resolved vendor snapshot
         if: always()
@@ -162,6 +163,7 @@ jobs:
           retention-days: 14
 
       - name: Stage canonical vendor evidence
+        if: always()
         run: python -S tool/stage_vendor_evidence.py --kind candidate --output build/vendor-evidence-test
       - name: Preserve vendor lock used by this run
         if: always()
@@ -244,6 +246,7 @@ jobs:
         retention-days: 14
         if-no-files-found: error
     - name: Stage canonical vendor evidence
+      if: always()
       run: python -S tool/stage_vendor_evidence.py --kind locked --output build/vendor-evidence-locked
     - name: Preserve vendor lock used by this run
       if: always()
