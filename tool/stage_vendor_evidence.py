@@ -17,7 +17,7 @@ def main():
     root = Path.cwd().resolve()
     cmd = [sys.executable, "-S", str(root / ".vendor-sync-tools/vendor_sync.py"),
            "evidence", "--manifest", "vendor.lock.json"]
-    if args.kind == "candidate":
+    if args.kind == "candidate" and (root / "vendor-promotion.json").is_file():
         cmd += ["--runtime-evidence", "vendor-promotion.json"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     evidence = json.loads(result.stdout)
