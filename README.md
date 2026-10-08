@@ -164,7 +164,7 @@ built-in generic type syntax such as `tuple[int, int]`.
 ## Roadmap
 
 - expand the component gallery
-- migrate Ironmate MCP Stub onto the shared contract
+- consolidate Ironmate metadata-only discovery in the portfolio; retain working consumer demos
 - add API/MCP Stub patterns without moving domain logic into web-ui
 - expand themes beyond Modern and GitHub-like
 - keep HTML contract v1 stable while `markdown.py` and `ascii_artist` integrations adopt it
@@ -194,3 +194,39 @@ wrong hashes, stale run IDs and failed receipts. These are integrity/run checks;
 they add no screen-content or pixel-regression assertions.
 
 Public source placement and automatic Python CI updates: [vendor automation](docs/vendor-automation.md).
+
+## Python static wrapper
+
+`web_ui.py` is a portable, stdlib-only HTML emitter for Python 3.10+. It accepts
+text or explicitly authored HTML and CSS. It neither downloads assets nor needs
+Node, npm, Deno, a browser, or an installed Python package. JavaScript is not
+added to generated documents.
+
+```sh
+printf 'Hello <world>' | python -S web_ui.py --title Demo > demo.html
+printf '<main class="ui-page">Demo</main>' | python -S web_ui.py --trusted-html --css palette.css > demo.html
+printf 'Result' | python -S web_ui.py --asset-base ./vendor/web-ui --theme github-like > demo.html
+```
+
+The first example escapes input as text. `--trusted-html` and `--css` accept
+caller-authored source, not untrusted content; this wrapper is not a sanitizer.
+Embedded CSS produces a self-contained document when the supplied HTML/CSS have
+no external references. Shared asset links need the existing `css/` directory
+copied alongside the output or an explicit HTTPS asset base pinned by the
+consumer to a full commit SHA. A mutable URL is not a recommended baseline.
+`--stub` additionally links `css/stub.css` and requires `--asset-base`.
+
+```python
+from web_ui import render_document, shared_stylesheets
+print(render_document("Hello", title="Demo", stylesheets=shared_stylesheets("./vendor/web-ui")))
+# Caller-supplied CSS can also be passed directly: render_document("Hello", css="body {color:#000}")
+```
+
+Existing `ui.js` text/clipboard helpers, `stub.js` form binding, and
+`repository-diagnostics.js` rendering remain in use by examples or consumers.
+They remain optional browser utilities; Python cannot replace browser-side
+interaction merely by generating HTML. The wrapper preserves the v1 classes
+and theme attributes without changing those existing assets.
+
+See [Pages ownership and execution](docs/pages-ownership.md) for the separation
+between static discovery and execution evidence.
