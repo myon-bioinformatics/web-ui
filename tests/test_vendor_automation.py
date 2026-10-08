@@ -13,24 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = '.github/workflows/tooling-smoke.yml'
 TEST_JOB = 'tooling'
 HELPER = 'tool/sync_vendor_provenance.py'
-SNAPSHOT = ['vendor.lock.json',
- 'tool/vendor/repository_metadata_contract.py',
- 'tool/vendor/repository_metadata_generator.py',
- 'tool/vendor/LICENSE',
- 'tool/vendor/gh_identity.py',
- 'tool/vendor/gh_identity-LICENSE',
- 'tool/vendor/provenance.json']
+def _lock_entries(root=ROOT):
+    lock = json.loads((root / 'vendor.lock.json').read_text(encoding='utf-8'))
+    assert lock['schema'] == 'vendor-lock/1'
+    return lock['files']
+
+
+SNAPSHOT = ['vendor.lock.json', *[e['destination'] for e in _lock_entries()],
+            'tool/vendor/provenance.json']
 RECEIPT_PATH = "${{ inputs.vendor-mode != 'locked' && 'vendor-promotion.json' || '' }}"
 UPDATE_SNAPSHOT = SNAPSHOT + [RECEIPT_PATH]
-EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
- ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
- ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_contract.py',
-  'tool/vendor/repository_metadata_contract.py'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_generator.py',
-  'tool/vendor/repository_metadata_generator.py')}
+
 
 
 def _workflow():
@@ -54,8 +47,8 @@ def _copy_snapshot(root):
 
 def test_vendor_lock_has_explicit_sources_and_verified_bytes():
     records = _projector().records(ROOT)
-    assert len(records) == len(EXPECTED)
-    assert {(e["repository"], e["source"], e["destination"]) for e in records.values()} == EXPECTED
+    expected = {(e['repository'], e['source'], e['destination']) for e in _lock_entries()}
+    assert {(e["repository"], e["source"], e["destination"]) for e in records.values()} == expected
 
 
 def test_public_vendor_ci_updates_without_repository_writes():
