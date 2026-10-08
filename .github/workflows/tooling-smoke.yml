@@ -67,7 +67,8 @@ jobs:
           --update-outcome "$VENDOR_UPDATE_OUTCOME"
       - name: Stage canonical vendor evidence
         if: always()
-        run: if [ -f vendor-promotion.json ]; then
+        run: |
+          if [ -f vendor-promotion.json ]; then
             python -S .vendor-sync-tools/vendor_stage.py --kind candidate --output build/vendor-evidence-candidate --legacy-evidence tool/vendor/provenance.json --runtime-evidence vendor-promotion.json
           else
             python -S .vendor-sync-tools/vendor_stage.py --kind candidate --output build/vendor-evidence-candidate --legacy-evidence tool/vendor/provenance.json
@@ -168,7 +169,8 @@ jobs:
 
       - name: Stage canonical vendor evidence
         if: always()
-        run: if [ -f vendor-promotion.json ]; then
+        run: |
+          if [ -f vendor-promotion.json ]; then
             python -S .vendor-sync-tools/vendor_stage.py --kind candidate --output build/vendor-evidence-test --legacy-evidence tool/vendor/provenance.json --runtime-evidence vendor-promotion.json
           else
             python -S .vendor-sync-tools/vendor_stage.py --kind candidate --output build/vendor-evidence-test --legacy-evidence tool/vendor/provenance.json
