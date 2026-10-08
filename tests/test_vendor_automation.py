@@ -111,7 +111,7 @@ def test_public_vendor_ci_updates_without_repository_writes():
         assert upload['with']['path'].startswith('build/vendor-evidence-')
     pins = [s['with']['ref'] for steps in (resolve,test) for s in steps
             if s.get('with',{}).get('repository') == 'myon-bioinformatics/myon-bioinformatics']
-    assert pins == ['15069238522201c492abe38b6becf6c557793d0d'] * 2
+    assert pins == ['72bb3cc09e9df471ae5d834dc4a71d313497ded6'] * 2
     for steps in (resolve,test):
         for step in steps:
             if step.get('uses','').startswith('actions/checkout@'):
@@ -275,7 +275,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
                     if s.get('name') == 'Recreate locked vendor files from GitHub')
     assert steps[recreate] == original
     tool = next(s for s in steps if s.get('name') == 'Fetch pinned shared vendor tool')
-    assert tool['with']['ref'] == '15069238522201c492abe38b6becf6c557793d0d'
+    assert tool['with']['ref'] == '72bb3cc09e9df471ae5d834dc4a71d313497ded6'
     for step in steps:
         assert 'continue-on-error' not in step
         if step.get('uses', '').startswith('actions/checkout@'):
@@ -289,36 +289,49 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     assert lock['with']['path'] == 'build/vendor-evidence-locked'
 
 
-@pytest.mark.parametrize("receipt", [False, True])
-def test_stage_shell_parses_and_selects_receipt(tmp_path, receipt):
+@pytest.mark.parametrize("job_name,kind,receipt", [
+    ("resolve-vendor", "candidate", True),
+    ("resolve-vendor", "locked", False),
+    ("tooling", "candidate", True),
+    ("tooling", "locked", False),
+    ("test-locked", "locked", True),
+])
+def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name, kind, receipt):
+    """Execute the workflow command against real files, including locked dispatch."""
+    import hashlib
     import os
-    ci = _workflow()
-    stage_steps = [
-        next(step for step in ci["jobs"][job]["steps"]
-             if step.get("name") == "Stage canonical vendor evidence")
-        for job in ("resolve-vendor", "tooling", "test-locked")
-    ]
-    for step in stage_steps:
-        assert step["if"] == "always()"
-        assert ".vendor-sync-tools/vendor_stage.py" in step["run"]
-        parsed = subprocess.run(["bash", "-n"], input=step["run"], text=True,
-                                capture_output=True, timeout=10)
-        assert parsed.returncode == 0, parsed.stderr
-    assert "--kind locked" in stage_steps[2]["run"]
-    assert "--runtime-evidence" not in stage_steps[2]["run"]
+    parent_tool = ROOT / ".vendor-sync-tools/vendor_stage.py"
+    if not parent_tool.is_file():
+        pytest.skip("pinned parent checkout is supplied by Tooling smoke")
+    assert not (ROOT / "tool/stage_vendor_evidence.py").exists()
+    _copy_snapshot(tmp_path)
     if receipt:
-        (tmp_path / "vendor-promotion.json").write_text("{}")
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    shim = binary / "python"
-    shim.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> calls.txt\n')
-    shim.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = str(binary) + os.pathsep + env["PATH"]
-    for step in stage_steps[:2]:
-        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]],
-                                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
-        assert result.returncode == 0, result.stderr
-    calls = (tmp_path / "calls.txt").read_text().splitlines()
-    assert len(calls) == 2
-    assert all(("--runtime-evidence vendor-promotion.json" in call) == receipt for call in calls)
+        (tmp_path / "vendor-promotion.json").write_text(
+            '{"schema":"vendor-promotion/1","mode":"promote","changed_paths":[],"promoted":[]}',
+            encoding="utf-8")
+    steps = _workflow()["jobs"][job_name]["steps"]
+    staging = next(step for step in steps if step.get("name") == "Stage canonical vendor evidence")
+    assert staging["if"] == "always()"
+    if job_name != "test-locked":
+        assert staging["env"]["VENDOR_EVIDENCE_KIND"] == "${{ inputs.vendor-mode == 'locked' && 'locked' || 'candidate' }}"
+    command = staging["run"].replace(".vendor-sync-tools/vendor_stage.py", shlex.quote(str(parent_tool)))
+    env = dict(os.environ, VENDOR_EVIDENCE_KIND=kind)
+    syntax = subprocess.run(["bash", "-n"], input=command, text=True, capture_output=True)
+    assert syntax.returncode == 0, syntax.stderr
+    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command],
+                            cwd=tmp_path, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    output = Path(json.loads(result.stdout)["output"])
+    evidence = json.loads((output / "vendor-evidence.json").read_text(encoding="utf-8"))
+    lock_members = {"vendor.lock.json", *[entry["destination"] for entry in _lock_entries(tmp_path)]}
+    assert set(evidence["locked"]) == set(evidence["candidate"]) == lock_members
+    assert evidence["kind"] == kind
+    assert evidence["legacy"] == ["tool/vendor/provenance.json"]
+    assert evidence["runtime"] == (["vendor-promotion.json"] if kind == "candidate" and receipt else [])
+    members = lock_members | set(evidence["legacy"]) | set(evidence["runtime"])
+    assert set(evidence["sha256"]) == members
+    assert {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()} == members | {"vendor-evidence.json"}
+    for member in members:
+        data = (output / member).read_bytes()
+        assert data == (tmp_path / member).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == evidence["sha256"][member]

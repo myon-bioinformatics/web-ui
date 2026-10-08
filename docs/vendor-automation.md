@@ -73,3 +73,15 @@ exact commit and verifies Git blob/SHA-256 before writing; other errors remain n
 The small projection adapter is consumer-owned because existing provenance
 schemas differ. Acquisition and verification stay in the shared pinned tool;
 unifying projection needs an explicit schema contract rather than guessed aliases.
+
+
+Canonical evidence staging is owned by the parent repository (`vendor_stage.py`),
+checked out at the workflow's full commit pin alongside `vendor_sync.py`. web-ui
+has no generic staging implementation. The parent derives locked/candidate paths
+from `vendor.lock.json`, verifies locked bytes, classifies the optional promotion
+receipt as runtime and `tool/vendor/provenance.json` as explicit legacy evidence,
+and records SHA-256 for every staged member. Locked dispatches and the independent
+Locked baseline job omit the promotion receipt. Tooling smoke executes the actual
+pinned staging commands in regression tests; parent tests own path-safety coverage.
+The pin currently includes parent #54, so #41 remains Draft pending parent review,
+exact-head CI, and inspection of candidate and locked artifact ZIP contents.
