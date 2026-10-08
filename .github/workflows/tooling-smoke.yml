@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: myon-bioinformatics/myon-bioinformatics
-          ref: 72bb3cc09e9df471ae5d834dc4a71d313497ded6
+          ref: 38954220a14c2054b8d020005b8d454cde8cffb1
           path: .vendor-sync-tools
           persist-credentials: false
       - name: Verify checked-in vendor copies
@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: myon-bioinformatics/myon-bioinformatics
-          ref: 72bb3cc09e9df471ae5d834dc4a71d313497ded6
+          ref: 38954220a14c2054b8d020005b8d454cde8cffb1
           path: .vendor-sync-tools
           persist-credentials: false
       - name: Download resolved vendor snapshot
@@ -202,7 +202,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         repository: myon-bioinformatics/myon-bioinformatics
-        ref: 72bb3cc09e9df471ae5d834dc4a71d313497ded6
+        ref: 38954220a14c2054b8d020005b8d454cde8cffb1
         path: .vendor-sync-tools
         persist-credentials: false
     - name: Verify checked-in vendor copies
