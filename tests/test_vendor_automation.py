@@ -13,24 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = '.github/workflows/tooling-smoke.yml'
 TEST_JOB = 'tooling'
 HELPER = 'tool/sync_vendor_provenance.py'
-SNAPSHOT = ['vendor.lock.json',
- 'tool/vendor/repository_metadata_contract.py',
- 'tool/vendor/repository_metadata_generator.py',
- 'tool/vendor/LICENSE',
- 'tool/vendor/gh_identity.py',
- 'tool/vendor/gh_identity-LICENSE',
- 'tool/vendor/provenance.json']
+def _lock_entries(root=ROOT):
+    lock = json.loads((root / 'vendor.lock.json').read_text(encoding='utf-8'))
+    assert lock['schema'] == 'vendor-lock/1'
+    return lock['files']
+
+
+SNAPSHOT = ['vendor.lock.json', *[e['destination'] for e in _lock_entries()],
+            'tool/vendor/provenance.json']
 RECEIPT_PATH = "${{ inputs.vendor-mode != 'locked' && 'vendor-promotion.json' || '' }}"
 UPDATE_SNAPSHOT = SNAPSHOT + [RECEIPT_PATH]
-EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
- ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
- ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_contract.py',
-  'tool/vendor/repository_metadata_contract.py'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_generator.py',
-  'tool/vendor/repository_metadata_generator.py')}
+
 
 
 def _workflow():
@@ -54,8 +47,8 @@ def _copy_snapshot(root):
 
 def test_vendor_lock_has_explicit_sources_and_verified_bytes():
     records = _projector().records(ROOT)
-    assert len(records) == len(EXPECTED)
-    assert {(e["repository"], e["source"], e["destination"]) for e in records.values()} == EXPECTED
+    expected = {(e['repository'], e['source'], e['destination']) for e in _lock_entries()}
+    assert {(e["repository"], e["source"], e["destination"]) for e in records.values()} == expected
 
 
 def test_public_vendor_ci_updates_without_repository_writes():
@@ -115,10 +108,10 @@ def test_public_vendor_ci_updates_without_repository_writes():
         upload = next(s for s in steps if s.get('name') == name)
         assert upload['if'] == 'always()'
         assert upload['with']['if-no-files-found'] == 'error'
-        assert set(upload['with']['path'].splitlines()) == set(UPDATE_SNAPSHOT)
+        assert upload['with']['path'].startswith('build/vendor-evidence-')
     pins = [s['with']['ref'] for steps in (resolve,test) for s in steps
             if s.get('with',{}).get('repository') == 'myon-bioinformatics/myon-bioinformatics']
-    assert pins == ['08dc3757deeb930c950bdcc6bd55ec3112ba49fc'] * 2
+    assert pins == ['38954220a14c2054b8d020005b8d454cde8cffb1'] * 2
     for steps in (resolve,test):
         for step in steps:
             if step.get('uses','').startswith('actions/checkout@'):
@@ -282,7 +275,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
                     if s.get('name') == 'Recreate locked vendor files from GitHub')
     assert steps[recreate] == original
     tool = next(s for s in steps if s.get('name') == 'Fetch pinned shared vendor tool')
-    assert tool['with']['ref'] == '08dc3757deeb930c950bdcc6bd55ec3112ba49fc'
+    assert tool['with']['ref'] == '38954220a14c2054b8d020005b8d454cde8cffb1'
     for step in steps:
         assert 'continue-on-error' not in step
         if step.get('uses', '').startswith('actions/checkout@'):
@@ -293,4 +286,52 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
                 assert step['if'] == 'always()'
             assert step['with']['if-no-files-found'] == 'error'
     lock = next(s for s in steps if s.get('name') == 'Preserve vendor lock used by this run')
-    assert set(lock['with']['path'].splitlines()) == set(SNAPSHOT)
+    assert lock['with']['path'] == 'build/vendor-evidence-locked'
+
+
+@pytest.mark.parametrize("job_name,kind,receipt", [
+    ("resolve-vendor", "candidate", True),
+    ("resolve-vendor", "locked", False),
+    ("tooling", "candidate", True),
+    ("tooling", "locked", False),
+    ("test-locked", "locked", True),
+])
+def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name, kind, receipt):
+    """Execute the workflow command against real files, including locked dispatch."""
+    import hashlib
+    import os
+    parent_tool = ROOT / ".vendor-sync-tools/vendor_stage.py"
+    if not parent_tool.is_file():
+        pytest.skip("pinned parent checkout is supplied by Tooling smoke")
+    assert not (ROOT / "tool/stage_vendor_evidence.py").exists()
+    _copy_snapshot(tmp_path)
+    if receipt:
+        (tmp_path / "vendor-promotion.json").write_text(
+            '{"schema":"vendor-promotion/1","mode":"promote","changed_paths":[],"promoted":[]}',
+            encoding="utf-8")
+    steps = _workflow()["jobs"][job_name]["steps"]
+    staging = next(step for step in steps if step.get("name") == "Stage canonical vendor evidence")
+    assert staging["if"] == "always()"
+    if job_name != "test-locked":
+        assert staging["env"]["VENDOR_EVIDENCE_KIND"] == "${{ inputs.vendor-mode == 'locked' && 'locked' || 'candidate' }}"
+    command = staging["run"].replace(".vendor-sync-tools/vendor_stage.py", shlex.quote(str(parent_tool)))
+    env = dict(os.environ, VENDOR_EVIDENCE_KIND=kind)
+    syntax = subprocess.run(["bash", "-n"], input=command, text=True, capture_output=True)
+    assert syntax.returncode == 0, syntax.stderr
+    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", command],
+                            cwd=tmp_path, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    output = Path(json.loads(result.stdout)["output"])
+    evidence = json.loads((output / "vendor-evidence.json").read_text(encoding="utf-8"))
+    lock_members = {"vendor.lock.json", *[entry["destination"] for entry in _lock_entries(tmp_path)]}
+    assert set(evidence["locked"]) == set(evidence["candidate"]) == lock_members
+    assert evidence["kind"] == kind
+    assert evidence["legacy"] == ["tool/vendor/provenance.json"]
+    assert evidence["runtime"] == (["vendor-promotion.json"] if kind == "candidate" and receipt else [])
+    members = lock_members | set(evidence["legacy"]) | set(evidence["runtime"])
+    assert set(evidence["sha256"]) == members
+    assert {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()} == members | {"vendor-evidence.json"}
+    for member in members:
+        data = (output / member).read_bytes()
+        assert data == (tmp_path / member).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == evidence["sha256"][member]
