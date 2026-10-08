@@ -111,7 +111,7 @@ def test_public_vendor_ci_updates_without_repository_writes():
         assert upload['with']['path'].startswith('build/vendor-evidence-')
     pins = [s['with']['ref'] for steps in (resolve,test) for s in steps
             if s.get('with',{}).get('repository') == 'myon-bioinformatics/myon-bioinformatics']
-    assert pins == ['098e2b2bde603190260f901706a335e4ecd3fa7c'] * 2
+    assert pins == ['15069238522201c492abe38b6becf6c557793d0d'] * 2
     for steps in (resolve,test):
         for step in steps:
             if step.get('uses','').startswith('actions/checkout@'):
@@ -275,7 +275,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
                     if s.get('name') == 'Recreate locked vendor files from GitHub')
     assert steps[recreate] == original
     tool = next(s for s in steps if s.get('name') == 'Fetch pinned shared vendor tool')
-    assert tool['with']['ref'] == '098e2b2bde603190260f901706a335e4ecd3fa7c'
+    assert tool['with']['ref'] == '15069238522201c492abe38b6becf6c557793d0d'
     for step in steps:
         assert 'continue-on-error' not in step
         if step.get('uses', '').startswith('actions/checkout@'):
