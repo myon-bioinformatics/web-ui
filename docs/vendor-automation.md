@@ -83,5 +83,5 @@ receipt as runtime and `tool/vendor/provenance.json` as explicit legacy evidence
 and records SHA-256 for every staged member. Locked dispatches and the independent
 Locked baseline job omit the promotion receipt. Tooling smoke executes the actual
 pinned staging commands in regression tests; parent tests own path-safety coverage.
-The pin currently includes parent #54, so #41 remains Draft pending parent review,
+The pin includes merged parent #54; #41 remains Draft pending
 exact-head CI, and inspection of candidate and locked artifact ZIP contents.
