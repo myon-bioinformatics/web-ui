@@ -163,9 +163,7 @@ jobs:
 
       - name: Stage canonical vendor evidence
         run: python -S tool/stage_vendor_evidence.py --kind candidate --output build/vendor-evidence-test
-      - name: Stage canonical vendor evidence
-      run: python -S tool/stage_vendor_evidence.py --kind locked --output build/vendor-evidence-locked
-    - name: Preserve vendor lock used by this run
+      - name: Preserve vendor lock used by this run
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -245,6 +243,8 @@ jobs:
           repository-metadata.jsonl
         retention-days: 14
         if-no-files-found: error
+    - name: Stage canonical vendor evidence
+      run: python -S tool/stage_vendor_evidence.py --kind locked --output build/vendor-evidence-locked
     - name: Preserve vendor lock used by this run
       if: always()
       uses: actions/upload-artifact@v7
