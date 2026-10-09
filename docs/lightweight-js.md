@@ -7,11 +7,11 @@ runtime dependencies are out of scope for shared web-ui assets.
 
 Acceptable lightweight JS meets all of:
 
-1. Few dependencies, so version upgrades stay easy
+1. Very few dependencies, so version upgrades stay easy
 2. Referable like a CDN or Deno import (URL or single vendored file), without a
    consumer build step
-3. Capable enough that a single file can drive multi-feature UI, similar in
-   spirit to Vue’s single-file / CDN usage model
+3. Little prerequisite tooling and a small persistent cache/build environment;
+   source KB/MB and network transfer size alone do not define lightweight
 
 web-ui’s first-party ES modules (`js/ui.js`, `js/stub.js`,
 `js/repository-diagnostics.js`) already sit inside this bar. Execution JS must
@@ -88,3 +88,9 @@ existing screenshot evidence jobs.
 
 See [lightweight JS candidates and documentation tips](lightweight-js-candidates.md)
 for declared evaluation scope, official URLs and observed documentation DOM gaps.
+
+## Optional Deno tooling
+
+Python remains the default. Deno is a candidate for concrete JS/TS reuse or asset
+preparation needs, not a required browser launcher or a duplicate HTML reader.
+See [Deno scope and real HTML/DOM evidence](deno-tooling-candidate.md).
