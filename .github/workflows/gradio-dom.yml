@@ -1,0 +1,39 @@
+name: Local Gradio DOM
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  gradio-dom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/browser-test-kit
+          ref: 2d4da483c30907bd7a392b009b73366421ee0c8d
+          path: .browser-test-kit-dom
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tests/requirements-gradio.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: Compare Gradio DOM with shared extraction
+        env:
+          WEB_UI_GRADIO_TEST: '1'
+          BTK_ROOT: .browser-test-kit-dom
+          GRADIO_ANALYTICS_ENABLED: 'False'
+          DOM_EVIDENCE_DIR: build/gradio-dom
+        run: python -m pytest -v tests/integration/test_gradio_dom.py --junitxml=build/gradio-dom/junit.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gradio-dom-evidence
+          path: build/gradio-dom
+          if-no-files-found: error

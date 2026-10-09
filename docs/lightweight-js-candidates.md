@@ -76,3 +76,22 @@ Capture ownership stays with
 [browser-test-kit PR #54](https://github.com/myon-bioinformatics/browser-test-kit/pull/54).
 Consumers can reuse the pinned evidence offline. GHI need not acquire a browser
 or take ownership of generic documentation probes.
+
+## Media candidates (2026-10-09)
+
+- **Tone.js: optional audio-specific candidate.** Use only for an actual audio UI;
+  this does not add it to the default bundle or `shared_scripts()` allowlist.
+  Vendor an exact version locally and record its license and transitive dependencies.
+  Start audio from a deliberate user gesture via `Tone.start()`; do not autoplay
+  in generic DOM tests. Documentation: https://tonejs.github.io/docs/14.9.17/functions/start.html
+  (observed version, not a latest-version claim).
+- **Remotion: separate rendering tool candidate.** CLI rendering is supported
+  (`npx remotion render <entry> <composition> <output>`), but React, Node tooling,
+  bundling and browser rendering are additional prerequisites. Under our definition
+  of lightweight (few dependencies and little setup/cache/build), it belongs in
+  an optional media project/job, not the shared page runtime. No runtime dependency
+  is adopted by this PR. Documentation: https://www.remotion.dev/docs/cli/render
+  and https://www.remotion.dev/docs.
+
+Saved documentation DOM observations are maintained in browser-test-kit
+`docs/media-doc-dom-survey.md`; acquisition/extraction implementations stay there.

@@ -140,7 +140,10 @@ def test_updated_lock_projects_exact_identity_and_keeps_reader_formats(tmp_path)
     _copy_snapshot(tmp_path)
     lock_path = tmp_path / 'vendor.lock.json'
     lock = json.loads(lock_path.read_text(encoding='utf-8'))
-    for e in lock['files']: e['commit'] = 'a' * 40
+    for e in lock['files']:
+        if e['ref'] == e['commit']:
+            e['ref'] = 'a' * 40
+        e['commit'] = 'a' * 40
     lock_path.write_text(json.dumps(lock),encoding='utf-8')
     projector = _projector()
     projector.project(tmp_path)
@@ -191,6 +194,7 @@ def test_grouped_provenance_rejects_mixed_commits_before_writing(tmp_path):
     lock_path = tmp_path / 'vendor.lock.json'
     lock = json.loads(lock_path.read_text(encoding='utf-8'))
     lock['files'][0]['commit'] = 'a' * 40
+    lock['files'][0]['ref'] = 'a' * 40
     lock_path.write_text(json.dumps(lock), encoding='utf-8')
     with pytest.raises(ValueError, match='one source commit'):
         _projector().project(tmp_path)
@@ -335,3 +339,10 @@ def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name, kind
         data = (output / member).read_bytes()
         assert data == (tmp_path / member).read_bytes()
         assert hashlib.sha256(data).hexdigest() == evidence["sha256"][member]
+
+
+def test_retired_ironmate_sources_do_not_follow_deleted_main_paths():
+    entries = [e for e in _lock_entries() if e['repository'] == 'myon-bioinformatics/Ironmate']
+    assert {e['source'] for e in entries} == {'repository_metadata_contract.py', 'repository_metadata_generator.py', 'LICENSE'}
+    assert all(e['ref'] == e['commit'] for e in entries)
+    _projector().records(ROOT)  # Verify every source and license byte too.

@@ -85,3 +85,12 @@ Locked baseline job omit the promotion receipt. Tooling smoke executes the actua
 pinned staging commands in regression tests; parent tests own path-safety coverage.
 The pin includes merged parent #54; #41 remains Draft pending
 exact-head CI, and inspection of candidate and locked artifact ZIP contents.
+
+## Retired Ironmate sources
+
+Ironmate #81 removed the upstream metadata prototypes. The two existing source
+entries and their LICENSE therefore use their already verified full commit as
+`ref`. Their commit, blob, SHA-256 and bytes are unchanged. Promotion remains
+active; these entries explicitly remain legacy pins until a maintained owner is
+chosen. This avoids requesting deleted paths from moving main and restores the
+producer jobs on which JUnit collection depends.
