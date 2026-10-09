@@ -1,0 +1,9 @@
+{
+  "source_url": "https://www.alpinejs.dev/essentials/installation",
+  "observed_date": "2026-10-09",
+  "kind": "live_dom_fragment",
+  "selection": "second pre element in observed document",
+  "html": "<pre><code data-theme=\"github-light\" data-lang=\"alpine\" class=\"torchlight\" style=\"background-color: #fff; --theme-selection-background: #e2e5e9;\"><!-- Syntax highlighted by torchlight.dev --><div class=\"line\"><span style=\"color: #24292E;\">&lt;</span><span style=\"color: #22863A;\">script</span><span style=\"color: #24292E;\"> </span><span style=\"color: #6F42C1;\">defer</span><span style=\"color: #24292E;\"> </span><span style=\"color: #6F42C1;\">src</span><span style=\"color: #24292E;\">=</span><span style=\"color: #032F62;\">\"https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js\"</span><span style=\"color: #24292E;\">&gt;&lt;/</span><span style=\"color: #22863A;\">script</span><span style=\"color: #24292E;\">&gt;</span></div><div aria-hidden=\"true\" hidden=\"\" tabindex=\"-1\" style=\"display: none;\" class=\"torchlight-copy-target\">\n&lt;script defer src=\"https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js\"&gt;&lt;/script&gt;</div></code></pre>",
+  "visible_text": "<script defer src=\"https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js\"></script>",
+  "note": "Documentation code as inert text; not a dependency pin or executable fixture."
+}

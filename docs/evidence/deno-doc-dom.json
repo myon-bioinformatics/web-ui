@@ -1,0 +1,31 @@
+{
+  "source_url": "https://docs.deno.com/runtime/packages/",
+  "observed_date": "2026-10-09",
+  "encoding": "UTF-8",
+  "http_response": {
+    "bytes": 142497,
+    "sha256": "d311f33361e6b9717e9c00332d93803d6e7be57042aa76d51f8b7f006746f97c",
+    "full_response_committed": false
+  },
+  "region": "main#content article",
+  "region_count": 1,
+  "pre_count": 22,
+  "samples": [
+    {
+      "kind": "first pre",
+      "raw_html": "<pre><code class=\"highlight notranslate language-sh\">deno <span class=\"token function\">install</span>\n</code></pre>",
+      "dom_html": "<pre><code class=\"highlight notranslate language-sh\">deno <span class=\"token function\">install</span>\n</code></pre>",
+      "text_content": "deno install\n",
+      "inner_text": "deno install\n",
+      "page_text": "deno install"
+    },
+    {
+      "kind": "h2#https-imports",
+      "raw_html": "<h2 id=\"https-imports\" tabindex=\"-1\">HTTPS imports <a class=\"header-anchor\" href=\"#https-imports\"><span class=\"sr-only\">Jump to heading</span><span aria-hidden=\"true\" class=\"anchor-end\">#</span></a></h2>",
+      "dom_html": "<h2 id=\"https-imports\" tabindex=\"-1\">HTTPS imports <a class=\"header-anchor\" href=\"#https-imports\"><span class=\"sr-only\">Jump to heading</span><span aria-hidden=\"true\" class=\"anchor-end\">#</span></a></h2>",
+      "text_content": "HTTPS imports Jump to heading#",
+      "inner_text": "HTTPS imports \nJump to heading\n#"
+    }
+  ],
+  "scope": "Two exact fragments only; innerText is not a pixel visibility oracle. No Deno runtime execution."
+}
