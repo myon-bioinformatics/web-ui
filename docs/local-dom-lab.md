@@ -38,5 +38,10 @@ round-trip code-block extra-LF finding remains distinct from text extraction.
 The separate six-case GHI HTML/Markdown probe now passes against markdown PR #95
 commit `6f69bd59693c81d8796613cc4966b17f6c070d7c`, including this web-ui wrapper
 and GHI #24's updated structural extractor. This does not update any consumer
-vendor lock or claim arbitrary HTML is reversible. Code with no terminal LF and
-code inside details retain documented representation limitations in that PR.
+vendor lock or claim arbitrary HTML is reversible.
+
+Follow-up: markdown PR #95 commit `c1fe7aeb45dc059636f1df0d6d15bdfffb068332`
+also fixes code inside details (code structure, literal blank lines and fenced
+`:::` handling), with seven added regressions and successful same-head CI.
+The no-terminal-LF normalization remains intentional; exact restoration of that
+case is out of scope. The earlier observation above remains tied to its commit.
