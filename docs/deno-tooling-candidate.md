@@ -71,3 +71,12 @@ pinned browser-compatible module graph; Deno-specific APIs cannot be assumed to
 run in a browser. Declare the concrete reuse benefit, dependencies and cache/build
 requirements in that implementation change. No runtime dependency or lock changes
 are made here.
+
+## Reader follow-up (2026-10-09)
+
+The terminal-LF mismatch above is the original observation at main `54d30b1`.
+It is corrected by browser-test-kit #54 commit
+`2d4da483c30907bd7a392b009b73366421ee0c8d`. The same saved pre now matches the
+recorded innerText exactly, and web-ui #43 also exercises it through a real
+local Gradio/Chromium iframe. Source evidence is unchanged. This reader fix
+does not establish HTML/Markdown round-trip fidelity; that has its own probe.

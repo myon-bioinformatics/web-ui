@@ -3,7 +3,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import sys
 
 import pytest
 
@@ -28,7 +27,18 @@ def test_gradio_dom(tmp_path, monkeypatch):
     deno = json.loads((ROOT / 'docs/evidence/deno-doc-dom.json').read_text())['samples'][0]
     samples = [(alpine['html'], alpine['visible_text']), (deno['dom_html'], deno['inner_text']),
                ('<pre><code>日本語 &amp; text\n\n  x  \n</code></pre>', '日本語 & text\n\n  x  \n')]
-    fragment = ''.join(f'<section id="sample-{i}">{html}</section>' for i, (html, _) in enumerate(samples))
+    samples = [dict(name=f'base-{i}', html=html, expected=expected, selector='pre', code_context=False)
+               for i, (html, expected) in enumerate(samples)]
+    media = json.loads((btk / 'fixtures/page_text/media-doc-dom-survey.json').read_text())
+    for item in media:
+        if item['name'] in ('ffmpeg', 'pillow'):
+            samples.append(dict(name=item['name'], html=item['fragment_html'],
+                                expected=item['fragment_inner_text'], selector='pre', code_context=False))
+    code_samples = json.loads((btk / 'fixtures/page_text/media-code-dom.json').read_text())['samples']
+    for item in code_samples:
+        samples.append(dict(name=item['id'], html=item['pre_outer_html'],
+                            expected=item['code_inner_text'], selector='pre code', code_context=True))
+    fragment = ''.join(f'<section id="sample-{i}">{sample["html"]}</section>' for i, sample in enumerate(samples))
     demo = lab.build_demo(fragment, css='pre { white-space: pre; }')
     evidence = []
     try:
@@ -41,13 +51,18 @@ def test_gradio_dom(tmp_path, monkeypatch):
                 page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(url) else route.abort())
                 page.goto(url, wait_until='domcontentloaded')
                 frame = page.frame_locator('#dom-lab')
-                for i, (html, expected) in enumerate(samples):
-                    pre = frame.locator(f'#sample-{i} pre')
+                for i, sample in enumerate(samples):
+                    expected = sample['expected']
+                    pre = frame.locator(f'#sample-{i} {sample["selector"]}')
                     expect(pre).to_be_visible()
                     visible = pre.inner_text()
                     dom = pre.evaluate('(el) => el.outerHTML')
-                    extracted = extractor.page_text(dom)['text']
-                    evidence.append(dict(html=dom, visible=visible, extracted=extracted))
+                    # Selecting code omits title/copy controls; explicitly restore
+                    # its observed pre context for the static reader.
+                    source = '<pre>' + dom + '</pre>' if sample['code_context'] else dom
+                    extracted = extractor.page_text(source)['text']
+                    evidence.append(dict(name=sample['name'], html=dom, visible=visible, extracted=extracted,
+                                         modeled_pre_context=sample['code_context']))
                     assert visible == expected
                     assert extracted == expected
             finally:

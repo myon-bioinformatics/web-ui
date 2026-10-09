@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: myon-bioinformatics/browser-test-kit
-          ref: 2d4da483c30907bd7a392b009b73366421ee0c8d
+          ref: b94f801a9c57b1914ff6b732519521a7a42fadfe
           path: .browser-test-kit-dom
           persist-credentials: false
       - uses: actions/setup-python@v7

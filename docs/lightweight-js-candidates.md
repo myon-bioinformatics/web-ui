@@ -95,3 +95,13 @@ or take ownership of generic documentation probes.
 
 Saved documentation DOM observations are maintained in browser-test-kit
 `docs/media-doc-dom-survey.md`; acquisition/extraction implementations stay there.
+
+## Reader follow-up (2026-10-09)
+
+The Alpine mismatch above describes the original main snapshot, not the current
+PR reader. browser-test-kit #54 commit
+`2d4da483c30907bd7a392b009b73366421ee0c8d` excludes explicit hidden copy targets
+and preserves preformatted whitespace. The saved Alpine fragment now matches
+its recorded innerText. web-ui #43 runs it in a real local Gradio/Chromium iframe
+and uses the shared reader at an exact commit; the original evidence is retained.
+This does not certify arbitrary stylesheet visibility or whole-page equivalence.
