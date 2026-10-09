@@ -83,3 +83,8 @@ That lane verifies a live published surface. It is not a Pages runtime
 dependency, not a substitute for offline pytest, and not vendored into web-ui.
 CI continues to use Python layout generation plus explicit Node wrappers and the
 existing screenshot evidence jobs.
+
+## Candidate catalogue
+
+See [lightweight JS candidates and documentation tips](lightweight-js-candidates.md)
+for declared evaluation scope, official URLs and observed documentation DOM gaps.
