@@ -2,7 +2,7 @@
 
 Text is escaped by default. HTML and CSS supplied explicitly are trusted source,
 not sanitized user input. This module never fetches assets. JavaScript is omitted
-by default; callers may opt in to local/HTTPS module script links. Node is wrapped
+by default; callers may opt in to local module script links. Node is wrapped
 only as an explicit subprocess helper for pytest/CI one-liners.
 """
 from __future__ import annotations
@@ -48,9 +48,23 @@ def shared_stylesheets(asset_base: str, *, theme: str = "modern", stub: bool = F
     return tuple(f'{asset_base.rstrip("/")}/css/{name}' for name in files)
 
 
+def _require_local_script_path(value: str, *, label: str) -> None:
+    # Check before urlsplit, which strips some whitespace/control characters.
+    # Browsers also treat backslashes as slashes in HTTP(S) URL references.
+    if (not value or any(ord(char) <= 32 or ord(char) == 127 for char in value)
+            or "\\" in value or "?" in value or "#" in value):
+        raise ValueError(f"{label} must be a local path without whitespace, controls, backslashes, query or fragment")
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or value.startswith("//"):
+        raise ValueError(f"{label} must be a local path; remote scripts are not supported")
+
+
 def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> tuple[str, ...]:
-    """Return opt-in local/HTTPS ES module links for first-party lightweight JS."""
-    _require_local_or_https(asset_base, label="asset_base", allow_query=False)
+    """Link named local modules; callers own vendoring, exact pins and serving.
+
+    This validates path syntax and known names, not file contents or provenance.
+    """
+    _require_local_script_path(asset_base, label="asset_base")
     if not names:
         raise ValueError("names must not be empty")
     unknown = sorted(set(names) - set(SHARED_SCRIPT_NAMES))
@@ -72,9 +86,12 @@ def render_document(
     """Wrap escaped text or trusted HTML with CSS; scripts are opt-in links only.
 
     CSS is caller-authored. Reject an HTML raw-text terminator rather than allow
-    it to escape the style element. Stylesheet and script links allow only local
-    or HTTPS paths. No inline script body is injected. This is an HTML emitter,
-    not a general HTML/CSS/JS sanitizer.
+    it to escape the style element. Stylesheets allow local or HTTPS paths;
+    scripts allow only local paths, without query/fragment. Callers own script
+    contents, exact version pins, imports and serving without remote redirects.
+    trusted_html is verbatim and may bypass these link checks (including via a
+    base element); it must only contain caller-audited HTML. This is an HTML
+    emitter, not a general HTML/CSS/JS sanitizer or provenance verifier.
     """
     if theme not in THEMES:
         raise ValueError("unknown theme")
@@ -88,7 +105,7 @@ def render_document(
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
     script_tags = []
     for src in scripts:
-        _require_local_or_https(src, label="script")
+        _require_local_script_path(src, label="script")
         script_tags.append(f'<script type="module" src="{escape(src, quote=True)}"></script>')
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -123,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         "--with-scripts",
         nargs="*",
         metavar="NAME",
-        help="opt-in shared JS module names under js/ (requires --asset-base; default ui.js)",
+        help="opt-in shared JS module names under js/ (requires local --asset-base; default ui.js)",
     )
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     args = parser.parse_args(argv)

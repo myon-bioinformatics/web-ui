@@ -29,8 +29,27 @@ printf 'Hello' | python -S web_ui.py --asset-base . --with-scripts ui.js > demo.
 ```
 
 Scripts are omitted by default. `--with-scripts` / `shared_scripts()` only emit
-`<script type="module" src="...">` links for local or HTTPS sources. The wrapper
-never injects inline script bodies and never downloads packages.
+`<script type="module" src="...">` links for local managed assets only.
+`shared_scripts()` accepts only the known first-party names. Direct
+`render_document(scripts=(...))` accepts caller-selected local module paths with
+the same validation: relative or root-relative paths, no scheme/authority,
+query, fragment, whitespace, control characters or backslashes. HTTPS URLs are
+rejected even if they look versioned; there is no remote-script/SRI API.
+Stylesheet links retain their existing local/HTTPS behavior.
+
+The wrapper guarantees link syntax and opt-in emission, not immutable bytes or
+provenance. Before opting in, callers must vendor audited modules at an exact
+commit, retain/verify their lock and hashes, and serve that snapshot alongside
+the document. Callers also own module imports and must avoid remote redirects
+or a remote document base. A local filename alone is not evidence of a pin.
+`shared_scripts()` does not inspect the filesystem or fetch assets, and direct
+`scripts=` does not restrict filenames to the first-party name list.
+
+`trusted_html` / `--trusted-html` remains an explicit trust escape hatch: it is
+emitted verbatim and can contain script tags, event handlers or a `<base>` that
+changes relative URL resolution. Its caller must audit all of that HTML; link
+validation is not an HTML sanitizer or a document-wide execution sandbox.
+The wrapper itself never generates inline script bodies or downloads packages.
 
 ## Node wrapping for pytest
 

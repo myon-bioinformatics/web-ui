@@ -215,11 +215,16 @@ printf 'Result' | python -S web_ui.py --asset-base . --with-scripts ui.js > demo
 The first examples escape input as text. `--trusted-html` and `--css` accept
 caller-authored source, not untrusted content; this wrapper is not a sanitizer.
 Embedded CSS produces a self-contained document when the supplied HTML/CSS have
-no external references. Shared asset links need the existing `css/` directory
+no external references. Shared stylesheet links need the existing `css/` directory
 copied alongside the output or an explicit HTTPS asset base pinned by the
 consumer to a full commit SHA. A mutable URL is not a recommended baseline.
 `--stub` additionally links `css/stub.css` and requires `--asset-base`.
-`--with-scripts` requires `--asset-base` and emits module `src` links only.
+`--with-scripts` requires a **local** `--asset-base` and emits module `src`
+links only. `shared_scripts()` and direct `render_document(scripts=...)` both
+reject remote URLs (including HTTPS), query/fragment and ambiguous path syntax.
+Consumers must vendor and verify exact-version modules and manage their serving
+and imports; the wrapper checks path syntax, not file identity. Authored
+`trusted_html` is outside this link policy. See [the JS contract](docs/lightweight-js.md).
 
 ```python
 from web_ui import render_document, run_node, shared_scripts, shared_stylesheets

@@ -49,6 +49,62 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('<script type="module" src="./js/stub.js"></script>', html)
         self.assertNotIn('<script>', html)
 
+    def test_remote_and_ambiguous_scripts_rejected_on_both_paths(self):
+        invalid = (
+            'https://example.test/latest', 'https://example.test/main',
+            'https://example.test/' + 'a' * 40, '//example.test',
+            '///example.test', 'http://example.test', 'javascript:alert(1)',
+            'data:text/javascript,alert(1)', 'file:///tmp/ui.js',
+            'https://user:password@example.test/latest',
+            r'\\example.test', r'/\example.test',
+            ' /assets', '/assets\n', '/assets\t', '/assets\x00', '/assets\x7f',
+            '', '/assets?ref=latest', '/assets#latest', '/assets?', '/assets#',
+        )
+        for value in invalid:
+            with self.subTest(value=value, api='shared'), self.assertRaises(ValueError):
+                shared_scripts(value)
+            with self.subTest(value=value, api='direct'), self.assertRaises(ValueError):
+                render_document(scripts=(value,))
+
+    def test_local_module_paths_remain_supported(self):
+        for base in ('.', './vendor/web-ui', '../vendor/web-ui', '/assets/web-ui', '/'):
+            with self.subTest(base=base):
+                scripts = shared_scripts(base)
+                self.assertEqual(scripts, (base.rstrip('/') + '/js/ui.js',))
+                self.assertIn('src="' + scripts[0] + '"', render_document(scripts=scripts))
+        self.assertIn('src="./owned/custom.js"',
+                      render_document(scripts=('./owned/custom.js',)))
+        self.assertIn('src="./owned/a&amp;b.js"',
+                      render_document(scripts=('./owned/a&b.js',)))
+
+    def test_html_css_output_compatibility_without_scripts(self):
+        self.assertEqual(
+            render_document('A&B', title='Title', css='body{color:red}',
+                            stylesheets=('https://example.test/main.css?v=1',)),
+            '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>Title</title><link rel="stylesheet" href="https://example.test/main.css?v=1">'
+            '<style>body{color:red}</style></head><body data-ui-theme="modern">'
+            '<main class="ui-page"><section class="ui-panel"><h1 class="ui-title">Title</h1>'
+            '<pre class="ui-output">A&amp;B</pre></section></main></body></html>\n',
+        )
+        self.assertEqual(shared_stylesheets('https://example.test/pinned')[0],
+                         'https://example.test/pinned/css/tokens.css')
+
+    def test_cli_remote_assets_are_css_only(self):
+        command = [sys.executable, '-S', str(ROOT / 'web_ui.py'),
+                   '--asset-base', 'https://example.test/latest']
+        plain = subprocess.run(command, input='ok', text=True, capture_output=True)
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        self.assertNotIn('<script', plain.stdout)
+        for names in ([], ['ui.js']):
+            with self.subTest(names=names):
+                linked = subprocess.run(command + ['--with-scripts'] + names,
+                                        input='ok', text=True, capture_output=True)
+                self.assertEqual(linked.returncode, 2)
+                self.assertEqual(linked.stdout, '')
+                self.assertIn('must be a local path', linked.stderr)
+
     def test_invalid_inputs_and_raw_text_escape_are_rejected(self):
         for css in ('</STYLE><script>x</script>', '</style >', '</style/>'):
             with self.subTest(css=css), self.assertRaises(ValueError):
