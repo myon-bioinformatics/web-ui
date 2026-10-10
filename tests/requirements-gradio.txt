@@ -1,4 +1,4 @@
 # Optional local DOM integration only; not a web-ui runtime dependency.
-gradio==6.29.1
+gradio==6.30.0
 playwright==1.63.0
 pytest==9.1.1
