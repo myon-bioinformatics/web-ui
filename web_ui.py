@@ -101,7 +101,7 @@ def module_script(source: str, *, mode: str = "inline", nonce: str | None = None
             raise ValueError("nonce is only supported for inline mode")
         encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
         return f'<script type="module" src="data:text/javascript;base64,{encoded}"></script>'
-    if re.search(r"</script(?=[\\s/>])", source, re.IGNORECASE):
+    if re.search(r"</script(?=[\s/>])", source, re.IGNORECASE):
         raise ValueError("module contains HTML script end tag")
     attribute = f' nonce="{escape(nonce, quote=True)}"' if nonce else ""
     return f'<script type="module"{attribute}>{source}</script>'
