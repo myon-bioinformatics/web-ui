@@ -244,3 +244,41 @@ classes and theme attributes without changing those existing assets.
 
 See [Pages ownership and execution](docs/pages-ownership.md) for the separation
 between static discovery and execution evidence.
+
+### Single-file embedded ES modules (experimental)
+
+The Python wrapper can carry a snapshot of `js/ui.js` inside `web_ui.py`.
+No npm, pip dependencies or runtime download is needed. JavaScript remains opt-in.
+
+```sh
+printf 'Hello' | python -S web_ui.py --embed-ui > demo.html
+python -S -c 'from web_ui import render_document; print(render_document("Hello", embedded_modules=("ui.js",)))' > demo.html
+```
+
+The output HTML contains the ES module body. The module exports `setText`,
+`prettyJson` and `copyText`; embedding it alone does not invoke them.
+The same Python file exposes `module_asset("ui.js")`, returning bytes and
+`text/javascript; charset=utf-8` for caller-owned HTTP routing. The Python
+wrapper does **not** run a web server. To avoid inline code, use
+`module_mode="data"` for a base64 data URL, with a CSP that explicitly permits
+`data:` scripts. Data URLs do not support relative module imports.
+
+Inline modules need an appropriate CSP nonce or hash (or a relaxed policy).
+`module_nonce="..."` supplies a caller-generated nonce;
+`module_csp_hash(EMBEDDED_UI_JS)` gives the CSP hash expression.
+Do not generate a static, predictable nonce as a security measure.
+These modes are not a JS sanitizer: source must be trusted and audited.
+Module bodies containing HTML `</script>` terminators are rejected.
+
+**Deployment comparison:** existing local module `src` references require a
+separate served JS file; embedded inline/data mode creates one HTML artifact;
+`module_asset` allows a single Python source to serve a separate JS response.
+CDN dependencies are allowed as a deliberate consumer choice, but the current
+`render_document(scripts=...)` policy intentionally rejects remote JS URLs.
+For CDN experiments, use separately audited, pinned trusted HTML or a future
+explicit remote-module API; this change does not silently relax that policy.
+A CDN or remote import needs network access and import-graph provenance.
+
+Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
+verification should check the resulting module in Chromium under the chosen CSP;
+unit tests alone do not establish browser execution.
