@@ -8,6 +8,8 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import base64
 from html import escape
 from pathlib import Path
 import re
@@ -17,6 +19,9 @@ import sys
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
+# Snapshot of js/ui.js; update together with the upstream source and regression test.
+EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
+
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js")
 
 
@@ -73,6 +78,41 @@ def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> t
     return tuple(f'{asset_base.rstrip("/")}/js/{name}' for name in names)
 
 
+
+def module_asset(name: str = "ui.js") -> tuple[bytes, str]:
+    """Return immutable bundled module bytes and the JavaScript MIME type."""
+    if name != "ui.js":
+        raise ValueError("unknown embedded module")
+    return EMBEDDED_UI_JS.encode("utf-8"), "text/javascript; charset=utf-8"
+
+
+def module_script(source: str, *, mode: str = "inline", nonce: str | None = None) -> str:
+    """Emit trusted ES module source without fetching or evaluating it in Python.
+
+    Inline mode requires CSP script-src nonce/hash/unsafe-inline authorization.
+    Data mode requires script-src data: and does not support relative imports.
+    """
+    if mode not in ("inline", "data"):
+        raise ValueError("unknown module mode")
+    if nonce is not None and (not nonce or not re.fullmatch(r"[A-Za-z0-9+/_=-]+", nonce)):
+        raise ValueError("invalid CSP nonce")
+    if mode == "data":
+        if nonce is not None:
+            raise ValueError("nonce is only supported for inline mode")
+        encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+        return f'<script type="module" src="data:text/javascript;base64,{encoded}"></script>'
+    if re.search(r"</script(?=[\s/>])", source, re.IGNORECASE):
+        raise ValueError("module contains HTML script end tag")
+    attribute = f' nonce="{escape(nonce, quote=True)}"' if nonce else ""
+    return f'<script type="module"{attribute}>{source}</script>'
+
+
+def module_csp_hash(source: str) -> str:
+    """CSP sha256 source expression for an inline module's exact UTF-8 body."""
+    digest = base64.b64encode(hashlib.sha256(source.encode("utf-8")).digest()).decode("ascii")
+    return f"'sha256-{digest}'"
+
+
 def render_document(
     text: str = "",
     *,
@@ -81,6 +121,9 @@ def render_document(
     css: str = "",
     stylesheets: tuple[str, ...] = (),
     scripts: tuple[str, ...] = (),
+    embedded_modules: tuple[str, ...] = (),
+    module_mode: str = "inline",
+    module_nonce: str | None = None,
     trusted_html: str | None = None,
 ) -> str:
     """Wrap escaped text or trusted HTML with CSS; scripts are opt-in links only.
@@ -107,6 +150,11 @@ def render_document(
     for src in scripts:
         _require_local_script_path(src, label="script")
         script_tags.append(f'<script type="module" src="{escape(src, quote=True)}"></script>')
+    if len(set(embedded_modules)) != len(embedded_modules):
+        raise ValueError("duplicate embedded module")
+    for name in embedded_modules:
+        data, _ = module_asset(name)
+        script_tags.append(module_script(data.decode("utf-8"), mode=module_mode, nonce=module_nonce))
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -142,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         metavar="NAME",
         help="opt-in shared JS module names under js/ (requires local --asset-base; default ui.js)",
     )
+    parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
+    parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     args = parser.parse_args(argv)
     if args.stub and not args.asset_base:
@@ -164,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
             css=css,
             stylesheets=styles,
             scripts=scripts,
+            embedded_modules=("ui.js",) if args.embed_ui else (),
+            module_mode=args.module_mode,
             trusted_html=content if args.trusted_html else None,
         )
     except (OSError, ValueError) as exc:
