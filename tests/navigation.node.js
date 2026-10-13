@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const ui=require('../js/navigation.js');
+assert.equal(ui.sourceURL('https://example.test/a'),'https://example.test/a');
+for(const value of ['javascript:alert(1)','data:text/html,x','ftp://example.test/','https://u:p@example.test/','https://example.test/ bad','https://example.test\\bad','//example.test/',''])assert.throws(()=>ui.sourceURL(value));
+let opened;const win={open:(...args)=>opened=args};ui.openExternalURL('https://example.test/',win);assert.deepEqual(opened,['https://example.test/','_blank','noopener,noreferrer']);
+const views=['home','wiki','pixiv'];
+assert.equal(ui.viewFromLocation('#pixiv','',views,'home'),'pixiv');
+assert.equal(ui.viewFromLocation('#wiki?title=A','',views,'home'),'wiki');
+assert.equal(ui.viewFromLocation('#bad','',views,'home'),'home');
+assert.equal(ui.viewFromLocation('#pixiv','?view=wiki',views,'home',{wiki:'wiki'}),'wiki');
+assert.equal(ui.viewFromLocation('#pixiv','?view=unlisted',views,'home',{wiki:'wiki'}),'pixiv');
