@@ -207,7 +207,6 @@ def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] 
     for name in remove_stylesheets:
         page = re.sub(r'<link\b[^>]*href="' + re.escape(name) + r'(?:\?[^"]*)?"[^>]*>', '', page)
     # Code typography belongs to the chosen shared theme; other Markdown CSS stays.
-    page = re.sub(r'(pre, code\s*\{)\s*font-family:[^;]*;\s*(\})', r'\1 font-family: inherit; \2', page)
     def transform(match):
         tag, attrs = match.group(1), match.group(2)
         classes = re.search(r'\s+class="([^"]*)"', attrs)
@@ -225,6 +224,9 @@ def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] 
             attrs += ' class="' + ' '.join(dict.fromkeys(names)) + '"'
         return '<' + tag + attrs + '>'
     chunks = re.split(r'(<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>)', page, flags=re.S)
+    for index in range(1, len(chunks), 2):
+        if chunks[index].startswith('<style'):
+            chunks[index] = re.sub(r'(pre, code\s*\{)\s*font-family:[^;]*;\s*(\})', r'\1 font-family: inherit; \2', chunks[index])
     for index in range(0, len(chunks), 2):
         chunks[index] = re.sub(r'<(body|main|header|div|section|span|p|h[1-6]|pre|input|select|textarea|button)\b([^>]*)>',
                                transform, chunks[index])

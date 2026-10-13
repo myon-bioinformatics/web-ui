@@ -23,11 +23,11 @@ def test_navigation_module_remains_opt_in():
     assert 'navigation.js' not in ui.render_document('A')
     assert ui.shared_scripts('.',names=('navigation.js',))==('./js/navigation.js',)
 def test_adopt_static_export_preserves_data_and_script_bodies():
-    source='<html><head><link rel="stylesheet" href="legacy.css?v=1"><style>pre, code { font-family: monospace; }</style></head><body><main class="old-page"><button id="go">Go</button><pre>{"snapshot":"old"}</pre><script>const s="<button>unchanged</button>";</script></main></body></html>'
+    source='<html><head><link rel="stylesheet" href="legacy.css?v=1"><style>pre, code { font-family: monospace; }</style></head><body><main class="old-page"><button id="go">Go</button><pre>{"snapshot":"old"}</pre><script>const s="<button>unchanged</button>pre, code { font-family: original; }";</script></main></body></html>'
     adapted=ui.adopt_document(source,asset_base='./vendor',class_aliases={'old-page':'ui-page'},remove_stylesheets=('legacy.css',))
     assert 'legacy.css' not in adapted and 'class="ui-page"' in adapted
     assert '<button id="go" class="ui-button">Go</button>' in adapted
     assert '{"snapshot":"old"}' in adapted
-    assert '<script>const s="<button>unchanged</button>";</script>' in adapted
+    assert '<script>const s="<button>unchanged</button>pre, code { font-family: original; }";</script>' in adapted
     assert 'font-family: inherit;' in adapted
     assert adapted==ui.adopt_document(adapted,asset_base='./vendor')
