@@ -94,3 +94,41 @@ for declared evaluation scope, official URLs and observed documentation DOM gaps
 Python remains the default. Deno is a candidate for concrete JS/TS reuse or asset
 preparation needs, not a required browser launcher or a duplicate HTML reader.
 See [Deno scope and real HTML/DOM evidence](deno-tooling-candidate.md).
+
+## Shared source links and view switching
+
+`navigation.js` is a dependency-free first-party UMD module (also usable as a
+side-effect ES module). It never fetches URLs or writes storage. Python emits
+escaped controls in one call; the consumer pins/copies the module and opts in:
+
+```sh
+python -S -c 'from web_ui import source_link; print(source_link("source-url"))'
+python -S -c 'from web_ui import view_tabs; print(view_tabs((("home","Home"),("wiki","Wiki"))))'
+```
+
+Pair `source_link()` with a caller-authored input whose id matches `input_id`.
+`shared_scripts("./vendor/web-ui", names=("navigation.js",))` emits the local
+module link; `render_document` remains JS-free by default. Loading the module
+binds declared `data-ui-source-for` links and `data-ui-view`/`data-ui-nav` panels.
+Only an explicit link click navigates. Empty, credentialed, non-HTTP(S), whitespace
+and backslash-containing URLs are rejected. New tabs use noopener/noreferrer.
+Normal remote navigation is distinct from browser fetch, proxying, raw source
+capture, and same-input extraction reuse.
+
+For existing markup, `webUiNavigation.bindSourceLink(input, anchor)` and
+`webUiNavigation.bindViews(window, {viewAttribute: "data-pages-view",
+navAttribute: "data-pages-nav", queryAliases: {wiki: "wiki"}})` are single-call
+JS bindings. Duplicate binding returns the existing handle; `destroy()` removes
+its event listeners. View names come from declared panels; unknown hashes fall
+back to home. Optional explicit legacy `?view=wiki` aliases retain query priority
+and canonicalize to `#wiki`, preserving other query fields. No alias is enabled
+by default. `openExternalURL(url, window)` supplies the same HTTP(S) validation
+and new-tab policy to legacy consumers' existing buttons.
+
+For an existing **trusted static export**, Python can reuse presentation in one
+call instead of cloning the theme: `adopt_document(page, asset_base="./vendor",
+class_aliases={"old-page":"ui-page"}, remove_stylesheets=("legacy.css",))`.
+It requires audited double-quoted export markup, preserves IDs/scripts/report
+contents and adds shared control classes. It is not an HTML sanitizer or an
+input parser. The consumer must preserve original source hashes and record the
+published presentation transform/hash; theme adoption is not a fresh report run.

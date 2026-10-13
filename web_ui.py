@@ -22,7 +22,7 @@ THEMES = ("modern", "github-like")
 # Snapshot of js/ui.js; update together with the upstream source and regression test.
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
-SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js")
+SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js")
 
 
 def text_panel(text: str, *, heading: str = "") -> str:
@@ -161,6 +161,80 @@ def render_document(
         f'<title>{escape(title)}</title>{"".join(links)}{style}</head>'
         f'<body data-ui-theme="{theme}">{body}{"".join(script_tags)}</body></html>\n'
     )
+
+
+def _element_id(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", value):
+        raise ValueError("element id must be an ASCII identifier")
+    return value
+
+
+def source_link(input_id: str, *, link_id: str = "source-open", label: str = "取得元サイトを新しいタブで開く ↗") -> str:
+    """Link to a visitor-selected HTTP(S) input. No request until clicked.
+
+    Pair with opt-in pinned navigation.js; invalid/empty inputs stay hidden.
+    """
+    return (f'<a id="{_element_id(link_id)}" class="ui-button" '
+            f'data-ui-source-for="{_element_id(input_id)}" target="_blank" '
+            f'rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>'
+            f'{escape(label)}</a>')
+
+
+def view_tabs(views: tuple[tuple[str, str], ...], *, default_view: str = "home") -> str:
+    """Escaped hash navigation; pair with declared data-ui-view panels and navigation.js."""
+    names = [_element_id(name) for name, _ in views]
+    if len(set(names)) != len(names) or default_view not in names:
+        raise ValueError("views require unique names and an existing default")
+    return f'<nav aria-label="Views" data-ui-default-view="{_element_id(default_view)}">' + ' '.join(
+        f'<a class="ui-button" href="#{escape(name)}" data-ui-nav="{escape(name)}">{escape(label)}</a>'
+        for name, label in views) + '</nav>'
+
+
+def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] | None = None,
+                   remove_stylesheets: tuple[str, ...] = (), theme: str = "modern") -> str:
+    """Apply shared presentation to an audited, double-quoted static export.
+
+    Preserve IDs, routes, script bodies and report content. This is not a
+    visitor-input sanitizer or a general HTML parser. Consumers keep original
+    hashes and label the transformed publication separately.
+    """
+    styles = shared_stylesheets(asset_base, theme=theme)
+    aliases = class_aliases or {}
+    if any(not re.fullmatch(r"[A-Za-z_][\w-]*", key) or
+           any(not re.fullmatch(r"[A-Za-z_][\w-]*", value) for value in values.split())
+           for key, values in aliases.items()):
+        raise ValueError("class aliases must be CSS class identifiers")
+    for name in remove_stylesheets:
+        page = re.sub(r'<link\b[^>]*href="' + re.escape(name) + r'(?:\?[^"]*)?"[^>]*>', '', page)
+    # Code typography belongs to the chosen shared theme; other Markdown CSS stays.
+    page = re.sub(r'(pre, code\s*\{)\s*font-family:[^;]*;\s*(\})', r'\1 font-family: inherit; \2', page)
+    def transform(match):
+        tag, attrs = match.group(1), match.group(2)
+        classes = re.search(r'\s+class="([^"]*)"', attrs)
+        names = []
+        if classes:
+            names = [part for name in classes[1].split() for part in aliases.get(name, name).split()]
+            attrs = attrs[:classes.start()] + attrs[classes.end():]
+        required = {"button": "ui-button", "input": "ui-input", "textarea": "ui-input",
+                    "select": "ui-input", "pre": "ui-output"}.get(tag)
+        if required and required not in names:
+            names.append(required)
+        if tag == "body":
+            attrs = re.sub(r'\sdata-ui-theme="[^"]*"', '', attrs) + f' data-ui-theme="{theme}"'
+        if names:
+            attrs += ' class="' + ' '.join(dict.fromkeys(names)) + '"'
+        return '<' + tag + attrs + '>'
+    chunks = re.split(r'(<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>)', page, flags=re.S)
+    for index in range(0, len(chunks), 2):
+        chunks[index] = re.sub(r'<(body|main|header|div|section|span|p|h[1-6]|pre|input|select|textarea|button)\b([^>]*)>',
+                               transform, chunks[index])
+    page = ''.join(chunks)
+    links = ''.join(f'<link rel="stylesheet" href="{escape(path, quote=True)}" data-shared-ui="web-ui">' for path in styles)
+    if 'data-shared-ui="web-ui"' not in page:
+        if '</head>' not in page:
+            raise ValueError("shared presentation requires a document head")
+        page = page.replace('</head>', links + '</head>', 1)
+    return page
 
 
 def run_node(*argv: str | Path, timeout: float | None = 30) -> subprocess.CompletedProcess[str]:
