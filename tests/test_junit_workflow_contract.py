@@ -50,8 +50,8 @@ def _assert_contract(workflow):
         assert upload["with"]["if-no-files-found"] == "error"
         assert upload["with"]["retention-days"] == 14
     collector = workflow["jobs"]["junit-identity"]
-    assert collector["needs"] == ["tooling"]
-    assert collector["if"] == "always()"
+    assert collector["needs"] == ["changes", "tooling"]
+    assert collector["if"] == "(always()) && needs.changes.outputs.product_changed == 'true'"
     assert collector.get("continue-on-error", False) is False
     assert collector["uses"] == COLLECTOR
     reports = json.loads(collector["with"]["expected-reports"])
