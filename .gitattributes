@@ -1,3 +1,1 @@
-tool/vendor/repository_metadata_contract.py -text
-tool/vendor/repository_metadata_generator.py -text
 tool/vendor/LICENSE -text

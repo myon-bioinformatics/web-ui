@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -40,8 +39,8 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
            "GITHUB_REF_NAME": "123/merge"}
     output = tmp_path / "metadata"
     subprocess.run(
-        [sys.executable, "-S", str(ROOT / "tool/vendor/repository_metadata_generator.py"),
-         "--repository", "myon-bioinformatics/web-ui", "--root", str(checkout),
+        [sys.executable, "-S", str(ROOT / "tool/vendor/gh_identity.py"), "repo-metadata",
+         "--format", "v1", "--repository", "myon-bioinformatics/web-ui", "--root", str(checkout),
          "--output-dir", str(output)],
         check=True, env=env, capture_output=True, text=True,
     )
@@ -58,50 +57,19 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
         check=True, capture_output=True, text=True,
     )
 
-    # Advisory collection can probe git --version, but never head/branch identity.
+    # Advisory collection reports tooling versions only; never head/branch identity.
     from tool import tooling_meta
-    probes = []
-    def observe(command):
-        probes.append(command)
-        return "1.2.3"
-    monkeypatch.setattr(tooling_meta.canonical, "observe_command_version", observe)
-    monkeypatch.setattr(tooling_meta.canonical, "observe_package_version", lambda _: "4.1.0")
+    def fake_tool_versions(commands, *, include_python=False, **_):
+        observed = {command: "1.2.3" for command in commands}
+        if include_python:
+            observed["python"] = "1.2.3"
+        return observed
+    monkeypatch.setattr(tooling_meta.canonical, "tool_versions", fake_tool_versions)
+    monkeypatch.setattr(tooling_meta, "observe_package_version", lambda _: "4.1.0")
     metadata = collect()
     assert set(metadata) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert metadata["runtime"]["python"]
     assert set(metadata["packages"]) == {"pytest", "stagehand"}
-    assert probes == ["git", "gh", "node", "npx"]
-
-
-def test_canonical_vendor_provenance():
-    vendor = ROOT / "tool/vendor"
-    provenance = json.loads((vendor / "provenance.json").read_text())
-    assert provenance["source_repository"] == "myon-bioinformatics/Ironmate"
-    assert provenance["source_commit"] == _locked('tool/vendor/repository_metadata_contract.py')['commit']
-
-    expected = {
-        "repository_metadata_contract.py": {
-            "git_blob_sha": _locked('tool/vendor/repository_metadata_contract.py')['blob_sha'],
-            "sha256": _locked('tool/vendor/repository_metadata_contract.py')['sha256'],
-        },
-        "repository_metadata_generator.py": {
-            "git_blob_sha": _locked('tool/vendor/repository_metadata_generator.py')['blob_sha'],
-            "sha256": _locked('tool/vendor/repository_metadata_generator.py')['sha256'],
-        },
-        "LICENSE": {
-            "git_blob_sha": _locked('tool/vendor/LICENSE')['blob_sha'],
-            "sha256": _locked('tool/vendor/LICENSE')['sha256'],
-        },
-    }
-    assert set(provenance["files"]) == set(expected)
-    for name, hashes in expected.items():
-        info = provenance["files"][name]
-        assert info["git_blob_sha"] == hashes["git_blob_sha"]
-        assert info["sha256"] == hashes["sha256"]
-        data = (vendor / name).read_bytes()
-        assert hashlib.sha256(data).hexdigest() == hashes["sha256"]
-        git_blob = b"blob " + str(len(data)).encode() + b"\0" + data
-        assert hashlib.sha1(git_blob).hexdigest() == hashes["git_blob_sha"]
 
 
 def test_stagehand_v4_python_surface():
