@@ -282,3 +282,11 @@ A CDN or remote import needs network access and import-graph provenance.
 Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
 verification should check the resulting module in Chromium under the chosen CSP;
 unit tests alone do not establish browser execution.
+
+### Common controls in one line
+
+`button`, `select`, `input_field`, `textarea`, `checkbox`, `details`, and
+`section_browser` now emit labeled native controls from Python. A local,
+explicitly loaded `controls.js` binds section selection to text output; native
+controls and disclosure work without JS. See [one-liners and the Markdown
+boundary](docs/python-controls.md).
