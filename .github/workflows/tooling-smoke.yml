@@ -5,7 +5,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  changes:
+    permissions:
+      contents: read
+    uses: myon-bioinformatics/myon-bioinformatics/.github/workflows/reusable-change-detection.yml@40bd74c4a36896509b506d6d06251255be6c77c7
+
   resolve-vendor:
+    if: needs.changes.outputs.product_changed == 'true'
+    needs: changes
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -52,9 +59,10 @@ jobs:
           retention-days: 14
 
   tooling:
+    if: needs.changes.outputs.product_changed == 'true'
     permissions:
       contents: read
-    needs: resolve-vendor
+    needs: [changes, resolve-vendor]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -148,6 +156,8 @@ jobs:
           retention-days: 14
 
   test-locked:
+    if: needs.changes.outputs.product_changed == 'true'
+    needs: changes
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -232,8 +242,8 @@ jobs:
 
 
   junit-identity:
-    needs: [tooling]
-    if: always()
+    needs: [changes, tooling]
+    if: (always()) && needs.changes.outputs.product_changed == 'true'
     permissions:
       contents: read
       actions: read
