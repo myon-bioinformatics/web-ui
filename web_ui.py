@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import base64
 from html import escape
 from pathlib import Path
@@ -22,7 +23,7 @@ THEMES = ("modern", "github-like")
 # Snapshot of js/ui.js; update together with the upstream source and regression test.
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
-SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js")
+SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
 
 
 def text_panel(text: str, *, heading: str = "") -> str:
@@ -167,6 +168,79 @@ def _element_id(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", value):
         raise ValueError("element id must be an ASCII identifier")
     return value
+
+
+def button(label: str, *, id: str | None = None, type: str = "button", disabled: bool = False) -> str:
+    """An escaped native button; custom actions remain consumer-owned."""
+    if type not in ("button", "submit", "reset"):
+        raise ValueError("unknown button type")
+    identity = f' id="{_element_id(id)}"' if id is not None else ""
+    return f'<button class="ui-button" type="{type}"{identity}{" disabled" if disabled else ""}>{escape(label)}</button>'
+
+
+def select(options: tuple[tuple[str, str], ...], *, id: str, label: str,
+           selected: str | None = None, disabled: bool = False) -> str:
+    """Labeled native dropdown. Values must be unique; labels stay plain text."""
+    identity = _element_id(id)
+    values = [value for value, _ in options]
+    if len(set(values)) != len(values) or (selected is not None and selected not in values):
+        raise ValueError("options require unique values and an existing selection")
+    items = ''.join(f'<option value="{escape(value, quote=True)}"{" selected" if value == selected else ""}>{escape(text)}</option>'
+                    for value, text in options)
+    return (f'<label for="{identity}">{escape(label)}</label> '
+            f'<select class="ui-input" id="{identity}" name="{identity}"{" disabled" if disabled else ""}>{items}</select>')
+
+
+def input_field(*, id: str, label: str, value: str = "", type: str = "text",
+                required: bool = False) -> str:
+    """Labeled native text/search/email/URL/number/date/password input."""
+    if type not in ("text", "search", "email", "url", "number", "date", "password"):
+        raise ValueError("unknown input type")
+    identity = _element_id(id)
+    return (f'<label for="{identity}">{escape(label)}</label> '
+            f'<input class="ui-input" id="{identity}" name="{identity}" type="{type}" '
+            f'value="{escape(value, quote=True)}"{" required" if required else ""}>')
+
+
+def textarea(*, id: str, label: str, value: str = "", rows: int = 8) -> str:
+    """Labeled, escaped multiline input."""
+    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
+        raise ValueError("rows must be a positive integer")
+    identity = _element_id(id)
+    return (f'<label for="{identity}">{escape(label)}</label> '
+            f'<textarea class="ui-input" id="{identity}" name="{identity}" rows="{rows}">{escape(value)}</textarea>')
+
+
+def checkbox(label: str, *, id: str, checked: bool = False) -> str:
+    """Native checkbox with an associated text label."""
+    identity = _element_id(id)
+    return (f'<label for="{identity}"><input type="checkbox" id="{identity}" name="{identity}"'
+            f'{" checked" if checked else ""}> {escape(label)}</label>')
+
+
+def details(summary: str, text: str = "", *, open: bool = False, trusted_html: str | None = None) -> str:
+    """Native disclosure, without JS. Pass renderer output via trusted_html explicitly."""
+    body = f'<pre class="ui-output">{escape(text)}</pre>' if trusted_html is None else trusted_html
+    return f'<details class="ui-panel"{" open" if open else ""}><summary>{escape(summary)}</summary>{body}</details>'
+
+
+def section_browser(sections: tuple[tuple[str, str], ...], *, id: str = "sections",
+                    label: str = "Heading", full_text: str = "", full_label: str = "(full extract)") -> str:
+    """Text-only section dropdown; opt in to controls.js to enable switching.
+
+    Sections are (label, body) pairs, so duplicate titles keep distinct values.
+    No Markdown parsing or provider grammar lives in this presentation helper.
+    Without JavaScript the full text is still visible and the select is disabled.
+    """
+    identity = _element_id(id)
+    items = [{"value": str(index), "label": title, "body": body}
+             for index, (title, body) in enumerate(sections)]
+    payload = json.dumps({"items": items, "fullText": full_text, "fullLabel": full_label}, ensure_ascii=True)
+    payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    control = select((("", full_label),), id=identity, label=label, disabled=True)
+    return (f'<section class="ui-panel" data-ui-section-browser>{control}'
+            f'<pre class="ui-output" data-ui-section-output aria-live="polite">{escape(full_text)}</pre>'
+            f'<script type="application/json" data-ui-section-data>{payload}</script></section>')
 
 
 def source_link(input_id: str, *, link_id: str = "source-open", label: str = "取得元サイトを新しいタブで開く ↗") -> str:
