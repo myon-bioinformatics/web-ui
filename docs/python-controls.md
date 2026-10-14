@@ -50,3 +50,12 @@ rendering the body first preserves its normal table/list/heading rendering.
 Only pass output from a trusted renderer to `trusted_html`; arbitrary pasted
 HTML is not sanitized by web-ui. The section selector deliberately displays
 Markdown as text, matching the portfolio Wiki extraction view.
+
+## Browser regression
+
+The required `Local Gradio DOM` CI job runs
+`python tests/integration/controls_browser.py -v` after installing its pinned
+Playwright/Chromium dependencies. This opens Python-generated HTML over loopback
+HTTP and checks auto-mount, duplicate labels, change/full-text restoration, inert
+hostile text, clear/destroy, zero external requests and the no-JS fallback.
+Missing browser dependencies fail this explicitly invoked test instead of skipping.
