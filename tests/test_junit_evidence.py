@@ -28,12 +28,12 @@ def unavailable(monkeypatch):
     monkeypatch.setattr(canonical.shutil, "which", lambda _: None)
 
 def test_unavailable_command(unavailable):
-    assert canonical.observe_command_version("git") is None
+    assert canonical.tool_versions(("git",), include_python=False) == {}
 
 @pytest.mark.parametrize("command", ["PARAMETER_SENTINEL"], ids=["PARAMETER_SENTINEL"])
 def test_wrong_probe_expectation(unavailable, command):
     print("STDOUT_SENTINEL")
-    assert canonical.observe_command_version("git") == "ASSERTION_SENTINEL", command
+    assert canonical.tool_versions(("git",), include_python=False) == "ASSERTION_SENTINEL", command
 
 @pytest.fixture
 def broken_setup():
