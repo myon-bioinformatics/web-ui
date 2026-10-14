@@ -12,7 +12,7 @@
     },
     {
       "repository": "myon-bioinformatics/gh_identity",
-      "ref": "refs/heads/main",
+      "ref": "c6b52a29d8cd1dce0ebe0c4288cd16b0e4b84b96",
       "commit": "c6b52a29d8cd1dce0ebe0c4288cd16b0e4b84b96",
       "source": "gh_identity.py",
       "destination": "tool/vendor/gh_identity.py",
@@ -21,7 +21,7 @@
     },
     {
       "repository": "myon-bioinformatics/gh_identity",
-      "ref": "refs/heads/main",
+      "ref": "c6b52a29d8cd1dce0ebe0c4288cd16b0e4b84b96",
       "commit": "c6b52a29d8cd1dce0ebe0c4288cd16b0e4b84b96",
       "source": "LICENSE",
       "destination": "tool/vendor/gh_identity-LICENSE",

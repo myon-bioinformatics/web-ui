@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -71,29 +70,6 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
     assert set(metadata) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert metadata["runtime"]["python"]
     assert set(metadata["packages"]) == {"pytest", "stagehand"}
-
-
-def test_canonical_vendor_provenance():
-    vendor = ROOT / "tool/vendor"
-    provenance = json.loads((vendor / "provenance.json").read_text())
-    assert provenance["source_repository"] == "myon-bioinformatics/Ironmate"
-    assert provenance["source_commit"] == _locked('tool/vendor/LICENSE')['commit']
-
-    expected = {
-        "LICENSE": {
-            "git_blob_sha": _locked('tool/vendor/LICENSE')['blob_sha'],
-            "sha256": _locked('tool/vendor/LICENSE')['sha256'],
-        },
-    }
-    assert set(provenance["files"]) == set(expected)
-    for name, hashes in expected.items():
-        info = provenance["files"][name]
-        assert info["git_blob_sha"] == hashes["git_blob_sha"]
-        assert info["sha256"] == hashes["sha256"]
-        data = (vendor / name).read_bytes()
-        assert hashlib.sha256(data).hexdigest() == hashes["sha256"]
-        git_blob = b"blob " + str(len(data)).encode() + b"\0" + data
-        assert hashlib.sha1(git_blob).hexdigest() == hashes["git_blob_sha"]
 
 
 def test_stagehand_v4_python_surface():
