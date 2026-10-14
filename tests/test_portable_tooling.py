@@ -1,6 +1,7 @@
 """Consumer projection, canonical ownership, and standalone JSON regressions."""
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -16,12 +17,12 @@ canonical = tooling_meta.canonical
 
 @pytest.mark.parametrize("partial", [False, True])
 def test_partial_or_empty_tooling_omits_unavailable_keys(monkeypatch, partial):
-    monkeypatch.setattr(canonical.platform, "python_version", lambda: "3.12.8" if partial else "invalid")
+    monkeypatch.setattr(platform, "python_version", lambda: "3.12.8" if partial else "invalid")
     probes = []
 
     def run(argv, **kwargs):
         probes.append(argv)
-        assert kwargs["shell"] is False
+        assert kwargs.get("shell") is not True
         assert kwargs["timeout"] == 5.0
         assert argv[1:] == ["--version"]
         return SimpleNamespace(returncode=0, stdout="git version 2.45.1\n", stderr="")
@@ -32,9 +33,9 @@ def test_partial_or_empty_tooling_omits_unavailable_keys(monkeypatch, partial):
     def package(name):
         if partial and name == "pytest":
             return "9.0.0"
-        raise canonical.importlib_metadata.PackageNotFoundError(name)
+        raise tooling_meta.importlib_metadata.PackageNotFoundError(name)
 
-    monkeypatch.setattr(canonical.importlib_metadata, "version", package)
+    monkeypatch.setattr(tooling_meta.importlib_metadata, "version", package)
     result = tooling_meta.collect()
     assert set(result) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert result["runtime"] == ({"python": "3.12.8"} if partial else {})
@@ -48,17 +49,19 @@ def test_partial_or_empty_tooling_omits_unavailable_keys(monkeypatch, partial):
 def test_consumer_only_requests_allowlisted_observations(monkeypatch):
     calls = []
 
-    def collect(**kwargs):
-        calls.append(kwargs)
-        return {"python": "3.12.8", "git": "2.45.1", "gh": "2.60.0",
-                "node": "22.0.0", "npx": "10.0.0", "pytest": "9.0.0", "stagehand": "4.1.0"}
+    def tool_versions(commands, *, include_python=False, **kwargs):
+        calls.append({"commands": commands, "include_python": include_python})
+        observed = {command: "1.0.0" for command in commands}
+        if include_python:
+            observed["python"] = "3.12.8"
+        return observed
 
-    monkeypatch.setattr(canonical, "collect_portable_tooling", collect)
+    monkeypatch.setattr(canonical, "tool_versions", tool_versions)
+    monkeypatch.setattr(tooling_meta, "observe_package_version", lambda name: {"pytest": "9.0.0", "stagehand": "4.1.0"}[name])
     result = tooling_meta.collect()
-    assert calls == [{"include_python": True, "commands": ("git", "gh", "node", "npx"),
-                      "distributions": (("pytest", "pytest"), ("stagehand", "stagehand"))}]
+    assert calls == [{"commands": tooling_meta.COMMANDS, "include_python": True}]
     assert result["runtime"] == {"python": "3.12.8"}
-    assert result["commands"] == {"git": "2.45.1", "gh": "2.60.0", "node": "22.0.0", "npx": "10.0.0"}
+    assert result["commands"] == {"git": "1.0.0", "gh": "1.0.0", "node": "1.0.0", "npx": "1.0.0"}
     assert result["packages"] == {"pytest": "9.0.0", "stagehand": "4.1.0"}
 
 
@@ -67,29 +70,18 @@ def test_duplicate_canonical_owners_fail_before_probing(monkeypatch, collision):
     def unexpected(*args, **kwargs):
         pytest.fail("collision must fail before observations")
 
-    monkeypatch.setattr(canonical.platform, "python_version", unexpected)
-    monkeypatch.setattr(canonical, "observe_command_version", unexpected)
-    monkeypatch.setattr(canonical, "observe_package_version", unexpected)
+    monkeypatch.setattr(canonical, "tool_versions", unexpected)
+    monkeypatch.setattr(tooling_meta, "observe_package_version", unexpected)
     if collision == "duplicate-command":
         monkeypatch.setattr(tooling_meta, "COMMANDS", ("git", "git"))
+    elif collision == "runtime":
+        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("python", "other"),))
+    elif collision == "command":
+        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("git", "other"),))
     else:
-        key = {"runtime": "python", "command": "git", "package": "pytest"}[collision]
-        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + ((key, "other"),))
+        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("pytest", "other"),))
     with pytest.raises(ValueError, match="exactly one canonical source"):
         tooling_meta.collect()
-
-
-@pytest.mark.parametrize("key", ["python", "git", "pytest"])
-def test_caller_cannot_overwrite_canonical_keys_even_if_unavailable(monkeypatch, tmp_path, key):
-    def unexpected(*args, **kwargs):
-        pytest.fail("overlap must fail before checkout or tooling observations")
-
-    monkeypatch.setattr(canonical, "git", unexpected)
-    monkeypatch.setattr(canonical, "collect_portable_tooling", unexpected)
-    with pytest.raises(ValueError, match="caller tooling overlaps canonical tooling: " + key):
-        canonical.record_from_checkout(tmp_path, "myon-bioinformatics/web-ui", tooling={key: "unknown"},
-                                       include_python_tooling=True, tooling_commands=tooling_meta.COMMANDS,
-                                       tooling_distributions=tooling_meta.DISTRIBUTIONS)
 
 
 def test_standalone_json_is_stdlib_only_and_does_not_need_checkout(tmp_path):
@@ -100,7 +92,7 @@ def test_standalone_json_is_stdlib_only_and_does_not_need_checkout(tmp_path):
     assert result.stderr == ""
     record = json.loads(result.stdout)
     assert set(record) == {"generated_at_utc", "runtime", "commands", "packages"}
-    assert record["runtime"] == {"python": canonical.platform.python_version()}
+    assert record["runtime"] == {"python": platform.python_version()}
     assert record["commands"] == {}
     assert record["packages"] == {}
     assert list(tmp_path.iterdir()) == []
@@ -108,7 +100,7 @@ def test_standalone_json_is_stdlib_only_and_does_not_need_checkout(tmp_path):
 
 @pytest.mark.parametrize("failure", ["nonzero", "malformed", "timeout", "oserror"])
 def test_failed_canonical_observations_are_omitted(monkeypatch, failure):
-    monkeypatch.setattr(canonical.platform, "python_version", lambda: "3.12.8")
+    monkeypatch.setattr(platform, "python_version", lambda: "3.12.8")
     monkeypatch.setattr(canonical.shutil, "which", lambda name: name)
 
     def run(argv, **kwargs):
@@ -121,7 +113,7 @@ def test_failed_canonical_observations_are_omitted(monkeypatch, failure):
                                stderr="")
 
     monkeypatch.setattr(canonical.subprocess, "run", run)
-    monkeypatch.setattr(canonical.importlib_metadata, "version", lambda _: "private malformed package")
+    monkeypatch.setattr(tooling_meta.importlib_metadata, "version", lambda _: "private malformed package")
     first = tooling_meta.collect()
     second = tooling_meta.collect()
     for record in (first, second):

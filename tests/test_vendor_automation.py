@@ -187,18 +187,23 @@ def test_projection_cli_help_and_unknown_options_do_not_need_or_write_sources(tm
         assert set(tmp_path.rglob('*')) == {helper.parent, helper}
 
 
-def test_grouped_provenance_rejects_mixed_commits_before_writing(tmp_path):
+def test_legacy_provenance_tracks_ironmate_license_only(tmp_path):
     _copy_snapshot(tmp_path)
-    path = tmp_path / 'tool/vendor/provenance.json'
-    before = path.read_bytes()
-    lock_path = tmp_path / 'vendor.lock.json'
-    lock = json.loads(lock_path.read_text(encoding='utf-8'))
-    lock['files'][0]['commit'] = 'a' * 40
-    lock['files'][0]['ref'] = 'a' * 40
-    lock_path.write_text(json.dumps(lock), encoding='utf-8')
-    with pytest.raises(ValueError, match='one source commit'):
-        _projector().project(tmp_path)
-    assert path.read_bytes() == before
+    projector = _projector()
+    projector.project(tmp_path)
+    projected = json.loads((tmp_path / 'tool/vendor/provenance.json').read_text(encoding='utf-8'))
+    license_entry = next(e for e in _lock_entries(tmp_path) if e['destination'] == 'tool/vendor/LICENSE')
+    assert projected == {
+        'source_repository': 'myon-bioinformatics/Ironmate',
+        'source_commit': license_entry['commit'],
+        'files': {
+            'LICENSE': {
+                'source_path': 'LICENSE',
+                'git_blob_sha': license_entry['blob_sha'],
+                'sha256': license_entry['sha256'],
+            },
+        },
+    }
 
 
 @pytest.mark.parametrize("mutation", ["blob", "sha256", "extra", "ref", "commit"])
@@ -343,6 +348,6 @@ def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name, kind
 
 def test_retired_ironmate_sources_do_not_follow_deleted_main_paths():
     entries = [e for e in _lock_entries() if e['repository'] == 'myon-bioinformatics/Ironmate']
-    assert {e['source'] for e in entries} == {'repository_metadata_contract.py', 'repository_metadata_generator.py', 'LICENSE'}
+    assert {e['source'] for e in entries} == {'LICENSE'}
     assert all(e['ref'] == e['commit'] for e in entries)
     _projector().records(ROOT)  # Verify every source and license byte too.

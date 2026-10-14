@@ -12,13 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {('myon-bioinformatics/gh_identity', 'gh_identity.py', 'tool/vendor/gh_identity.py'),
  ('myon-bioinformatics/gh_identity', 'LICENSE', 'tool/vendor/gh_identity-LICENSE'),
- ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_contract.py',
-  'tool/vendor/repository_metadata_contract.py'),
- ('myon-bioinformatics/Ironmate',
-  'repository_metadata_generator.py',
-  'tool/vendor/repository_metadata_generator.py')}
+ ('myon-bioinformatics/Ironmate', 'LICENSE', 'tool/vendor/LICENSE')}
 
 
 def records(root):

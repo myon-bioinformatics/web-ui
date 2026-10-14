@@ -45,13 +45,14 @@ Run:
 ```sh
 python -m pytest -v
 python tool/tooling_meta.py
-python -S tool/vendor/repository_metadata_generator.py --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
+python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 
-`tooling_meta.py` delegates Python runtime, Git/GitHub CLI/Node/npx versions,
-and the explicitly allowlisted `pytest`/`stagehand` distributions to Ironmate's
-`collect_portable_tooling()`. The consumer only timestamps and projects those
-observations into the existing `runtime`, `commands`, and `packages` JSON groups.
+`tooling_meta.py` delegates Python runtime and Git/GitHub CLI/Node/npx versions
+to vendored `gh_identity.tool_versions()`, and observes the explicitly
+allowlisted `pytest`/`stagehand` distributions locally. The consumer only
+timestamps and projects those observations into the existing `runtime`, `commands`,
+and `packages` JSON groups.
 It does not collect repository identity or add app/render/build measurements.
 
 Available values are canonical normalized short version strings (for example,

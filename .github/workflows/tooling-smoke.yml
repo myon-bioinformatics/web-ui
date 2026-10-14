@@ -156,7 +156,7 @@ jobs:
       - name: Execute repository diagnostics renderer
         run: node tests/repository_diagnostics.node.js
       - name: Generate canonical repository metadata (stdlib only)
-        run: python -S tool/vendor/repository_metadata_generator.py --repository myon-bioinformatics/web-ui --root . --output-dir .
+        run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
       - name: Capture advisory tooling metadata
         run: python tool/tooling_meta.py > tooling-meta.json
       - uses: actions/upload-artifact@v7
@@ -245,7 +245,7 @@ jobs:
     - name: Execute repository diagnostics renderer
       run: node tests/repository_diagnostics.node.js
     - name: Generate canonical repository metadata (stdlib only)
-      run: python -S tool/vendor/repository_metadata_generator.py --repository myon-bioinformatics/web-ui --root . --output-dir .
+      run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
     - name: Capture advisory tooling metadata
       run: python tool/tooling_meta.py > tooling-meta.json
     - uses: actions/upload-artifact@v7
