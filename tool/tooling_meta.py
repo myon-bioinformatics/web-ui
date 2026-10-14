@@ -20,6 +20,15 @@ canonical = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 _SPEC.loader.exec_module(canonical)
 
+
+def observe_command_version(command: str) -> str | None:
+    if command not in canonical._RM_TOOL_ARGS:
+        raise ValueError("unsupported tooling command: " + command)
+    return canonical.tool_versions((command,), include_python=False).get(command)
+
+
+canonical.observe_command_version = observe_command_version  # type: ignore[attr-defined]
+
 RUNTIME_KEYS = ("python",)
 COMMANDS = ("git", "gh", "node", "npx")
 DISTRIBUTIONS = (("pytest", "pytest"), ("stagehand", "stagehand"))
