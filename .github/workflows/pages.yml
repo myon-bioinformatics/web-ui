@@ -12,6 +12,6 @@ permissions:
 
 jobs:
   deploy:
-    uses: myon-bioinformatics/myon-bioinformatics/.github/workflows/reusable-pages-static.yml@f907560c2b9b3f7a0f78f4434f547f91cb2ef954
+    uses: myon-bioinformatics/myon-bioinformatics/.github/workflows/reusable-pages-static.yml@ab17b409d82f95abc81116af7ff0d3e7bdc4158c
     with:
       artifact_path: .
