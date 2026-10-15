@@ -10,7 +10,7 @@ entry carries `repository`, full 40-hex `ref`/`commit`, `source`, `destination`,
 `blob_sha`, and `sha256`. CI checks the lock with the parent repository's
 `vendor_sync.py check --manifest vendor.lock.json`, checked out from
 `myon-bioinformatics/myon-bioinformatics` at
-`9cc33f08f225eaf67d9a00489a1bf15977ebee25`.
+`b000e5967cb7596f6f9f20fe396a686fdc700c16`.
 
 The `resolve-vendor` job materializes locked files once per run and publishes a
 verified vendor snapshot artifact. The primary `tooling` job downloads that
@@ -24,7 +24,7 @@ ALM agents can reproduce verification in a disposable checkout:
 
 ```bash
 git clone https://github.com/myon-bioinformatics/myon-bioinformatics.git .vendor-sync-tools
-git -C .vendor-sync-tools checkout --detach 9cc33f08f225eaf67d9a00489a1bf15977ebee25
+git -C .vendor-sync-tools checkout --detach b000e5967cb7596f6f9f20fe396a686fdc700c16
 python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
 python -S .vendor-sync-tools/vendor_sync.py materialize --manifest vendor.lock.json
 python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
