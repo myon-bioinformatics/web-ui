@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/tooling-smoke.yml"
 COLLECTOR = (
     "myon-bioinformatics/myon-bioinformatics/.github/workflows/"
-    "reusable-junit-identity.yml@f907560c2b9b3f7a0f78f4434f547f91cb2ef954"
+    "reusable-junit-identity.yml@ab17b409d82f95abc81116af7ff0d3e7bdc4158c"
 )
 COMMAND = "python -m pytest -v --junitxml=build/test-results/pytest-3.12.xml"
 
