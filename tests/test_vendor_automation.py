@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ".github/workflows/tooling-smoke.yml"
 TEST_JOB = "tooling"
-PIN = "ab17b409d82f95abc81116af7ff0d3e7bdc4158c"
+PIN = "9cc33f08f225eaf67d9a00489a1bf15977ebee25"
 
 
 def _lock_entries(root=ROOT):
