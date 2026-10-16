@@ -40,7 +40,7 @@ jobs:
           node-version: "22"
       - name: Clear prior capture evidence
         run: rm -rf screenshot-evidence web-ui-desktop-1440x900.png web-ui-mobile-390x844.png web-ui-contract-v1-desktop-1440x900.png web-ui-contract-v1-mobile-390x844.png web-ui-github-like-desktop-1440x900.png web-ui-github-like-mobile-390x844.png
-      - run: npx --yes playwright@1.63.0 install --with-deps chromium
+      - run: npx --yes playwright@1.63.0 install --with-deps --only-shell chromium
       - name: Serve examples
         run: python3 -m http.server 8000 > /tmp/web-ui-http.log 2>&1 &
       - name: Wait for static server

@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r tests/requirements-gradio.txt
-      - run: python -m playwright install --with-deps chromium
+      - run: python -m playwright install --with-deps --only-shell chromium
       - name: Verify generated controls in Chromium
         run: python tests/integration/controls_browser.py -v
       - name: Compare Gradio DOM with shared extraction
