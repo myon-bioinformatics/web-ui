@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import base64
 from html import escape
 from pathlib import Path
@@ -24,11 +25,30 @@ THEMES = ("modern", "github-like")
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
+# Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
+# sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
+_PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
+_PPTXGENJS_SRI = "sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8"
 # Explicit HTTPS allowlist for opt-in remote classic scripts (not ES modules).
 # Unpinned URLs are intentional for entries documented as rolling "latest" lanes.
 REMOTE_SCRIPT_NAMES: dict[str, str] = {
     "plotly.js": "https://cdn.plot.ly/plotly-latest.min.js",
+    "pptxgenjs": _PPTXGENJS_URL,
 }
+# Integrity is omitted for rolling lanes because those bytes are not stable.
+REMOTE_SCRIPT_INTEGRITY: dict[str, str] = {
+    _PPTXGENJS_URL: _PPTXGENJS_SRI,
+}
+_PPTX_LAYOUTS = frozenset({"LAYOUT_4x3", "LAYOUT_16x9", "LAYOUT_16x10", "LAYOUT_WIDE"})
+_PPTX_DASHES = frozenset({"solid", "dash", "dashDot", "lgDash", "lgDashDot", "lgDashDotDot", "sysDash", "sysDot"})
+_PPTX_ALIGNS = frozenset({"left", "center", "right", "justify"})
+_PPTX_VALIGNS = frozenset({"top", "middle", "bottom"})
+_PPTX_ARROW_KEYS = frozenset({"beginArrowType", "endArrowType", "lineHead", "lineTail"})
+_PPTX_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pptx\Z")
+_PPTX_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9]{0,40}\Z")
+_PPTX_FONT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,40}\Z")
+_PPTX_HEX = re.compile(r"#?([0-9A-Fa-f]{6})\Z")
+_PPTX_DATA_IMAGE = re.compile(r"(?:data:)?(image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\Z")
 
 
 def text_panel(text: str, *, heading: str = "") -> str:
@@ -80,12 +100,22 @@ def _require_allowed_remote_script(value: str, *, label: str) -> None:
         raise ValueError(f"{label} must be an opt-in remote script from remote_scripts()")
 
 
+def _remote_script_tag(src: str) -> str:
+    _require_allowed_remote_script(src, label="remote script")
+    attributes = f' src="{escape(src, quote=True)}"'
+    integrity = REMOTE_SCRIPT_INTEGRITY.get(src)
+    if integrity:
+        attributes += f' integrity="{escape(integrity, quote=True)}" crossorigin="anonymous"'
+    return f"<script{attributes}></script>"
+
+
 def remote_scripts(*names: str) -> tuple[str, ...]:
     """Return HTTPS script URLs from an explicit, documented allowlist.
 
     These are classic (non-module) scripts loaded from a remote origin. They are
     intentionally separate from ``shared_scripts()`` so remote execution stays an
-    explicit consumer choice. Callers own network access, CSP, and SRI policy.
+    explicit consumer choice. Callers own network access and CSP. Pinned entries
+    are emitted with Subresource Integrity; rolling entries omit it.
     """
     if not names:
         raise ValueError("names must not be empty")
@@ -178,8 +208,9 @@ def render_document(
     scripts allow only local paths, without query/fragment. ``remote_scripts``
     accepts only URLs returned by ``remote_scripts()`` (explicit HTTPS allowlist).
     Remote classic scripts are emitted in ``<head>`` so body inline initializers
-    can depend on them. Callers own script contents, exact version pins, imports
-    and serving without remote redirects.
+    can depend on them. Pinned allowlist entries include their integrity
+    attribute; rolling URLs do not. Callers own script contents, imports and
+    serving without remote redirects.
     trusted_html is verbatim and may bypass these link checks (including via a
     base element); it must only contain caller-audited HTML. This is an HTML
     emitter, not a general HTML/CSS/JS sanitizer or provenance verifier.
@@ -193,10 +224,7 @@ def render_document(
         _require_local_or_https(href, label="stylesheet")
         links.append(f'<link rel="stylesheet" href="{escape(href, quote=True)}">')
     style = f"<style>{css}</style>" if css else ""
-    head_remote_scripts = []
-    for src in remote_scripts:
-        _require_allowed_remote_script(src, label="remote script")
-        head_remote_scripts.append(f'<script src="{escape(src, quote=True)}"></script>')
+    head_remote_scripts = [_remote_script_tag(src) for src in remote_scripts]
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
     script_tags = []
     for src in scripts:
@@ -311,6 +339,621 @@ def plotly_figure(
         f'if(el&&window.Plotly){{window.Plotly.newPlot(el,s.data,s.layout,s.config);}}}})();'
     )
     return f'<div id="{identity}" class="ui-panel"></div>{classic_script(initializer, nonce=nonce)}'
+
+
+def _pptx_round(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _pptx_number(value, *, label: str, minimum: float | None = None, maximum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{label} must be a finite number")
+    number = float(value)
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{label} must be >= {minimum}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{label} must be <= {maximum}")
+    return number
+
+
+def _pptx_positive(value, *, label: str) -> float:
+    number = _pptx_number(value, label=label)
+    if number <= 0:
+        raise ValueError(f"{label} must be positive")
+    return number
+
+
+def _pptx_text(value, *, label: str, limit: int) -> str:
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(f"{label} must be a string of at most {limit} characters")
+    if any(ord(char) < 32 and char not in "\n\t\r" or ord(char) == 127 for char in value):
+        raise ValueError(f"{label} must be plain text")
+    return value
+
+
+def _pptx_color(value, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a hex color")
+    match = _PPTX_HEX.fullmatch(value.strip())
+    if not match:
+        raise ValueError(f"{label} must be a 6-digit hex color")
+    return match.group(1).upper()
+
+
+def _pptx_unknown(mapping: dict, allowed: set[str], *, label: str) -> None:
+    extra = sorted(set(mapping) - allowed)
+    if extra:
+        raise ValueError(f"unknown {label}: {', '.join(extra)}")
+
+
+def _pptx_reject_arrow_keys(value, *, label: str) -> None:
+    if isinstance(value, dict):
+        found = sorted(_PPTX_ARROW_KEYS.intersection(value))
+        if found:
+            raise ValueError(f"{label} cannot set built-in line arrow keys; use pptx_connector()")
+        for item in value.values():
+            _pptx_reject_arrow_keys(item, label=label)
+    elif isinstance(value, list):
+        for item in value:
+            _pptx_reject_arrow_keys(item, label=label)
+
+
+def _pptx_fill(value, *, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a mapping")
+    _pptx_unknown(value, {"color", "transparency"}, label=label)
+    fill = {"color": _pptx_color(value.get("color"), label=f"{label} color")}
+    if "transparency" in value:
+        fill["transparency"] = _pptx_number(value["transparency"], label=f"{label} transparency", minimum=0, maximum=100)
+    return fill
+
+
+def _pptx_line_style(value, *, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a mapping")
+    _pptx_reject_arrow_keys(value, label=label)
+    _pptx_unknown(value, {"color", "width", "dashType"}, label=label)
+    style = {}
+    if "color" in value:
+        style["color"] = _pptx_color(value["color"], label=f"{label} color")
+    if "width" in value:
+        style["width"] = _pptx_positive(value["width"], label=f"{label} width")
+    if "dashType" in value:
+        if value["dashType"] not in _PPTX_DASHES:
+            raise ValueError(f"{label} dashType is not supported")
+        style["dashType"] = value["dashType"]
+    if not style:
+        raise ValueError(f"{label} must include color, width, or dashType")
+    return style
+
+
+def _pptx_bool(value, *, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
+def _pptx_line_box(x1: float, y1: float, x2: float, y2: float, *, color: str, width: float) -> dict:
+    """Straight line as a non-negative box plus flip, with no arrow styling."""
+    main_diagonal = (x1 <= x2 and y1 <= y2) or (x1 >= x2 and y1 >= y2)
+    return {
+        "x": _pptx_round(min(x1, x2)),
+        "y": _pptx_round(min(y1, y2)),
+        "w": _pptx_round(abs(x2 - x1)),
+        "h": _pptx_round(abs(y2 - y1)),
+        "flipH": not main_diagonal,
+        "flipV": False,
+        "line": {"color": color, "width": width},
+    }
+
+
+def _pptx_box(item: dict, *, label: str, require_height: bool = True) -> dict:
+    box = {
+        "x": _pptx_number(item.get("x"), label=f"{label} x"),
+        "y": _pptx_number(item.get("y"), label=f"{label} y"),
+        "w": _pptx_positive(item.get("w"), label=f"{label} w"),
+    }
+    if require_height or "h" in item:
+        box["h"] = _pptx_positive(item.get("h"), label=f"{label} h")
+    return box
+
+
+def _pptx_text_options(raw, position: dict) -> dict:
+    options = dict(position)
+    if not raw:
+        return options
+    if not isinstance(raw, dict):
+        raise ValueError("text options must be a mapping")
+    _pptx_reject_arrow_keys(raw, label="text options")
+    _pptx_unknown(raw, {"fontSize", "fontFace", "bold", "italic", "color", "align", "valign", "fill", "shape", "margin"},
+                  label="text options")
+    if "fontSize" in raw:
+        options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
+    if "fontFace" in raw:
+        if not isinstance(raw["fontFace"], str) or not _PPTX_FONT.fullmatch(raw["fontFace"]):
+            raise ValueError("fontFace must be a font name")
+        options["fontFace"] = raw["fontFace"]
+    if "bold" in raw:
+        options["bold"] = _pptx_bool(raw["bold"], label="bold")
+    if "italic" in raw:
+        options["italic"] = _pptx_bool(raw["italic"], label="italic")
+    if "color" in raw:
+        options["color"] = _pptx_color(raw["color"], label="text color")
+    if "align" in raw:
+        if raw["align"] not in _PPTX_ALIGNS:
+            raise ValueError("align must be left, center, right, or justify")
+        options["align"] = raw["align"]
+    if "valign" in raw:
+        if raw["valign"] not in _PPTX_VALIGNS:
+            raise ValueError("valign must be top, middle, or bottom")
+        options["valign"] = raw["valign"]
+    if "fill" in raw:
+        options["fill"] = _pptx_fill(raw["fill"], label="text fill")
+    if "shape" in raw:
+        if not isinstance(raw["shape"], str) or not _PPTX_SHAPE.fullmatch(raw["shape"]):
+            raise ValueError("text shape must be a shape name")
+        options["shape"] = raw["shape"]
+    if "margin" in raw:
+        options["margin"] = _pptx_number(raw["margin"], label="margin", minimum=0, maximum=5)
+    return options
+
+
+def _pptx_shape_options(raw, position: dict) -> dict:
+    options = dict(position)
+    if not raw:
+        return options
+    if not isinstance(raw, dict):
+        raise ValueError("shape options must be a mapping")
+    _pptx_reject_arrow_keys(raw, label="shape options")
+    _pptx_unknown(raw, {"fill", "line", "rectRadius", "rotate"}, label="shape options")
+    if "fill" in raw:
+        options["fill"] = _pptx_fill(raw["fill"], label="shape fill")
+    if "line" in raw:
+        options["line"] = _pptx_line_style(raw["line"], label="shape line")
+    if "rectRadius" in raw:
+        options["rectRadius"] = _pptx_number(raw["rectRadius"], label="rectRadius", minimum=0, maximum=1)
+    if "rotate" in raw:
+        options["rotate"] = _pptx_number(raw["rotate"], label="rotate", minimum=-360, maximum=360)
+    return options
+
+
+def _pptx_cell(cell, *, label: str) -> dict:
+    if isinstance(cell, str):
+        return {"text": _pptx_text(cell, label=label, limit=2000)}
+    if not isinstance(cell, dict):
+        raise ValueError(f"{label} must be a string or a cell mapping")
+    _pptx_unknown(cell, {"text", "options"}, label=label)
+    result = {"text": _pptx_text(cell.get("text"), label=label, limit=2000)}
+    raw = cell.get("options") or {}
+    if raw:
+        if not isinstance(raw, dict):
+            raise ValueError(f"{label} options must be a mapping")
+        _pptx_unknown(raw, {"bold", "color", "align", "fontSize", "fill"}, label=f"{label} options")
+        options = {}
+        if "bold" in raw:
+            options["bold"] = _pptx_bool(raw["bold"], label="bold")
+        if "color" in raw:
+            options["color"] = _pptx_color(raw["color"], label="cell color")
+        if "align" in raw:
+            if raw["align"] not in _PPTX_ALIGNS:
+                raise ValueError("align must be left, center, right, or justify")
+            options["align"] = raw["align"]
+        if "fontSize" in raw:
+            options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
+        if "fill" in raw:
+            options["fill"] = _pptx_fill(raw["fill"], label="cell fill")
+        result["options"] = options
+    return result
+
+
+def _pptx_table_options(raw, position: dict, *, columns: int) -> dict:
+    options = dict(position)
+    if not raw:
+        return options
+    if not isinstance(raw, dict):
+        raise ValueError("table options must be a mapping")
+    _pptx_unknown(raw, {"colW", "border", "fill", "fontSize", "color", "align", "valign", "bold", "margin"},
+                  label="table options")
+    if "colW" in raw:
+        widths = raw["colW"]
+        if isinstance(widths, bool) or isinstance(widths, (int, float)):
+            options["colW"] = _pptx_positive(widths, label="colW")
+        elif isinstance(widths, list):
+            if len(widths) != columns:
+                raise ValueError("colW must match the column count")
+            options["colW"] = [_pptx_positive(width, label="colW") for width in widths]
+        else:
+            raise ValueError("colW must be a number or a list of numbers")
+    if "border" in raw:
+        border = raw["border"]
+        if not isinstance(border, dict):
+            raise ValueError("border must be a mapping")
+        _pptx_unknown(border, {"color", "pt"}, label="border")
+        options["border"] = {
+            "color": _pptx_color(border.get("color"), label="border color"),
+            "pt": _pptx_positive(border.get("pt"), label="border pt"),
+        }
+    if "fill" in raw:
+        options["fill"] = _pptx_fill(raw["fill"], label="table fill")
+    if "fontSize" in raw:
+        options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
+    if "color" in raw:
+        options["color"] = _pptx_color(raw["color"], label="table color")
+    if "align" in raw:
+        if raw["align"] not in _PPTX_ALIGNS:
+            raise ValueError("align must be left, center, right, or justify")
+        options["align"] = raw["align"]
+    if "valign" in raw:
+        if raw["valign"] not in _PPTX_VALIGNS:
+            raise ValueError("valign must be top, middle, or bottom")
+        options["valign"] = raw["valign"]
+    if "bold" in raw:
+        options["bold"] = _pptx_bool(raw["bold"], label="bold")
+    if "margin" in raw:
+        options["margin"] = _pptx_number(raw["margin"], label="margin", minimum=0, maximum=5)
+    return options
+
+
+def _pptx_https_url(value, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be an HTTPS URL")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ValueError(f"{label} must be an HTTPS URL without credentials")
+    return value
+
+
+def _pptx_center(box: dict) -> tuple[float, float]:
+    return (box["x"] + box["w"] / 2.0, box["y"] + box["h"] / 2.0)
+
+
+def _pptx_boundary_toward(box: dict, toward: tuple[float, float]) -> tuple[float, float]:
+    """Point where the ray from this box's center toward another point exits the box."""
+    center_x, center_y = _pptx_center(box)
+    delta_x = toward[0] - center_x
+    delta_y = toward[1] - center_y
+    if delta_x == 0 and delta_y == 0:
+        raise ValueError("connector objects share a center")
+    scale_x = (box["w"] / 2.0) / abs(delta_x) if delta_x else math.inf
+    scale_y = (box["h"] / 2.0) / abs(delta_y) if delta_y else math.inf
+    scale = min(scale_x, scale_y)
+    return (center_x + delta_x * scale, center_y + delta_y * scale)
+
+
+def pptx_arrow_geometry(
+    source: dict,
+    target: dict,
+    *,
+    mode: str = "edge",
+    color: str = "363636",
+    width: float = 1.25,
+    head: float = 0.18,
+) -> dict:
+    """Line plus triangle arrowhead between two positioned boxes, in inches.
+
+    ``mode="edge"`` joins the box edges crossed by the center-to-center ray
+    (side-by-side boxes meet right-edge to left-edge; a box below another meets
+    bottom to top). ``mode="center"`` joins the centers. The arrowhead is a
+    separate triangle centered on the midpoint, rotated to the line angle.
+    This is not a PptxGenJS line arrow or connector shape.
+    """
+    if mode not in ("edge", "center"):
+        raise ValueError("connector mode must be edge or center")
+    for label, box in (("source", source), ("target", target)):
+        if not isinstance(box, dict):
+            raise ValueError(f"connector {label} must be a positioned object")
+        for key in ("x", "y", "w", "h"):
+            if key not in box:
+                raise ValueError(f"connector {label} needs x, y, w, and h")
+    source_box = _pptx_box(source, label="connector source")
+    target_box = _pptx_box(target, label="connector target")
+    source_center = _pptx_center(source_box)
+    target_center = _pptx_center(target_box)
+    if mode == "center":
+        x1, y1 = source_center
+        x2, y2 = target_center
+    else:
+        x1, y1 = _pptx_boundary_toward(source_box, target_center)
+        x2, y2 = _pptx_boundary_toward(target_box, source_center)
+    if math.hypot(x2 - x1, y2 - y1) == 0:
+        raise ValueError("connector length must be positive")
+    ink = _pptx_color(color, label="connector color")
+    stroke = _pptx_positive(width, label="connector width")
+    head_size = _pptx_positive(head, label="connector head")
+    rotate = round((math.degrees(math.atan2(y2 - y1, x2 - x1)) + 90.0) % 360.0, 4)
+    midpoint = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    return {
+        "mode": mode,
+        "x1": _pptx_round(x1),
+        "y1": _pptx_round(y1),
+        "x2": _pptx_round(x2),
+        "y2": _pptx_round(y2),
+        "midpoint": {"x": _pptx_round(midpoint[0]), "y": _pptx_round(midpoint[1])},
+        "distance": _pptx_round(math.hypot(x2 - x1, y2 - y1)),
+        "rotate": rotate,
+        "line": {
+            "op": "line",
+            "options": _pptx_line_box(x1, y1, x2, y2, color=ink, width=stroke),
+        },
+        "head": {
+            "op": "shape",
+            "shape": "triangle",
+            "options": {
+                "x": _pptx_round(midpoint[0] - head_size / 2.0),
+                "y": _pptx_round(midpoint[1] - head_size / 2.0),
+                "w": _pptx_round(head_size),
+                "h": _pptx_round(head_size),
+                "rotate": rotate,
+                "fill": {"color": ink},
+                "line": {"color": ink, "width": stroke},
+            },
+        },
+    }
+
+
+def pptx_connector(
+    source: str,
+    target: str,
+    *,
+    mode: str = "edge",
+    color: str = "363636",
+    width: float = 1.25,
+    head: float = 0.18,
+) -> dict:
+    """Connector item for a JSON slide spec.
+
+    Resolves to a straight line plus a triangle arrowhead. Center mode is drawn
+    before other slide objects so the boxes cover the line and the visible span
+    between them reads as the arrow. Edge mode meets the facing edges.
+    """
+    if mode not in ("edge", "center"):
+        raise ValueError("connector mode must be edge or center")
+    _element_id(source)
+    _element_id(target)
+    if source == target:
+        raise ValueError("connector source and target must differ")
+    _pptx_color(color, label="connector color")
+    _pptx_positive(width, label="connector width")
+    _pptx_positive(head, label="connector head")
+    return {
+        "kind": "connector",
+        "from": source,
+        "to": target,
+        "mode": mode,
+        "color": color,
+        "width": width,
+        "head": head,
+    }
+
+
+def _pptx_item_id(item: dict) -> str | None:
+    if "id" not in item:
+        return None
+    return _element_id(item["id"])
+
+
+def _pptx_convert_item(item: dict) -> tuple[dict, dict | None]:
+    if not isinstance(item, dict):
+        raise ValueError("slide item must be a mapping")
+    kind = item.get("kind")
+    if kind == "text":
+        _pptx_unknown(item, {"id", "kind", "text", "x", "y", "w", "h", "options"}, label="text item")
+        position = _pptx_box(item, label="text")
+        return {"op": "text", "text": _pptx_text(item.get("text"), label="text", limit=8000),
+                "options": _pptx_text_options(item.get("options"), position)}, position
+    if kind == "shape":
+        _pptx_unknown(item, {"id", "kind", "shape", "x", "y", "w", "h", "options"}, label="shape item")
+        if not isinstance(item.get("shape"), str) or not _PPTX_SHAPE.fullmatch(item["shape"]):
+            raise ValueError("shape must be a shape name")
+        position = _pptx_box(item, label="shape")
+        return {"op": "shape", "shape": item["shape"],
+                "options": _pptx_shape_options(item.get("options"), position)}, position
+    if kind == "line":
+        _pptx_unknown(item, {"id", "kind", "x", "y", "w", "h", "options"}, label="line item")
+        _pptx_reject_arrow_keys(item.get("options") or {}, label="line options")
+        raw_options = item.get("options") or {}
+        if raw_options and not isinstance(raw_options, dict):
+            raise ValueError("line options must be a mapping")
+        _pptx_unknown(raw_options, {"line"}, label="line options")
+        style = _pptx_line_style(raw_options["line"], label="line") if "line" in raw_options else {"color": "363636", "width": 1.25}
+        x = _pptx_number(item.get("x"), label="line x")
+        y = _pptx_number(item.get("y"), label="line y")
+        span_w = _pptx_number(item.get("w"), label="line w")
+        span_h = _pptx_number(item.get("h"), label="line h")
+        if span_w == 0 and span_h == 0:
+            raise ValueError("line length must be positive")
+        options = _pptx_line_box(x, y, x + span_w, y + span_h, color=style.get("color", "363636"), width=style.get("width", 1.25))
+        if "dashType" in style:
+            options["line"]["dashType"] = style["dashType"]
+        return {"op": "line", "options": options}, None
+    if kind == "table":
+        _pptx_unknown(item, {"id", "kind", "rows", "x", "y", "w", "h", "options"}, label="table item")
+        rows = item.get("rows")
+        if not isinstance(rows, list) or not rows or not all(isinstance(row, list) and row for row in rows):
+            raise ValueError("table rows must be a non-empty list of non-empty rows")
+        width = len(rows[0])
+        if any(len(row) != width for row in rows):
+            raise ValueError("table rows must have equal length")
+        encoded = [[_pptx_cell(cell, label=f"cell {row_index}:{column}")
+                    for column, cell in enumerate(row)]
+                   for row_index, row in enumerate(rows)]
+        position = _pptx_box(item, label="table", require_height="h" in item)
+        return {"op": "table", "rows": encoded,
+                "options": _pptx_table_options(item.get("options"), position, columns=width)}, position if "h" in position else None
+    if kind == "image":
+        _pptx_unknown(item, {"id", "kind", "path", "data", "x", "y", "w", "h", "altText"}, label="image item")
+        if ("path" in item) == ("data" in item):
+            raise ValueError("image requires path or data")
+        position = _pptx_box(item, label="image")
+        options = dict(position)
+        if "path" in item:
+            options["path"] = _pptx_https_url(item["path"], label="image path")
+        else:
+            if not isinstance(item["data"], str):
+                raise ValueError("image data must be a base64 image string")
+            match = _PPTX_DATA_IMAGE.fullmatch(item["data"])
+            if not match:
+                raise ValueError("image data must be an image/*;base64 payload")
+            options["data"] = match.group(1)
+        if "altText" in item:
+            options["altText"] = _pptx_text(item["altText"], label="altText", limit=200)
+        return {"op": "image", "options": options}, position
+    raise ValueError(f"unknown slide item: {kind}")
+
+
+def _resolve_pptx_spec(spec: dict, *, filename: str | None, auto: bool) -> dict:
+    if not isinstance(spec, dict):
+        raise ValueError("spec must be a mapping")
+    _pptx_unknown(spec, {"fileName", "filename", "layout", "author", "title", "slides"}, label="presentation keys")
+    if "fileName" in spec and "filename" in spec:
+        raise ValueError("use one of fileName or filename")
+    chosen = filename if filename is not None else spec.get("fileName", spec.get("filename", "presentation.pptx"))
+    if not isinstance(chosen, str) or not _PPTX_FILENAME.fullmatch(chosen):
+        raise ValueError("fileName must be a plain .pptx filename")
+    layout = spec.get("layout")
+    if layout is not None and layout not in _PPTX_LAYOUTS:
+        raise ValueError("layout must be a built-in PptxGenJS layout name")
+    resolved = {"fileName": chosen, "slides": []}
+    if layout is not None:
+        resolved["layout"] = layout
+    if "author" in spec:
+        resolved["author"] = _pptx_text(spec["author"], label="author", limit=200)
+    if "title" in spec:
+        resolved["title"] = _pptx_text(spec["title"], label="title", limit=200)
+    if auto:
+        resolved["auto"] = True
+    slides = spec.get("slides")
+    if not isinstance(slides, list) or not slides:
+        raise ValueError("slides must be a non-empty list")
+    for slide in slides:
+        if not isinstance(slide, dict):
+            raise ValueError("slide must be a mapping")
+        _pptx_unknown(slide, {"background", "items"}, label="slide keys")
+        items = slide.get("items", [])
+        if not isinstance(items, list):
+            raise ValueError("slide items must be a list")
+        encoded = {"back": [], "items": [], "front": []}
+        if "background" in slide:
+            background = slide["background"]
+            if not isinstance(background, dict):
+                raise ValueError("slide background must be a mapping")
+            _pptx_unknown(background, {"color"}, label="background")
+            encoded["background"] = {"color": _pptx_color(background.get("color"), label="background color")}
+        boxes: dict[str, dict] = {}
+        seen_ids: set[str] = set()
+        pending: list[tuple[str, dict]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("slide item must be a mapping")
+            identity = _pptx_item_id(item)
+            if identity is not None:
+                if identity in seen_ids:
+                    raise ValueError(f"duplicate slide item id: {identity}")
+                seen_ids.add(identity)
+            if item.get("kind") == "connector":
+                _pptx_unknown(item, {"kind", "from", "to", "mode", "color", "width", "head"}, label="connector")
+                pending.append(("connector", item))
+                continue
+            operation, box = _pptx_convert_item(item)
+            if identity is not None and box is not None:
+                boxes[identity] = box
+            pending.append(("item", operation))
+        front_lines = []
+        heads = []
+        for tag, payload in pending:
+            if tag == "item":
+                encoded["items"].append(payload)
+                continue
+            source_id = payload.get("from")
+            target_id = payload.get("to")
+            if not isinstance(source_id, str) or source_id not in boxes:
+                raise ValueError("connector source must be a positioned object on the same slide")
+            if not isinstance(target_id, str) or target_id not in boxes:
+                raise ValueError("connector target must be a positioned object on the same slide")
+            geometry = pptx_arrow_geometry(
+                boxes[source_id],
+                boxes[target_id],
+                mode=payload.get("mode", "edge"),
+                color=payload.get("color", "363636"),
+                width=payload.get("width", 1.25),
+                head=payload.get("head", 0.18),
+            )
+            if geometry["mode"] == "center":
+                encoded["back"].append(geometry["line"])
+            else:
+                front_lines.append(geometry["line"])
+            heads.append(geometry["head"])
+        encoded["front"] = front_lines + heads
+        resolved["slides"].append(encoded)
+    return resolved
+
+
+def _pptx_json(value) -> str:
+    payload = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+    return (payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def _pptx_runtime(element_id: str) -> str:
+    return (
+        "(function(){"
+        f'var specEl=document.getElementById("{element_id}-spec");'
+        f'var button=document.getElementById("{element_id}");'
+        "if(!specEl)return;"
+        "var spec=JSON.parse(specEl.textContent);"
+        "function draw(slide,item){"
+        'if(item.op==="text")slide.addText(item.text,item.options||{});'
+        'else if(item.op==="shape")slide.addShape(item.shape,item.options||{});'
+        'else if(item.op==="line")slide.addShape("line",item.options||{});'
+        'else if(item.op==="table")slide.addTable(item.rows,item.options||{});'
+        'else if(item.op==="image")slide.addImage(item.options||{});'
+        "}"
+        "function build(){"
+        "if(!window.PptxGenJS)return;"
+        "var pptx=new window.PptxGenJS();"
+        "if(spec.layout)pptx.layout=spec.layout;"
+        "if(spec.author)pptx.author=spec.author;"
+        "if(spec.title)pptx.title=spec.title;"
+        "(spec.slides||[]).forEach(function(slideSpec){"
+        "var slide=pptx.addSlide();"
+        "if(slideSpec.background)slide.background=slideSpec.background;"
+        "(slideSpec.back||[]).forEach(function(item){draw(slide,item);});"
+        "(slideSpec.items||[]).forEach(function(item){draw(slide,item);});"
+        "(slideSpec.front||[]).forEach(function(item){draw(slide,item);});"
+        "});"
+        'return pptx.writeFile({fileName:spec.fileName||"presentation.pptx"});'
+        "}"
+        'if(button)button.addEventListener("click",function(){build();});'
+        "if(spec.auto)build();"
+        "})();"
+    )
+
+
+def pptx_presentation(
+    spec: dict,
+    *,
+    button_id: str = "download-pptx",
+    label: str = "Download PowerPoint",
+    filename: str | None = None,
+    auto: bool = False,
+    nonce: str | None = None,
+) -> str:
+    """Trusted HTML: a download button that builds a .pptx from a JSON slide spec.
+
+    The browser loads PptxGenJS from ``remote_scripts("pptxgenjs")`` and calls
+    ``writeFile``. Python only validates the spec and expands ``pptx_connector``
+    items into a line plus a triangle. It does not assemble or patch Office XML.
+    Slide layouts and diagram styling stay in the consumer's spec.
+    """
+    if not isinstance(auto, bool):
+        raise ValueError("auto must be a boolean")
+    identity = _element_id(button_id)
+    payload = _pptx_json(_resolve_pptx_spec(spec, filename=filename, auto=auto))
+    return (
+        f'<div class="ui-panel" data-pptx-download="{identity}">{button(label, id=identity)}'
+        f'<script type="application/json" id="{identity}-spec">{payload}</script>'
+        f'{classic_script(_pptx_runtime(identity), nonce=nonce)}</div>'
+    )
 
 
 def section_browser(sections: tuple[tuple[str, str], ...], *, id: str = "sections",
@@ -433,7 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
         "--with-remote-scripts",
         nargs="+",
         metavar="NAME",
-        help="opt-in HTTPS classic scripts from the documented allowlist (e.g. plotly.js)",
+        help="opt-in HTTPS classic scripts from the documented allowlist (e.g. plotly.js, pptxgenjs)",
     )
     parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
     parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")

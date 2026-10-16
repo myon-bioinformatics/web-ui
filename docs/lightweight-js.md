@@ -43,16 +43,22 @@ that are not ES modules. It does not weaken `shared_scripts()` or local
 `scripts=` validation. Each name maps to one documented URL; callers opt in by
 name and pass the returned tuple to `render_document(remote_scripts=...)`.
 Remote tags are emitted in `<head>` so trusted body inline initializers can
-depend on them. There is no generic remote URL API and no built-in SRI helper;
-consumers own CSP, network access, and pinning policy when they choose not to
-use the documented rolling URLs.
+depend on them. There is no generic remote URL API and no caller-supplied SRI
+argument. Pinned allowlist entries whose bytes are immutable are emitted with
+`integrity` and `crossorigin="anonymous"`. Rolling entries omit SRI because a
+moving URL has no stable hash. Consumers own CSP and network access.
 
 Current allowlist entries:
 
-- `plotly.js` → `https://cdn.plot.ly/plotly-latest.min.js` (unpinned latest lane)
+- `plotly.js` → `https://cdn.plot.ly/plotly-latest.min.js` (unpinned latest lane; no SRI)
+- `pptxgenjs` → `https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js`
+  (pinned 4.0.1 browser bundle, JSZip included;
+  `sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8`)
 
-Future drawing helpers (for example Mermaid) can add new allowlist names without
-changing the local module policy.
+The separate `pptxgen.min.js` build expects a global `JSZip` and is not the
+allowlist entry. Recompute the sha384 from the pinned bundle bytes before
+changing the version. Further allowlist names can be added without changing
+the local module policy.
 
 Stylesheet links retain their existing local/HTTPS behavior.
 
@@ -69,7 +75,8 @@ emitted verbatim and can contain script tags, event handlers or a `<base>` that
 changes relative URL resolution. Its caller must audit all of that HTML; link
 validation is not an HTML sanitizer or a document-wide execution sandbox.
 The wrapper generates inline classic scripts only through explicit helpers such
-as `classic_script()` and `plotly_figure()`; it does not download packages.
+as `classic_script()`, `plotly_figure()`, and `pptx_presentation()`; it does
+not download packages or assemble Office XML.
 
 ## Node wrapping for pytest
 
@@ -160,6 +167,46 @@ HTML: a `ui-panel` graph container and an inline classic script that calls
 `Plotly.newPlot` with the JSON fields `data`, `layout`, and `config`. Pass
 `remote_scripts("plotly.js")` to `render_document` (or `--with-remote-scripts
 plotly.js` on the CLI) so plotly.js loads before the initializer runs.
+
+## PowerPoint files from a JSON slide spec
+
+`pptx_presentation()` is the generic browser download helper for PptxGenJS.
+Python validates a JSON slide spec and emits a button plus an inline classic
+script. The browser constructs the `.pptx` with `writeFile`. web-ui does not
+unzip the package, post-process OOXML, or patch PowerPoint-app compatibility
+markup; that stays in the consumer repository (Ironmate, for example). Diagram
+layouts and visual styles also stay in the consumer spec. This repository only
+provides the allowlist entry, the spec helper, and the arrow geometry below.
+
+```sh
+python -S -c 'from web_ui import pptx_connector, pptx_presentation, render_document, remote_scripts; spec={"fileName":"flow.pptx","layout":"LAYOUT_WIDE","slides":[{"items":[{"id":"a","kind":"text","text":"A","x":0.5,"y":1.5,"w":2.2,"h":0.8,"options":{"shape":"roundRect","align":"center","valign":"middle"}},{"id":"b","kind":"text","text":"B","x":4.0,"y":1.5,"w":2.2,"h":0.8,"options":{"shape":"roundRect","align":"center","valign":"middle"}},{"id":"c","kind":"text","text":"C","x":2.2,"y":3.4,"w":2.2,"h":0.8},pptx_connector("a","b"),pptx_connector("b","c"),{"kind":"table","rows":[["Step","Note"],["1","Generic"]],"x":7.0,"y":1.5,"w":5.0,"h":1.2}]}]}; print(render_document(trusted_html=pptx_presentation(spec), remote_scripts=remote_scripts("pptxgenjs")))' > deck.html
+```
+
+Item `kind` is `text`, `shape`, `line`, `table`, `image`, or `connector`.
+Positions are inches. Pass `remote_scripts("pptxgenjs")` or
+`--with-remote-scripts pptxgenjs` so the pinned bundle loads before the click
+handler runs. Images use an HTTPS `path` or an `image/...;base64,...` `data`
+value.
+
+### Arrows are a line plus a triangle
+
+`pptx_connector("a", "b")` does not use PptxGenJS line arrows
+(`endArrowType` / `beginArrowType`) or the built-in connector shape. The helper
+expands the connector into a straight `line` shape and a separate `triangle`
+centered on the midpoint (half the segment length). The triangle starts
+pointing up; `rotate` turns it clockwise to the line angle (approximate degrees
+are enough).
+
+- `mode="edge"` (default) follows the center-to-center ray and stops on each
+  box boundary. Side-by-side boxes join the facing sides (right edge to left
+  edge when the target is to the right). A box below or above another joins the
+  bottom and top edges when that is the edge the ray crosses.
+- `mode="center"` joins the centers. Those lines are drawn first (`back`) so
+  later objects cover the part inside each box, and the arrowhead stays in
+  front. The visible remainder between the objects is the arrow.
+
+`pptx_arrow_geometry(source_box, target_box)` returns the same coordinates
+without HTML, for a consumer that wants to place the line and triangle itself.
 
 For an existing **trusted static export**, Python can reuse presentation in one
 call instead of cloning the theme: `adopt_document(page, asset_base="./vendor",

@@ -288,6 +288,18 @@ python -S -c 'from web_ui import plotly_figure, render_document, remote_scripts;
 initializer; `remote_scripts("plotly.js")` links the unpinned plotly.js CDN URL
 from the explicit allowlist.
 
+Browser `.pptx` download from a JSON slide spec (no `python-pptx`, no Office
+XML in Python). `pptxgenjs` is the pinned PptxGenJS 4.0.1 bundle with SRI.
+Connectors are a straight line plus a triangle arrowhead, not the built-in
+arrow connector. Layouts and diagram styles stay in the caller spec.
+
+```sh
+python -S -c 'from web_ui import pptx_presentation, render_document, remote_scripts; spec={"slides":[{"items":[{"kind":"text","text":"Hello","x":0.5,"y":0.5,"w":4,"h":0.6}]}]}; print(render_document(trusted_html=pptx_presentation(spec), remote_scripts=remote_scripts("pptxgenjs")))' > deck.html
+```
+
+See [docs/lightweight-js.md](docs/lightweight-js.md) for the slide spec,
+`pptx_connector()`, and the edge/center arrow convention.
+
 Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
 verification should check the resulting module in Chromium under the chosen CSP;
 unit tests alone do not establish browser execution.
