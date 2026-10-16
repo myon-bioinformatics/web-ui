@@ -290,8 +290,11 @@ from the explicit allowlist.
 
 Browser `.pptx` download from a JSON slide spec (no `python-pptx`, no Office
 XML in Python). `pptxgenjs` is the pinned PptxGenJS 4.0.1 bundle with SRI.
-Connectors are a straight line plus a triangle arrowhead, not the built-in
-arrow connector. Layouts and diagram styles stay in the caller spec.
+Connectors are a straight line plus an unfilled triangle arrowhead, not the
+built-in arrow connector. Generated text, shapes, lines, arrowheads, and tables
+default to black `000000` text and borders, no fill, and `fontFace` `Meiryo`
+(メイリオ). Spec values for those properties override the defaults. Layouts
+beyond that stay in the caller spec.
 
 ```sh
 python -S -c 'from web_ui import pptx_presentation, render_document, remote_scripts; spec={"slides":[{"items":[{"kind":"text","text":"Hello","x":0.5,"y":0.5,"w":4,"h":0.6}]}]}; print(render_document(trusted_html=pptx_presentation(spec), remote_scripts=remote_scripts("pptxgenjs")))' > deck.html

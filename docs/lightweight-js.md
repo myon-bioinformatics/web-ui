@@ -188,6 +188,16 @@ Positions are inches. Pass `remote_scripts("pptxgenjs")` or
 handler runs. Images use an HTTPS `path` or an `image/...;base64,...` `data`
 value.
 
+Generated text, shapes, lines, connector arrowheads, and tables use black
+(`000000`) text and borders, no fill (`{"type": "none"}`), and `fontFace`
+`Meiryo`. Meiryo is the same family as メイリオ. PptxGenJS writes that one
+`fontFace` string into the Latin, East Asian, and complex-script typeface
+slots; it has no separate East Asian font field. A spec value for the same
+property replaces the default. A partial `line` or table `border` keeps the
+unspecified default fields (black, 1.25 pt). Connector `color` replaces the
+black stroke only; the arrowhead stays unfilled. `fontFace` may be any plain
+font name, including `メイリオ`.
+
 ### Arrows are a line plus a triangle
 
 `pptx_connector("a", "b")` does not use PptxGenJS line arrows
@@ -200,10 +210,13 @@ are enough).
 - `mode="edge"` (default) follows the center-to-center ray and stops on each
   box boundary. Side-by-side boxes join the facing sides (right edge to left
   edge when the target is to the right). A box below or above another joins the
-  bottom and top edges when that is the edge the ray crosses.
+  bottom and top edges when that is the edge the ray crosses. Overlapping
+  boxes, edges that only touch, and a zero-length gap raise `ValueError`
+  because the facing edges do not leave a positive gap.
 - `mode="center"` joins the centers. Those lines are drawn first (`back`) so
   later objects cover the part inside each box, and the arrowhead stays in
-  front. The visible remainder between the objects is the arrow.
+  front. The visible remainder between the objects is the arrow. A shared
+  center is rejected; distinct centers are allowed when the boxes overlap.
 
 `pptx_arrow_geometry(source_box, target_box)` returns the same coordinates
 without HTML, for a consumer that wants to place the line and triangle itself.

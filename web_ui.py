@@ -46,8 +46,13 @@ _PPTX_VALIGNS = frozenset({"top", "middle", "bottom"})
 _PPTX_ARROW_KEYS = frozenset({"beginArrowType", "endArrowType", "lineHead", "lineTail"})
 _PPTX_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pptx\Z")
 _PPTX_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9]{0,40}\Z")
-_PPTX_FONT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,40}\Z")
 _PPTX_HEX = re.compile(r"#?([0-9A-Fa-f]{6})\Z")
+_PPTX_DEFAULT_COLOR = "000000"
+# PptxGenJS writes one fontFace into the Latin, East Asian, and complex-script slots.
+# Meiryo is that face; メイリオ is the same family. Callers may override fontFace.
+_PPTX_DEFAULT_FONT = "Meiryo"
+_PPTX_DEFAULT_LINE_WIDTH = 1.25
+_PPTX_MIN_DISTANCE = 1e-6
 _PPTX_DATA_IMAGE = re.compile(r"(?:data:)?(image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\Z")
 
 
@@ -408,12 +413,32 @@ def _pptx_fill(value, *, label: str) -> dict:
     return fill
 
 
+def _pptx_font_face(value, *, label: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ValueError(f"{label} must be a font name")
+    if any(ord(char) < 32 or ord(char) == 127 or char in "<>" for char in value):
+        raise ValueError(f"{label} must be a font name")
+    return value
+
+
+def _pptx_no_fill() -> dict:
+    return {"type": "none"}
+
+
+def _pptx_default_line() -> dict:
+    return {"type": "solid", "color": _PPTX_DEFAULT_COLOR, "width": _PPTX_DEFAULT_LINE_WIDTH}
+
+
 def _pptx_line_style(value, *, label: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a mapping")
     _pptx_reject_arrow_keys(value, label=label)
-    _pptx_unknown(value, {"color", "width", "dashType"}, label=label)
-    style = {}
+    _pptx_unknown(value, {"type", "color", "width", "dashType"}, label=label)
+    style = _pptx_default_line()
+    if "type" in value:
+        if value["type"] not in ("none", "solid"):
+            raise ValueError(f"{label} type must be none or solid")
+        style["type"] = value["type"]
     if "color" in value:
         style["color"] = _pptx_color(value["color"], label=f"{label} color")
     if "width" in value:
@@ -422,8 +447,6 @@ def _pptx_line_style(value, *, label: str) -> dict:
         if value["dashType"] not in _PPTX_DASHES:
             raise ValueError(f"{label} dashType is not supported")
         style["dashType"] = value["dashType"]
-    if not style:
-        raise ValueError(f"{label} must include color, width, or dashType")
     return style
 
 
@@ -443,7 +466,7 @@ def _pptx_line_box(x1: float, y1: float, x2: float, y2: float, *, color: str, wi
         "h": _pptx_round(abs(y2 - y1)),
         "flipH": not main_diagonal,
         "flipV": False,
-        "line": {"color": color, "width": width},
+        "line": {"type": "solid", "color": color, "width": width},
     }
 
 
@@ -460,19 +483,21 @@ def _pptx_box(item: dict, *, label: str, require_height: bool = True) -> dict:
 
 def _pptx_text_options(raw, position: dict) -> dict:
     options = dict(position)
+    options["color"] = _PPTX_DEFAULT_COLOR
+    options["fontFace"] = _PPTX_DEFAULT_FONT
+    options["fill"] = _pptx_no_fill()
+    options["line"] = _pptx_default_line()
     if not raw:
         return options
     if not isinstance(raw, dict):
         raise ValueError("text options must be a mapping")
     _pptx_reject_arrow_keys(raw, label="text options")
-    _pptx_unknown(raw, {"fontSize", "fontFace", "bold", "italic", "color", "align", "valign", "fill", "shape", "margin"},
+    _pptx_unknown(raw, {"fontSize", "fontFace", "bold", "italic", "color", "align", "valign", "fill", "line", "shape", "margin"},
                   label="text options")
     if "fontSize" in raw:
         options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
     if "fontFace" in raw:
-        if not isinstance(raw["fontFace"], str) or not _PPTX_FONT.fullmatch(raw["fontFace"]):
-            raise ValueError("fontFace must be a font name")
-        options["fontFace"] = raw["fontFace"]
+        options["fontFace"] = _pptx_font_face(raw["fontFace"], label="fontFace")
     if "bold" in raw:
         options["bold"] = _pptx_bool(raw["bold"], label="bold")
     if "italic" in raw:
@@ -489,6 +514,8 @@ def _pptx_text_options(raw, position: dict) -> dict:
         options["valign"] = raw["valign"]
     if "fill" in raw:
         options["fill"] = _pptx_fill(raw["fill"], label="text fill")
+    if "line" in raw:
+        options["line"] = _pptx_line_style(raw["line"], label="text line")
     if "shape" in raw:
         if not isinstance(raw["shape"], str) or not _PPTX_SHAPE.fullmatch(raw["shape"]):
             raise ValueError("text shape must be a shape name")
@@ -500,6 +527,8 @@ def _pptx_text_options(raw, position: dict) -> dict:
 
 def _pptx_shape_options(raw, position: dict) -> dict:
     options = dict(position)
+    options["fill"] = _pptx_no_fill()
+    options["line"] = _pptx_default_line()
     if not raw:
         return options
     if not isinstance(raw, dict):
@@ -517,42 +546,48 @@ def _pptx_shape_options(raw, position: dict) -> dict:
     return options
 
 
-def _pptx_cell(cell, *, label: str) -> dict:
+def _pptx_cell(cell, *, label: str, color: str, font_face: str, fill: dict) -> dict:
+    options = {"color": color, "fontFace": font_face, "fill": dict(fill)}
     if isinstance(cell, str):
-        return {"text": _pptx_text(cell, label=label, limit=2000)}
+        return {"text": _pptx_text(cell, label=label, limit=2000), "options": options}
     if not isinstance(cell, dict):
         raise ValueError(f"{label} must be a string or a cell mapping")
     _pptx_unknown(cell, {"text", "options"}, label=label)
-    result = {"text": _pptx_text(cell.get("text"), label=label, limit=2000)}
+    result = {"text": _pptx_text(cell.get("text"), label=label, limit=2000), "options": options}
     raw = cell.get("options") or {}
-    if raw:
-        if not isinstance(raw, dict):
-            raise ValueError(f"{label} options must be a mapping")
-        _pptx_unknown(raw, {"bold", "color", "align", "fontSize", "fill"}, label=f"{label} options")
-        options = {}
-        if "bold" in raw:
-            options["bold"] = _pptx_bool(raw["bold"], label="bold")
-        if "color" in raw:
-            options["color"] = _pptx_color(raw["color"], label="cell color")
-        if "align" in raw:
-            if raw["align"] not in _PPTX_ALIGNS:
-                raise ValueError("align must be left, center, right, or justify")
-            options["align"] = raw["align"]
-        if "fontSize" in raw:
-            options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
-        if "fill" in raw:
-            options["fill"] = _pptx_fill(raw["fill"], label="cell fill")
-        result["options"] = options
+    if not raw:
+        return result
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} options must be a mapping")
+    _pptx_unknown(raw, {"bold", "color", "align", "fontSize", "fontFace", "fill"}, label=f"{label} options")
+    if "bold" in raw:
+        options["bold"] = _pptx_bool(raw["bold"], label="bold")
+    if "color" in raw:
+        options["color"] = _pptx_color(raw["color"], label="cell color")
+    if "align" in raw:
+        if raw["align"] not in _PPTX_ALIGNS:
+            raise ValueError("align must be left, center, right, or justify")
+        options["align"] = raw["align"]
+    if "fontSize" in raw:
+        options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
+    if "fontFace" in raw:
+        options["fontFace"] = _pptx_font_face(raw["fontFace"], label="fontFace")
+    if "fill" in raw:
+        options["fill"] = _pptx_fill(raw["fill"], label="cell fill")
     return result
 
 
 def _pptx_table_options(raw, position: dict, *, columns: int) -> dict:
     options = dict(position)
+    options["color"] = _PPTX_DEFAULT_COLOR
+    options["fontFace"] = _PPTX_DEFAULT_FONT
+    options["fill"] = _pptx_no_fill()
+    options["border"] = {"color": _PPTX_DEFAULT_COLOR, "pt": _PPTX_DEFAULT_LINE_WIDTH}
     if not raw:
         return options
     if not isinstance(raw, dict):
         raise ValueError("table options must be a mapping")
-    _pptx_unknown(raw, {"colW", "border", "fill", "fontSize", "color", "align", "valign", "bold", "margin"},
+    _pptx_unknown(raw, {"colW", "border", "fill", "fontSize", "fontFace", "color", "align", "valign", "bold", "margin"},
                   label="table options")
     if "colW" in raw:
         widths = raw["colW"]
@@ -569,12 +604,14 @@ def _pptx_table_options(raw, position: dict, *, columns: int) -> dict:
         if not isinstance(border, dict):
             raise ValueError("border must be a mapping")
         _pptx_unknown(border, {"color", "pt"}, label="border")
-        options["border"] = {
-            "color": _pptx_color(border.get("color"), label="border color"),
-            "pt": _pptx_positive(border.get("pt"), label="border pt"),
-        }
+        if "color" in border:
+            options["border"]["color"] = _pptx_color(border["color"], label="border color")
+        if "pt" in border:
+            options["border"]["pt"] = _pptx_positive(border["pt"], label="border pt")
     if "fill" in raw:
         options["fill"] = _pptx_fill(raw["fill"], label="table fill")
+    if "fontFace" in raw:
+        options["fontFace"] = _pptx_font_face(raw["fontFace"], label="fontFace")
     if "fontSize" in raw:
         options["fontSize"] = _pptx_number(raw["fontSize"], label="fontSize", minimum=1, maximum=256)
     if "color" in raw:
@@ -625,16 +662,18 @@ def pptx_arrow_geometry(
     target: dict,
     *,
     mode: str = "edge",
-    color: str = "363636",
-    width: float = 1.25,
+    color: str = _PPTX_DEFAULT_COLOR,
+    width: float = _PPTX_DEFAULT_LINE_WIDTH,
     head: float = 0.18,
 ) -> dict:
     """Line plus triangle arrowhead between two positioned boxes, in inches.
 
     ``mode="edge"`` joins the box edges crossed by the center-to-center ray
     (side-by-side boxes meet right-edge to left-edge; a box below another meets
-    bottom to top). ``mode="center"`` joins the centers. The arrowhead is a
-    separate triangle centered on the midpoint, rotated to the line angle.
+    bottom to top). Overlapping, touching, and zero-length gaps raise
+    ``ValueError``. ``mode="center"`` joins the centers and rejects a shared
+    center. The arrowhead is an unfilled triangle centered on the midpoint,
+    rotated to the line angle, with a separate black (or ``color``) stroke.
     This is not a PptxGenJS line arrow or connector shape.
     """
     if mode not in ("edge", "center"):
@@ -649,13 +688,20 @@ def pptx_arrow_geometry(
     target_box = _pptx_box(target, label="connector target")
     source_center = _pptx_center(source_box)
     target_center = _pptx_center(target_box)
+    direction_x = target_center[0] - source_center[0]
+    direction_y = target_center[1] - source_center[1]
+    if math.hypot(direction_x, direction_y) <= _PPTX_MIN_DISTANCE:
+        raise ValueError("connector objects share a center")
     if mode == "center":
         x1, y1 = source_center
         x2, y2 = target_center
     else:
         x1, y1 = _pptx_boundary_toward(source_box, target_center)
         x2, y2 = _pptx_boundary_toward(target_box, source_center)
-    if math.hypot(x2 - x1, y2 - y1) == 0:
+        gap_x, gap_y = x2 - x1, y2 - y1
+        if gap_x * direction_x + gap_y * direction_y <= 0:
+            raise ValueError("connector objects overlap or touch; edge mode needs a gap between the facing edges")
+    if math.hypot(x2 - x1, y2 - y1) <= _PPTX_MIN_DISTANCE:
         raise ValueError("connector length must be positive")
     ink = _pptx_color(color, label="connector color")
     stroke = _pptx_positive(width, label="connector width")
@@ -684,8 +730,8 @@ def pptx_arrow_geometry(
                 "w": _pptx_round(head_size),
                 "h": _pptx_round(head_size),
                 "rotate": rotate,
-                "fill": {"color": ink},
-                "line": {"color": ink, "width": stroke},
+                "fill": _pptx_no_fill(),
+                "line": {"type": "solid", "color": ink, "width": stroke},
             },
         },
     }
@@ -696,15 +742,16 @@ def pptx_connector(
     target: str,
     *,
     mode: str = "edge",
-    color: str = "363636",
-    width: float = 1.25,
+    color: str = _PPTX_DEFAULT_COLOR,
+    width: float = _PPTX_DEFAULT_LINE_WIDTH,
     head: float = 0.18,
 ) -> dict:
     """Connector item for a JSON slide spec.
 
-    Resolves to a straight line plus a triangle arrowhead. Center mode is drawn
-    before other slide objects so the boxes cover the line and the visible span
-    between them reads as the arrow. Edge mode meets the facing edges.
+    Resolves to a straight black line plus an unfilled triangle arrowhead.
+    ``color`` overrides the line color. Center mode is drawn before other slide
+    objects so the boxes cover the line and the visible span between them reads
+    as the arrow. Edge mode meets the facing edges and rejects overlap.
     """
     if mode not in ("edge", "center"):
         raise ValueError("connector mode must be edge or center")
@@ -755,16 +802,19 @@ def _pptx_convert_item(item: dict) -> tuple[dict, dict | None]:
         if raw_options and not isinstance(raw_options, dict):
             raise ValueError("line options must be a mapping")
         _pptx_unknown(raw_options, {"line"}, label="line options")
-        style = _pptx_line_style(raw_options["line"], label="line") if "line" in raw_options else {"color": "363636", "width": 1.25}
+        style = _pptx_line_style(raw_options["line"], label="line") if "line" in raw_options else _pptx_default_line()
         x = _pptx_number(item.get("x"), label="line x")
         y = _pptx_number(item.get("y"), label="line y")
         span_w = _pptx_number(item.get("w"), label="line w")
         span_h = _pptx_number(item.get("h"), label="line h")
         if span_w == 0 and span_h == 0:
             raise ValueError("line length must be positive")
-        options = _pptx_line_box(x, y, x + span_w, y + span_h, color=style.get("color", "363636"), width=style.get("width", 1.25))
-        if "dashType" in style:
-            options["line"]["dashType"] = style["dashType"]
+        options = _pptx_line_box(
+            x, y, x + span_w, y + span_h,
+            color=style.get("color", _PPTX_DEFAULT_COLOR),
+            width=style.get("width", _PPTX_DEFAULT_LINE_WIDTH),
+        )
+        options["line"] = style
         return {"op": "line", "options": options}, None
     if kind == "table":
         _pptx_unknown(item, {"id", "kind", "rows", "x", "y", "w", "h", "options"}, label="table item")
@@ -774,12 +824,13 @@ def _pptx_convert_item(item: dict) -> tuple[dict, dict | None]:
         width = len(rows[0])
         if any(len(row) != width for row in rows):
             raise ValueError("table rows must have equal length")
-        encoded = [[_pptx_cell(cell, label=f"cell {row_index}:{column}")
+        position = _pptx_box(item, label="table", require_height="h" in item)
+        options = _pptx_table_options(item.get("options"), position, columns=width)
+        encoded = [[_pptx_cell(cell, label=f"cell {row_index}:{column}", color=options["color"],
+                               font_face=options["fontFace"], fill=options["fill"])
                     for column, cell in enumerate(row)]
                    for row_index, row in enumerate(rows)]
-        position = _pptx_box(item, label="table", require_height="h" in item)
-        return {"op": "table", "rows": encoded,
-                "options": _pptx_table_options(item.get("options"), position, columns=width)}, position if "h" in position else None
+        return {"op": "table", "rows": encoded, "options": options}, position if "h" in position else None
     if kind == "image":
         _pptx_unknown(item, {"id", "kind", "path", "data", "x", "y", "w", "h", "altText"}, label="image item")
         if ("path" in item) == ("data" in item):
@@ -874,8 +925,8 @@ def _resolve_pptx_spec(spec: dict, *, filename: str | None, auto: bool) -> dict:
                 boxes[source_id],
                 boxes[target_id],
                 mode=payload.get("mode", "edge"),
-                color=payload.get("color", "363636"),
-                width=payload.get("width", 1.25),
+                color=payload.get("color", _PPTX_DEFAULT_COLOR),
+                width=payload.get("width", _PPTX_DEFAULT_LINE_WIDTH),
                 head=payload.get("head", 0.18),
             )
             if geometry["mode"] == "center":
@@ -942,8 +993,10 @@ def pptx_presentation(
 
     The browser loads PptxGenJS from ``remote_scripts("pptxgenjs")`` and calls
     ``writeFile``. Python only validates the spec and expands ``pptx_connector``
-    items into a line plus a triangle. It does not assemble or patch Office XML.
-    Slide layouts and diagram styling stay in the consumer's spec.
+    items into a line plus an unfilled triangle. Generated objects default to
+    black text and borders, no fill, and fontFace Meiryo; spec values override
+    those properties. It does not assemble or patch Office XML. Slide layouts
+    and diagram styling stay in the consumer's spec.
     """
     if not isinstance(auto, bool):
         raise ValueError("auto must be a boolean")

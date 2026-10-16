@@ -56,7 +56,9 @@ class PptxPresentationTests(unittest.TestCase):
         self.assertEqual((reversed_geometry["x1"], reversed_geometry["x2"]), (4.0, 2.5))
         self.assertEqual(reversed_geometry["rotate"], 270)
         self.assertEqual(geometry["line"]["op"], "line")
-        self.assertEqual(geometry["line"]["options"]["line"]["color"], "363636")
+        self.assertEqual(geometry["line"]["options"]["line"]["color"], "000000")
+        self.assertEqual(geometry["head"]["options"]["fill"], {"type": "none"})
+        self.assertEqual(geometry["head"]["options"]["line"]["color"], "000000")
         self.assertFalse(geometry["line"]["options"]["flipH"])
         head = geometry["head"]
         self.assertEqual(head["shape"], "triangle")
@@ -85,6 +87,24 @@ class PptxPresentationTests(unittest.TestCase):
         sideways = pptx_arrow_geometry({"x": 0, "y": 0, "w": 2, "h": 1}, {"x": 5, "y": 0.5, "w": 2, "h": 1})
         self.assertEqual(sideways["x1"], 2)
         self.assertEqual(sideways["x2"], 5)
+
+    def test_edge_mode_rejects_overlap_touch_and_shared_center(self):
+        left = {"x": 0, "y": 0, "w": 3, "h": 2}
+        overlap = {"x": 2, "y": 0, "w": 3, "h": 2}
+        with self.assertRaises(ValueError):
+            pptx_arrow_geometry(left, overlap)
+        touching = {"x": 3, "y": 0, "w": 2, "h": 2}
+        with self.assertRaises(ValueError):
+            pptx_arrow_geometry(left, touching)
+        outer = {"x": 0, "y": 0, "w": 10, "h": 10}
+        inner = {"x": 6, "y": 4, "w": 2, "h": 2}
+        with self.assertRaises(ValueError):
+            pptx_arrow_geometry(outer, inner, mode="edge")
+        contained = pptx_arrow_geometry(outer, inner, mode="center")
+        self.assertEqual(contained["mode"], "center")
+        self.assertGreater(contained["distance"], 0)
+        with self.assertRaises(ValueError):
+            pptx_arrow_geometry({"x": 0, "y": 0, "w": 4, "h": 4}, {"x": 1, "y": 1, "w": 2, "h": 2}, mode="center")
 
     def test_center_mode_line_is_behind_objects(self):
         spec = {
@@ -172,13 +192,68 @@ class PptxPresentationTests(unittest.TestCase):
             ]}]})
 
     def test_slide_text_cannot_break_out_of_the_script(self):
-        hostile = '</script><script>alert(1)</script>&'
-        fragment = pptx_presentation({"slides": [{"items": [
-            {"kind": "text", "text": hostile, "x": 0.2, "y": 0.2, "w": 2, "h": 0.5},
-        ]}]})
-        payload = fragment.split('id="download-pptx-spec">', 1)[1].split("</script>", 1)[0]
+        hostile = '</ScRiPt><script>alert(1)</script>&\u2028\u2029'
+        fragment = pptx_presentation(
+            {"author": hostile, "slides": [{"items": [
+                {"kind": "text", "text": hostile, "x": 0.2, "y": 0.2, "w": 2, "h": 0.5},
+            ]}]},
+            label='<script>alert(1)</script>',
+        )
+        payload, after_json = fragment.split('id="download-pptx-spec">', 1)[1].split("</script>", 1)
+        runtime = after_json.split("</script>", 1)[0]
         self.assertNotIn("<", payload)
-        self.assertEqual(_resolved(fragment)["slides"][0]["items"][0]["text"], hostile)
+        self.assertNotIn("\u2028", payload)
+        self.assertNotIn("\u2029", payload)
+        self.assertNotIn("alert(1)", runtime)
+        self.assertIn("writeFile", runtime)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", fragment)
+        resolved = _resolved(fragment)
+        self.assertEqual(resolved["slides"][0]["items"][0]["text"], hostile)
+        self.assertEqual(resolved["author"], hostile)
+
+    def test_generated_objects_default_to_black_meiryo_and_no_fill(self):
+        spec = {"slides": [{"items": [
+            {"id": "a", "kind": "text", "text": "A", "x": 0.4, "y": 0.4, "w": 2, "h": 0.8},
+            {"id": "b", "kind": "shape", "shape": "rect", "x": 3, "y": 0.4, "w": 2, "h": 0.8,
+             "options": {"fill": {"color": "EEEEEE"}, "line": {"width": 2}}},
+            {"kind": "text", "text": "Override", "x": 0.4, "y": 1.6, "w": 2, "h": 0.6,
+             "options": {"color": "FF0000", "fontFace": "メイリオ", "fill": {"color": "AABBCC"}}},
+            {"kind": "line", "x": 0.4, "y": 2.6, "w": 2, "h": 0},
+            pptx_connector("a", "b", color="112233"),
+            {"kind": "table", "rows": [["Name", {"text": "Value", "options": {"bold": True, "color": "0000FF"}}]],
+             "x": 0.4, "y": 3.2, "w": 4, "h": 1},
+        ]}]}
+        slide = _resolved(pptx_presentation(spec))["slides"][0]
+        text = slide["items"][0]["options"]
+        self.assertEqual(text["color"], "000000")
+        self.assertEqual(text["fontFace"], "Meiryo")
+        self.assertEqual(text["fill"], {"type": "none"})
+        self.assertEqual(text["line"]["color"], "000000")
+        shape = slide["items"][1]["options"]
+        self.assertEqual(shape["fill"], {"color": "EEEEEE"})
+        self.assertEqual(shape["line"]["color"], "000000")
+        self.assertEqual(shape["line"]["width"], 2)
+        override = slide["items"][2]["options"]
+        self.assertEqual(override["color"], "FF0000")
+        self.assertEqual(override["fontFace"], "メイリオ")
+        self.assertEqual(override["fill"], {"color": "AABBCC"})
+        self.assertEqual(override["line"]["color"], "000000")
+        self.assertEqual(slide["items"][3]["options"]["line"]["color"], "000000")
+        connector_line = slide["front"][0]["options"]["line"]
+        connector_head = slide["front"][1]["options"]
+        self.assertEqual(connector_line["color"], "112233")
+        self.assertEqual(connector_head["fill"], {"type": "none"})
+        self.assertEqual(connector_head["line"]["color"], "112233")
+        table = slide["items"][4]
+        self.assertEqual(table["options"]["fontFace"], "Meiryo")
+        self.assertEqual(table["options"]["color"], "000000")
+        self.assertEqual(table["options"]["fill"], {"type": "none"})
+        self.assertEqual(table["options"]["border"], {"color": "000000", "pt": 1.25})
+        self.assertEqual(table["rows"][0][0]["options"]["fontFace"], "Meiryo")
+        self.assertEqual(table["rows"][0][0]["options"]["color"], "000000")
+        self.assertEqual(table["rows"][0][1]["options"]["color"], "0000FF")
+        self.assertTrue(table["rows"][0][1]["options"]["bold"])
+        self.assertEqual(table["rows"][0][1]["options"]["fontFace"], "Meiryo")
 
     def test_python_source_does_not_assemble_office_xml(self):
         source = (ROOT / "web_ui.py").read_text(encoding="utf-8")
