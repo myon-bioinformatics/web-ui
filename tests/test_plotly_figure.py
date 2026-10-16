@@ -18,7 +18,7 @@ class PlotlyFigureTests(unittest.TestCase):
     def test_remote_scripts_allowlist_is_explicit(self):
         self.assertEqual(
             remote_scripts("plotly.js"),
-            ("https://cdn.plot.ly/plotly-latest.min.js",),
+            ("https://cdn.plot.ly/plotly-4.1.1.min.js",),
         )
         with self.assertRaises(ValueError):
             remote_scripts()
@@ -56,7 +56,7 @@ class PlotlyFigureTests(unittest.TestCase):
             remote_scripts=remote_scripts("plotly.js"),
         )
         head, body = html.split("</head>", 1)
-        self.assertIn('src="https://cdn.plot.ly/plotly-latest.min.js"', head)
+        self.assertIn('src="https://cdn.plot.ly/plotly-4.1.1.min.js"', head)
         self.assertNotIn("plotly-latest", body.split("<body", 1)[1].split("</body>", 1)[0])
         self.assertIn('id="plot"', body)
 
@@ -80,7 +80,7 @@ class PlotlyFigureTests(unittest.TestCase):
             cwd=ROOT,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("plotly-latest.min.js", run.stdout)
+        self.assertIn("plotly-4.1.1.min.js", run.stdout)
 
     def test_one_liner_without_python_plotly_package(self):
         code = (
@@ -92,7 +92,7 @@ class PlotlyFigureTests(unittest.TestCase):
         run = subprocess.run([sys.executable, "-S", "-c", code], text=True, capture_output=True, cwd=ROOT)
         self.assertEqual(run.returncode, 0, run.stderr)
         head, rest = run.stdout.split("</head>", 1)
-        self.assertIn("plotly-latest.min.js", head)
+        self.assertIn("plotly-4.1.1.min.js", head)
         self.assertIn("Plotly.newPlot", rest)
 
 

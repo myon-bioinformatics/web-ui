@@ -35,10 +35,10 @@ class PptxPresentationTests(unittest.TestCase):
         self.assertIn('crossorigin="anonymous"', head)
         self.assertNotIn("pptxgen", body)
         plotly = render_document(remote_scripts=remote_scripts("plotly.js"))
-        self.assertIn('src="https://cdn.plot.ly/plotly-latest.min.js"></script>', plotly)
-        self.assertNotIn("integrity=", plotly)
+        self.assertIn('src="https://cdn.plot.ly/plotly-4.1.1.min.js"', plotly)
+        self.assertIn("integrity=", plotly)
         combined = render_document(remote_scripts=remote_scripts("plotly.js", "pptxgenjs"))
-        self.assertLess(combined.index("plotly-latest"), combined.index("pptxgen.bundle"))
+        self.assertLess(combined.index("plotly-4.1.1"), combined.index("pptxgen.bundle"))
         with self.assertRaises(ValueError):
             remote_scripts("pptxgenjs", "missing.js")
 

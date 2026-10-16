@@ -1,7 +1,8 @@
 """Dependency-free static HTML wrapper (Python 3.10+).
 
 Text is escaped by default. HTML and CSS supplied explicitly are trusted source,
-not sanitized user input. This module never fetches assets. JavaScript is omitted
+not sanitized user input. Rendering never fetches assets; fetch_plotly_js() is an
+explicit, integrity-checked download helper. JavaScript is omitted
 by default; callers may opt in to local module script links. Node is wrapped
 only as an explicit subprocess helper for pytest/CI one-liners.
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import math
 import base64
@@ -18,6 +20,8 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
@@ -29,14 +33,21 @@ SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigat
 # sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
 _PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
 _PPTXGENJS_SRI = "sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8"
+# One distribution contract for external tags and explicit offline embedding.
+# CDN and plotly.js-dist-min@4.1.1 bytes independently matched this SHA-256.
+PLOTLY_JS_VERSION = "4.1.1"
+PLOTLY_JS_URL = f"https://cdn.plot.ly/plotly-{PLOTLY_JS_VERSION}.min.js"
+PLOTLY_JS_SHA256 = "3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f"
+PLOTLY_JS_MAX_BYTES = 8 * 1024 * 1024
+PLOTLY_JS_SRI = "sha256-" + base64.b64encode(bytes.fromhex(PLOTLY_JS_SHA256)).decode("ascii")
 # Explicit HTTPS allowlist for opt-in remote classic scripts (not ES modules).
-# Unpinned URLs are intentional for entries documented as rolling "latest" lanes.
 REMOTE_SCRIPT_NAMES: dict[str, str] = {
-    "plotly.js": "https://cdn.plot.ly/plotly-latest.min.js",
+    "plotly.js": PLOTLY_JS_URL,
     "pptxgenjs": _PPTXGENJS_URL,
 }
-# Integrity is omitted for rolling lanes because those bytes are not stable.
+# Every remote allowlist entry has fixed bytes and Subresource Integrity.
 REMOTE_SCRIPT_INTEGRITY: dict[str, str] = {
+    PLOTLY_JS_URL: PLOTLY_JS_SRI,
     _PPTXGENJS_URL: _PPTXGENJS_SRI,
 }
 _PPTX_LAYOUTS = frozenset({"LAYOUT_4x3", "LAYOUT_16x9", "LAYOUT_16x10", "LAYOUT_WIDE"})
@@ -105,7 +116,7 @@ def _require_allowed_remote_script(value: str, *, label: str) -> None:
         raise ValueError(f"{label} must be an opt-in remote script from remote_scripts()")
 
 
-def _remote_script_tag(src: str) -> str:
+def remote_script_tag(src: str) -> str:
     _require_allowed_remote_script(src, label="remote script")
     attributes = f' src="{escape(src, quote=True)}"'
     integrity = REMOTE_SCRIPT_INTEGRITY.get(src)
@@ -120,7 +131,7 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
     These are classic (non-module) scripts loaded from a remote origin. They are
     intentionally separate from ``shared_scripts()`` so remote execution stays an
     explicit consumer choice. Callers own network access and CSP. Pinned entries
-    are emitted with Subresource Integrity; rolling entries omit it.
+    are emitted with Subresource Integrity and anonymous CORS.
     """
     if not names:
         raise ValueError("names must not be empty")
@@ -128,6 +139,46 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
     if unknown:
         raise ValueError(f"unknown remote script: {', '.join(unknown)}")
     return tuple(REMOTE_SCRIPT_NAMES[name] for name in names)
+
+
+def verify_plotly_js(raw: bytes) -> bytes:
+    """Return the pinned bytes or fail before any decoding, caching or execution."""
+    if not isinstance(raw, bytes):
+        raise TypeError("Plotly.js payload must be bytes")
+    if not raw:
+        raise RuntimeError("Plotly.js CDN returned an empty body")
+    if len(raw) > PLOTLY_JS_MAX_BYTES:
+        raise RuntimeError(f"Plotly.js exceeds {PLOTLY_JS_MAX_BYTES} byte limit")
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != PLOTLY_JS_SHA256:
+        raise RuntimeError(f"Plotly.js {PLOTLY_JS_VERSION} SHA-256 mismatch: {actual}")
+    return raw
+
+
+def fetch_plotly_js(*, timeout: float = 60.0) -> bytes:
+    """Explicitly fetch the fixed CDN bundle; never accept alternate or partial bytes.
+
+    Rendering helpers do not call this function. Consumers own successful-byte
+    caching; cached/local bytes can be checked with verify_plotly_js().
+    """
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    request = urllib.request.Request(
+        PLOTLY_JS_URL, headers={"User-Agent": "web-ui/1.0 (verified Plotly embed)"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status if hasattr(response, "status") else response.getcode()
+            if status != 200:
+                raise RuntimeError(f"Plotly.js CDN returned HTTP {status} for {PLOTLY_JS_URL}")
+            raw = response.read(PLOTLY_JS_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Plotly.js CDN request failed: HTTP {exc.code} {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Plotly.js CDN request failed: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"Plotly.js CDN request failed: {exc}") from exc
+    return verify_plotly_js(raw)
 
 
 def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> tuple[str, ...]:
@@ -214,7 +265,7 @@ def render_document(
     accepts only URLs returned by ``remote_scripts()`` (explicit HTTPS allowlist).
     Remote classic scripts are emitted in ``<head>`` so body inline initializers
     can depend on them. Pinned allowlist entries include their integrity
-    attribute; rolling URLs do not. Callers own script contents, imports and
+    attribute and anonymous CORS. Callers own script contents, imports and
     serving without remote redirects.
     trusted_html is verbatim and may bypass these link checks (including via a
     base element); it must only contain caller-audited HTML. This is an HTML
@@ -229,7 +280,7 @@ def render_document(
         _require_local_or_https(href, label="stylesheet")
         links.append(f'<link rel="stylesheet" href="{escape(href, quote=True)}">')
     style = f"<style>{css}</style>" if css else ""
-    head_remote_scripts = [_remote_script_tag(src) for src in remote_scripts]
+    head_remote_scripts = [remote_script_tag(src) for src in remote_scripts]
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
     script_tags = []
     for src in scripts:
