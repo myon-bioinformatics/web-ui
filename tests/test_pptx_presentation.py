@@ -117,14 +117,49 @@ class PptxPresentationTests(unittest.TestCase):
                 ],
             }],
         }
+        fragment = pptx_presentation(spec)
+        runtime = fragment.rsplit("<script>", 1)[1].split("</script>", 1)[0]
+        self.assertIn("(slideSpec.items||[])", runtime)
+        self.assertNotIn("slideSpec.back||", runtime)
+        self.assertNotIn("slideSpec.front", runtime)
+        slide = _resolved(fragment)["slides"][0]
+        self.assertEqual(set(slide), {"items"})
+        kinds = [item.get("shape") if item["op"] == "shape" else item["op"] for item in slide["items"]]
+        self.assertEqual(kinds, ["line", "triangle", "rect", "ellipse"])
+        self.assertEqual(slide["items"][0]["options"]["x"], 1.5)
+        self.assertEqual(slide["items"][0]["options"]["w"], 3.5)
+        self.assertEqual(slide["items"][1]["shape"], "triangle")
+        self.assertEqual(slide["items"][1]["options"]["rotate"], 90)
+
+    def test_center_connectors_lead_the_list_and_edge_connectors_stay_put(self):
+        spec = {
+            "slides": [{
+                "items": [
+                    {"id": "a", "kind": "shape", "shape": "rect", "x": 0.5, "y": 1, "w": 2, "h": 1},
+                    pptx_connector("a", "b", mode="center", color="111111"),
+                    {"id": "b", "kind": "shape", "shape": "ellipse", "x": 4, "y": 1, "w": 2, "h": 1},
+                    pptx_connector("b", "c"),
+                    {"id": "c", "kind": "shape", "shape": "rect", "x": 2, "y": 3.2, "w": 2, "h": 1},
+                    pptx_connector("a", "c", mode="center", color="222222"),
+                ],
+            }],
+        }
         slide = _resolved(pptx_presentation(spec))["slides"][0]
-        self.assertEqual(slide["back"][0]["op"], "line")
-        self.assertEqual(slide["back"][0]["options"]["x"], 1.5)
-        self.assertEqual(slide["back"][0]["options"]["w"], 3.5)
-        self.assertTrue(all(item["op"] != "line" for item in slide["items"]))
-        self.assertEqual([item["op"] for item in slide["items"]], ["shape", "shape"])
-        self.assertEqual(slide["front"][0]["shape"], "triangle")
-        self.assertEqual(slide["front"][0]["options"]["rotate"], 90)
+        kinds = [item.get("shape") if item["op"] == "shape" else item["op"] for item in slide["items"]]
+        self.assertEqual(kinds, [
+            "line", "triangle", "line", "triangle",
+            "rect", "ellipse", "line", "triangle", "rect",
+        ])
+        self.assertEqual(slide["items"][0]["options"]["line"]["color"], "111111")
+        self.assertEqual(slide["items"][1]["options"]["line"]["color"], "111111")
+        self.assertEqual(slide["items"][2]["options"]["line"]["color"], "222222")
+        self.assertEqual(slide["items"][3]["options"]["line"]["color"], "222222")
+        self.assertEqual(slide["items"][4]["shape"], "rect")
+        self.assertEqual(slide["items"][5]["shape"], "ellipse")
+        self.assertEqual(slide["items"][6]["op"], "line")
+        self.assertEqual(slide["items"][8]["shape"], "rect")
+        with self.assertRaises(ValueError):
+            pptx_presentation({"slides": [{"back": [], "items": [], "front": []}]})
 
     def test_edge_connector_expands_inside_the_spec(self):
         spec = {
@@ -152,15 +187,14 @@ class PptxPresentationTests(unittest.TestCase):
         deck = _resolved(fragment)
         slide = deck["slides"][0]
         self.assertEqual(slide["background"]["color"], "EEF2FF")
-        self.assertEqual(slide["back"], [])
-        self.assertEqual(slide["front"][0]["op"], "line")
-        self.assertEqual(slide["front"][0]["options"]["x"], 2.5)
-        self.assertEqual(slide["front"][1]["shape"], "triangle")
-        kinds = [item["op"] for item in slide["items"]]
-        self.assertEqual(kinds, ["text", "text", "table", "image", "line"])
-        self.assertEqual(slide["items"][2]["rows"][0][0]["text"], "Step")
-        self.assertEqual(slide["items"][3]["options"]["data"], "image/png;base64,aaaa")
-        diagonal = slide["items"][4]["options"]
+        self.assertNotIn("back", slide)
+        self.assertNotIn("front", slide)
+        kinds = [item.get("shape") if item["op"] == "shape" else item["op"] for item in slide["items"]]
+        self.assertEqual(kinds, ["text", "text", "line", "triangle", "table", "image", "line"])
+        self.assertEqual(slide["items"][2]["options"]["x"], 2.5)
+        self.assertEqual(slide["items"][4]["rows"][0][0]["text"], "Step")
+        self.assertEqual(slide["items"][5]["options"]["data"], "image/png;base64,aaaa")
+        diagonal = slide["items"][6]["options"]
         self.assertTrue(diagonal["flipH"])
         self.assertEqual(diagonal["line"]["dashType"], "dash")
         self.assertNotIn("auto", deck)
@@ -239,12 +273,16 @@ class PptxPresentationTests(unittest.TestCase):
         self.assertEqual(override["fill"], {"color": "AABBCC"})
         self.assertEqual(override["line"]["color"], "000000")
         self.assertEqual(slide["items"][3]["options"]["line"]["color"], "000000")
-        connector_line = slide["front"][0]["options"]["line"]
-        connector_head = slide["front"][1]["options"]
+        connector_line = slide["items"][4]["options"]["line"]
+        connector_head = slide["items"][5]["options"]
         self.assertEqual(connector_line["color"], "112233")
         self.assertEqual(connector_head["fill"], {"type": "none"})
         self.assertEqual(connector_head["line"]["color"], "112233")
-        table = slide["items"][4]
+        self.assertLess(
+            next(index for index, item in enumerate(slide["items"]) if item["op"] == "line" and item["options"]["line"]["color"] == "112233"),
+            next(index for index, item in enumerate(slide["items"]) if item["op"] == "table"),
+        )
+        table = slide["items"][6]
         self.assertEqual(table["options"]["fontFace"], "Meiryo")
         self.assertEqual(table["options"]["color"], "000000")
         self.assertEqual(table["options"]["fill"], {"type": "none"})

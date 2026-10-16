@@ -749,9 +749,9 @@ def pptx_connector(
     """Connector item for a JSON slide spec.
 
     Resolves to a straight black line plus an unfilled triangle arrowhead.
-    ``color`` overrides the line color. Center mode is drawn before other slide
-    objects so the boxes cover the line and the visible span between them reads
-    as the arrow. Edge mode meets the facing edges and rejects overlap.
+    ``color`` overrides the line color. Center mode is normalized to the start
+    of the slide's ordered item list so the connector paints behind later
+    objects. Edge mode stays at its list position and rejects overlap.
     """
     if mode not in ("edge", "center"):
         raise ValueError("connector mode must be edge or center")
@@ -883,7 +883,7 @@ def _resolve_pptx_spec(spec: dict, *, filename: str | None, auto: bool) -> dict:
         items = slide.get("items", [])
         if not isinstance(items, list):
             raise ValueError("slide items must be a list")
-        encoded = {"back": [], "items": [], "front": []}
+        encoded = {"items": []}
         if "background" in slide:
             background = slide["background"]
             if not isinstance(background, dict):
@@ -909,11 +909,13 @@ def _resolve_pptx_spec(spec: dict, *, filename: str | None, auto: bool) -> dict:
             if identity is not None and box is not None:
                 boxes[identity] = box
             pending.append(("item", operation))
-        front_lines = []
-        heads = []
+        # Paint order matches PptxGenJS and OOXML: earlier items are behind.
+        # Center-mode connectors are normalized to the start of that list.
+        behind: list[dict] = []
+        ordered: list[dict] = []
         for tag, payload in pending:
             if tag == "item":
-                encoded["items"].append(payload)
+                ordered.append(payload)
                 continue
             source_id = payload.get("from")
             target_id = payload.get("to")
@@ -929,12 +931,12 @@ def _resolve_pptx_spec(spec: dict, *, filename: str | None, auto: bool) -> dict:
                 width=payload.get("width", _PPTX_DEFAULT_LINE_WIDTH),
                 head=payload.get("head", 0.18),
             )
+            pair = [geometry["line"], geometry["head"]]
             if geometry["mode"] == "center":
-                encoded["back"].append(geometry["line"])
+                behind.extend(pair)
             else:
-                front_lines.append(geometry["line"])
-            heads.append(geometry["head"])
-        encoded["front"] = front_lines + heads
+                ordered.extend(pair)
+        encoded["items"] = behind + ordered
         resolved["slides"].append(encoded)
     return resolved
 
@@ -968,9 +970,7 @@ def _pptx_runtime(element_id: str) -> str:
         "(spec.slides||[]).forEach(function(slideSpec){"
         "var slide=pptx.addSlide();"
         "if(slideSpec.background)slide.background=slideSpec.background;"
-        "(slideSpec.back||[]).forEach(function(item){draw(slide,item);});"
         "(slideSpec.items||[]).forEach(function(item){draw(slide,item);});"
-        "(slideSpec.front||[]).forEach(function(item){draw(slide,item);});"
         "});"
         'return pptx.writeFile({fileName:spec.fileName||"presentation.pptx"});'
         "}"

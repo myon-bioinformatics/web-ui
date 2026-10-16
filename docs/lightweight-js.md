@@ -183,6 +183,8 @@ python -S -c 'from web_ui import pptx_connector, pptx_presentation, render_docum
 ```
 
 Item `kind` is `text`, `shape`, `line`, `table`, `image`, or `connector`.
+Each slide has one `items` array. Array order is z-order, the same order
+PptxGenJS and OOXML paint: index 0 is behind, and the last item is in front.
 Positions are inches. Pass `remote_scripts("pptxgenjs")` or
 `--with-remote-scripts pptxgenjs` so the pinned bundle loads before the click
 handler runs. Images use an HTTPS `path` or an `image/...;base64,...` `data`
@@ -213,10 +215,13 @@ are enough).
   bottom and top edges when that is the edge the ray crosses. Overlapping
   boxes, edges that only touch, and a zero-length gap raise `ValueError`
   because the facing edges do not leave a positive gap.
-- `mode="center"` joins the centers. Those lines are drawn first (`back`) so
-  later objects cover the part inside each box, and the arrowhead stays in
-  front. The visible remainder between the objects is the arrow. A shared
-  center is rejected; distinct centers are allowed when the boxes overlap.
+- `mode="center"` joins the centers. Normalization moves that connector's
+  line and triangle to the start of the slide `items` list, in the order the
+  connectors appeared, so later objects cover the part of the line inside each
+  box. The visible remainder between the objects is the arrow. A shared center
+  is rejected; distinct centers are allowed when the boxes overlap. Edge-mode
+  connectors stay where they were written and expand to a line followed by its
+  triangle.
 
 `pptx_arrow_geometry(source_box, target_box)` returns the same coordinates
 without HTML, for a consumer that wants to place the line and triangle itself.
