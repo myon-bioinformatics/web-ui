@@ -24,6 +24,11 @@ THEMES = ("modern", "github-like")
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
+# Explicit HTTPS allowlist for opt-in remote classic scripts (not ES modules).
+# Unpinned URLs are intentional for entries documented as rolling "latest" lanes.
+REMOTE_SCRIPT_NAMES: dict[str, str] = {
+    "plotly.js": "https://cdn.plot.ly/plotly-latest.min.js",
+}
 
 
 def text_panel(text: str, *, heading: str = "") -> str:
@@ -65,6 +70,31 @@ def _require_local_script_path(value: str, *, label: str) -> None:
         raise ValueError(f"{label} must be a local path; remote scripts are not supported")
 
 
+def _allowed_remote_script_urls() -> frozenset[str]:
+    return frozenset(REMOTE_SCRIPT_NAMES.values())
+
+
+def _require_allowed_remote_script(value: str, *, label: str) -> None:
+    _require_local_or_https(value, label=label, allow_query=False)
+    if value not in _allowed_remote_script_urls():
+        raise ValueError(f"{label} must be an opt-in remote script from remote_scripts()")
+
+
+def remote_scripts(*names: str) -> tuple[str, ...]:
+    """Return HTTPS script URLs from an explicit, documented allowlist.
+
+    These are classic (non-module) scripts loaded from a remote origin. They are
+    intentionally separate from ``shared_scripts()`` so remote execution stays an
+    explicit consumer choice. Callers own network access, CSP, and SRI policy.
+    """
+    if not names:
+        raise ValueError("names must not be empty")
+    unknown = sorted({name for name in names if name not in REMOTE_SCRIPT_NAMES})
+    if unknown:
+        raise ValueError(f"unknown remote script: {', '.join(unknown)}")
+    return tuple(REMOTE_SCRIPT_NAMES[name] for name in names)
+
+
 def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> tuple[str, ...]:
     """Link named local modules; callers own vendoring, exact pins and serving.
 
@@ -85,6 +115,19 @@ def module_asset(name: str = "ui.js") -> tuple[bytes, str]:
     if name != "ui.js":
         raise ValueError("unknown embedded module")
     return EMBEDDED_UI_JS.encode("utf-8"), "text/javascript; charset=utf-8"
+
+
+def classic_script(source: str, *, nonce: str | None = None) -> str:
+    """Emit trusted classic JavaScript without fetching or evaluating it in Python.
+
+    Inline bodies require CSP script-src nonce/hash/unsafe-inline authorization.
+    """
+    if nonce is not None and (not nonce or not re.fullmatch(r"[A-Za-z0-9+/_=-]+", nonce)):
+        raise ValueError("invalid CSP nonce")
+    if re.search(r"</script(?=[\s/>])", source, re.IGNORECASE):
+        raise ValueError("script contains HTML script end tag")
+    attribute = f' nonce="{escape(nonce, quote=True)}"' if nonce else ""
+    return f"<script{attribute}>{source}</script>"
 
 
 def module_script(source: str, *, mode: str = "inline", nonce: str | None = None) -> str:
@@ -122,6 +165,7 @@ def render_document(
     css: str = "",
     stylesheets: tuple[str, ...] = (),
     scripts: tuple[str, ...] = (),
+    remote_scripts: tuple[str, ...] = (),
     embedded_modules: tuple[str, ...] = (),
     module_mode: str = "inline",
     module_nonce: str | None = None,
@@ -131,8 +175,11 @@ def render_document(
 
     CSS is caller-authored. Reject an HTML raw-text terminator rather than allow
     it to escape the style element. Stylesheets allow local or HTTPS paths;
-    scripts allow only local paths, without query/fragment. Callers own script
-    contents, exact version pins, imports and serving without remote redirects.
+    scripts allow only local paths, without query/fragment. ``remote_scripts``
+    accepts only URLs returned by ``remote_scripts()`` (explicit HTTPS allowlist).
+    Remote classic scripts are emitted in ``<head>`` so body inline initializers
+    can depend on them. Callers own script contents, exact version pins, imports
+    and serving without remote redirects.
     trusted_html is verbatim and may bypass these link checks (including via a
     base element); it must only contain caller-audited HTML. This is an HTML
     emitter, not a general HTML/CSS/JS sanitizer or provenance verifier.
@@ -146,6 +193,10 @@ def render_document(
         _require_local_or_https(href, label="stylesheet")
         links.append(f'<link rel="stylesheet" href="{escape(href, quote=True)}">')
     style = f"<style>{css}</style>" if css else ""
+    head_remote_scripts = []
+    for src in remote_scripts:
+        _require_allowed_remote_script(src, label="remote script")
+        head_remote_scripts.append(f'<script src="{escape(src, quote=True)}"></script>')
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
     script_tags = []
     for src in scripts:
@@ -159,7 +210,7 @@ def render_document(
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{escape(title)}</title>{"".join(links)}{style}</head>'
+        f'<title>{escape(title)}</title>{"".join(links)}{style}{"".join(head_remote_scripts)}</head>'
         f'<body data-ui-theme="{theme}">{body}{"".join(script_tags)}</body></html>\n'
     )
 
@@ -222,6 +273,44 @@ def details(summary: str, text: str = "", *, open: bool = False, trusted_html: s
     """Native disclosure, without JS. Pass renderer output via trusted_html explicitly."""
     body = f'<pre class="ui-output">{escape(text)}</pre>' if trusted_html is None else trusted_html
     return f'<details class="ui-panel"{" open" if open else ""}><summary>{escape(summary)}</summary>{body}</details>'
+
+
+def plotly_figure(
+    spec: dict,
+    *,
+    div_id: str = "plot",
+    height: int | None = 400,
+    width: int | None = None,
+    nonce: str | None = None,
+) -> str:
+    """Trusted HTML: a Plotly graph container plus an inline ``Plotly.newPlot`` call.
+
+    Pass a Plotly figure JSON object ``{"data": [...], "layout": {...}, "config": {...}}``.
+    Pair with ``remote_scripts("plotly.js")`` in ``render_document`` so plotly.js loads
+    from the documented CDN URL before this initializer runs.
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("spec must be a mapping")
+    data = spec.get("data", [])
+    if not isinstance(data, list):
+        raise ValueError("spec data must be a list")
+    layout = dict(spec.get("layout") or {})
+    config = dict(spec.get("config") or {})
+    if height is not None:
+        if isinstance(height, bool) or not isinstance(height, int) or height < 1:
+            raise ValueError("height must be a positive integer")
+        layout["height"] = height
+    if width is not None:
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            raise ValueError("width must be a positive integer")
+        layout["width"] = width
+    identity = _element_id(div_id)
+    payload = json.dumps({"data": data, "layout": layout, "config": config}, ensure_ascii=True)
+    initializer = (
+        f'(function(){{var s={payload};var el=document.getElementById("{identity}");'
+        f'if(el&&window.Plotly){{window.Plotly.newPlot(el,s.data,s.layout,s.config);}}}})();'
+    )
+    return f'<div id="{identity}" class="ui-panel"></div>{classic_script(initializer, nonce=nonce)}'
 
 
 def section_browser(sections: tuple[tuple[str, str], ...], *, id: str = "sections",
@@ -340,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="NAME",
         help="opt-in shared JS module names under js/ (requires local --asset-base; default ui.js)",
     )
+    parser.add_argument(
+        "--with-remote-scripts",
+        nargs="+",
+        metavar="NAME",
+        help="opt-in HTTPS classic scripts from the documented allowlist (e.g. plotly.js)",
+    )
     parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
     parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
@@ -357,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             names = tuple(args.with_scripts) if args.with_scripts else ("ui.js",)
             scripts = shared_scripts(args.asset_base, names=names)
+        remote = remote_scripts(*args.with_remote_scripts) if args.with_remote_scripts else ()
         result = render_document(
             content,
             title=args.title,
@@ -364,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
             css=css,
             stylesheets=styles,
             scripts=scripts,
+            remote_scripts=remote,
             embedded_modules=("ui.js",) if args.embed_ui else (),
             module_mode=args.module_mode,
             trusted_html=content if args.trusted_html else None,

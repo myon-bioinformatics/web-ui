@@ -273,11 +273,20 @@ Module bodies containing HTML `</script>` terminators are rejected.
 **Deployment comparison:** existing local module `src` references require a
 separate served JS file; embedded inline/data mode creates one HTML artifact;
 `module_asset` allows a single Python source to serve a separate JS response.
-CDN dependencies are allowed as a deliberate consumer choice, but the current
-`render_document(scripts=...)` policy intentionally rejects remote JS URLs.
-For CDN experiments, use separately audited, pinned trusted HTML or a future
-explicit remote-module API; this change does not silently relax that policy.
-A CDN or remote import needs network access and import-graph provenance.
+CDN dependencies stay a deliberate consumer choice. Local module `scripts=` and
+`shared_scripts()` still reject remote URLs. Opt in to documented HTTPS classic
+scripts with `remote_scripts()` and `render_document(remote_scripts=...)`. See
+[docs/lightweight-js.md](docs/lightweight-js.md).
+
+Plotly charts from a figure JSON spec (no Python `plotly` package):
+
+```sh
+python -S -c 'from web_ui import plotly_figure, render_document, remote_scripts; spec={"data":[{"type":"bar","y":[1,2,3]}]}; print(render_document(trusted_html=plotly_figure(spec), remote_scripts=remote_scripts("plotly.js")))' > chart.html
+```
+
+`plotly_figure()` emits the graph div and a trusted inline `Plotly.newPlot`
+initializer; `remote_scripts("plotly.js")` links the unpinned plotly.js CDN URL
+from the explicit allowlist.
 
 Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
 verification should check the resulting module in Chromium under the chosen CSP;

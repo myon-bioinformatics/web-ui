@@ -34,7 +34,26 @@ Scripts are omitted by default. `--with-scripts` / `shared_scripts()` only emit
 `render_document(scripts=(...))` accepts caller-selected local module paths with
 the same validation: relative or root-relative paths, no scheme/authority,
 query, fragment, whitespace, control characters or backslashes. HTTPS URLs are
-rejected even if they look versioned; there is no remote-script/SRI API.
+rejected on the local module path even if they look versioned.
+
+### Opt-in remote classic scripts
+
+`remote_scripts()` is the separate, explicit allowlist for HTTPS classic scripts
+that are not ES modules. It does not weaken `shared_scripts()` or local
+`scripts=` validation. Each name maps to one documented URL; callers opt in by
+name and pass the returned tuple to `render_document(remote_scripts=...)`.
+Remote tags are emitted in `<head>` so trusted body inline initializers can
+depend on them. There is no generic remote URL API and no built-in SRI helper;
+consumers own CSP, network access, and pinning policy when they choose not to
+use the documented rolling URLs.
+
+Current allowlist entries:
+
+- `plotly.js` → `https://cdn.plot.ly/plotly-latest.min.js` (unpinned latest lane)
+
+Future drawing helpers (for example Mermaid) can add new allowlist names without
+changing the local module policy.
+
 Stylesheet links retain their existing local/HTTPS behavior.
 
 The wrapper guarantees link syntax and opt-in emission, not immutable bytes or
@@ -49,7 +68,8 @@ or a remote document base. A local filename alone is not evidence of a pin.
 emitted verbatim and can contain script tags, event handlers or a `<base>` that
 changes relative URL resolution. Its caller must audit all of that HTML; link
 validation is not an HTML sanitizer or a document-wide execution sandbox.
-The wrapper itself never generates inline script bodies or downloads packages.
+The wrapper generates inline classic scripts only through explicit helpers such
+as `classic_script()` and `plotly_figure()`; it does not download packages.
 
 ## Node wrapping for pytest
 
@@ -124,6 +144,22 @@ back to home. Optional explicit legacy `?view=wiki` aliases retain query priorit
 and canonicalize to `#wiki`, preserving other query fields. No alias is enabled
 by default. `openExternalURL(url, window)` supplies the same HTTP(S) validation
 and new-tab policy to legacy consumers' existing buttons.
+
+## Plotly figure specs without the Python plotly package
+
+Consumers such as Aoi/DRAgoWing can render charts from a Plotly figure JSON
+spec using stdlib-only helpers. No `pip install plotly` is required; the browser
+loads plotly.js from the opt-in CDN allowlist.
+
+```sh
+python -S -c 'from web_ui import plotly_figure, render_document, remote_scripts; spec={"data":[{"type":"scatter","x":[1,2],"y":[3,4]}]}; print(render_document(trusted_html=plotly_figure(spec), remote_scripts=remote_scripts("plotly.js")))' > chart.html
+```
+
+`plotly_figure(spec, *, div_id="plot", height=400, width=None)` returns trusted
+HTML: a `ui-panel` graph container and an inline classic script that calls
+`Plotly.newPlot` with the JSON fields `data`, `layout`, and `config`. Pass
+`remote_scripts("plotly.js")` to `render_document` (or `--with-remote-scripts
+plotly.js` on the CLI) so plotly.js loads before the initializer runs.
 
 For an existing **trusted static export**, Python can reuse presentation in one
 call instead of cloning the theme: `adopt_document(page, asset_base="./vendor",
