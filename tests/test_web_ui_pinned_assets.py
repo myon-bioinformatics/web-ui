@@ -71,8 +71,14 @@ class PinnedAssetTests(unittest.TestCase):
                 ui.verify_remote_script('pptxgenjs', RAW + b'x')
         with self.assertRaises(ValueError):
             ui.verify_remote_script('left-pad', RAW)
-        # Every allowlisted remote script has a parseable pin.
+        # plotly.js is intentionally unpinned (jsDelivr latest, no SRI); every other
+        # allowlisted remote script has a parseable pin.
+        self.assertNotIn(ui.PLOTLY_JS_URL, ui.REMOTE_SCRIPT_INTEGRITY)
+        with self.assertRaisesRegex(ValueError, 'not pinned'):
+            ui.verify_remote_script('plotly.js', RAW)
         for name, address in ui.REMOTE_SCRIPT_NAMES.items():
+            if address == ui.PLOTLY_JS_URL:
+                continue
             with self.subTest(name=name):
                 ui._parse_integrity(ui.REMOTE_SCRIPT_INTEGRITY[address])
 

@@ -44,35 +44,31 @@ that are not ES modules. It does not weaken `shared_scripts()` or local
 name and pass the returned tuple to `render_document(remote_scripts=...)`.
 Remote tags are emitted in `<head>` so trusted body inline initializers can
 depend on them. There is no generic remote URL API and no caller-supplied SRI
-argument. All allowlist entries use fixed versions and are emitted with
-`integrity` and `crossorigin="anonymous"`. Consumers own CSP and network access.
+argument. Pinned entries are emitted with `integrity` and `crossorigin="anonymous"`;
+plotly.js is unpinned and has no integrity attribute. Consumers own CSP and
+network access.
 
 Current allowlist entries:
 
-- `plotly.js` → `https://cdn.plot.ly/plotly-4.1.1.min.js` (fixed 4.1.1 full bundle; SHA-256 SRI)
+- `plotly.js` → `https://cdn.jsdelivr.net/npm/plotly.js-dist-min/plotly.min.js`
+  (jsDelivr resolves to the latest `plotly.js-dist-min` npm release; no SRI)
 - `pptxgenjs` → `https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js`
   (pinned 4.0.1 browser bundle, JSZip included;
   `sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8`)
 
-Plotly's distribution contract lives in `web_ui.py`: `PLOTLY_JS_VERSION`,
-`PLOTLY_JS_URL`, `PLOTLY_JS_SHA256`, derived `PLOTLY_JS_SRI`, and
-`PLOTLY_JS_MAX_BYTES` (8 MiB). The SHA-256 is
-`3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f`.
-On 2026-10-17, the CDN and npm `plotly.js-dist-min@4.1.1/plotly.min.js`
-bundles matched (4,815,814 bytes). Plotly's official documentation identifies
-`plotly-latest` as legacy v1.58.5, frozen since July 2021:
-<https://plotly.com/javascript/getting-started/>.
+Plotly's distribution contract lives in `web_ui.py`: `PLOTLY_JS_URL` and
+`PLOTLY_JS_MAX_BYTES` (8 MiB). Do not use `cdn.plot.ly/plotly-latest.min.js`;
+Plotly's official documentation identifies that endpoint as legacy v1.58.5,
+frozen since July 2021: <https://plotly.com/javascript/getting-started/>.
 
 Rendering never downloads an asset. For explicit offline embedding,
-`fetch_plotly_js()` returns **bytes** only after HTTP 200, a bounded read, and
-SHA-256 verification. `verify_plotly_js(raw)` applies the same contract to
-local/cached bytes. Only decode/embed/cache after success; errors are raised
-for acquisition failure, oversized/empty bodies, or any byte mismatch. A
-consumer may vendor this single stdlib module at an exact commit and retain
-its license and lock, rather than maintain separate URL/hash/fetch code.
-Consumers still own cache lifetime, inline-script construction and CSP.
-When upgrading, independently compare the official CDN and npm distribution,
-update the version/hash together, and run the real Chromium SRI smoke test.
+`fetch_plotly_js()` returns **bytes** only after HTTP 200 and a bounded read.
+`verify_plotly_js(raw)` applies the same size/empty checks to local/cached bytes.
+Only decode/embed/cache after success; errors are raised for acquisition failure,
+oversized/empty bodies. A consumer may vendor this single stdlib module at an
+exact commit and retain its license and lock, rather than maintain separate
+URL/fetch code. Consumers still own cache lifetime, inline-script construction,
+CSP, and the trust model for unpinned CDN bytes.
 
 The separate `pptxgen.min.js` build expects a global `JSZip` and is not the
 allowlist entry. Recompute the sha384 from the pinned bundle bytes before
