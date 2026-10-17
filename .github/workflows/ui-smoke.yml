@@ -1,6 +1,7 @@
 name: UI smoke
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
   changes:
