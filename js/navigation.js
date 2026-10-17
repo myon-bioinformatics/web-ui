@@ -57,11 +57,57 @@
     const handle={sync,destroy(){win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);viewBindings.delete(doc);}};
     viewBindings.set(doc,handle);sync();return handle;
   }
+  // Route table: a visible identity (emoji or short name) -> app route, as in
+  // browser-test-kit route_trail.py registries ({"/route": "\u{1F3E0}"}). Identity
+  // drops U+FE0F, so both spellings of a heading emoji resolve to one route.
+  const emojiIdentity=value=>String(value).replace(/️/g,'');
+  function routeTable(registry){
+    const rows=Array.isArray(registry)?registry:Object.entries(registry||{}).map(([route,key])=>({route,key}));
+    const byKey=new Map(),routes=new Set(),entries=[];
+    for(const row of rows){
+      const route=row.route,key=row.key??row.emoji;
+      if(typeof route!=='string' || !/^\/[^\s#?\\]*$/.test(route) || route.includes('//'))throw Error('route must be an absolute app path such as /map: '+route);
+      if(typeof key!=='string' || !key.trim() || /\s/.test(key))throw Error('route key must be a nonempty token: '+route);
+      const id=emojiIdentity(key);
+      if(routes.has(route))throw Error('duplicate route: '+route);
+      if(byKey.has(id))throw Error('route key names two routes: '+key);
+      routes.add(route);byKey.set(id,route);entries.push({route,key,identity:id,label:typeof row.label==='string'?row.label:null});
+    }
+    if(!entries.length)throw Error('route table is empty');
+    const lookup=value=>{const id=emojiIdentity(String(value??'').trim());return byKey.get(id)??(routes.has(id)?id:null);};
+    return {entries,lookup};
+  }
+  function routeHref(route,{base='',routing='hash'}={}){
+    if(routing!=='hash' && routing!=='path')throw Error('routing must be hash or path');
+    return routing==='hash'?base+'#'+route:String(base).replace(/\/$/,'')+route;
+  }
+  const routeBindings=new WeakMap();
+  function bindRouteTable(win,registry,{routing='hash',attribute='data-ui-go'}={}){
+    const doc=win.document;
+    if(routeBindings.has(doc))return routeBindings.get(doc);
+    const table=routeTable(registry);
+    const current=()=>routing==='hash'?(String(win.location.hash).replace(/^#/,'').split('?')[0]||'/'):win.location.pathname;
+    const go=key=>{const route=table.lookup(key);if(route===null)throw Error('unknown route key: '+key);
+      if(routing==='hash')win.location.hash=route;else win.location.assign(routeHref(route,{routing}));return route;};
+    const controls=[...doc.querySelectorAll('['+attribute+']')];
+    const sync=()=>{const here=current();for(const el of controls){const route=table.lookup(el.getAttribute(attribute));
+      if(route===null){el.setAttribute('aria-disabled','true');continue;}
+      if(el.tagName.toLowerCase()==='a')el.setAttribute('href',routeHref(route,{routing}));
+      if(route===here)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');}
+      return here;};
+    const click=event=>{const el=event.target.closest?.('['+attribute+']');if(!el || el.tagName.toLowerCase()==='a')return;
+      if(table.lookup(el.getAttribute(attribute))!==null){event.preventDefault();go(el.getAttribute(attribute));}};
+    doc.addEventListener('click',click);win.addEventListener('hashchange',sync);win.addEventListener('popstate',sync);
+    const handle={table,go,sync,current,destroy(){doc.removeEventListener('click',click);win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);routeBindings.delete(doc);}};
+    routeBindings.set(doc,handle);sync();return handle;
+  }
   function bindNavigation(win){
     const doc=win.document;
     const links=[...doc.querySelectorAll('[data-ui-source-for]')].map(link=>bindSourceLink(doc.getElementById(link.getAttribute('data-ui-source-for')),link));
     const views=doc.querySelectorAll('[data-ui-view]').length?bindViews(win,{defaultView:doc.querySelector('[data-ui-default-view]')?.getAttribute('data-ui-default-view')||'home'}):null;
-    return {links,views};
+    const tableScript=doc.getElementById('ui-route-table');
+    const routes=tableScript?bindRouteTable(win,JSON.parse(tableScript.textContent),{routing:tableScript.getAttribute('data-ui-routing')||'hash'}):null;
+    return {links,views,routes};
   }
-  return {sourceURL,openExternalURL,bindSourceLink,viewFromLocation,bindViews,bindNavigation};
+  return {sourceURL,openExternalURL,bindSourceLink,viewFromLocation,bindViews,emojiIdentity,routeTable,routeHref,bindRouteTable,bindNavigation};
 });
