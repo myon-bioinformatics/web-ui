@@ -10,7 +10,7 @@ sanitizer or a network firewall.
 ```sh
 python -m pip install -r tests/requirements-gradio.txt
 python -m playwright install chromium
-python tool/serve_dom_lab.py fixture.html --css fixture.css
+python tool/web_ui_serve_dom_lab.py fixture.html --css fixture.css
 ```
 
 The test actually launches Gradio on loopback, opens Chromium, and compares

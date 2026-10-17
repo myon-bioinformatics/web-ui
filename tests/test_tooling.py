@@ -7,7 +7,7 @@ import shutil
 
 import pytest
 
-from tool.tooling_meta import collect
+from tool.web_ui_tooling_meta import collect
 
 
 def _locked(destination):
@@ -58,14 +58,14 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
     )
 
     # Advisory collection reports tooling versions only; never head/branch identity.
-    from tool import tooling_meta
+    from tool import web_ui_tooling_meta
     def fake_tool_versions(commands, *, include_python=False, **_):
         observed = {command: "1.2.3" for command in commands}
         if include_python:
             observed["python"] = "1.2.3"
         return observed
-    monkeypatch.setattr(tooling_meta.canonical, "tool_versions", fake_tool_versions)
-    monkeypatch.setattr(tooling_meta, "observe_package_version", lambda _: "4.1.0")
+    monkeypatch.setattr(web_ui_tooling_meta.canonical, "tool_versions", fake_tool_versions)
+    monkeypatch.setattr(web_ui_tooling_meta, "observe_package_version", lambda _: "4.1.0")
     metadata = collect()
     assert set(metadata) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert metadata["runtime"]["python"]

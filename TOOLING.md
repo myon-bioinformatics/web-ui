@@ -30,7 +30,7 @@ integration and should remain opt-in tests.
 Live Stagehand tests must be opt-in. Local browser tests may use local
 Chrome/Chromium. Remote Browserbase tests must receive credentials through
 GitHub Actions secrets/environment at execution time; credentials must never be
-committed, emitted by `tooling_meta.py`, or uploaded as artifacts.
+committed, emitted by `web_ui_tooling_meta.py`, or uploaded as artifacts.
 
 ## Tool diagnostics
 
@@ -44,11 +44,11 @@ Run:
 
 ```sh
 python -m pytest -v
-python tool/tooling_meta.py
+python tool/web_ui_tooling_meta.py
 python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 
-`tooling_meta.py` delegates Python runtime and Git/GitHub CLI/Node/npx versions
+`web_ui_tooling_meta.py` delegates Python runtime and Git/GitHub CLI/Node/npx versions
 to vendored `gh_identity.tool_versions()`, and observes the explicitly
 allowlisted `pytest`/`stagehand` distributions locally. The consumer only
 timestamps and projects those observations into the existing `runtime`, `commands`,

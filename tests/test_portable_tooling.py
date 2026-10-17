@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tool import tooling_meta
+from tool import web_ui_tooling_meta
 
 ROOT = Path(__file__).resolve().parents[1]
-canonical = tooling_meta.canonical
+canonical = web_ui_tooling_meta.canonical
 
 
 @pytest.mark.parametrize("partial", [False, True])
@@ -33,10 +33,10 @@ def test_partial_or_empty_tooling_omits_unavailable_keys(monkeypatch, partial):
     def package(name):
         if partial and name == "pytest":
             return "9.0.0"
-        raise tooling_meta.importlib_metadata.PackageNotFoundError(name)
+        raise web_ui_tooling_meta.importlib_metadata.PackageNotFoundError(name)
 
-    monkeypatch.setattr(tooling_meta.importlib_metadata, "version", package)
-    result = tooling_meta.collect()
+    monkeypatch.setattr(web_ui_tooling_meta.importlib_metadata, "version", package)
+    result = web_ui_tooling_meta.collect()
     assert set(result) == {"generated_at_utc", "runtime", "commands", "packages"}
     assert result["runtime"] == ({"python": "3.12.8"} if partial else {})
     assert result["commands"] == ({"git": "2.45.1"} if partial else {})
@@ -57,9 +57,9 @@ def test_consumer_only_requests_allowlisted_observations(monkeypatch):
         return observed
 
     monkeypatch.setattr(canonical, "tool_versions", tool_versions)
-    monkeypatch.setattr(tooling_meta, "observe_package_version", lambda name: {"pytest": "9.0.0", "stagehand": "4.1.0"}[name])
-    result = tooling_meta.collect()
-    assert calls == [{"commands": tooling_meta.COMMANDS, "include_python": True}]
+    monkeypatch.setattr(web_ui_tooling_meta, "observe_package_version", lambda name: {"pytest": "9.0.0", "stagehand": "4.1.0"}[name])
+    result = web_ui_tooling_meta.collect()
+    assert calls == [{"commands": web_ui_tooling_meta.COMMANDS, "include_python": True}]
     assert result["runtime"] == {"python": "3.12.8"}
     assert result["commands"] == {"git": "1.0.0", "gh": "1.0.0", "node": "1.0.0", "npx": "1.0.0"}
     assert result["packages"] == {"pytest": "9.0.0", "stagehand": "4.1.0"}
@@ -71,22 +71,22 @@ def test_duplicate_canonical_owners_fail_before_probing(monkeypatch, collision):
         pytest.fail("collision must fail before observations")
 
     monkeypatch.setattr(canonical, "tool_versions", unexpected)
-    monkeypatch.setattr(tooling_meta, "observe_package_version", unexpected)
+    monkeypatch.setattr(web_ui_tooling_meta, "observe_package_version", unexpected)
     if collision == "duplicate-command":
-        monkeypatch.setattr(tooling_meta, "COMMANDS", ("git", "git"))
+        monkeypatch.setattr(web_ui_tooling_meta, "COMMANDS", ("git", "git"))
     elif collision == "runtime":
-        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("python", "other"),))
+        monkeypatch.setattr(web_ui_tooling_meta, "DISTRIBUTIONS", web_ui_tooling_meta.DISTRIBUTIONS + (("python", "other"),))
     elif collision == "command":
-        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("git", "other"),))
+        monkeypatch.setattr(web_ui_tooling_meta, "DISTRIBUTIONS", web_ui_tooling_meta.DISTRIBUTIONS + (("git", "other"),))
     else:
-        monkeypatch.setattr(tooling_meta, "DISTRIBUTIONS", tooling_meta.DISTRIBUTIONS + (("pytest", "other"),))
+        monkeypatch.setattr(web_ui_tooling_meta, "DISTRIBUTIONS", web_ui_tooling_meta.DISTRIBUTIONS + (("pytest", "other"),))
     with pytest.raises(ValueError, match="exactly one canonical source"):
-        tooling_meta.collect()
+        web_ui_tooling_meta.collect()
 
 
 def test_standalone_json_is_stdlib_only_and_does_not_need_checkout(tmp_path):
     env = {**os.environ, "PATH": str(tmp_path), "PYTHONPATH": ""}
-    result = subprocess.run([sys.executable, "-S", str(ROOT / "tool/tooling_meta.py")],
+    result = subprocess.run([sys.executable, "-S", str(ROOT / "tool/web_ui_tooling_meta.py")],
                             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -113,9 +113,9 @@ def test_failed_canonical_observations_are_omitted(monkeypatch, failure):
                                stderr="")
 
     monkeypatch.setattr(canonical.subprocess, "run", run)
-    monkeypatch.setattr(tooling_meta.importlib_metadata, "version", lambda _: "private malformed package")
-    first = tooling_meta.collect()
-    second = tooling_meta.collect()
+    monkeypatch.setattr(web_ui_tooling_meta.importlib_metadata, "version", lambda _: "private malformed package")
+    first = web_ui_tooling_meta.collect()
+    second = web_ui_tooling_meta.collect()
     for record in (first, second):
         assert record["runtime"] == {"python": "3.12.8"}
         assert record["commands"] == record["packages"] == {}
