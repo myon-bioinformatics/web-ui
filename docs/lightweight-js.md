@@ -79,6 +79,16 @@ allowlist entry. Recompute the sha384 from the pinned bundle bytes before
 changing the version. Further allowlist names can be added without changing
 the local module policy.
 
+The same contract is available for any pinned asset: `verify_pinned_asset(raw,
+integrity)` and `fetch_pinned_asset(url, integrity)` take either a 64-hex SHA-256 or
+an SRI value (`sha256-`/`sha384-`/`sha512-`), so one pin serves both the
+`<script integrity>` attribute and offline embedding. `verify_remote_script(name,
+raw)` checks local bytes of an allowlisted script against `REMOTE_SCRIPT_INTEGRITY`.
+`python web_ui.py --sri FILE` prints the sha384 SRI and SHA-256 hex for a new pin.
+On 2026-10-17 the `pptxgenjs` pin also matched `package/dist/pptxgen.bundle.js`
+from `npm pack pptxgenjs@4.0.1` (460,889 bytes); set
+`WEB_UI_PPTXGENJS_TEST_FILE` to that file to re-run the check.
+
 Stylesheet links retain their existing local/HTTPS behavior.
 
 Remote tags enforce the recorded SRI in supporting browsers. Local module
