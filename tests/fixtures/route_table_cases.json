@@ -1,0 +1,100 @@
+{
+ "valid": [
+  {
+   "name": "mapping with both VS16 spellings resolving",
+   "registry": {
+    "/": "🏠",
+    "/map": "🗺️",
+    "/shades": "🕶"
+   },
+   "lookups": {
+    "🏠": "/",
+    "🗺": "/map",
+    "🗺️": "/map",
+    "/shades": "/shades",
+    "nope": null
+   }
+  },
+  {
+   "name": "list with names and labels",
+   "registry": [
+    {
+     "route": "/hub",
+     "key": "hub",
+     "label": "Hub"
+    },
+    {
+     "route": "/tools/photo",
+     "emoji": "📷"
+    }
+   ],
+   "lookups": {
+    "hub": "/hub",
+    "📷": "/tools/photo",
+    "/hub": "/hub"
+   }
+  }
+ ],
+ "invalid": [
+  {
+   "name": "same identity twice",
+   "registry": {
+    "/a": "🗺",
+    "/b": "🗺️"
+   }
+  },
+  {
+   "name": "relative route",
+   "registry": {
+    "map": "🗺"
+   }
+  },
+  {
+   "name": "route with hash",
+   "registry": {
+    "/a#b": "🗺"
+   }
+  },
+  {
+   "name": "double slash",
+   "registry": {
+    "//evil.example": "🗺"
+   }
+  },
+  {
+   "name": "route with space",
+   "registry": {
+    "/a b": "🗺"
+   }
+  },
+  {
+   "name": "empty key",
+   "registry": {
+    "/a": ""
+   }
+  },
+  {
+   "name": "key with space",
+   "registry": {
+    "/a": "two words"
+   }
+  },
+  {
+   "name": "duplicate route in list",
+   "registry": [
+    {
+     "route": "/a",
+     "key": "a"
+    },
+    {
+     "route": "/a",
+     "key": "b"
+    }
+   ]
+  },
+  {
+   "name": "empty",
+   "registry": {}
+  }
+ ]
+}

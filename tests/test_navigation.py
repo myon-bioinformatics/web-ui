@@ -31,3 +31,32 @@ def test_adopt_static_export_preserves_data_and_script_bodies():
     assert '<script>const s="<button>unchanged</button>pre, code { font-family: original; }";</script>' in adapted
     assert 'font-family: inherit;' in adapted
     assert adapted==ui.adopt_document(adapted,asset_base='./vendor')
+
+
+ROUTE_CASES = __import__('json').loads((ROOT / 'tests/fixtures/route_table_cases.json').read_text(encoding='utf-8'))
+
+
+@pytest.mark.parametrize('case', ROUTE_CASES['valid'], ids=lambda c: c['name'])
+def test_route_table_valid_cases_match_navigation_js(case):
+    rows = ui.route_table(case['registry'])
+    lookup = {row['identity']: row['route'] for row in rows}
+    routes = {row['route'] for row in rows}
+    for key, expected in case['lookups'].items():
+        found = lookup.get(key.replace('\ufe0f', ''), key if key in routes else None)
+        assert found == expected, key
+
+
+@pytest.mark.parametrize('case', ROUTE_CASES['invalid'], ids=lambda c: c['name'])
+def test_route_table_invalid_cases_match_navigation_js(case):
+    with pytest.raises(ValueError):
+        ui.route_table(case['registry'])
+
+
+def test_route_links_escape_and_carry_the_table():
+    html = ui.route_links([{'route': '/', 'key': 'home', 'label': '</script><b>x'}, {'route': '/map', 'key': 'map'}])
+    assert '</script><b>' not in html.split('<script', 1)[1].split('</script>', 1)[0]
+    assert '\\u003c/script>' in html and 'href="#/"' in html and 'data-ui-go="map"' in html
+    assert 'data-ui-routing="hash"' in html and '&lt;/script&gt;&lt;b&gt;x' in html
+    assert 'href="/map"' in ui.route_links({'/map': 'map'}, routing='path')
+    with pytest.raises(ValueError):
+        ui.route_links({'/map': 'map'}, routing='query')
