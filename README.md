@@ -273,11 +273,37 @@ Module bodies containing HTML `</script>` terminators are rejected.
 **Deployment comparison:** existing local module `src` references require a
 separate served JS file; embedded inline/data mode creates one HTML artifact;
 `module_asset` allows a single Python source to serve a separate JS response.
-CDN dependencies are allowed as a deliberate consumer choice, but the current
-`render_document(scripts=...)` policy intentionally rejects remote JS URLs.
-For CDN experiments, use separately audited, pinned trusted HTML or a future
-explicit remote-module API; this change does not silently relax that policy.
-A CDN or remote import needs network access and import-graph provenance.
+CDN dependencies stay a deliberate consumer choice. Local module `scripts=` and
+`shared_scripts()` still reject remote URLs. Opt in to documented HTTPS classic
+scripts with `remote_scripts()` and `render_document(remote_scripts=...)`. See
+[docs/lightweight-js.md](docs/lightweight-js.md).
+
+Plotly charts from a figure JSON spec (no Python `plotly` package):
+
+```sh
+python -S -c 'from web_ui import plotly_figure, render_document, remote_scripts; spec={"data":[{"type":"bar","y":[1,2,3]}]}; print(render_document(trusted_html=plotly_figure(spec), remote_scripts=remote_scripts("plotly.js")))' > chart.html
+```
+
+`plotly_figure()` emits the graph div and a trusted inline `Plotly.newPlot`
+initializer; `remote_scripts("plotly.js")` links the unpinned plotly.js CDN URL
+from the explicit allowlist.
+
+Browser `.pptx` download from a JSON slide spec (no `python-pptx`, no Office
+XML in Python). `pptxgenjs` is the pinned PptxGenJS 4.0.1 bundle with SRI.
+Each slide is one `items` list; array order is z-order. Center-mode connectors
+move to the start of that list so they paint behind later objects. Connectors
+are a straight line plus an unfilled triangle arrowhead, not the built-in
+arrow connector. Generated text, shapes, lines, arrowheads, and tables default
+to black `000000` text and borders, no fill, and `fontFace` `Meiryo` (メイリオ).
+Spec values for those properties override the defaults. Layouts beyond that
+stay in the caller spec.
+
+```sh
+python -S -c 'from web_ui import pptx_presentation, render_document, remote_scripts; spec={"slides":[{"items":[{"kind":"text","text":"Hello","x":0.5,"y":0.5,"w":4,"h":0.6}]}]}; print(render_document(trusted_html=pptx_presentation(spec), remote_scripts=remote_scripts("pptxgenjs")))' > deck.html
+```
+
+See [docs/lightweight-js.md](docs/lightweight-js.md) for the slide spec,
+`pptx_connector()`, and the edge/center arrow convention.
 
 Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
 verification should check the resulting module in Chromium under the chosen CSP;
