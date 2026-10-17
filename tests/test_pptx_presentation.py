@@ -14,6 +14,7 @@ from web_ui import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+PLOTLY_JSDELIVR = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min/plotly.min.js"
 PPTX_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
 PPTX_SRI = "sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8"
 
@@ -35,10 +36,12 @@ class PptxPresentationTests(unittest.TestCase):
         self.assertIn('crossorigin="anonymous"', head)
         self.assertNotIn("pptxgen", body)
         plotly = render_document(remote_scripts=remote_scripts("plotly.js"))
-        self.assertIn('src="https://cdn.plot.ly/plotly-4.1.1.min.js"', plotly)
-        self.assertIn("integrity=", plotly)
+        self.assertIn(f'src="{PLOTLY_JSDELIVR}"', plotly)
+        self.assertNotIn("integrity=", plotly.split("</head>", 1)[0])
         combined = render_document(remote_scripts=remote_scripts("plotly.js", "pptxgenjs"))
-        self.assertLess(combined.index("plotly-4.1.1"), combined.index("pptxgen.bundle"))
+        head = combined.split("</head>", 1)[0]
+        self.assertLess(head.index("plotly.js-dist-min"), head.index("pptxgen.bundle"))
+        self.assertIn("integrity=", head)
         with self.assertRaises(ValueError):
             remote_scripts("pptxgenjs", "missing.js")
 

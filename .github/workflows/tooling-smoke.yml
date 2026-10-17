@@ -131,7 +131,7 @@ jobs:
       - name: Generate canonical repository metadata (stdlib only)
         run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
       - name: Capture advisory tooling metadata
-        run: python tool/tooling_meta.py > tooling-meta.json
+        run: python tool/web_ui_tooling_meta.py > tooling-meta.json
       - uses: actions/upload-artifact@v7
         with:
           name: tooling-meta
@@ -216,7 +216,7 @@ jobs:
     - name: Generate canonical repository metadata (stdlib only)
       run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
     - name: Capture advisory tooling metadata
-      run: python tool/tooling_meta.py > tooling-meta.json
+      run: python tool/web_ui_tooling_meta.py > tooling-meta.json
     - uses: actions/upload-artifact@v7
       with:
         name: locked-tooling-meta

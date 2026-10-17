@@ -2,7 +2,7 @@
 
 Text is escaped by default. HTML and CSS supplied explicitly are trusted source,
 not sanitized user input. Rendering never fetches assets; fetch_plotly_js() is an
-explicit, integrity-checked download helper. JavaScript is omitted
+explicit download helper with bounded reads. JavaScript is omitted
 by default; callers may opt in to local module script links. Node is wrapped
 only as an explicit subprocess helper for pytest/CI one-liners.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import http.client
 import json
 import math
@@ -33,21 +34,16 @@ SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigat
 # sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
 _PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
 _PPTXGENJS_SRI = "sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8"
-# One distribution contract for external tags and explicit offline embedding.
-# CDN and plotly.js-dist-min@4.1.1 bytes independently matched this SHA-256.
-PLOTLY_JS_VERSION = "4.1.1"
-PLOTLY_JS_URL = f"https://cdn.plot.ly/plotly-{PLOTLY_JS_VERSION}.min.js"
-PLOTLY_JS_SHA256 = "3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f"
+# jsDelivr resolves plotly.js-dist-min to the latest npm release (not plotly-latest).
+PLOTLY_JS_URL = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min/plotly.min.js"
 PLOTLY_JS_MAX_BYTES = 8 * 1024 * 1024
-PLOTLY_JS_SRI = "sha256-" + base64.b64encode(bytes.fromhex(PLOTLY_JS_SHA256)).decode("ascii")
 # Explicit HTTPS allowlist for opt-in remote classic scripts (not ES modules).
 REMOTE_SCRIPT_NAMES: dict[str, str] = {
     "plotly.js": PLOTLY_JS_URL,
     "pptxgenjs": _PPTXGENJS_URL,
 }
-# Every remote allowlist entry has fixed bytes and Subresource Integrity.
+# Pinned remote entries carry Subresource Integrity; unpinned plotly.js does not.
 REMOTE_SCRIPT_INTEGRITY: dict[str, str] = {
-    PLOTLY_JS_URL: PLOTLY_JS_SRI,
     _PPTXGENJS_URL: _PPTXGENJS_SRI,
 }
 _PPTX_LAYOUTS = frozenset({"LAYOUT_4x3", "LAYOUT_16x9", "LAYOUT_16x10", "LAYOUT_WIDE"})
@@ -131,7 +127,8 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
     These are classic (non-module) scripts loaded from a remote origin. They are
     intentionally separate from ``shared_scripts()`` so remote execution stays an
     explicit consumer choice. Callers own network access and CSP. Pinned entries
-    are emitted with Subresource Integrity and anonymous CORS.
+    (for example pptxgenjs) are emitted with Subresource Integrity and anonymous
+    CORS; plotly.js is unpinned and has no integrity attribute.
     """
     if not names:
         raise ValueError("names must not be empty")
@@ -141,22 +138,108 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
     return tuple(REMOTE_SCRIPT_NAMES[name] for name in names)
 
 
+_INTEGRITY = re.compile(r"(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})\Z")
+_ALGORITHM_NAMES = {"sha256": "SHA-256", "sha384": "SHA-384", "sha512": "SHA-512"}
+
+
+def sri(raw: bytes, algorithm: str = "sha384") -> str:
+    """Subresource Integrity value (``sha384-...``) for exact bytes, for pinning a new asset."""
+    if not isinstance(raw, bytes):
+        raise TypeError("payload must be bytes")
+    if algorithm not in _ALGORITHM_NAMES:
+        raise ValueError("algorithm must be sha256, sha384 or sha512")
+    return f"{algorithm}-" + base64.b64encode(hashlib.new(algorithm, raw).digest()).decode("ascii")
+
+
+def _parse_integrity(integrity: str) -> tuple[str, bytes]:
+    if isinstance(integrity, str) and re.fullmatch(r"[0-9a-f]{64}", integrity):
+        return "sha256", bytes.fromhex(integrity)
+    match = _INTEGRITY.match(integrity) if isinstance(integrity, str) else None
+    if not match:
+        raise ValueError("integrity must be 64 lowercase hex (SHA-256) or sha256-/sha384-/sha512- SRI")
+    digest = base64.b64decode(match.group(2), validate=True)
+    if len(digest) != hashlib.new(match.group(1)).digest_size:
+        raise ValueError("integrity digest has the wrong length")
+    return match.group(1), digest
+
+
+def verify_pinned_asset(raw: bytes, integrity: str, *, max_bytes: int = PLOTLY_JS_MAX_BYTES,
+                        label: str = "asset") -> bytes:
+    """Return ``raw`` only if it matches ``integrity``; fail before any decoding, caching or execution.
+
+    ``integrity`` is a 64-hex SHA-256 or an SRI value (``sha256-``/``sha384-``/``sha512-``),
+    so the same pin serves the ``<script integrity>`` attribute and offline embedding.
+    """
+    algorithm, expected = _parse_integrity(integrity)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    if not isinstance(raw, bytes):
+        raise TypeError(f"{label} payload must be bytes")
+    if not raw:
+        raise RuntimeError(f"{label}: empty body")
+    if len(raw) > max_bytes:
+        raise RuntimeError(f"{label} exceeds {max_bytes} byte limit")
+    actual = hashlib.new(algorithm, raw).digest()
+    if not hmac.compare_digest(actual, expected):
+        shown = actual.hex() if algorithm == "sha256" else base64.b64encode(actual).decode("ascii")
+        raise RuntimeError(f"{label} {_ALGORITHM_NAMES[algorithm]} mismatch: {shown}")
+    return raw
+
+
+def fetch_pinned_asset(url: str, integrity: str, *, max_bytes: int = PLOTLY_JS_MAX_BYTES,
+                       timeout: float = 60.0, label: str | None = None) -> bytes:
+    """Explicitly fetch fixed HTTPS bytes and verify them; never accept alternate or partial bytes.
+
+    Rendering helpers do not call this. Consumers own caching of verified bytes and can
+    re-check cached or local copies with verify_pinned_asset().
+    """
+    label = label or url
+    _parse_integrity(integrity)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    if urlsplit(url).scheme != "https":
+        raise ValueError("url must be https")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    request = urllib.request.Request(url, headers={"User-Agent": "web-ui/1.0 (verified asset)"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status if hasattr(response, "status") else response.getcode()
+            if status != 200:
+                raise RuntimeError(f"{label} returned HTTP {status} for {url}")
+            raw = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"{label} request failed: HTTP {exc.code} {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{label} request failed: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"{label} request failed: {exc}") from exc
+    return verify_pinned_asset(raw, integrity, max_bytes=max_bytes, label=label)
+
+
+def verify_remote_script(name: str, raw: bytes) -> bytes:
+    """Verify local bytes of an allowlisted remote script (e.g. ``pptxgenjs``) against its pinned SRI."""
+    if name not in REMOTE_SCRIPT_NAMES:
+        raise ValueError(f"unknown remote script: {name}")
+    url = REMOTE_SCRIPT_NAMES[name]
+    if url not in REMOTE_SCRIPT_INTEGRITY:
+        raise ValueError(f"remote script is not pinned: {name}")
+    return verify_pinned_asset(raw, REMOTE_SCRIPT_INTEGRITY[url], label=name)
+
+
 def verify_plotly_js(raw: bytes) -> bytes:
-    """Return the pinned bytes or fail before any decoding, caching or execution."""
+    """Return CDN bytes or fail before any decoding, caching or execution."""
     if not isinstance(raw, bytes):
         raise TypeError("Plotly.js payload must be bytes")
     if not raw:
         raise RuntimeError("Plotly.js CDN returned an empty body")
     if len(raw) > PLOTLY_JS_MAX_BYTES:
         raise RuntimeError(f"Plotly.js exceeds {PLOTLY_JS_MAX_BYTES} byte limit")
-    actual = hashlib.sha256(raw).hexdigest()
-    if actual != PLOTLY_JS_SHA256:
-        raise RuntimeError(f"Plotly.js {PLOTLY_JS_VERSION} SHA-256 mismatch: {actual}")
     return raw
 
 
 def fetch_plotly_js(*, timeout: float = 60.0) -> bytes:
-    """Explicitly fetch the fixed CDN bundle; never accept alternate or partial bytes.
+    """Explicitly fetch the allowlisted jsDelivr bundle with a bounded read.
 
     Rendering helpers do not call this function. Consumers own successful-byte
     caching; cached/local bytes can be checked with verify_plotly_js().
@@ -264,8 +347,9 @@ def render_document(
     scripts allow only local paths, without query/fragment. ``remote_scripts``
     accepts only URLs returned by ``remote_scripts()`` (explicit HTTPS allowlist).
     Remote classic scripts are emitted in ``<head>`` so body inline initializers
-    can depend on them. Pinned allowlist entries include their integrity
-    attribute and anonymous CORS. Callers own script contents, imports and
+    can depend on them. Pinned allowlist entries include integrity and anonymous
+    CORS; plotly.js is unpinned without integrity. Callers own script contents,
+    imports and
     serving without remote redirects.
     trusted_html is verbatim and may bypass these link checks (including via a
     base element); it must only contain caller-audited HTML. This is an HTML
@@ -1185,7 +1269,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
     parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
+    parser.add_argument("--sri", type=Path, metavar="FILE",
+                        help="print the sha384 SRI and SHA-256 hex of FILE (for pinning a new asset) and exit")
     args = parser.parse_args(argv)
+    if args.sri:
+        try:
+            raw = args.sri.read_bytes()
+        except OSError as exc:
+            parser.error(str(exc))
+        sys.stdout.write(f"{sri(raw)}\nsha256 {hashlib.sha256(raw).hexdigest()}\n")
+        return 0
     if args.stub and not args.asset_base:
         parser.error("--stub requires --asset-base")
     if args.with_scripts is not None and not args.asset_base:

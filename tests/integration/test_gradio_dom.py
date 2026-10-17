@@ -22,7 +22,7 @@ def test_gradio_dom(tmp_path, monkeypatch):
     from playwright.sync_api import sync_playwright, expect
     btk = Path(os.environ['BTK_ROOT']).resolve()
     extractor = load('shared_page_text', btk / 'scripts/page_text.py')
-    lab = load('gradio_lab', ROOT / 'tool/serve_dom_lab.py')
+    lab = load('gradio_lab', ROOT / 'tool/web_ui_serve_dom_lab.py')
     alpine = json.loads((ROOT / 'docs/evidence/alpine-code-dom.json').read_text())
     deno = json.loads((ROOT / 'docs/evidence/deno-doc-dom.json').read_text())['samples'][0]
     samples = [(alpine['html'], alpine['visible_text']), (deno['dom_html'], deno['inner_text']),
