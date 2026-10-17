@@ -12,14 +12,12 @@ from web_ui import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+PLOTLY_JSDELIVR = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min/plotly.min.js"
 
 
 class PlotlyFigureTests(unittest.TestCase):
     def test_remote_scripts_allowlist_is_explicit(self):
-        self.assertEqual(
-            remote_scripts("plotly.js"),
-            ("https://cdn.plot.ly/plotly-4.1.1.min.js",),
-        )
+        self.assertEqual(remote_scripts("plotly.js"), (PLOTLY_JSDELIVR,))
         with self.assertRaises(ValueError):
             remote_scripts()
         with self.assertRaises(ValueError):
@@ -56,7 +54,8 @@ class PlotlyFigureTests(unittest.TestCase):
             remote_scripts=remote_scripts("plotly.js"),
         )
         head, body = html.split("</head>", 1)
-        self.assertIn('src="https://cdn.plot.ly/plotly-4.1.1.min.js"', head)
+        self.assertIn(f'src="{PLOTLY_JSDELIVR}"', head)
+        self.assertNotIn("integrity=", head)
         self.assertNotIn("plotly-latest", body.split("<body", 1)[1].split("</body>", 1)[0])
         self.assertIn('id="plot"', body)
 
@@ -80,7 +79,8 @@ class PlotlyFigureTests(unittest.TestCase):
             cwd=ROOT,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("plotly-4.1.1.min.js", run.stdout)
+        self.assertIn("plotly.js-dist-min/plotly.min.js", run.stdout)
+        self.assertNotIn("integrity=", run.stdout)
 
     def test_one_liner_without_python_plotly_package(self):
         code = (
@@ -92,7 +92,8 @@ class PlotlyFigureTests(unittest.TestCase):
         run = subprocess.run([sys.executable, "-S", "-c", code], text=True, capture_output=True, cwd=ROOT)
         self.assertEqual(run.returncode, 0, run.stderr)
         head, rest = run.stdout.split("</head>", 1)
-        self.assertIn("plotly-4.1.1.min.js", head)
+        self.assertIn("plotly.js-dist-min/plotly.min.js", head)
+        self.assertNotIn("integrity=", head)
         self.assertIn("Plotly.newPlot", rest)
 
 

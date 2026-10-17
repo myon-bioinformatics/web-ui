@@ -2,7 +2,7 @@
 
 Text is escaped by default. HTML and CSS supplied explicitly are trusted source,
 not sanitized user input. Rendering never fetches assets; fetch_plotly_js() is an
-explicit, integrity-checked download helper. JavaScript is omitted
+explicit download helper with bounded reads. JavaScript is omitted
 by default; callers may opt in to local module script links. Node is wrapped
 only as an explicit subprocess helper for pytest/CI one-liners.
 """
@@ -33,21 +33,16 @@ SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigat
 # sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
 _PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
 _PPTXGENJS_SRI = "sha384-qb0Xhi7LLYpvW1HCK6oMrmDLSY9sy7vwm6ZlV6KjtrlL9yg30+YN4neTwnmX+Kp8"
-# One distribution contract for external tags and explicit offline embedding.
-# CDN and plotly.js-dist-min@4.1.1 bytes independently matched this SHA-256.
-PLOTLY_JS_VERSION = "4.1.1"
-PLOTLY_JS_URL = f"https://cdn.plot.ly/plotly-{PLOTLY_JS_VERSION}.min.js"
-PLOTLY_JS_SHA256 = "3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f"
+# jsDelivr resolves plotly.js-dist-min to the latest npm release (not plotly-latest).
+PLOTLY_JS_URL = "https://cdn.jsdelivr.net/npm/plotly.js-dist-min/plotly.min.js"
 PLOTLY_JS_MAX_BYTES = 8 * 1024 * 1024
-PLOTLY_JS_SRI = "sha256-" + base64.b64encode(bytes.fromhex(PLOTLY_JS_SHA256)).decode("ascii")
 # Explicit HTTPS allowlist for opt-in remote classic scripts (not ES modules).
 REMOTE_SCRIPT_NAMES: dict[str, str] = {
     "plotly.js": PLOTLY_JS_URL,
     "pptxgenjs": _PPTXGENJS_URL,
 }
-# Every remote allowlist entry has fixed bytes and Subresource Integrity.
+# Pinned remote entries carry Subresource Integrity; unpinned plotly.js does not.
 REMOTE_SCRIPT_INTEGRITY: dict[str, str] = {
-    PLOTLY_JS_URL: PLOTLY_JS_SRI,
     _PPTXGENJS_URL: _PPTXGENJS_SRI,
 }
 _PPTX_LAYOUTS = frozenset({"LAYOUT_4x3", "LAYOUT_16x9", "LAYOUT_16x10", "LAYOUT_WIDE"})
@@ -131,7 +126,8 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
     These are classic (non-module) scripts loaded from a remote origin. They are
     intentionally separate from ``shared_scripts()`` so remote execution stays an
     explicit consumer choice. Callers own network access and CSP. Pinned entries
-    are emitted with Subresource Integrity and anonymous CORS.
+    (for example pptxgenjs) are emitted with Subresource Integrity and anonymous
+    CORS; plotly.js is unpinned and has no integrity attribute.
     """
     if not names:
         raise ValueError("names must not be empty")
@@ -142,21 +138,18 @@ def remote_scripts(*names: str) -> tuple[str, ...]:
 
 
 def verify_plotly_js(raw: bytes) -> bytes:
-    """Return the pinned bytes or fail before any decoding, caching or execution."""
+    """Return CDN bytes or fail before any decoding, caching or execution."""
     if not isinstance(raw, bytes):
         raise TypeError("Plotly.js payload must be bytes")
     if not raw:
         raise RuntimeError("Plotly.js CDN returned an empty body")
     if len(raw) > PLOTLY_JS_MAX_BYTES:
         raise RuntimeError(f"Plotly.js exceeds {PLOTLY_JS_MAX_BYTES} byte limit")
-    actual = hashlib.sha256(raw).hexdigest()
-    if actual != PLOTLY_JS_SHA256:
-        raise RuntimeError(f"Plotly.js {PLOTLY_JS_VERSION} SHA-256 mismatch: {actual}")
     return raw
 
 
 def fetch_plotly_js(*, timeout: float = 60.0) -> bytes:
-    """Explicitly fetch the fixed CDN bundle; never accept alternate or partial bytes.
+    """Explicitly fetch the allowlisted jsDelivr bundle with a bounded read.
 
     Rendering helpers do not call this function. Consumers own successful-byte
     caching; cached/local bytes can be checked with verify_plotly_js().
@@ -264,8 +257,9 @@ def render_document(
     scripts allow only local paths, without query/fragment. ``remote_scripts``
     accepts only URLs returned by ``remote_scripts()`` (explicit HTTPS allowlist).
     Remote classic scripts are emitted in ``<head>`` so body inline initializers
-    can depend on them. Pinned allowlist entries include their integrity
-    attribute and anonymous CORS. Callers own script contents, imports and
+    can depend on them. Pinned allowlist entries include integrity and anonymous
+    CORS; plotly.js is unpinned without integrity. Callers own script contents,
+    imports and
     serving without remote redirects.
     trusted_html is verbatim and may bypass these link checks (including via a
     base element); it must only contain caller-audited HTML. This is an HTML
