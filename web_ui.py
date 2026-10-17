@@ -195,6 +195,8 @@ def fetch_pinned_asset(url: str, integrity: str, *, max_bytes: int = PLOTLY_JS_M
     """
     label = label or url
     _parse_integrity(integrity)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
     if urlsplit(url).scheme != "https":
         raise ValueError("url must be https")
     if not math.isfinite(timeout) or timeout <= 0:

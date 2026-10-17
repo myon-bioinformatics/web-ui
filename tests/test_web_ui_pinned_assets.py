@@ -63,6 +63,13 @@ class PinnedAssetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ui.fetch_pinned_asset('https://cdn.example/lib.js', 'nope')
 
+    def test_fetch_rejects_invalid_limits_before_network(self):
+        for limit in (-2, -1, 0, True, 1.5, None):
+            with self.subTest(limit=limit), patch('urllib.request.urlopen') as opener:
+                with self.assertRaisesRegex(ValueError, 'positive integer'):
+                    ui.fetch_pinned_asset('https://cdn.example/lib.js', ui.sri(RAW), max_bytes=limit)
+                opener.assert_not_called()
+
     def test_remote_script_pins(self):
         url = ui.REMOTE_SCRIPT_NAMES['pptxgenjs']
         with patch.dict(ui.REMOTE_SCRIPT_INTEGRITY, {url: ui.sri(RAW)}):
