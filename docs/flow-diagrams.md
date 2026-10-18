@@ -1,4 +1,4 @@
-# Static flow diagrams (optional, no JavaScript)
+# Static flow diagrams and optional image export
 
 Additive web-ui diagram component: JSON → HTML/CSS or Mermaid Markdown. No changes to frozen contract/v1.
 
@@ -13,7 +13,7 @@ python -S -m unittest discover -s tests -p 'test_flow_diagram.py' -v
 
 The HTML variant uses existing web-ui themes and `css/flow.css`. The standalone HTML output embeds the local CSS. A fragment can be embedded in an existing consumer page using `--format fragment`.
 
-Mermaid Markdown renders on GitHub; it is source code, not an SVG/PNG renderer. Ironmate [PR #122](https://github.com/myon-bioinformatics/Ironmate/pull/122) connects this JSON contract to its existing `mermaid_svg.py` + mmdc and Image Studio raster output. The adapter provides Mermaid Markdown, SVG, PNG, standard padded Base64 and PNG data URI through CLI, Python and a thin Node-to-Python wrapper. See [Ironmate flow export](https://github.com/myon-bioinformatics/Ironmate/blob/feat/web-ui-flow-export/docs/flow-export.md) for requirements and examples. The adapter is pending integration until that PR is merged.
+Mermaid Markdown renders on GitHub; it is source code, not an SVG/PNG renderer. Ironmate connects this JSON contract to its existing `mermaid_svg.py` + mmdc and Image Studio raster output. The adapter provides Mermaid Markdown, SVG, PNG, standard padded Base64 and PNG data URI through CLI, Python and a thin Node-to-Python wrapper. See [Ironmate flow export](https://github.com/myon-bioinformatics/Ironmate/blob/main/docs/flow-export.md) for requirements and examples.
 
 User labels are escaped as HTML text and encoded for Mermaid labels. The input is intentionally bounded (256KiB, at most eight sources and eight steps). It is a linear merge-style flow, not a general graph editor. Use `examples/pr-flow.json` as a sample. Do not load remote scripts or send input to a server.
 
