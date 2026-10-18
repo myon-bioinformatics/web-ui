@@ -42,7 +42,7 @@ class FlowDiagramTests(unittest.TestCase):
     def test_invalid_specs_fail(self):
         invalid = [None, {}, {"title": "x", "sources": [], "steps": [{"title": "ok"}]},
                    {"title": "x", "sources": [{"title": "z", "raw_html": "x"}], "steps": [{"title": "ok"}]},
-                   {"title": "x", "sources": [{"title": "one\\ntwo"}], "steps": [{"title": "ok"}]},
+                   {"title": "x", "sources": [{"title": "one" + chr(10) + "two"}], "steps": [{"title": "ok"}]},
                    {"title": "x", "sources": [{"title": "ok"}], "steps": [{"title": ""}]},
                    {"title": "x", "sources": [{"title": "ok"}] * 9, "steps": [{"title": "ok"}]}]
         for item in invalid:
