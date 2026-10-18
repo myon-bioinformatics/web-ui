@@ -17,3 +17,11 @@ test("invalid late patch does not mutate input", () => {
     {path:"/title",value:"new"}, {path:"/steps/99/note",value:"bad"}]));
   assert.equal(JSON.stringify(sample), old);
 });
+test("invalid null or overlong late operation leaves caller state intact", () => {
+  for (const [path, value] of [["/steps/0/note", null], ["/sources_label", null],
+    ["/steps/0/title", "😀".repeat(121)], ["/steps/0/title", "\ud800"]]) {
+    const old = JSON.stringify(sample);
+    assert.throws(() => patchFlow(sample, [{path:"/title",value:"first valid edit"}, {path,value}]));
+    assert.equal(JSON.stringify(sample), old);
+  }
+});
