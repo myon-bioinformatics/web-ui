@@ -177,6 +177,27 @@ and canonicalize to `#wiki`, preserving other query fields. No alias is enabled
 by default. `openExternalURL(url, window)` supplies the same HTTP(S) validation
 and new-tab policy to legacy consumers' existing buttons.
 
+### Route tables: move by emoji or name, offline and online
+
+```sh
+python -S -c 'from web_ui import route_links; print(route_links({"/": "\U0001F3E0", "/map": "\U0001F5FA\ufe0f"}))'
+```
+
+`route_links(registry)` validates a route table (the `{"/route": key}` registry
+shape of browser-test-kit `route_trail.py`, or `[{"route", "key", "label"}]`) and
+emits escaped links plus the table as inert JSON (`<script type="application/json"
+id="ui-route-table">`). `navigation.js` binds it automatically: links get `href`, the
+current page gets `aria-current`, `[data-ui-go=KEY]` buttons navigate, and
+`webUiNavigation.bindRouteTable(window, {}).go(KEY)` moves by emoji, name or route.
+Keys compare without U+FE0F, so both spellings of a heading emoji name one route; a key
+naming two routes, a repeated route, or a relative/`//`/`#` route is rejected (the same
+cases in `tests/fixtures/route_table_cases.json` run against Python and JS).
+Hash routing (`#/route`, the default) works from `file://`; there, load
+`navigation.js` with a classic `<script src>`, because browsers block
+`type="module"` scripts from `file://`. `tests/integration/route_table_browser.py`
+walks the same table in Chromium from `file://` and over HTTP. Ordered multi-page
+trails and walking a deployed site remain browser-test-kit `route_trail.py --run`.
+
 ## Plotly figure specs without the Python plotly package
 
 Consumers such as Aoi/DRAgoWing can render charts from a Plotly figure JSON

@@ -1184,6 +1184,62 @@ def view_tabs(views: tuple[tuple[str, str], ...], *, default_view: str = "home")
         for name, label in views) + '</nav>'
 
 
+_ROUTE_PATH = re.compile(r"/[^\s#?\\]*\Z")
+
+
+def route_table(registry) -> list[dict]:
+    """Validate a route table: ``{"/route": key}`` or ``[{"route", "key"|"emoji", "label"?}]``.
+
+    Same rules as ``navigation.js`` ``routeTable`` (and browser-test-kit
+    ``route_trail.py`` registries): routes are absolute app paths, keys are
+    nonempty tokens, the identity drops U+FE0F, and a key naming two routes or a
+    repeated route is an error. Returns rows with ``route``, ``key``, ``identity``, ``label``.
+    """
+    rows = registry if isinstance(registry, list) else [{"route": r, "key": k} for r, k in dict(registry).items()]
+    seen_routes, seen_keys, out = set(), {}, []
+    for row in rows:
+        route, key = row.get("route"), row.get("key", row.get("emoji"))
+        if not isinstance(route, str) or not _ROUTE_PATH.match(route) or "//" in route:
+            raise ValueError(f"route must be an absolute app path such as /map: {route!r}")
+        if not isinstance(key, str) or not key.strip() or any(c.isspace() for c in key):
+            raise ValueError(f"route key must be a nonempty token: {route}")
+        identity = key.replace("\ufe0f", "")
+        if route in seen_routes:
+            raise ValueError(f"duplicate route: {route}")
+        if identity in seen_keys:
+            raise ValueError(f"route key names two routes: {key}")
+        seen_routes.add(route)
+        seen_keys[identity] = route
+        label = row.get("label")
+        out.append({"route": route, "key": key, "identity": identity, "label": label if isinstance(label, str) else None})
+    if not out:
+        raise ValueError("route table is empty")
+    return out
+
+
+def route_links(registry, *, routing: str = "hash", label: str = "Pages") -> str:
+    """Escaped links for a route table plus the table as inert JSON for ``navigation.js``.
+
+    ``routing="hash"`` (``#/route``) works from ``file://`` and static hosting;
+    ``"path"`` needs a server that serves each path. Each link carries
+    ``data-ui-go`` with its key, so ``webUiNavigation.bindRouteTable`` (bound
+    automatically by ``bindNavigation``) marks the current page and
+    ``go("<key>")`` navigates by emoji or name. Without JavaScript the
+    ``href`` still navigates.
+    """
+    if routing not in ("hash", "path"):
+        raise ValueError("routing must be hash or path")
+    rows = route_table(registry)
+    payload = json.dumps([{k: r[k] for k in ("route", "key", "label") if r[k] is not None} for r in rows],
+                         ensure_ascii=False).replace("<", "\\u003c")
+    links = " ".join(
+        f'<a class="ui-button" href="{escape(("#" if routing == "hash" else "") + r["route"])}" '
+        f'data-ui-go="{escape(r["key"])}">{escape(r["key"] + (" " + r["label"] if r["label"] else ""))}</a>'
+        for r in rows)
+    return (f'<nav aria-label="{escape(label)}">{links}</nav>'
+            f'<script type="application/json" id="ui-route-table" data-ui-routing="{routing}">{payload}</script>')
+
+
 def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] | None = None,
                    remove_stylesheets: tuple[str, ...] = (), theme: str = "modern") -> str:
     """Apply shared presentation to an audited, double-quoted static export.

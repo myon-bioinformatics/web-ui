@@ -1,0 +1,14 @@
+/* Optional flow diagram component: no JS and no changes to contract/v1. */
+@layer components {
+.ui-flow{padding:clamp(.8rem,3vw,1.8rem);margin:1.25rem 0;border:1px solid var(--ui-border);border-radius:1.5rem;background:var(--ui-bg);color:var(--ui-fg)}
+.ui-flow-caption{margin:0 0 1.25rem;font-size:clamp(1rem,2.25vw,1.25rem);font-weight:700;text-align:center}
+.ui-flow-sources{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,10.5rem),1fr));gap:.85rem;list-style:none;margin:0;padding:0}
+.ui-flow-steps{list-style:none;padding:0;margin:0}
+.ui-flow-source,.ui-flow-step{min-width:0}
+.ui-flow-card{border:1px solid var(--ui-border);border-radius:1.2rem;background:var(--ui-panel);padding:clamp(1rem,3vw,1.7rem);text-align:center;overflow-wrap:anywhere}
+.ui-flow-card-title{display:block;font-weight:750;font-size:clamp(1.15rem,2.5vw,1.9rem);line-height:1.4}
+.ui-flow-card-note{display:block;margin-top:.5rem;color:var(--ui-muted);line-height:1.5}
+.ui-flow-arrow,.ui-flow-step+.ui-flow-step::before{display:block;content:"↓";margin:.85rem auto;width:fit-content;color:var(--ui-muted);font-size:1.8rem;line-height:1.4;font-weight:700;text-align:center}
+@media(max-width:520px){.ui-flow-sources{grid-template-columns:1fr}.ui-flow-card{padding:.85rem}}
+@media print{.ui-flow,.ui-flow-card{break-inside:avoid}}
+}
