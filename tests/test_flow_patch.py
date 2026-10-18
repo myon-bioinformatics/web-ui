@@ -35,6 +35,15 @@ class FlowPatchTests(unittest.TestCase):
                 patch_flow(SPEC, operations)
             self.assertEqual(json.dumps(SPEC, ensure_ascii=False), before)
 
+    def test_cli_rejects_malformed_utf8_and_oversize(self):
+        for raw in (b"\\xff", b" " * (320 * 1024 + 1)):
+            with self.subTest(size=len(raw)):
+                for command in ([sys.executable, "-S", "-m", "tool.flow_patch"],
+                                ["node", "js/flow-patch.cjs"]):
+                    result = subprocess.run(command, input=raw, capture_output=True, cwd=ROOT)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(result.stdout, b"")
+
     def test_python_node_cli_parity(self):
         data = {"spec": SPEC, "patch": [{"path": "/steps/1/note", "value": "CI完了"}]}
         input_text = json.dumps(data, ensure_ascii=False)
