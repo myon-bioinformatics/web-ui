@@ -53,19 +53,34 @@ def _https(url):
 
 
 def _verdicts(dataset):
-    """{(adapter, env id): (verdict, build)} from a btk dataset (records may lack a target)."""
+    """Index legacy IDs and screenshot environment keys without the execution-mode suffix."""
     out = {}
     for record in (dataset or {}).get("records", []):
         target, env = record.get("target") or {}, record.get("env") or {}
-        if target.get("adapter") and env.get("id"):
-            build = (target.get("provenance") or {}).get("value")
-            out[target["adapter"], env["id"]] = (record.get("verdict"), build if isinstance(build, str) else None)
+        if not target.get("adapter"):
+            continue
+        keys = {env["id"]} if isinstance(env.get("id"), str) and env["id"] else set()
+        parts = (env.get("os"), env.get("channel") or env.get("browser"), env.get("profile"))
+        if all(isinstance(p, str) and p for p in parts):
+            keys.add("-".join(parts))
+        build = (target.get("provenance") or {}).get("value")
+        for name in keys:
+            key = (target["adapter"], name)
+            if key in out:
+                raise ValueError(f"ambiguous observations for {key}")
+            out[key] = (record.get("verdict"), build if isinstance(build, str) else None)
     return out
 
 
 def _tile(report, cells, verdicts, adapter, env, tiles_base):
     cell = cells.get((adapter, env))
     verdict, build = verdicts.get((adapter, env), (None, None))
+    # app_comparison has already joined the exact screenshot cell to its observation.
+    observation = (cell or {}).get("observation")
+    if isinstance(observation, dict):
+        verdict = observation.get("verdict")
+        build = observation.get("build")
+        build = build if isinstance(build, str) else None
     classes = []
     if cell is None:
         classes.append("is-missing")

@@ -27,6 +27,12 @@ reference environment, and, with a browser-test-kit dataset, pass/fail and the d
 build commit that environment saw. Missing captures are marked, failures outlined. The tile column, gap and padding come from switchable [layout presets](layout-presets.md)
 (default: the 8 px grid of the capture widths and Ironmate tiles); the viewer offers them as radio buttons.
 
+When a report cell includes an `observation`, its verdict and build take precedence.
+Otherwise the dataset is joined by structured OS, channel (or browser), and profile,
+matching screenshot directory names without the headless/headed suffix. Legacy exact
+environment IDs remain supported. Ambiguous records for the same tile are rejected
+instead of silently selecting one observation.
+
 Differences are tile-level hints from Ironmate, not pixel-exact gates. Mobile profiles are
 emulation. Inputs are trusted JSON from those tools; text is escaped, page URLs must be
 HTTPS and asset/tile bases must be local paths.

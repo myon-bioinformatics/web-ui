@@ -62,6 +62,37 @@ def test_viewer_escapes_and_embeds_css():
     assert ".ui-matrix:has(" in page and '<body data-ui-theme="modern">' in page
 
 
+@pytest.mark.parametrize("browser,channel", [("chromium", None), ("chromium", "chrome")])
+def test_viewer_joins_structured_environment_without_headless_suffix(browser, channel):
+    env_key = f"Linux-{channel or browser}-desktop"
+    dataset = {"records": [{"env": {"id": env_key + "-headless", "os": "Linux", "browser": browser,
+                                    "channel": channel, "profile": "desktop"}, "verdict": "fail",
+                            "target": {"adapter": "flutter-home", "provenance": {"value": "b" * 40}}}]}
+    data = report(reference=env_key, envs=[env_key], cells=[{"page": "flutter-home", "env": env_key}])
+    page = cm.viewer(PAGES, data, dataset)
+    assert '<li class="is-fail is-reference">' in page
+    assert "fail \u00b7 build " + "b" * 12 in page
+
+
+def test_viewer_prefers_the_report_cell_observation_over_dataset_aliases():
+    data = report(cells=[{"page": "flutter-home", "env": "Linux-chromium-desktop",
+                          "observation": {"verdict": "fail", "build": "c" * 40}}])
+    dataset = {"records": [{"env": {"id": "Linux-chromium-desktop"}, "verdict": "pass",
+                            "target": {"adapter": "flutter-home", "provenance": {"value": "a" * 40}}}]}
+    for source in (None, dataset):
+        page = cm.viewer(PAGES, data, source)
+        assert "fail \u00b7 build " + "c" * 12 in page
+        assert "pass \u00b7 build " + "a" * 12 not in page
+
+
+def test_viewer_rejects_ambiguous_mode_aliases():
+    records = [{"env": {"id": "Linux-chromium-desktop-" + mode, "os": "Linux", "browser": "chromium",
+                         "profile": "desktop"}, "verdict": verdict, "target": {"adapter": "flutter-home"}}
+               for mode, verdict in (("headless", "pass"), ("headed", "fail"))]
+    with pytest.raises(ValueError, match="ambiguous observations"):
+        cm.viewer(PAGES, report(), {"records": records})
+
+
 def test_matrix_css_defaults_are_on_the_8px_grid():
     # Defaults only: layout presets (examples/layout-presets.json) may switch to other values.
     import re
