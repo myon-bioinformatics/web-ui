@@ -195,6 +195,12 @@ they add no screen-content or pixel-regression assertions.
 
 Public source placement and automatic Python CI updates: [vendor automation](docs/vendor-automation.md).
 
+## Multi-browser captures of Flutter pages
+
+`examples/flutter-pages.json` lists the representative flutter_navigation_basic pages by emoji
+(route table + published URL), and `tool/capture_matrix.py` turns browser-test-kit captures and
+Ironmate's comparison sheet into a static viewer opened by emoji. See [capture matrix](docs/capture-matrix.md).
+
 ## Python static wrapper
 
 `web_ui.py` is a portable, stdlib-only HTML emitter for Python 3.10+. It accepts
