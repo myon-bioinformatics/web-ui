@@ -90,7 +90,7 @@ jobs:
         run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "26"
       - name: Install Python verification tools
         run: python -m pip install -r tests/requirements.txt
       - name: Verify GitHub CLI
@@ -127,7 +127,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Verify Node/Python flow diagram parity
-        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs
+        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs tests/types.node.cjs
+      - name: Type-check the .d.cts declarations (pinned TypeScript)
+        run: npx --yes -p typescript@7.0.2 tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 tests/types-usage.cts
       - name: Execute repository diagnostics renderer
         run: node tests/repository_diagnostics.node.js
       - name: Generate canonical repository metadata (stdlib only)
@@ -195,7 +197,7 @@ jobs:
       run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
     - uses: actions/setup-node@v7
       with:
-        node-version: '22'
+        node-version: '26'
     - name: Install Python verification tools
       run: python -m pip install -r tests/requirements.txt
     - name: Verify GitHub CLI

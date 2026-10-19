@@ -203,6 +203,11 @@ Ironmate's comparison sheet into a static viewer opened by emoji. See [capture m
 Its tile layout switches live between presets (8px grid, compact, device width, wide); see [layout presets](docs/layout-presets.md)
 for the JSON, the Python/Node CSS generators and the sweep that lists every preset that holds.
 
+Every Node module in `js/*.cjs` ships a `.d.cts` declaration beside it, so TypeScript and
+editors type-check `require("web-ui/js/flow.cjs")` with no build step. `tests/types.node.cjs`
+keeps the declared names equal to the runtime exports, and CI compiles `tests/types-usage.cts`
+with a pinned TypeScript.
+
 ## Python static wrapper
 
 `web_ui.py` is a portable, stdlib-only HTML emitter for Python 3.10+. It accepts
