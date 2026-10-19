@@ -65,3 +65,15 @@ class ControlsTests(unittest.TestCase):
     def test_explicit_markdown_renderer_output_is_composable(self):
         self.assertIn('<table>', ui.details('Table', trusted_html='<table><tr><td>value</td></tr></table>'))
         self.assertNotIn('<table>', ui.details('Table', '<table>'))
+
+    def test_badge_and_card_helpers(self):
+        hostile = '\"><script>alert(1)</script>&'
+        badge_html = ui.badge(hostile)
+        self.assertEqual(badge_html, '<span class="ui-tag">&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</span>')
+
+        card_html = ui.card(hostile, title=hostile)
+        self.assertIn('<article class="ui-card"><h2>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</h2>', card_html)
+        self.assertIn('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</article>', card_html)
+
+        trusted_card = ui.card(title='Card Title', trusted_html='<p>Trusted content</p>')
+        self.assertEqual(trusted_card, '<article class="ui-card"><h2>Card Title</h2><p>Trusted content</p></article>')

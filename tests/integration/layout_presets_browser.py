@@ -62,6 +62,36 @@ class LayoutPresetTests(unittest.TestCase):
         labelled = capture_matrix.viewer(PAGES, REPORT, embed_css=True, layouts=BROKEN, candidates=result)
         self.assertIn("ok at 1280px; check at 320px, 384px", labelled)
 
+    def assert_no_candidates(self, result):
+        self.assertFalse(result["every_width_has_a_candidate"])
+        self.assertEqual(result["by_width"], {"320": [], "1280": []})
+        self.assertEqual(len(result["observations"]), 2 * len(SPEC["presets"]))
+        for row in result["observations"]:
+            self.assertFalse(row["ok"])
+            self.assertEqual(row["items"], 0)
+            self.assertIn("no_items", row["failed"])
+        for row in result["presets"].values():
+            self.assertEqual(row, {"passed": [], "failed": [320, 1280]})
+
+    def test_sweep_rejects_selector_without_matches(self):
+        result = layout_presets.sweep(self.page.as_uri(), SPEC, [320, 1280], items=".typo-no-tiles")
+        self.assert_no_candidates(result)
+
+    def test_sweep_rejects_unrendered_items(self):
+        # Matching DOM nodes are insufficient when none have rendered boxes.
+        self.page.write_text(self.page.read_text(encoding="utf-8").replace(
+            "</head>", "<style>.ui-matrix-tiles{display:none}</style></head>"), encoding="utf-8")
+        result = layout_presets.sweep(self.page.as_uri(), SPEC, [320, 1280], items=".ui-matrix-tiles li")
+        self.assert_no_candidates(result)
+
+    def test_cli_returns_failure_and_writes_evidence_when_items_are_missing(self):
+        out = Path(self.tmp.name) / "candidates.json"
+        status = layout_presets.main(["sweep", str(self.page), "--presets",
+                                      str(ROOT / "examples/layout-presets.json"), "--widths", "320", "1280",
+                                      "--items", ".typo-no-tiles", "--out", str(out)])
+        self.assertEqual(status, 1)
+        self.assert_no_candidates(json.loads(out.read_text(encoding="utf-8")))
+
 
 if __name__ == "__main__":
     unittest.main()

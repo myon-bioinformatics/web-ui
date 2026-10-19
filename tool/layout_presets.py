@@ -118,6 +118,7 @@ _CHECK_JS = r"""items => {
   if (de.scrollWidth > de.clientWidth + 0.5) failed.push('horizontal_overflow');
   const boxes = [...document.querySelectorAll(items)].filter(e => e.getClientRects().length)
     .map(e => e.getBoundingClientRect());
+  if (boxes.length === 0) failed.push('no_items');
   boxes.forEach((r, i) => { if (r.left < -0.5 || r.right > innerWidth + 0.5) failed.push('outside:' + i); });
   for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
     const a = boxes[i], b = boxes[j];

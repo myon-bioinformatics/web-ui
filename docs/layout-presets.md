@@ -33,7 +33,9 @@ For each width the sweep clicks each preset's radio like a person would, then ch
 layout: no horizontal overflow, and the `--items` boxes neither overlap nor leave the
 viewport. The result (`web-ui-layout-candidates/1`) lists, per preset, the widths where it
 held or needs a look, and per width every preset that held. Several passing presets are
-expected; the command fails only when some width has no preset that holds.
+expected; the command fails only when some width has no preset that holds. A selector
+that matches no rendered boxes fails with `no_items`, including when all matching
+elements are hidden with `display: none`; an empty inspection is never a passing candidate.
 
 Passing candidates go back into the page: `controls_html(spec, candidates)` (and
 `capture_matrix.py --candidates`) label each radio with "ok at …" / "check at …". Nothing is
