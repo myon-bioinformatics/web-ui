@@ -62,6 +62,13 @@ def test_viewer_escapes_and_embeds_css():
     assert ".ui-matrix:has(" in page and '<body data-ui-theme="modern">' in page
 
 
+def test_matrix_css_spacing_is_on_the_8px_grid():
+    import re
+    css = (ROOT / "css/matrix.css").read_text(encoding="utf-8")
+    sizes = [int(v) for v in re.findall(r"(?<![\d.])(\d+)px", css) if v not in ("1", "2")]  # borders/outlines
+    assert sizes and all(v % 8 == 0 for v in sizes) and "rem" not in css.replace(".8rem", "")
+
+
 @pytest.mark.parametrize("change", [
     {"report": {"schema": "other"}}, {"theme": "dark"}, {"tiles_base": "https://cdn"}, {"asset_base": "a\"b"},
     {"pages": {"pages": [{"route": "/x", "key": "k", "adapter": "a", "url": "http://insecure/"}]}},

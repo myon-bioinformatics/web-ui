@@ -14,7 +14,7 @@ set is checked against browser-test-kit's list by fixture, not by import.
 
 ```sh
 # browser-test-kit platform-apps artifacts -> Ironmate sheet -> web-ui viewer
-python -S ../Ironmate/browser_matrix.py app-results --out matrix
+python -S ../Ironmate/browser_matrix.py app-results --out matrix   # default shot width-384
 python -S tool/capture_matrix.py --pages examples/flutter-pages.json \
   --report matrix/report.json [--dataset app-matrix/dataset.json] --embed-css > matrix/viewer.html
 ```
@@ -24,7 +24,8 @@ page and all pages are shown without a fragment, so the viewer needs no JavaScri
 works from `file://`. Each page shows one tile per environment (Ironmate's
 `tiles/<page>/<env>.png`, relative to `--tiles-base`), the tile difference from the
 reference environment, and, with a browser-test-kit dataset, pass/fail and the deployed
-build commit that environment saw. Missing captures are marked, failures outlined.
+build commit that environment saw. Missing captures are marked, failures outlined. Spacing and the tile column width in
+`css/matrix.css` are multiples of 8 px, the same grid as the capture widths and Ironmate tiles.
 
 Differences are tile-level hints from Ironmate, not pixel-exact gates. Mobile profiles are
 emulation. Inputs are trusted JSON from those tools; text is escaped, page URLs must be
