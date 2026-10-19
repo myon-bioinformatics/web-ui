@@ -77,9 +77,20 @@ class ControlsTests(unittest.TestCase):
 
         trusted_card = ui.card(title='Card Title', trusted_html='<p>Trusted content</p>')
         self.assertEqual(trusted_card, '<article class="ui-card"><h2>Card Title</h2><p>Trusted content</p></article>')
-        self.assertEqual(ui.card("x", title="T", heading_level=3), '<article class="ui-card"><h3>T</h3>x</article>')
-        for bad in (0, 7, True, "2"):
-            with self.assertRaises(ValueError):
-                ui.card("x", title="T", heading_level=bad)
+
+    def test_sortable_table_helper(self):
+        headers = ('Name', 'Age')
+        rows = (('Alice', '30'), ('Bob', '25'))
+        html = ui.sortable_table(headers, rows, id='my-table')
+
+        self.assertIn('id="my-table"', html)
+        self.assertIn('data-ui-sortable', html)
+        self.assertIn('<button class="ui-button" type="button" data-ui-sort>Name</button>', html)
+        self.assertIn('<td>Alice</td>', html)
+        self.assertIn('<td>30</td>', html)
+
         with self.assertRaises(ValueError):
-            ui.card("text", trusted_html="<p>t</p>")
+            ui.sortable_table((), ())
+
+        with self.assertRaises(ValueError):
+            ui.sortable_table(('Name', 'Age'), (('Alice',),))

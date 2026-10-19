@@ -200,8 +200,6 @@ Public source placement and automatic Python CI updates: [vendor automation](doc
 `examples/flutter-pages.json` lists the representative flutter_navigation_basic pages by emoji
 (route table + published URL), and `tool/capture_matrix.py` turns browser-test-kit captures and
 Ironmate's comparison sheet into a static viewer opened by emoji. See [capture matrix](docs/capture-matrix.md).
-Its tile layout switches live between presets (8px grid, compact, device width, wide); see [layout presets](docs/layout-presets.md)
-for the JSON, the Python/Node CSS generators and the sweep that lists every preset that holds.
 
 ## Python static wrapper
 
@@ -319,7 +317,7 @@ unit tests alone do not establish browser execution.
 
 ### Common controls in one line
 
-`button`, `select`, `input_field`, `textarea`, `checkbox`, `badge`, `card`, `details`, and
+`button`, `select`, `input_field`, `textarea`, `checkbox`, `badge`, `card`, `sortable_table`, `details`, and
 `section_browser` now emit labeled native controls and components from Python. A local,
 explicitly loaded `controls.js` binds section selection to text output; native
 controls and disclosure work without JS. See [one-liners and the Markdown

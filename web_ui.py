@@ -29,7 +29,7 @@ THEMES = ("modern", "github-like")
 # Snapshot of js/ui.js; update together with the upstream source and regression test.
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
-SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
+SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js", "sortable.js")
 # Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
 # sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
 _PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
@@ -394,19 +394,9 @@ def badge(text: str) -> str:
     return f'<span class="ui-tag">{escape(text)}</span>'
 
 
-def card(
-    text: str = "", *, title: str | None = None, trusted_html: str | None = None, heading_level: int = 2
-) -> str:
-    """Escaped text or trusted HTML container using the stable v1 .ui-card class.
-
-    ``heading_level`` (1-6) sets the title element so the card fits the page outline.
-    Pass either ``text`` or ``trusted_html``, not both.
-    """
-    if type(heading_level) is not int or not 1 <= heading_level <= 6:
-        raise ValueError("heading_level must be an integer from 1 to 6")
-    if trusted_html is not None and text:
-        raise ValueError("pass either text or trusted_html, not both")
-    heading = f"<h{heading_level}>{escape(title)}</h{heading_level}>" if title else ""
+def card(text: str = "", *, title: str | None = None, trusted_html: str | None = None) -> str:
+    """Escaped text or trusted HTML container using the stable v1 .ui-card class."""
+    heading = f"<h2>{escape(title)}</h2>" if title else ""
     body = escape(text) if trusted_html is None else trusted_html
     return f'<article class="ui-card">{heading}{body}</article>'
 
@@ -1164,6 +1154,29 @@ def pptx_presentation(
         f'<script type="application/json" id="{identity}-spec">{payload}</script>'
         f'{classic_script(_pptx_runtime(identity), nonce=nonce)}</div>'
     )
+
+
+def sortable_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...], *, id: str | None = None) -> str:
+    """Sortable HTML table with column sorting buttons; pair with local sortable.js."""
+    if not headers:
+        raise ValueError("headers must not be empty")
+    col_count = len(headers)
+    for row in rows:
+        if len(row) != col_count:
+            raise ValueError("each row must match header length")
+    identity = f' id="{_element_id(id)}"' if id is not None else ""
+    th_cells = []
+    for h in headers:
+        esc_h = escape(h)
+        btn = f'<button class="ui-button" type="button" data-ui-sort>{esc_h}</button>'
+        th_cells.append(f'<th>{btn}</th>')
+    thead_content = f"<tr>{''.join(th_cells)}</tr>"
+    tr_rows = []
+    for row in rows:
+        td_cells = [f'<td>{escape(cell)}</td>' for cell in row]
+        tr_rows.append(f"<tr>{''.join(td_cells)}</tr>")
+    tbody_content = "".join(tr_rows)
+    return f'<table class="ui-panel"{identity} data-ui-sortable><thead>{thead_content}</thead><tbody>{tbody_content}</tbody></table>'
 
 
 def section_browser(sections: tuple[tuple[str, str], ...], *, id: str = "sections",

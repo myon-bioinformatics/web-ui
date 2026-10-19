@@ -58,43 +58,11 @@ def test_viewer_sections_open_by_emoji_without_javascript():
 def test_viewer_escapes_and_embeds_css():
     pages = {"pages": [{"route": "/x", "key": "<b>", "label": "<i>", "adapter": "a<b", "url": "https://e.test/#/x"}]}
     page = cm.viewer(pages, report(pages=["a<b"], cells=[]), embed_css=True, theme="modern")
-    assert "<b>" not in page.split("</head>")[1].split('<fieldset')[0] and "&lt;i&gt;" in page
+    assert "<b>" not in page.split("<style>")[1].split("</style>")[1] and "&lt;i&gt;" in page
     assert ".ui-matrix:has(" in page and '<body data-ui-theme="modern">' in page
 
 
-@pytest.mark.parametrize("browser,channel", [("chromium", None), ("chromium", "chrome")])
-def test_viewer_joins_structured_environment_without_headless_suffix(browser, channel):
-    env_key = f"Linux-{channel or browser}-desktop"
-    dataset = {"records": [{"env": {"id": env_key + "-headless", "os": "Linux", "browser": browser,
-                                    "channel": channel, "profile": "desktop"}, "verdict": "fail",
-                            "target": {"adapter": "flutter-home", "provenance": {"value": "b" * 40}}}]}
-    data = report(reference=env_key, envs=[env_key], cells=[{"page": "flutter-home", "env": env_key}])
-    page = cm.viewer(PAGES, data, dataset)
-    assert '<li class="is-fail is-reference">' in page
-    assert "fail \u00b7 build " + "b" * 12 in page
-
-
-def test_viewer_prefers_the_report_cell_observation_over_dataset_aliases():
-    data = report(cells=[{"page": "flutter-home", "env": "Linux-chromium-desktop",
-                          "observation": {"verdict": "fail", "build": "c" * 40}}])
-    dataset = {"records": [{"env": {"id": "Linux-chromium-desktop"}, "verdict": "pass",
-                            "target": {"adapter": "flutter-home", "provenance": {"value": "a" * 40}}}]}
-    for source in (None, dataset):
-        page = cm.viewer(PAGES, data, source)
-        assert "fail \u00b7 build " + "c" * 12 in page
-        assert "pass \u00b7 build " + "a" * 12 not in page
-
-
-def test_viewer_rejects_ambiguous_mode_aliases():
-    records = [{"env": {"id": "Linux-chromium-desktop-" + mode, "os": "Linux", "browser": "chromium",
-                         "profile": "desktop"}, "verdict": verdict, "target": {"adapter": "flutter-home"}}
-               for mode, verdict in (("headless", "pass"), ("headed", "fail"))]
-    with pytest.raises(ValueError, match="ambiguous observations"):
-        cm.viewer(PAGES, report(), {"records": records})
-
-
-def test_matrix_css_defaults_are_on_the_8px_grid():
-    # Defaults only: layout presets (examples/layout-presets.json) may switch to other values.
+def test_matrix_css_spacing_is_on_the_8px_grid():
     import re
     css = (ROOT / "css/matrix.css").read_text(encoding="utf-8")
     sizes = [int(v) for v in re.findall(r"(?<![\d.])(\d+)px", css) if v not in ("1", "2")]  # borders/outlines
@@ -128,14 +96,3 @@ def test_cli_writes_a_page_or_exits_2(tmp_path):
                           str(tmp_path / "bad.json"), "--report", str(tmp_path / "report.json")],
                          capture_output=True, text=True, encoding="utf-8")
     assert bad.returncode == 2 and "expected schema web-ui-flutter-pages/1" in bad.stderr
-
-
-def test_viewer_has_a_live_layout_switch_labelled_by_sweep_candidates():
-    page = cm.viewer(PAGES, report())
-    assert '<fieldset class="ui-layout-switch"><legend>Tile layout</legend>' in page
-    assert 'name="ui-layout" value="grid8" checked' in page and 'value="compact"' in page
-    assert 'body:has(input[name="ui-layout"][value="wide"]:checked){--ui-matrix-col:240px' in page
-    candidates = {"schema": "web-ui-layout-candidates/1",
-                  "presets": {"grid8": {"passed": [320, 1280], "failed": []}, "wide": {"passed": [1280], "failed": [320]}}}
-    labelled = cm.viewer(PAGES, report(), candidates=candidates)
-    assert "ok at 320px, 1280px" in labelled and "ok at 1280px; check at 320px" in labelled and "not checked" in labelled

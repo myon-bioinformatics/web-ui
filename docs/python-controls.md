@@ -12,7 +12,8 @@ escaped. These helpers emit HTML, not a Python application server.
 | `textarea(id="source", label="原文")` | Multiline text |
 | `checkbox("有効", id="enabled")` | Native checked state |
 | `badge("新着")` | Tag / badge element (`.ui-tag`) |
-| `card("本文", title="見出し", heading_level=2)` | Card container element (`.ui-card`); `heading_level` 1-6 sets the title tag; `text` and `trusted_html` are mutually exclusive |
+| `card("本文", title="見出し")` | Card container element (`.ui-card`) |
+| `sortable_table(("名前", "年齢"), (("Alice", "30"),))` | Sortable table element; pair with local `sortable.js` |
 | `details("詳細", "本文")` | Expand/collapse without JS |
 | `section_browser((("概要", "本文"),), full_text="全文")` | Heading selector and text output; pair with local `controls.js` |
 
