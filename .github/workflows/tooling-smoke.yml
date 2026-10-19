@@ -127,7 +127,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Verify Node/Python flow diagram parity
-        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs
+        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs
       - name: Execute repository diagnostics renderer
         run: node tests/repository_diagnostics.node.js
       - name: Generate canonical repository metadata (stdlib only)

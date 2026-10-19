@@ -200,6 +200,8 @@ Public source placement and automatic Python CI updates: [vendor automation](doc
 `examples/flutter-pages.json` lists the representative flutter_navigation_basic pages by emoji
 (route table + published URL), and `tool/capture_matrix.py` turns browser-test-kit captures and
 Ironmate's comparison sheet into a static viewer opened by emoji. See [capture matrix](docs/capture-matrix.md).
+Its tile layout switches live between presets (8px grid, compact, device width, wide); see [layout presets](docs/layout-presets.md)
+for the JSON, the Python/Node CSS generators and the sweep that lists every preset that holds.
 
 ## Python static wrapper
 
