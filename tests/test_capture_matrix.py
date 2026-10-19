@@ -58,11 +58,12 @@ def test_viewer_sections_open_by_emoji_without_javascript():
 def test_viewer_escapes_and_embeds_css():
     pages = {"pages": [{"route": "/x", "key": "<b>", "label": "<i>", "adapter": "a<b", "url": "https://e.test/#/x"}]}
     page = cm.viewer(pages, report(pages=["a<b"], cells=[]), embed_css=True, theme="modern")
-    assert "<b>" not in page.split("<style>")[1].split("</style>")[1] and "&lt;i&gt;" in page
+    assert "<b>" not in page.split("</head>")[1].split('<fieldset')[0] and "&lt;i&gt;" in page
     assert ".ui-matrix:has(" in page and '<body data-ui-theme="modern">' in page
 
 
-def test_matrix_css_spacing_is_on_the_8px_grid():
+def test_matrix_css_defaults_are_on_the_8px_grid():
+    # Defaults only: layout presets (examples/layout-presets.json) may switch to other values.
     import re
     css = (ROOT / "css/matrix.css").read_text(encoding="utf-8")
     sizes = [int(v) for v in re.findall(r"(?<![\d.])(\d+)px", css) if v not in ("1", "2")]  # borders/outlines
@@ -96,3 +97,14 @@ def test_cli_writes_a_page_or_exits_2(tmp_path):
                           str(tmp_path / "bad.json"), "--report", str(tmp_path / "report.json")],
                          capture_output=True, text=True, encoding="utf-8")
     assert bad.returncode == 2 and "expected schema web-ui-flutter-pages/1" in bad.stderr
+
+
+def test_viewer_has_a_live_layout_switch_labelled_by_sweep_candidates():
+    page = cm.viewer(PAGES, report())
+    assert '<fieldset class="ui-layout-switch"><legend>Tile layout</legend>' in page
+    assert 'name="ui-layout" value="grid8" checked' in page and 'value="compact"' in page
+    assert 'body:has(input[name="ui-layout"][value="wide"]:checked){--ui-matrix-col:240px' in page
+    candidates = {"schema": "web-ui-layout-candidates/1",
+                  "presets": {"grid8": {"passed": [320, 1280], "failed": []}, "wide": {"passed": [1280], "failed": [320]}}}
+    labelled = cm.viewer(PAGES, report(), candidates=candidates)
+    assert "ok at 320px, 1280px" in labelled and "ok at 1280px; check at 320px" in labelled and "not checked" in labelled
