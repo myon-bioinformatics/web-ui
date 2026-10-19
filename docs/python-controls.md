@@ -11,6 +11,8 @@ escaped. These helpers emit HTML, not a Python application server.
 | `input_field(id="query", label="検索", type="search")` | Labeled input |
 | `textarea(id="source", label="原文")` | Multiline text |
 | `checkbox("有効", id="enabled")` | Native checked state |
+| `badge("新着")` | Tag / badge element (`.ui-tag`) |
+| `card("本文", title="見出し")` | Card container element (`.ui-card`) |
 | `details("詳細", "本文")` | Expand/collapse without JS |
 | `section_browser((("概要", "本文"),), full_text="全文")` | Heading selector and text output; pair with local `controls.js` |
 
