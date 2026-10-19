@@ -394,9 +394,19 @@ def badge(text: str) -> str:
     return f'<span class="ui-tag">{escape(text)}</span>'
 
 
-def card(text: str = "", *, title: str | None = None, trusted_html: str | None = None) -> str:
-    """Escaped text or trusted HTML container using the stable v1 .ui-card class."""
-    heading = f"<h2>{escape(title)}</h2>" if title else ""
+def card(
+    text: str = "", *, title: str | None = None, trusted_html: str | None = None, heading_level: int = 2
+) -> str:
+    """Escaped text or trusted HTML container using the stable v1 .ui-card class.
+
+    ``heading_level`` (1-6) sets the title element so the card fits the page outline.
+    Pass either ``text`` or ``trusted_html``, not both.
+    """
+    if type(heading_level) is not int or not 1 <= heading_level <= 6:
+        raise ValueError("heading_level must be an integer from 1 to 6")
+    if trusted_html is not None and text:
+        raise ValueError("pass either text or trusted_html, not both")
+    heading = f"<h{heading_level}>{escape(title)}</h{heading_level}>" if title else ""
     body = escape(text) if trusted_html is None else trusted_html
     return f'<article class="ui-card">{heading}{body}</article>'
 

@@ -77,3 +77,9 @@ class ControlsTests(unittest.TestCase):
 
         trusted_card = ui.card(title='Card Title', trusted_html='<p>Trusted content</p>')
         self.assertEqual(trusted_card, '<article class="ui-card"><h2>Card Title</h2><p>Trusted content</p></article>')
+        self.assertEqual(ui.card("x", title="T", heading_level=3), '<article class="ui-card"><h3>T</h3>x</article>')
+        for bad in (0, 7, True, "2"):
+            with self.assertRaises(ValueError):
+                ui.card("x", title="T", heading_level=bad)
+        with self.assertRaises(ValueError):
+            ui.card("text", trusted_html="<p>t</p>")
