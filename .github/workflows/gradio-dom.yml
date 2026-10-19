@@ -40,6 +40,8 @@ jobs:
         run: uv run --locked --group gradio python tests/integration/controls_browser.py -v
       - name: Verify route-table navigation offline (file://) and over HTTP
         run: uv run --locked --group gradio python tests/integration/route_table_browser.py -v
+      - name: Layout presets switch live and sweep to candidates (Chromium)
+        run: uv run --locked --group gradio python tests/integration/layout_presets_browser.py -v
       - name: Compare Gradio DOM with shared extraction
         env:
           WEB_UI_GRADIO_TEST: '1'

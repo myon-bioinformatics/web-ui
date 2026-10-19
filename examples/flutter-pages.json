@@ -1,0 +1,70 @@
+{
+  "schema": "web-ui-flutter-pages/1",
+  "base_url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/",
+  "source": "flutter_navigation_basic lib/shared/navigation/page_identities.g.dart",
+  "pages": [
+    {
+      "route": "/",
+      "key": "🏠",
+      "label": "Home",
+      "adapter": "flutter-home",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/"
+    },
+    {
+      "route": "/hub",
+      "key": "🗺️",
+      "label": "Navigation Hub",
+      "adapter": "flutter-hub",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/hub"
+    },
+    {
+      "route": "/core/clipboard-shelf",
+      "key": "📋",
+      "label": "Clipboard Shelf",
+      "adapter": "flutter-clipboard-shelf",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/core/clipboard-shelf"
+    },
+    {
+      "route": "/tools/time/now-timeline",
+      "key": "🕒",
+      "label": "Now Timeline",
+      "adapter": "flutter-now-timeline",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/time/now-timeline"
+    },
+    {
+      "route": "/tools/media/photo-studio",
+      "key": "🖼️",
+      "label": "Photo Studio",
+      "adapter": "flutter-photo-studio",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/media/photo-studio"
+    },
+    {
+      "route": "/tools/http/request-draft",
+      "key": "🌐",
+      "label": "HTTP Request Draft",
+      "adapter": "flutter-http-request-draft",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/http/request-draft"
+    },
+    {
+      "route": "/examples/ui-showcase",
+      "key": "🎨",
+      "label": "UI Showcase",
+      "adapter": "flutter-ui-showcase",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/ui-showcase"
+    },
+    {
+      "route": "/examples/counter-playground",
+      "key": "👾",
+      "label": "Counter Playground",
+      "adapter": "flutter-counter",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/counter-playground"
+    },
+    {
+      "route": "/screen1",
+      "key": "🌍",
+      "label": "Screen 1",
+      "adapter": "flutter-screen1",
+      "url": "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/screen1"
+    }
+  ]
+}
