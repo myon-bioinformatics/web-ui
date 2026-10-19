@@ -91,8 +91,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Install Python verification tools
-        run: python -m pip install -r tests/requirements.txt
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+          enable-cache: "true"
       - name: Verify GitHub CLI
         run: |
           git --version
@@ -109,7 +111,7 @@ jobs:
       - name: Run pytest
         env:
           WEB_UI_FAILURE_EVIDENCE: build/controlled-failure
-        run: python -m pytest -v --junitxml=build/test-results/pytest-3.12.xml
+        run: uv run --locked python -m pytest -v --junitxml=build/test-results/pytest-3.12.xml
       - name: Preserve junit-python-3.12
         if: always()
         uses: actions/upload-artifact@v7
@@ -133,7 +135,7 @@ jobs:
       - name: Generate canonical repository metadata (stdlib only)
         run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
       - name: Capture advisory tooling metadata
-        run: python tool/web_ui_tooling_meta.py > tooling-meta.json
+        run: uv run --locked python tool/web_ui_tooling_meta.py > tooling-meta.json
       - uses: actions/upload-artifact@v7
         with:
           name: tooling-meta
@@ -196,8 +198,10 @@ jobs:
     - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - name: Install Python verification tools
-      run: python -m pip install -r tests/requirements.txt
+    - uses: astral-sh/setup-uv@v10
+      with:
+        python-version: '3.12'
+        enable-cache: 'true'
     - name: Verify GitHub CLI
       run: |
         git --version
@@ -212,13 +216,13 @@ jobs:
         sparse-checkout: xprobe.py
         sparse-checkout-cone-mode: false
     - name: Run pytest
-      run: python -m pytest -v
+      run: uv run --locked python -m pytest -v
     - name: Execute repository diagnostics renderer
       run: node tests/repository_diagnostics.node.js
     - name: Generate canonical repository metadata (stdlib only)
       run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir .
     - name: Capture advisory tooling metadata
-      run: python tool/web_ui_tooling_meta.py > tooling-meta.json
+      run: uv run --locked python tool/web_ui_tooling_meta.py > tooling-meta.json
     - uses: actions/upload-artifact@v7
       with:
         name: locked-tooling-meta

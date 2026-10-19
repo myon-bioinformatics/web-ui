@@ -5,7 +5,7 @@ This repository keeps runtime UI assets build-free. Python packages below are
 
 ## Browser automation
 
-Stagehand v4 is available as a Python SDK (`pip install stagehand`) as well as
+Stagehand v4 is available as a Python SDK (`stagehand`) as well as
 TypeScript and Go SDKs. web-ui treats it as an optional browser-agent lane next
 to deterministic Playwright smoke tests, not as a replacement for Playwright.
 
@@ -34,17 +34,11 @@ committed, emitted by `web_ui_tooling_meta.py`, or uploaded as artifacts.
 
 ## Tool diagnostics
 
-Install development dependencies:
+Install development dependencies and run them from the lockfile:
 
 ```sh
-python -m pip install -r tests/requirements.txt
-```
-
-Run:
-
-```sh
-python -m pytest -v
-python tool/web_ui_tooling_meta.py
+uv run --locked pytest -v
+uv run --locked python tool/web_ui_tooling_meta.py
 python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 

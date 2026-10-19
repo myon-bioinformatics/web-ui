@@ -8,9 +8,8 @@ Do not pass unreviewed HTML containing external assets; sandboxing is not an HTM
 sanitizer or a network firewall.
 
 ```sh
-python -m pip install -r tests/requirements-gradio.txt
-python -m playwright install chromium
-python tool/web_ui_serve_dom_lab.py fixture.html --css fixture.css
+uv run --locked --group gradio python -m playwright install chromium
+uv run --locked --group gradio python tool/web_ui_serve_dom_lab.py fixture.html --css fixture.css
 ```
 
 The test actually launches Gradio on loopback, opens Chromium, and compares
@@ -25,7 +24,7 @@ Test browser requests outside the local Gradio origin are aborted. Evidence JSON
 is retained even on comparison failure and the browser/server are closed.
 
 ```sh
-WEB_UI_GRADIO_TEST=1 BTK_ROOT=/path/to/pinned/browser-test-kit python -m pytest tests/integration/test_gradio_dom.py
+WEB_UI_GRADIO_TEST=1 BTK_ROOT=/path/to/pinned/browser-test-kit uv run --locked --group gradio python -m pytest tests/integration/test_gradio_dom.py
 ```
 
 The CI lane supplies browser-test-kit commit
