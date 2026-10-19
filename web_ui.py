@@ -389,6 +389,18 @@ def _element_id(value: str) -> str:
     return value
 
 
+def badge(text: str) -> str:
+    """Escaped badge/tag using the stable v1 .ui-tag class."""
+    return f'<span class="ui-tag">{escape(text)}</span>'
+
+
+def card(text: str = "", *, title: str | None = None, trusted_html: str | None = None) -> str:
+    """Escaped text or trusted HTML container using the stable v1 .ui-card class."""
+    heading = f"<h2>{escape(title)}</h2>" if title else ""
+    body = escape(text) if trusted_html is None else trusted_html
+    return f'<article class="ui-card">{heading}{body}</article>'
+
+
 def button(label: str, *, id: str | None = None, type: str = "button", disabled: bool = False) -> str:
     """An escaped native button; custom actions remain consumer-owned."""
     if type not in ("button", "submit", "reset"):
