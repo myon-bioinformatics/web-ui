@@ -26,9 +26,9 @@ jobs:
           ref: 6a2e32a4bbe49be5268e6b30040d665a89eecf66
           path: .browser-test-kit
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
       - name: Clear prior capture evidence
         run: rm -rf screenshot-evidence web-ui-desktop-1440x900.png web-ui-mobile-390x844.png web-ui-contract-v1-desktop-1440x900.png web-ui-contract-v1-mobile-390x844.png web-ui-github-like-desktop-1440x900.png web-ui-github-like-mobile-390x844.png
       - run: npx --yes playwright@1.63.0 install --with-deps --only-shell chromium
