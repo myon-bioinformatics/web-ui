@@ -90,7 +90,7 @@ jobs:
         run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "26"
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
@@ -129,7 +129,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Verify Node/Python flow diagram parity
-        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs
+        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs tests/declarations.node.cjs
+      - name: Type-check the .d.cts declarations (TypeScript is fetched here only, not a repo dependency)
+        run: |
+          npm install --prefix build/types --no-save --ignore-scripts --package-lock=false --no-audit --no-fund typescript@7.0.2 @types/node@26.6.5
+          build/types/node_modules/.bin/tsc --noEmit --strict --module nodenext --typeRoots build/types/node_modules/@types --types node js/*.d.cts
       - name: Execute repository diagnostics renderer
         run: node tests/repository_diagnostics.node.js
       - name: Generate canonical repository metadata (stdlib only)
@@ -197,7 +201,7 @@ jobs:
       run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
-        node-version: '22'
+        node-version: '26'
     - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       with:
         python-version: '3.12'
