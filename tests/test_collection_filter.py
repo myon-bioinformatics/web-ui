@@ -26,10 +26,10 @@ def test_python_filter_and_cli(case):
     assert result.stdout.endswith("\n")
 
 
-@pytest.mark.parametrize("request", CASES["invalid"])
-def test_invalid_request_fails_closed(request):
+@pytest.mark.parametrize("payload", CASES["invalid"])
+def test_invalid_request_fails_closed(payload):
     result = subprocess.run([sys.executable, "-S", str(ROOT / "collection_filter.py")],
-                            input=json.dumps(request), text=True, capture_output=True)
+                            input=json.dumps(payload), text=True, capture_output=True)
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith("error: ")
