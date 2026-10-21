@@ -171,9 +171,6 @@
       },
       "expected": [
         {
-          "name": "missing"
-        },
-        {
           "name": "null",
           "tag": null
         }
