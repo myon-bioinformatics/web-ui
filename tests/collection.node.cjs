@@ -13,7 +13,7 @@ assert.deepEqual(filterItems(items, { facets: { topic: 'slides', archived: false
 assert.deepEqual(filterItems(items, { query: 'nothing', text }), []);
 assert.deepEqual(filterItems(items), items);
 assert.deepEqual(filterItems(items, { facets: { archived: undefined } }), items);
-assert.deepEqual(filterItems(items, { predicates: [item => !item.archived, item => item.name.length > 3] }).map(x => x.name), ['Aoi', 'Ironmate']);
+assert.deepEqual(filterItems(items, { predicates: [item => !item.archived, item => item.name.length > 3] }).map(x => x.name), ['Ironmate']);
 assert.equal(normalizeText(null), '');
 assert.deepEqual(filterItems([{name:'日本語'}, {name:'English'}], { query:'日本', text:x=>x.name }), [{name:'日本語'}]);
 assert.deepEqual(filterItems([{name: 'x', tag: 0}, {name: 'y', tag: false}], {facets: {tag: false}}).map(x=>x.name), ['y']);
