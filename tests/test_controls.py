@@ -94,3 +94,15 @@ class ControlsTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             ui.sortable_table(('Name', 'Age'), (('Alice',),))
+
+    def test_key_value_list_and_alert_helpers(self):
+        hostile = '\"><script>alert(1)</script>&'
+        kv_html = ui.key_value_list({hostile: hostile})
+        self.assertEqual(kv_html, '<dl class="ui-panel"><dt>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</dt><dd>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</dd></dl>')
+
+        alert_html = ui.alert(hostile, title=hostile)
+        self.assertIn('<section class="ui-panel"><h2>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</h2>', alert_html)
+        self.assertIn('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;</section>', alert_html)
+
+        trusted_alert = ui.alert(title='Alert Title', trusted_html='<p>Trusted alert</p>')
+        self.assertEqual(trusted_alert, '<section class="ui-panel"><h2>Alert Title</h2><p>Trusted alert</p></section>')

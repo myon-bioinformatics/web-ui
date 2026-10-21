@@ -401,6 +401,20 @@ def card(text: str = "", *, title: str | None = None, trusted_html: str | None =
     return f'<article class="ui-card">{heading}{body}</article>'
 
 
+def key_value_list(items: dict[str, str] | tuple[tuple[str, str], ...]) -> str:
+    """Escaped definition list using the stable v1 .ui-panel class."""
+    pairs = items.items() if isinstance(items, dict) else items
+    dt_dd = [f'<dt>{escape(str(k))}</dt><dd>{escape(str(v))}</dd>' for k, v in pairs]
+    return f'<dl class="ui-panel">{"".join(dt_dd)}</dl>'
+
+
+def alert(text: str = "", *, title: str | None = None, trusted_html: str | None = None) -> str:
+    """Escaped callout panel using the stable v1 .ui-panel class."""
+    heading = f"<h2>{escape(title)}</h2>" if title else ""
+    body = escape(text) if trusted_html is None else trusted_html
+    return f'<section class="ui-panel">{heading}{body}</section>'
+
+
 def button(label: str, *, id: str | None = None, type: str = "button", disabled: bool = False) -> str:
     """An escaped native button; custom actions remain consumer-owned."""
     if type not in ("button", "submit", "reset"):

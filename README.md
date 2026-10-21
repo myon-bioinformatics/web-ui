@@ -317,7 +317,7 @@ unit tests alone do not establish browser execution.
 
 ### Common controls in one line
 
-`button`, `select`, `input_field`, `textarea`, `checkbox`, `badge`, `card`, `sortable_table`, `details`, and
+`button`, `select`, `input_field`, `textarea`, `checkbox`, `badge`, `card`, `key_value_list`, `alert`, `sortable_table`, `details`, and
 `section_browser` now emit labeled native controls and components from Python. A local,
 explicitly loaded `controls.js` binds section selection to text output; native
 controls and disclosure work without JS. See [one-liners and the Markdown

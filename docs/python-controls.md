@@ -13,6 +13,8 @@ escaped. These helpers emit HTML, not a Python application server.
 | `checkbox("有効", id="enabled")` | Native checked state |
 | `badge("新着")` | Tag / badge element (`.ui-tag`) |
 | `card("本文", title="見出し")` | Card container element (`.ui-card`) |
+| `key_value_list({"項目A": "値A"})` | Definition list element (`.ui-panel`) |
+| `alert("本文", title="通知")` | Callout panel element (`.ui-panel`) |
 | `sortable_table(("名前", "年齢"), (("Alice", "30"),))` | Sortable table element; pair with local `sortable.js` |
 | `details("詳細", "本文")` | Expand/collapse without JS |
 | `section_browser((("概要", "本文"),), full_text="全文")` | Heading selector and text output; pair with local `controls.js` |
