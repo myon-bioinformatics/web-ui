@@ -55,7 +55,7 @@ def filter_request(request):
                 values.extend(value if isinstance(value, list) else [value])
             if not any(needle in _text(value) for value in values):
                 continue
-        if any(not (any(_equal(v, expected) for v in item[key]) if isinstance(item.get(key), list)
+        if any(key not in item or not (any(_equal(v, expected) for v in item[key]) if isinstance(item.get(key), list)
                     else _equal(item.get(key), expected))
                for key, expected in facets.items()):
             continue
