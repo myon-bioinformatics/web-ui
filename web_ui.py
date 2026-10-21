@@ -29,7 +29,7 @@ THEMES = ("modern", "github-like")
 # Snapshot of js/ui.js; update together with the upstream source and regression test.
 EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
 
-SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js", "sortable.js")
+SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js", "sortable.js", "tabbed-panel.js")
 # Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
 # sha384 covers the exact bytes of that jsDelivr URL (immutable npm version).
 _PPTXGENJS_URL = "https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"
@@ -1168,6 +1168,29 @@ def pptx_presentation(
         f'<script type="application/json" id="{identity}-spec">{payload}</script>'
         f'{classic_script(_pptx_runtime(identity), nonce=nonce)}</div>'
     )
+
+
+def tabbed_panel(tabs: tuple[tuple[str, str], ...], *, id: str | None = None) -> str:
+    """Tabbed interface helper; pair with local tabbed-panel.js."""
+    if not tabs:
+        raise ValueError("tabs must not be empty")
+    identity = f' id="{_element_id(id)}"' if id is not None else ""
+    nav_buttons = []
+    panel_divs = []
+    for idx, (label, content) in enumerate(tabs):
+        tab_id = f"tab-{idx}"
+        is_first = idx == 0
+        aria_sel = ' aria-selected="true"' if is_first else ""
+        nav_buttons.append(
+            f'<button class="ui-button" type="button" role="tab" data-ui-tab="{tab_id}"{aria_sel}>{escape(label)}</button>'
+        )
+        hidden_attr = "" if is_first else " hidden"
+        panel_divs.append(
+            f'<div class="ui-panel" role="tabpanel" data-ui-tab-panel="{tab_id}"{hidden_attr}>{escape(content)}</div>'
+        )
+    nav_html = f'<nav class="ui-grid" data-ui-tab-nav role="tablist">{"".join(nav_buttons)}</nav>'
+    body_html = "".join(panel_divs)
+    return f'<section class="ui-panel"{identity} data-ui-tabbed>{nav_html}{body_html}</section>'
 
 
 def sortable_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...], *, id: str | None = None) -> str:

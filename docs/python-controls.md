@@ -15,6 +15,7 @@ escaped. These helpers emit HTML, not a Python application server.
 | `card("本文", title="見出し")` | Card container element (`.ui-card`) |
 | `key_value_list({"項目A": "値A"})` | Definition list element (`.ui-panel`) |
 | `alert("本文", title="通知")` | Callout panel element (`.ui-panel`) |
+| `tabbed_panel((("タブ1", "本文1"),))` | Tabbed interface element; pair with local `tabbed-panel.js` |
 | `sortable_table(("名前", "年齢"), (("Alice", "30"),))` | Sortable table element; pair with local `sortable.js` |
 | `details("詳細", "本文")` | Expand/collapse without JS |
 | `section_browser((("概要", "本文"),), full_text="全文")` | Heading selector and text output; pair with local `controls.js` |

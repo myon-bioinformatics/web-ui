@@ -106,3 +106,19 @@ class ControlsTests(unittest.TestCase):
 
         trusted_alert = ui.alert(title='Alert Title', trusted_html='<p>Trusted alert</p>')
         self.assertEqual(trusted_alert, '<section class="ui-panel"><h2>Alert Title</h2><p>Trusted alert</p></section>')
+
+    def test_tabbed_panel_helper(self):
+        tabs = (('Tab 1', 'Content 1'), ('Tab 2', 'Content 2'))
+        html = ui.tabbed_panel(tabs, id='my-tabbed')
+
+        self.assertIn('id="my-tabbed"', html)
+        self.assertIn('data-ui-tabbed', html)
+        self.assertIn('data-ui-tab="tab-0"', html)
+        self.assertIn('aria-selected="true"', html)
+        self.assertIn('data-ui-tab-panel="tab-0"', html)
+        self.assertIn('data-ui-tab-panel="tab-1" hidden', html)
+        self.assertIn('Content 1', html)
+        self.assertIn('Content 2', html)
+
+        with self.assertRaises(ValueError):
+            ui.tabbed_panel(())
