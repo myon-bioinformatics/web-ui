@@ -169,7 +169,7 @@ built-in generic type syntax such as `tuple[int, int]`.
 - expand themes beyond Modern and GitHub-like
 - keep HTML contract v1 stable while `markdown.py` and `ascii_artist` integrations adopt it
 
-See #1 for the bootstrap plan.
+The bootstrap work was tracked in #1 (closed).
 
 
 ## Development tooling
