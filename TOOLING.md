@@ -34,7 +34,13 @@ committed, emitted by `web_ui_tooling_meta.py`, or uploaded as artifacts.
 
 ## Tool diagnostics
 
-Install development dependencies and run them from the lockfile:
+Install development dependencies and run them from the lockfile.
+
+`pyproject.toml` sets `[tool.uv] override-dependencies` to lift transitive
+ceilings until upstream metadata catches up: Gradio 6.30.0 caps `pillow<13`,
+`safehttpx<0.2`, and `tomlkit<0.15` (Pillow 13+ addresses Dependabot JPEG CVEs);
+Playwright caps `pyee<15`. Drop each override when the parent package allows the
+current PyPI release without conflict.
 
 ```sh
 uv run --locked pytest -v
