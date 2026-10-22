@@ -1,0 +1,281 @@
+{
+  "schema": "collection-filter-cases/1",
+  "cases": [
+    {
+      "name": "combined-tag-and-status",
+      "request": {
+        "items": [
+          {
+            "name": "Aoi",
+            "topics": [
+              "python",
+              "research"
+            ],
+            "archived": false
+          },
+          {
+            "name": "Legacy",
+            "topics": [
+              "python"
+            ],
+            "archived": true
+          },
+          {
+            "name": "Ironmate",
+            "topics": [
+              "javascript"
+            ],
+            "archived": false
+          }
+        ],
+        "query": " PYTHON ",
+        "text_fields": [
+          "name",
+          "topics"
+        ],
+        "facets": {
+          "archived": false,
+          "topics": "python"
+        }
+      },
+      "expected": [
+        {
+          "name": "Aoi",
+          "topics": [
+            "python",
+            "research"
+          ],
+          "archived": false
+        }
+      ]
+    },
+    {
+      "name": "unicode",
+      "request": {
+        "items": [
+          {
+            "name": "日本語AI",
+            "topics": [
+              "研究"
+            ]
+          },
+          {
+            "name": "English",
+            "topics": []
+          }
+        ],
+        "query": "日本",
+        "text_fields": [
+          "name"
+        ]
+      },
+      "expected": [
+        {
+          "name": "日本語AI",
+          "topics": [
+            "研究"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "false-is-not-zero",
+      "request": {
+        "items": [
+          {
+            "name": "bool",
+            "status": false
+          },
+          {
+            "name": "number",
+            "status": 0
+          }
+        ],
+        "facets": {
+          "status": false
+        }
+      },
+      "expected": [
+        {
+          "name": "bool",
+          "status": false
+        }
+      ]
+    },
+    {
+      "name": "missing-fields",
+      "request": {
+        "items": [
+          {
+            "name": "no description"
+          },
+          {
+            "name": "match",
+            "description": "HELLO"
+          }
+        ],
+        "query": "hello",
+        "text_fields": [
+          "description",
+          "topics"
+        ]
+      },
+      "expected": [
+        {
+          "name": "match",
+          "description": "HELLO"
+        }
+      ]
+    },
+    {
+      "name": "empty-query",
+      "request": {
+        "items": [
+          {
+            "name": "one"
+          },
+          {
+            "name": "two"
+          }
+        ],
+        "query": "  "
+      },
+      "expected": [
+        {
+          "name": "one"
+        },
+        {
+          "name": "two"
+        }
+      ]
+    },
+    {
+      "name": "null-facet",
+      "request": {
+        "items": [
+          {
+            "name": "missing"
+          },
+          {
+            "name": "null",
+            "tag": null
+          },
+          {
+            "name": "other",
+            "tag": "x"
+          }
+        ],
+        "facets": {
+          "tag": null
+        }
+      },
+      "expected": [
+        {
+          "name": "null",
+          "tag": null
+        }
+      ]
+    },
+    {
+      "name": "numeric-facet",
+      "request": {
+        "items": [
+          {
+            "name": "one",
+            "count": 1
+          },
+          {
+            "name": "two",
+            "count": 2
+          },
+          {
+            "name": "false",
+            "count": false
+          }
+        ],
+        "facets": {
+          "count": 1
+        }
+      },
+      "expected": [
+        {
+          "name": "one",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "name": "array-facet",
+      "request": {
+        "items": [
+          {
+            "name": "one",
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          {
+            "name": "two",
+            "tags": [
+              "c"
+            ]
+          }
+        ],
+        "facets": {
+          "tags": "b"
+        }
+      },
+      "expected": [
+        {
+          "name": "one",
+          "tags": [
+            "a",
+            "b"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "no-match",
+      "request": {
+        "items": [
+          {
+            "name": "one"
+          }
+        ],
+        "query": "unmatched"
+      },
+      "expected": []
+    }
+  ],
+  "invalid": [
+    {
+      "items": "not-an-array"
+    },
+    {
+      "items": [
+        null
+      ]
+    },
+    {
+      "items": [],
+      "query": 7
+    },
+    {
+      "items": [],
+      "text_fields": []
+    },
+    {
+      "items": [],
+      "facets": {
+        "bad": []
+      }
+    },
+    [],
+    {
+      "items": [],
+      "facets": null
+    }
+  ]
+}

@@ -129,7 +129,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Verify Node/Python flow diagram parity
-        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs tests/declarations.node.cjs tests/collection.node.cjs
+        run: node --test tests/flow.node.cjs tests/flow-patch.node.cjs tests/layout-presets.node.cjs tests/declarations.node.cjs tests/collection.node.cjs tests/collection-cli.node.cjs
       - name: Type-check the .d.cts declarations (TypeScript is fetched here only, not a repo dependency)
         run: |
           npm install --prefix build/types --no-save --ignore-scripts --package-lock=false --no-audit --no-fund typescript@7.0.2 @types/node@26.6.5
