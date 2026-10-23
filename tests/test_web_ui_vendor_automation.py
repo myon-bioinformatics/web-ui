@@ -43,6 +43,11 @@ def test_vendor_lock_lists_expected_sources():
         ("myon-bioinformatics/Ironmate", "LICENSE", "tool/vendor/LICENSE"),
         ("myon-bioinformatics/gh_identity", "gh_identity.py", "tool/vendor/gh_identity.py"),
         ("myon-bioinformatics/gh_identity", "LICENSE", "tool/vendor/gh_identity-LICENSE"),
+        (
+            "myon-bioinformatics/myon-bioinformatics",
+            "node_launch.py",
+            "vendor/node_launch.py",
+        ),
     }
     actual = {(e["repository"], e["source"], e["destination"]) for e in _lock_entries()}
     assert actual == expected
@@ -123,7 +128,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     assert job.get("needs") == ci["jobs"]["resolve-vendor"].get("needs")
     assert job.get("if") == ci["jobs"]["resolve-vendor"].get("if")
     matrix = job.get("strategy", {}).get("matrix", {})
-    assert all(len(values) == 1 for values in matrix.values())
+    assert matrix == {"node-version": ["24", "latest"]}
     steps = job["steps"]
     assert not any("vendor_sync.py promote" in s.get("run", "") for s in steps)
     assert not any("vendor_sync.py update" in s.get("run", "") for s in steps)

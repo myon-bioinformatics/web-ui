@@ -9,18 +9,22 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import hmac
 import http.client
+import importlib.util
 import json
 import math
 import base64
+import os
 from html import escape
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from typing import Any
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -1311,18 +1315,115 @@ def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] 
     return page
 
 
-def run_node(*argv: str | Path, timeout: float | None = 30) -> subprocess.CompletedProcess[str]:
-    """Wrap `node` for pytest/CI one-liners. Does not start a browser or fetch URLs."""
-    node = shutil.which("node")
-    if node is None:
-        raise FileNotFoundError("node executable not found on PATH")
-    return subprocess.run(
-        [node, *[str(argument) for argument in argv]],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+_NODE_LAUNCH: Any = None
+
+
+def _node_launch_module() -> Any:
+    global _NODE_LAUNCH
+    if _NODE_LAUNCH is None:
+        path = Path(__file__).resolve().parent / "vendor" / "node_launch.py"
+        spec = importlib.util.spec_from_file_location("_vendored_node_launch", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _NODE_LAUNCH = module
+    return _NODE_LAUNCH
+
+
+def _raise_node_not_found(exc: BaseException, node: str | os.PathLike[str] | None) -> None:
+    message = str(exc)
+    if node is not None and "node executable not found: " in message:
+        path = os.fspath(node)
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path) from exc
+    version = re.search(r"must be 24 or newer \(found (\d+)\)", message)
+    if version is not None:
+        raise RuntimeError(
+            f"node requires Node 24 or newer; found Node {version.group(1)}"
+        ) from exc
+    raise RuntimeError("node requires Node 24 or newer; node executable not found on PATH") from exc
+
+
+def _map_node_launch_error(
+    exc: Any,
+    command: list[str],
+    timeout: float | None,
+) -> subprocess.CompletedProcess[bytes]:
+    if exc.code == "ELAUNCHSTDINCLOSED":
+        status = exc.status if exc.status is not None else -1
+        return subprocess.CompletedProcess(command, status, exc.stdout, exc.stderr)
+    if exc.code == "ELAUNCHFAILURE" and "timed out" in str(exc):
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=timeout,
+            output=exc.stdout,
+            stderr=exc.stderr,
+        ) from exc
+    raise exc
+
+
+def _web_ui_node_run(
+    target: str | Path,
+    *args: str | Path,
+    timeout: float | None = 30,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run vendored ``node_launch`` for pytest/CI helpers with subprocess-shaped errors."""
+    node_launch = _node_launch_module()
+    run_kwargs = dict(kwargs)
+    node = run_kwargs.pop("node", None)
+    env_var = run_kwargs.pop("env_var", None)
+    run_kwargs.pop("probe", None)
+    run_kwargs["timeout"] = timeout
+    try:
+        executable = node_launch.resolve_node(node=node, env_var=env_var)
+    except node_launch.NodeNotFoundError as exc:
+        _raise_node_not_found(exc, node)
+    command = node_launch.node_command(
+        target, *args, node=executable, probe=False, env_var=env_var
     )
+    try:
+        return node_launch.run(
+            target,
+            *args,
+            node=executable,
+            probe=False,
+            env_var=env_var,
+            **run_kwargs,
+        )
+    except node_launch.NodeNotFoundError as exc:
+        _raise_node_not_found(exc, node)
+    except node_launch.LaunchError as exc:
+        return _map_node_launch_error(exc, command, timeout)
+
+
+def run(
+    target: str | Path,
+    *args: str | Path,
+    timeout: float | None = 30,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a Node script via vendored ``node_launch``; stdout/stderr are bytes."""
+    return _web_ui_node_run(target, *args, timeout=timeout, **kwargs)
+
+
+def run_argv(
+    argv: tuple[str | Path, ...] | list[str | Path],
+    timeout: float | None = 30,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run ``node`` with argv passthrough; the first token is the script path."""
+    tokens = list(argv)
+    if not tokens:
+        raise ValueError("argv must not be empty")
+    return _web_ui_node_run(tokens[0], *tokens[1:], timeout=timeout, **kwargs)
+
+
+def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+    """Wrap Node 24+ for pytest/CI one-liners. Does not start a browser or fetch URLs."""
+    if not argv:
+        raise ValueError("run_node requires at least one argument")
+    run_kwargs = dict(kwargs)
+    run_kwargs.setdefault("check", False)
+    return _web_ui_node_run(argv[0], *argv[1:], timeout=timeout, **run_kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:
