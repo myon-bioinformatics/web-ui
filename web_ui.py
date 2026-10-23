@@ -1329,6 +1329,25 @@ def _node_launch_module() -> Any:
     return _NODE_LAUNCH
 
 
+def _decode_node_process_bytes(data: Any) -> str:
+    if isinstance(data, str):
+        return data
+    if not data:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _text_completed(
+    proc: subprocess.CompletedProcess[bytes],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        proc.args,
+        proc.returncode,
+        _decode_node_process_bytes(proc.stdout),
+        _decode_node_process_bytes(proc.stderr),
+    )
+
+
 def _raise_node_not_found(exc: BaseException, node: str | os.PathLike[str] | None) -> None:
     message = str(exc)
     if node is not None and "node executable not found: " in message:
@@ -1339,6 +1358,18 @@ def _raise_node_not_found(exc: BaseException, node: str | os.PathLike[str] | Non
         raise RuntimeError(
             f"node requires Node 24 or newer; found Node {version.group(1)}"
         ) from exc
+    if node is None and "node executable not found" in message:
+        discovered = shutil.which("node")
+        if discovered:
+            node_launch = _node_launch_module()
+            try:
+                node_launch._probe_node_once(discovered, node_launch.DEFAULT_PROBE_TIMEOUT)
+            except node_launch.NodeNotFoundError as probe_exc:
+                version = re.search(r"must be 24 or newer \(found (\d+)\)", str(probe_exc))
+                if version is not None:
+                    raise RuntimeError(
+                        f"node requires Node 24 or newer; found Node {version.group(1)}"
+                    ) from exc
     raise RuntimeError("node requires Node 24 or newer; node executable not found on PATH") from exc
 
 
@@ -1346,26 +1377,27 @@ def _map_node_launch_error(
     exc: Any,
     command: list[str],
     timeout: float | None,
-) -> subprocess.CompletedProcess[bytes]:
+) -> subprocess.CompletedProcess[str]:
     if exc.code == "ELAUNCHSTDINCLOSED":
         status = exc.status if exc.status is not None else -1
-        return subprocess.CompletedProcess(command, status, exc.stdout, exc.stderr)
+        return _text_completed(
+            subprocess.CompletedProcess(command, status, exc.stdout, exc.stderr)
+        )
     if exc.code == "ELAUNCHFAILURE" and "timed out" in str(exc):
         raise subprocess.TimeoutExpired(
             cmd=command,
             timeout=timeout,
-            output=exc.stdout,
-            stderr=exc.stderr,
+            output=_decode_node_process_bytes(exc.stdout),
+            stderr=_decode_node_process_bytes(exc.stderr),
         ) from exc
     raise exc
 
 
 def _web_ui_node_run(
-    target: str | Path,
-    *args: str | Path,
+    *argv: str | Path,
     timeout: float | None = 30,
     **kwargs: Any,
-) -> subprocess.CompletedProcess[bytes]:
+) -> subprocess.CompletedProcess[str]:
     """Run vendored ``node_launch`` for pytest/CI helpers with subprocess-shaped errors."""
     node_launch = _node_launch_module()
     run_kwargs = dict(kwargs)
@@ -1377,13 +1409,29 @@ def _web_ui_node_run(
         executable = node_launch.resolve_node(node=node, env_var=env_var)
     except node_launch.NodeNotFoundError as exc:
         _raise_node_not_found(exc, node)
-    command = node_launch.node_command(
-        target, *args, node=executable, probe=False, env_var=env_var
-    )
+    trailing = [os.fspath(value) for value in argv]
+    if trailing:
+        command = node_launch.node_command(
+            trailing[0], *trailing[1:], node=executable, probe=False, env_var=env_var
+        )
+        try:
+            completed = node_launch.run(
+                trailing[0],
+                *trailing[1:],
+                node=executable,
+                probe=False,
+                env_var=env_var,
+                **run_kwargs,
+            )
+        except node_launch.NodeNotFoundError as exc:
+            _raise_node_not_found(exc, node)
+        except node_launch.LaunchError as exc:
+            return _map_node_launch_error(exc, command, timeout)
+        return _text_completed(completed)
+    command = [executable]
     try:
-        return node_launch.run(
-            target,
-            *args,
+        completed = node_launch.run_argv(
+            [],
             node=executable,
             probe=False,
             env_var=env_var,
@@ -1393,37 +1441,14 @@ def _web_ui_node_run(
         _raise_node_not_found(exc, node)
     except node_launch.LaunchError as exc:
         return _map_node_launch_error(exc, command, timeout)
+    return _text_completed(completed)
 
 
-def run(
-    target: str | Path,
-    *args: str | Path,
-    timeout: float | None = 30,
-    **kwargs: Any,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run a Node script via vendored ``node_launch``; stdout/stderr are bytes."""
-    return _web_ui_node_run(target, *args, timeout=timeout, **kwargs)
-
-
-def run_argv(
-    argv: tuple[str | Path, ...] | list[str | Path],
-    timeout: float | None = 30,
-    **kwargs: Any,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run ``node`` with argv passthrough; the first token is the script path."""
-    tokens = list(argv)
-    if not tokens:
-        raise ValueError("argv must not be empty")
-    return _web_ui_node_run(tokens[0], *tokens[1:], timeout=timeout, **kwargs)
-
-
-def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Wrap Node 24+ for pytest/CI one-liners. Does not start a browser or fetch URLs."""
-    if not argv:
-        raise ValueError("run_node requires at least one argument")
     run_kwargs = dict(kwargs)
     run_kwargs.setdefault("check", False)
-    return _web_ui_node_run(argv[0], *argv[1:], timeout=timeout, **run_kwargs)
+    return _web_ui_node_run(*argv, timeout=timeout, **run_kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:

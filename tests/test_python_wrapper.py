@@ -191,7 +191,7 @@ class PythonWrapperTests(unittest.TestCase):
             self.skipTest('node 24+ not available')
         result = run_node(ROOT / 'tests' / 'repository_diagnostics.node.js')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, b'')
+        self.assertEqual(result.stdout, '')
 
     def test_run_node_reports_missing_executable(self):
         node_launch = _node_launch_module()

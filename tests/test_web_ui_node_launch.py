@@ -214,7 +214,7 @@ def _node_launch_process_layer_stub(monkeypatch):
             return subprocess.CompletedProcess(
                 tuple(argv), 0, (spec.version + "\n").encode(), b""
             )
-        if spec is not None and len(argv) >= 2 and argv[1] != "--version":
+        if spec is not None and not (len(argv) >= 2 and argv[1] == "--version"):
             return _complete_fake_run(argv, **kwargs)
         return real_run(args, *pargs, **kwargs)
 
@@ -235,8 +235,6 @@ def _node_launch_process_layer_stub(monkeypatch):
 
     monkeypatch.setattr(node_launch.subprocess, "run", fake_run)
     monkeypatch.setattr(node_launch.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     yield
     _FAKE_NODE_SPECS.clear()
 
@@ -270,15 +268,25 @@ def _legacy_run_node(
     timeout: float | None = 30,
     node: str | Path | None = None,
     input: str | bytes | None = None,
-) -> subprocess.CompletedProcess[bytes]:
+) -> subprocess.CompletedProcess[str]:
     executable = os.fspath(node) if node is not None else shutil.which("node")
     if executable is None:
         raise FileNotFoundError("node executable not found on PATH")
     command = [executable, *[str(argument) for argument in argv]]
+    spec = _FAKE_NODE_SPECS.get(_fake_node_key(executable))
+    if spec is not None:
+        proc = _complete_fake_run(command, input=input, timeout=timeout)
+        return subprocess.CompletedProcess(
+            proc.args,
+            proc.returncode,
+            proc.stdout.decode("utf-8", errors="replace"),
+            proc.stderr.decode("utf-8", errors="replace"),
+        )
     return subprocess.run(
         command,
         input=input,
         capture_output=True,
+        text=True,
         timeout=timeout,
         check=False,
     )
@@ -360,6 +368,18 @@ def test_node_not_on_path_raises_runtime_error(monkeypatch):
         ui.run_node(script, timeout=30)
 
 
+def test_node_v20_on_path_names_found_version(tmp_path, monkeypatch):
+    script = _write_fake_node(tmp_path, version="v20.0.0", on_eval="pass")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, **kw: str(script) if name == "node" else None,
+    )
+    ui._node_launch_module().clear_probe_cache()
+    with pytest.raises(RuntimeError, match=r"Node 24 or newer.*found Node 20"):
+        ui.run_node(ROOT / "tests" / "navigation.node.js")
+
+
 def test_node_v20_rejected_while_legacy_would_run(tmp_path):
     script = _write_fake_node(
         tmp_path,
@@ -369,7 +389,7 @@ def test_node_v20_rejected_while_legacy_would_run(tmp_path):
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
     legacy = _legacy_run_node(entry, node=script, timeout=30)
-    assert legacy.stdout == b"legacy\n"
+    assert legacy.stdout == "legacy\n"
     with pytest.raises(RuntimeError, match=r"Node 24 or newer.*found Node 20"):
         ui.run_node(entry, node=script, timeout=30)
 
@@ -408,7 +428,7 @@ def test_timeout_cmd_includes_resolved_node(tmp_path, monkeypatch):
 
     monkeypatch.setattr(node_launch, "run", hang)
     with pytest.raises(subprocess.TimeoutExpired) as info:
-        ui.run(entry, node=script, timeout=7, check=False)
+        ui.run_node(entry, node=script, timeout=7)
     assert info.value.timeout == 7
     assert info.value.cmd == [str(script), str(entry)]
 
@@ -435,7 +455,7 @@ def test_timeout_matches_legacy(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     def new():
-        return ui.run(entry, node=script, timeout=timeout, check=False)
+        return ui._web_ui_node_run(entry, node=script, timeout=timeout, check=False)
 
     _assert_same_outcome(old, new)
 
@@ -449,12 +469,14 @@ def test_stdin_closed_nonzero_returns_legacy_stderr(tmp_path):
         return _legacy_run_node(entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30)
 
     def new():
-        return ui.run(entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30, check=False)
+        return ui._web_ui_node_run(
+            entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30, check=False
+        )
 
     old_proc = old()
     new_proc = new()
     assert old_proc.returncode == new_proc.returncode == 3
-    assert new_proc.stderr == b"boom\n"
+    assert new_proc.stderr == "boom\n"
 
 
 def test_stdin_closed_zero_exit_returns_stdout(tmp_path):
@@ -472,7 +494,9 @@ def test_stdin_closed_zero_exit_returns_stdout(tmp_path):
         return _legacy_run_node(entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30)
 
     def new():
-        return ui.run(entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30, check=False)
+        return ui._web_ui_node_run(
+            entry, input=_STDIN_CLOSED_PAYLOAD, node=script, timeout=30, check=False
+        )
 
     _assert_same_outcome(old, new)
 
@@ -486,18 +510,24 @@ def test_bytes_stdout_preserved(tmp_path):
     )
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
-    done = ui.run(entry, node=script, timeout=30, check=False)
-    assert done.stdout == _BINARY_STDOUT
+    node_launch = ui._node_launch_module()
+    raw = node_launch.run(entry, node=script, timeout=30, check=False)
+    assert raw.stdout == _BINARY_STDOUT
+    done = ui.run_node(entry, node=script, timeout=30)
+    assert done.stdout == _BINARY_STDOUT.decode("utf-8", errors="replace")
 
 
-def test_run_argv_matches_run(tmp_path):
+def test_run_node_without_argv_matches_legacy_bare_node(tmp_path):
     script = _write_fake_node(
         tmp_path,
         version="v24.0.0",
-        on_eval="import sys; sys.stdout.write('argv\\n')",
+        on_eval="import sys; sys.stdout.write('bare\\n')",
     )
-    entry = tmp_path / "demo.js"
-    entry.write_text("", encoding="utf-8")
-    via_run = ui.run(entry, node=script, timeout=30, check=False)
-    via_argv = ui.run_argv((entry,), node=script, timeout=30, check=False)
-    assert _proc_bytes(via_run) == _proc_bytes(via_argv)
+
+    def old():
+        return _legacy_run_node(node=script, timeout=30)
+
+    def new():
+        return ui.run_node(node=script, timeout=30)
+
+    _assert_same_outcome(old, new)
