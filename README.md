@@ -1,5 +1,11 @@
 # web-ui
 
+<p align="center">
+  <img src="docs/brand/icon.png" alt="web-ui icon" width="160" />
+</p>
+
+[Icon](docs/brand/icon.png) · [Favicon](docs/brand/favicon.png)
+
 Shared CSS themes, semantic UI components, and small JavaScript utilities for static interfaces across myon-bioinformatics projects.
 
 **Static-first · build-free runtime · dependency-light · cross-repository**
