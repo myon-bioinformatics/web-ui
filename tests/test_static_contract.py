@@ -25,6 +25,7 @@ class ContractParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.hrefs = []
+        self.icon_links = []
         self.classes = []
         self.ids = set()
         self.labels_for = set()
@@ -33,6 +34,8 @@ class ContractParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        if tag == "link" and "icon" in values.get("rel", "").split():
+            self.icon_links.append(values)
         if tag == "a" and values.get("href"):
             self.hrefs.append(values["href"])
         if values.get("class"):
@@ -91,6 +94,19 @@ class StaticContractTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("@layer theme", text, f"{theme} must stay in @layer theme")
             self.assertIn(f'data-ui-theme="{theme}"', text, f"{theme} selector must be scoped by data-ui-theme")
+
+    def test_pages_entrypoints_resolve_the_repository_favicon(self):
+        favicon = ROOT / "docs/brand/favicon.png"
+        self.assertTrue(favicon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        for path in [ROOT / "index.html", *EXAMPLES.glob("*.html")]:
+            with self.subTest(page=str(path.relative_to(ROOT))):
+                links = self.parsed(path).icon_links
+                self.assertEqual(len(links), 1)
+                self.assertEqual(links[0].get("type"), "image/png")
+                href = links[0]["href"]
+                self.assertFalse(urlsplit(href).scheme)
+                self.assertFalse(href.startswith("/"))
+                self.assertEqual((path.parent / href).resolve(), favicon.resolve())
 
     def test_examples_reference_shared_assets(self):
         for path in EXAMPLES.glob("*.html"):

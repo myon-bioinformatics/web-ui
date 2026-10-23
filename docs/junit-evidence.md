@@ -24,4 +24,5 @@ No runtime import or dependency is added.
 The regression exercises the existing missing-command tooling probe with
 deterministic monkeypatching. The locked vendor job runs the regression too,
 but only the primary tooling job produces reports for this collector. Node,
-canonical metadata, screenshots and Pages reporting remain separate.
+canonical metadata, screenshots and Pages reporting remain separate. See
+[pages-ownership.md](./pages-ownership.md) for GitHub Pages evidence publishing policies.

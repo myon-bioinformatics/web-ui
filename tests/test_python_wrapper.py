@@ -19,6 +19,12 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertNotIn('<script', html)
         self.assertIn('data-ui-theme="modern"', html)
 
+    def test_generic_document_does_not_inherit_pages_branding(self):
+        html = render_document("Consumer output", title="Consumer page")
+        self.assertNotIn('rel="icon"', html)
+        self.assertNotIn("docs/brand", html)
+        self.assertNotIn("favicon.png", html)
+
     def test_authored_html_and_css_can_be_supplied(self):
         html = render_document(
             trusted_html='<main class="ui-page">Hi</main>',
