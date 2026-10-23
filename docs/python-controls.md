@@ -4,6 +4,13 @@
 path or use the repository root. All labels, values and default bodies are
 escaped. These helpers emit HTML, not a Python application server.
 
+`run_node()` also works when only `web_ui.py` is copied. It requires an installed
+Node 24+ executable; HTML generation does not require Node. A checkout uses
+`vendor/node_launch.py`; a standalone copy uses an embedded snapshot of that
+same stdlib launcher. Updating the vendor requires refreshing the snapshot;
+the regression suite checks their equality. Both paths preserve text output,
+nonzero exit results, and `subprocess.TimeoutExpired` with raw byte output.
+
 | Helper | Native behavior / use |
 | --- | --- |
 | `button("実行")` | `type=button` by default; use `type="submit"` inside a form |
