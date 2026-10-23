@@ -1389,8 +1389,8 @@ def _map_node_launch_error(
         raise subprocess.TimeoutExpired(
             cmd=command,
             timeout=timeout,
-            output=_decode_node_process_bytes(exc.stdout),
-            stderr=_decode_node_process_bytes(exc.stderr),
+            output=exc.stdout,
+            stderr=exc.stderr,
         ) from exc
     raise exc
 
