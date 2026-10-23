@@ -225,12 +225,15 @@ and CI type-checks the declarations with `tsc --strict`.
 
 ## Python static wrapper
 
-`web_ui.py` is a portable, stdlib-only HTML emitter for Python 3.10+. It accepts
-text or explicitly authored HTML and CSS. It neither downloads assets nor needs
-npm, Deno, a browser, or an installed Python package. Layout output is meant for
-Python/`pytest` one-liners. JavaScript is omitted by default; shared modules may
-be linked explicitly. `run_node()` wraps existing Node checks for the same
-pytest lane.
+`web_ui.py` is a portable, stdlib-only HTML emitter. Standalone users copy the
+file from GitHub and run that copy with Python 3.10+. The copy accepts text or
+explicitly authored HTML and CSS, and it needs no npm, Deno, browser, or
+installed package. The repository root is also an installable project for
+Python 3.11 or newer, with no third-party runtime dependencies, so
+`uv pip install` of the git URL installs the same module. Layout output is
+meant for Python/`pytest` one-liners. JavaScript is omitted by default; shared
+modules may be linked explicitly. `run_node()` wraps existing Node checks for
+the same pytest lane.
 
 ```sh
 python -S -c 'from web_ui import render_document; print(render_document("Hello"))'
