@@ -3,7 +3,8 @@
 ## Acceptance bar for lightweight JS
 
 Pages UIs may use CSS, GIF, and lightweight JavaScript. Heavy frameworks and npm
-runtime dependencies are out of scope for shared web-ui assets.
+runtime dependencies are out of scope for shared web-ui assets. See
+[pages-ownership.md](./pages-ownership.md) for GitHub Pages static hosting boundaries.
 
 Acceptable lightweight JS meets all of:
 
