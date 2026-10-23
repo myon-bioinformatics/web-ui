@@ -276,12 +276,9 @@ def _legacy_run_node(
     spec = _FAKE_NODE_SPECS.get(_fake_node_key(executable))
     if spec is not None:
         proc = _complete_fake_run(command, input=input, timeout=timeout)
-        return subprocess.CompletedProcess(
-            proc.args,
-            proc.returncode,
-            proc.stdout.decode("utf-8", errors="replace"),
-            proc.stderr.decode("utf-8", errors="replace"),
-        )
+        stdout = proc.stdout.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        stderr = proc.stderr.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     return subprocess.run(
         command,
         input=input,
@@ -515,6 +512,116 @@ def test_bytes_stdout_preserved(tmp_path):
     assert raw.stdout == _BINARY_STDOUT
     done = ui.run_node(entry, node=script, timeout=30)
     assert done.stdout == _BINARY_STDOUT.decode("utf-8", errors="replace")
+
+
+def test_decode_node_process_bytes_normalizes_line_endings():
+    assert ui._decode_node_process_bytes(b"a\r\nb\rc") == "a\nb\nc"
+    assert ui._decode_node_process_bytes("x\r\ny\rz") == "x\ny\nz"
+
+
+def test_run_node_normalizes_stdout_line_endings(tmp_path):
+    script = _write_fake_node(
+        tmp_path,
+        version="v24.0.0",
+        on_eval='import sys; sys.stdout.write("a\\r\\nb\\rc")',
+    )
+    result = ui.run_node(
+        "-e",
+        'process.stdout.write("a\\r\\nb\\rc")',
+        node=script,
+        timeout=30,
+    )
+    assert result.stdout == "a\nb\nc"
+
+
+def test_timeout_expired_normalizes_output_and_stderr(tmp_path, monkeypatch):
+    script = _write_fake_node(tmp_path, version="v24.0.0", on_eval="pass")
+    entry = tmp_path / "demo.js"
+    entry.write_text("", encoding="utf-8")
+    node_launch = ui._node_launch_module()
+
+    def timed_out(*args, **kwargs):
+        raise node_launch.LaunchError(
+            "node_launch: Node process timed out",
+            code="ELAUNCHFAILURE",
+            stdout=b"out\r\nline\r",
+            stderr=b"err\r\n",
+        )
+
+    monkeypatch.setattr(node_launch, "run", timed_out)
+    with pytest.raises(subprocess.TimeoutExpired) as info:
+        ui.run_node(entry, node=script, timeout=3)
+    assert info.value.output == "out\nline\n"
+    assert info.value.stderr == "err\n"
+
+
+def test_mutation_broken_decode_breaks_line_ending_parity(tmp_path, monkeypatch):
+    def broken_decode(data):
+        if isinstance(data, str):
+            return data
+        if not data:
+            return ""
+        return data.decode("utf-8", errors="replace")
+
+    monkeypatch.setattr(ui, "_decode_node_process_bytes", broken_decode)
+    script = _write_fake_node(
+        tmp_path,
+        version="v24.0.0",
+        stdout_bytes=b"a\r\nb\rc",
+    )
+    entry = tmp_path / "demo.js"
+    entry.write_text("", encoding="utf-8")
+
+    def old():
+        return _legacy_run_node(entry, node=script, timeout=30)
+
+    def new():
+        return ui.run_node(entry, node=script, timeout=30)
+
+    with pytest.raises(AssertionError):
+        _assert_same_outcome(old, new)
+
+
+def test_mutation_broken_raise_node_not_found_breaks_v20_path_check(tmp_path, monkeypatch):
+    def broken_raise(exc, node):
+        raise RuntimeError("node requires Node 24 or newer; node executable not found on PATH") from exc
+
+    monkeypatch.setattr(ui, "_raise_node_not_found", broken_raise)
+    script = _write_fake_node(tmp_path, version="v20.0.0", on_eval="pass")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, **kw: str(script) if name == "node" else None,
+    )
+    ui._node_launch_module().clear_probe_cache()
+    with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError, match=r"found Node 20"):
+            ui.run_node(ROOT / "tests" / "navigation.node.js")
+
+
+def test_mutation_bypassing_node_launch_run_breaks_normal_parity(tmp_path, monkeypatch):
+    node_launch = ui._node_launch_module()
+    script = _write_fake_node(
+        tmp_path,
+        version="v24.0.0",
+        on_eval="import sys; sys.stdout.write('ok\\n')",
+    )
+    entry = tmp_path / "demo.js"
+    entry.write_text("export {}", encoding="utf-8")
+
+    def broken_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, b"not-ok\n", b"")
+
+    monkeypatch.setattr(node_launch, "run", broken_run)
+
+    def old():
+        return _legacy_run_node(entry, node=script, timeout=30)
+
+    def new():
+        return ui.run_node(entry, node=script, timeout=30)
+
+    with pytest.raises(AssertionError):
+        _assert_same_outcome(old, new)
 
 
 def test_run_node_without_argv_matches_legacy_bare_node(tmp_path):

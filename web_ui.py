@@ -1331,10 +1331,12 @@ def _node_launch_module() -> Any:
 
 def _decode_node_process_bytes(data: Any) -> str:
     if isinstance(data, str):
-        return data
-    if not data:
+        text = data
+    elif not data:
         return ""
-    return data.decode("utf-8", errors="replace")
+    else:
+        text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _text_completed(
