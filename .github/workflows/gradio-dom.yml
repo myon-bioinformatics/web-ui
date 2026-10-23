@@ -26,10 +26,10 @@ jobs:
           ref: b94f801a9c57b1914ff6b732519521a7a42fadfe
           path: .browser-test-kit-dom
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           python-version: '3.12'
           enable-cache: 'true'
@@ -48,7 +48,7 @@ jobs:
           BTK_ROOT: .browser-test-kit-dom
           GRADIO_ANALYTICS_ENABLED: 'False'
           DOM_EVIDENCE_DIR: build/gradio-dom
-        run: uv run --locked --group gradio python -m pytest -v tests/integration/test_gradio_dom.py --junitxml=build/gradio-dom/junit.xml
+        run: uv run --group gradio pytest -v tests/integration/test_gradio_dom.py --junitxml=build/gradio-dom/junit.xml
       - uses: actions/upload-artifact@v7
         if: always()
         with:

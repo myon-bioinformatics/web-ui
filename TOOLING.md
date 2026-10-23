@@ -34,16 +34,19 @@ committed, emitted by `web_ui_tooling_meta.py`, or uploaded as artifacts.
 
 ## Tool diagnostics
 
-Install development dependencies and run them from the lockfile.
+Install development dependencies with uv and run them from that environment.
+pytest is a dev dependency with a lower bound only (`pytest>=8`).
 
 `pyproject.toml` sets `[tool.uv] override-dependencies` to lift transitive
 ceilings until upstream metadata catches up: Gradio 6.30.0 caps `pillow<13`,
 `safehttpx<0.2`, and `tomlkit<0.15` (Pillow 13+ addresses Dependabot JPEG CVEs);
-Playwright caps `pyee<15`. Drop each override when the parent package allows the
+Playwright caps `pyee<15`. The pyee override is a lower bound (`pyee>=13`) so
+Python 3.12 and newer can take pyee 15, while Python 3.11 stays on a pyee
+release that supports it. Drop each override when the parent package allows the
 current PyPI release without conflict.
 
 ```sh
-uv run --locked pytest -v
+uv run pytest -v
 uv run --locked python tool/web_ui_tooling_meta.py
 python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
@@ -88,7 +91,7 @@ The repository-metadata v1 schema and JSON/JSONL identity path are unchanged.
 - deterministic browser smoke: Playwright/Chromium
 - agent-oriented browser experiments: Stagehand v4
 - GitHub automation/diagnostics: `git` + `gh`
-- tests may use pytest
+- pytest tests run with `uv run pytest`; stdlib unittest lanes stay on `python -m unittest`
 - application/runtime UI remains build-free and dependency-light
 - version/SHA metadata should aid diagnosis, not cause needless failures merely
   because a newer tool release exists

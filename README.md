@@ -134,6 +134,12 @@ Run the static contract checks locally:
 python -m unittest discover -s tests -v
 ```
 
+Pytest lanes, including those contract modules, run with uv:
+
+```sh
+uv run pytest -v
+```
+
 The `-v` output identifies the failing contract by test name. If a browser screenshot fails in CI, inspect the `UI smoke` job first; successful screenshot runs publish the `web-ui-screenshots` artifact.
 
 GitHub Actions captures Chromium screenshots at two explicit v1 viewports:
@@ -327,7 +333,7 @@ python -S -c 'from web_ui import pptx_presentation, render_document, remote_scri
 See [docs/lightweight-js.md](docs/lightweight-js.md) for the slide spec,
 `pptx_connector()`, and the edge/center arrow convention.
 
-Run `python -m unittest tests.test_embedded_modules -v` or pytest. Browser
+Run `python -m unittest tests.test_embedded_modules -v` or `uv run pytest`. Browser
 verification should check the resulting module in Chromium under the chosen CSP;
 unit tests alone do not establish browser execution.
 

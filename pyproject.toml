@@ -2,7 +2,7 @@
 name = "web-ui"
 version = "0.1.0"
 description = "Shared CSS themes, semantic UI components, and small JavaScript utilities"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
@@ -23,5 +23,5 @@ override-dependencies = [
     "pillow>=13.0.0",
     "safehttpx>=0.2.0",
     "tomlkit>=0.15.2",
-    "pyee>=15.0.0",
+    "pyee>=13",
 ]

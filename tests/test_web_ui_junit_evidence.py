@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,11 +45,11 @@ def test_skip():
     pytest.skip("synthetic skipped probe")
 ''', encoding="utf-8")
     env = dict(os.environ, PYTHONPATH=str(ROOT), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTEST_ADDOPTS="")
-    command = [sys.executable, "-m", "pytest", str(fixture), "-c", os.devnull,
+    command = ["uv", "run", "pytest", str(fixture), "-c", os.devnull,
                "--rootdir", str(tmp_path), "--confcutdir", str(tmp_path), "-q"]
-    plain = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    plain = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
     reported = subprocess.run(command + ["--junitxml", str(evidence / "junit.xml"),
-                              "-o", "junit_logging=all"], cwd=tmp_path, env=env,
+                              "-o", "junit_logging=all"], cwd=ROOT, env=env,
                               capture_output=True, text=True, timeout=60)
     (evidence / "exit.json").write_text(json.dumps({"without_junit": plain.returncode,
                                                 "with_junit": reported.returncode}), encoding="utf-8")

@@ -30,7 +30,7 @@ python -S .vendor-sync-tools/vendor_sync.py materialize --manifest vendor.lock.j
 python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
 ```
 
-Run the existing Python suite from the locked test dependencies after verification: `uv run --locked python -m pytest -v`.
+Run the existing Python suite with uv after verification: `uv run pytest -v`.
 
 ## Retired Ironmate sources
 
