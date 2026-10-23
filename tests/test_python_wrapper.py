@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import sys
@@ -6,9 +7,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from web_ui import render_document, run_node, shared_scripts, shared_stylesheets
+from web_ui import _node_launch_module, render_document, run_node, shared_scripts, shared_stylesheets
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _node_at_least_24() -> bool:
+    if shutil.which("node") is None:
+        return False
+    try:
+        done = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
+    return bool(match and int(match.group(1)) >= 24)
 
 
 class PythonWrapperTests(unittest.TestCase):
@@ -175,15 +187,17 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('<script type="module" src="./js/ui.js"></script>', linked.stdout)
 
     def test_run_node_wraps_diagnostics_script(self):
-        if shutil.which('node') is None:
-            self.skipTest('node not available')
+        if not _node_at_least_24():
+            self.skipTest('node 24+ not available')
         result = run_node(ROOT / 'tests' / 'repository_diagnostics.node.js')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '')
 
     def test_run_node_reports_missing_executable(self):
-        with mock.patch('web_ui.shutil.which', return_value=None):
-            with self.assertRaises(FileNotFoundError):
+        node_launch = _node_launch_module()
+        node_launch.clear_probe_cache()
+        with mock.patch.object(node_launch.shutil, 'which', return_value=None):
+            with self.assertRaises(RuntimeError):
                 run_node('missing.js')
 
     def test_python_c_layout_one_liner(self):
