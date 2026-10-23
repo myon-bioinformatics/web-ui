@@ -12,7 +12,7 @@ COLLECTOR = (
     "myon-bioinformatics/myon-bioinformatics/.github/workflows/"
     "reusable-junit-identity.yml@2192ff22acafdd09e80ac722df91ee937aaedd5e"
 )
-COMMAND = "uv run --locked python -m pytest -v --junitxml=build/test-results/pytest-3.12.xml"
+COMMAND = "uv run pytest -v --junitxml=build/test-results/pytest-3.12.xml"
 
 
 def _step(job, name):

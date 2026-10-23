@@ -30,6 +30,6 @@ Both print `[{"name":"Aoi","topics":["python"]}]` and a newline. Contract:
   JavaScript functions are **not** serialized into the JSON contract.
 
 `tests/fixtures/collection_filter_cases.json` is shared across both languages.
-Run `python -S collection_filter.py` with JSON stdin, `python -m pytest
+Run `python -S collection_filter.py` with JSON stdin, `uv run pytest
 tests/test_collection_filter.py`, and `node --test tests/collection-cli.node.cjs`.
 A consumer should pin the source revision and verify its bytes before vendoring.

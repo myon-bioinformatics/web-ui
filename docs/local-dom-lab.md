@@ -24,7 +24,7 @@ Test browser requests outside the local Gradio origin are aborted. Evidence JSON
 is retained even on comparison failure and the browser/server are closed.
 
 ```sh
-WEB_UI_GRADIO_TEST=1 BTK_ROOT=/path/to/pinned/browser-test-kit uv run --locked --group gradio python -m pytest tests/integration/test_gradio_dom.py
+WEB_UI_GRADIO_TEST=1 BTK_ROOT=/path/to/pinned/browser-test-kit uv run --group gradio pytest tests/integration/test_gradio_dom.py
 ```
 
 The CI lane supplies browser-test-kit commit
