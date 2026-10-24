@@ -48,6 +48,7 @@ def test_vendor_lock_lists_expected_sources():
             "node_launch.py",
             "vendor/node_launch.py",
         ),
+        ("myon-bioinformatics/myon-bioinformatics", "py_launch.cjs", "vendor/py_launch.cjs"),
     }
     actual = {(e["repository"], e["source"], e["destination"]) for e in _lock_entries()}
     assert actual == expected
