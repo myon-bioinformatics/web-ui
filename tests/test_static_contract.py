@@ -108,6 +108,19 @@ class StaticContractTest(unittest.TestCase):
                 self.assertFalse(href.startswith("/"))
                 self.assertEqual((path.parent / href).resolve(), favicon.resolve())
 
+    def test_pages_visible_and_touch_icons_resolve_to_canonical_asset(self):
+        icon = ROOT / "docs/brand/icon.png"
+        self.assertTrue(icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        for path in [ROOT / "index.html", *EXAMPLES.glob("*.html")]:
+            text = path.read_text(encoding="utf-8")
+            patterns = [r'<link rel="apple-touch-icon" href="([^"]+)">']
+            if path == ROOT / "index.html":
+                patterns.append(r'<img[^>]+src="([^"]+)"')
+            for pattern in patterns:
+                href = re.search(pattern, text).group(1)
+                self.assertFalse(urlsplit(href).scheme)
+                self.assertEqual((path.parent / href).resolve(), icon.resolve())
+
     def test_examples_reference_shared_assets(self):
         for path in EXAMPLES.glob("*.html"):
             text = path.read_text(encoding="utf-8")
