@@ -40,6 +40,22 @@ NODE = _node()
 needs_node = pytest.mark.skipif(NODE is None, reason="Node 24+ not available (set NODE)")
 
 
+def test_ci_provisions_node_instead_of_skipping_entry_parity():
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        assert NODE is not None, "CI must configure Node >=24 before pytest"
+
+    workflow = (ROOT / ".github" / "workflows" / "tooling-smoke.yml").read_text(
+        encoding="utf-8"
+    )
+    for job in (
+        workflow.split("\n  tooling:\n", 1)[1].split("\n  test-locked:", 1)[0],
+        workflow.split("\n  test-locked:\n", 1)[1].split("\n  junit-identity:", 1)[0],
+    ):
+        assert "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1" in job
+        assert "node-version: ${{ matrix.node-version }}" in job
+        assert job.index("actions/setup-node@") < job.index("name: Run pytest")
+
+
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     env[ENV_VAR] = sys.executable
