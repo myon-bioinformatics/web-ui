@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['24', latest]
+        node-version: ['26', latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -176,7 +176,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['24', latest]
+        node-version: ['26', latest]
     steps:
     - uses: actions/checkout@v7
       with:
