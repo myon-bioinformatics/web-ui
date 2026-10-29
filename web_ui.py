@@ -62,6 +62,9 @@ _PPTX_DEFAULT_COLOR = "000000"
 # PptxGenJS writes one fontFace into the Latin, East Asian, and complex-script slots.
 # Meiryo is that face; メイリオ is the same family. Callers may override fontFace.
 _PPTX_DEFAULT_FONT = "Meiryo"
+# Same stack as the --ui-font token in css/tokens.css (tests/test_font.py keeps them equal).
+# Plotly cannot read CSS variables, so plotly_figure supplies it as the default layout font family.
+UI_FONT = "Meiryo, メイリオ, sans-serif"
 _PPTX_DEFAULT_LINE_WIDTH = 1.25
 _PPTX_MIN_DISTANCE = 1e-6
 _PPTX_DATA_IMAGE = re.compile(r"(?:data:)?(image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\Z")
@@ -481,7 +484,8 @@ def plotly_figure(
 
     Pass a Plotly figure JSON object ``{"data": [...], "layout": {...}, "config": {...}}``.
     Pair with ``remote_scripts("plotly.js")`` in ``render_document`` so plotly.js loads
-    from the documented CDN URL before this initializer runs.
+    from the documented CDN URL before this initializer runs. ``layout.font.family`` defaults
+    to ``UI_FONT`` (Meiryo first); any font keys the figure sets itself are kept.
     """
     if not isinstance(spec, dict):
         raise ValueError("spec must be a mapping")
@@ -489,6 +493,10 @@ def plotly_figure(
     if not isinstance(data, list):
         raise ValueError("spec data must be a list")
     layout = dict(spec.get("layout") or {})
+    font = layout.get("font") or {}
+    if not isinstance(font, dict):
+        raise ValueError("spec layout font must be a mapping")
+    layout["font"] = {"family": UI_FONT, **font}  # the figure's own font keys win
     config = dict(spec.get("config") or {})
     if height is not None:
         if isinstance(height, bool) or not isinstance(height, int) or height < 1:

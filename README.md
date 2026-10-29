@@ -38,11 +38,18 @@ Generic JavaScript handles browser behavior and rendering helpers. MCP/API proto
 
 Current themes:
 
-- `modern` — terminal/monospace-oriented default
+- `modern` — terminal-styled default (text is Meiryo like every theme; code stays monospace)
 - `github-like` — generic light presentation intentionally using familiar GitHub visual cues
 
 Theme files are presentation-only. Consumers keep the same semantic HTML and
 switch `data-ui-theme` plus the loaded theme stylesheet.
+
+Typography is shared, not per theme: `--ui-font` (Meiryo, メイリオ, then `sans-serif`) for text and
+`--ui-font-mono` for `pre`, `code`, `kbd` and `samp`. The code rule is `!important` so it also wins over
+an adapted page's own `pre, code { font-family: inherit }`. No font file is bundled (Meiryo cannot be
+redistributed), so systems without it, such as macOS, iOS and Linux, fall back to their `sans-serif`.
+`plotly_figure` defaults `layout.font.family` to `web_ui.UI_FONT`, the same stack; a figure's own
+`layout.font` keys win. PPTX output already defaults to `Meiryo`.
 
 The alternate-theme example is available at
 `examples/github-like.html`, and CI captures desktop/mobile screenshots for it.
