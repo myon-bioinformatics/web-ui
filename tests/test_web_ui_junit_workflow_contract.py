@@ -12,7 +12,7 @@ COLLECTOR = (
     "myon-bioinformatics/myon-bioinformatics/.github/workflows/"
     "reusable-junit-identity.yml@9e3da7ae1846e9604ebc24bb5178f7de094a4e77"
 )
-COMMAND = "uv run pytest -v --junitxml=build/test-results/pytest-3.12.xml"
+COMMAND = "uv run pytest -v --junitxml=build/test-results/pytest-3.15.xml"
 
 
 def _step(job, name):
@@ -39,8 +39,8 @@ def _assert_contract(workflow):
     assert " ".join(run["run"].split()) == COMMAND
     assert run["env"]["WEB_UI_FAILURE_EVIDENCE"] == "build/controlled-failure"
     for name, path in (
-        ("junit-python-3.12", "build/test-results/pytest-3.12.xml"),
-        ("junit-controlled-python-3.12", "build/controlled-failure/"),
+        ("junit-python-3.15", "build/test-results/pytest-3.15.xml"),
+        ("junit-controlled-python-3.15", "build/controlled-failure/"),
     ):
         upload = _upload(producer, name)
         assert producer["steps"].index(run) < producer["steps"].index(upload)
@@ -57,8 +57,8 @@ def _assert_contract(workflow):
     reports = json.loads(collector["with"]["expected-reports"])
     assert isinstance(reports, list) and len(reports) == 2
     assert set(reports) == {
-        "junit-python-3.12/pytest-3.12.xml",
-        "junit-controlled-python-3.12/junit.xml",
+        "junit-python-3.15/pytest-3.15.xml",
+        "junit-controlled-python-3.15/junit.xml",
     }
 
 
@@ -83,10 +83,10 @@ def test_failure_evidence_contract_rejects_unsafe_mutations():
         ("collector loses dependency", collector_path + ("needs",), []),
         ("collector missing report", collector_path + ("with", "expected-reports"), "[]"),
         ("collector unexpected report", collector_path + ("with", "expected-reports"),
-         json.dumps(["junit-python-3.12/pytest-3.12.xml",
-                     "junit-controlled-python-3.12/junit.xml", "unexpected/report.xml"])),
+         json.dumps(["junit-python-3.15/pytest-3.15.xml",
+                     "junit-controlled-python-3.15/junit.xml", "unexpected/report.xml"])),
     ]
-    for name in ("junit-python-3.12", "junit-controlled-python-3.12"):
+    for name in ("junit-python-3.15", "junit-controlled-python-3.15"):
         index = producer["steps"].index(_upload(producer, name))
         path = job_path + ("steps", index)
         mutations.extend([
