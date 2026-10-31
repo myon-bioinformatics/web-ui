@@ -27,7 +27,7 @@ web-ui's native Node generator remains available independently.
 
 Image rendering is optional and local. Mermaid source needs no browser; Ironmate
 SVG needs installed Mermaid CLI and its browser. PNG/Base64/data URI also need
-Node.js 22+ and installed Chrome/Chromium. No tool is downloaded automatically,
+Node.js 24+ and installed Chrome/Chromium. No tool is downloaded automatically,
 and a missing renderer fails explicitly. Transparent is the default image canvas;
 opaque `#RRGGBB` and scaled output are optional. Host fonts and browser versions
 can affect vector text rasterization.
