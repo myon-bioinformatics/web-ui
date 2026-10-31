@@ -9,7 +9,7 @@ jobs:
       contents: read
     uses: myon-bioinformatics/myon-bioinformatics/.github/workflows/reusable-change-detection.yml@9e3da7ae1846e9604ebc24bb5178f7de094a4e77
 
-  # Tooling smoke already runs these unittest cases through pytest on Python 3.12.
+  # Tooling smoke already runs these unittest cases through pytest on Python 3.15.
   # Keep this workflow focused on real-browser capture and visual evidence.
   screenshot:
     if: needs.changes.outputs.product_changed == 'true'

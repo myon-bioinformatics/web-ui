@@ -177,7 +177,7 @@ setup error if no PNGs match the configured pattern. By default it considers
 `web-ui-*.png`; `--pattern` can narrow enforcement to stable contract
 fixtures before examples/gallery captures become blocking.
 
-CI currently runs the checker with Python 3.12. The script uses Python 3.9+
+CI currently runs the checker with Python 3.15. The script uses Python 3.9+
 built-in generic type syntax such as `tuple[int, int]`.
 
 ## Roadmap
