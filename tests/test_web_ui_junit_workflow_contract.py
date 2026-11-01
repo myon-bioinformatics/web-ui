@@ -37,7 +37,7 @@ def _assert_contract(workflow):
     assert run.get("if") is None
     # The exact normalized command rejects || true, set +e and trailing exit 0.
     assert " ".join(run["run"].split()) == COMMAND
-    assert run["env"]["WEB_UI_FAILURE_EVIDENCE"] == "build/controlled-failure"
+    assert run["env"]["FAILURE_EVIDENCE_DIR"] == "build/controlled-failure"
     for name, path in (
         ("junit-python-3.15", "build/test-results/pytest-3.15.xml"),
         ("junit-controlled-python-3.15", "build/controlled-failure/"),

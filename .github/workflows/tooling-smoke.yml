@@ -116,7 +116,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Run pytest
         env:
-          WEB_UI_FAILURE_EVIDENCE: build/controlled-failure
+          FAILURE_EVIDENCE_DIR: build/controlled-failure
         run: uv run --group stagehand pytest -v --junitxml=build/test-results/pytest-3.15.xml
       - name: Preserve junit-python-3.15
         if: always()
