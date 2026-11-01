@@ -147,6 +147,8 @@ Pytest lanes, including those contract modules, run with uv:
 uv run pytest -v
 ```
 
+Stagehand is an opt-in dependency group, so the default sync does not install it. The Stagehand tests run in the tooling-smoke lane with `uv run --group stagehand pytest -v`.
+
 The `-v` output identifies the failing contract by test name. If a browser screenshot fails in CI, inspect the `UI smoke` job first; successful screenshot runs publish the `web-ui-screenshots` artifact.
 
 GitHub Actions captures Chromium screenshots at two explicit v1 viewports:
