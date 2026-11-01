@@ -10,10 +10,13 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
+# Default sync: pytest and PyYAML only. Stagehand is browser tooling, opt-in via --group stagehand.
 dev = [
     "pytest>=8",
-    "stagehand>=4",
     "PyYAML>=6",
+]
+stagehand = [
+    "stagehand>=4",
 ]
 gradio = [
     "gradio>=6.30.0",

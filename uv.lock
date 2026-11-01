@@ -1668,12 +1668,14 @@ source = { editable = "." }
 dev = [
     { name = "pytest" },
     { name = "pyyaml" },
-    { name = "stagehand" },
 ]
 gradio = [
     { name = "gradio" },
     { name = "playwright" },
     { name = "pytest" },
+]
+stagehand = [
+    { name = "stagehand" },
 ]
 
 [package.metadata]
@@ -1682,13 +1684,13 @@ gradio = [
 dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "stagehand", specifier = ">=4" },
 ]
 gradio = [
     { name = "gradio", specifier = ">=6.30.0" },
     { name = "playwright", specifier = ">=1.63.0" },
     { name = "pytest", specifier = ">=9.1.1" },
 ]
+stagehand = [{ name = "stagehand", specifier = ">=4" }]
 
 [[package]]
 name = "websockets"

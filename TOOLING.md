@@ -37,6 +37,11 @@ committed, emitted by `web_ui_tooling_meta.py`, or uploaded as artifacts.
 Install development dependencies with uv and run them from that environment.
 pytest is a dev dependency with a lower bound only (`pytest>=8`).
 
+Stagehand is not installed by default. It is the opt-in `stagehand` dependency
+group (`stagehand>=4`), so `uv sync` and `uv run pytest` do not pull browser
+tooling. Tests that need it use `pytest.importorskip` and skip without the group;
+the tooling-smoke lane runs them with `--group stagehand`, so the coverage is unchanged.
+
 `pyproject.toml` sets `[tool.uv] override-dependencies` to lift transitive
 ceilings until upstream metadata catches up: Gradio 6.30.0 caps `pillow<13`,
 `safehttpx<0.2`, and `tomlkit<0.15` (Pillow 13+ addresses Dependabot JPEG CVEs);
@@ -47,13 +52,14 @@ current PyPI release without conflict.
 
 ```sh
 uv run pytest -v
-uv run --locked python tool/web_ui_tooling_meta.py
+uv run --group stagehand pytest -v
+uv run --locked --group stagehand python tool/web_ui_tooling_meta.py
 python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
 ```
 
 `web_ui_tooling_meta.py` delegates Python runtime and Git/GitHub CLI/Node/npx versions
 to vendored `gh_identity.tool_versions()`, and observes the explicitly
-allowlisted `pytest`/`stagehand` distributions locally. The consumer only
+allowlisted `pytest`/`stagehand` distributions locally (`stagehand` is reported only when its group is installed). The consumer only
 timestamps and projects those observations into the existing `runtime`, `commands`,
 and `packages` JSON groups.
 It does not collect repository identity or add app/render/build measurements.

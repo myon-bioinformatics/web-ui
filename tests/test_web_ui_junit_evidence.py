@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_tooling_probe_child_keeps_exit_status_with_junit(tmp_path):
     importer = ROOT / ".junit-tools" / "xprobe.py"
-    if not importer.is_file() and os.environ.get("GITHUB_ACTIONS") != "true" and not os.environ.get("WEB_UI_FAILURE_EVIDENCE"):
+    if not importer.is_file() and os.environ.get("GITHUB_ACTIONS") != "true" and not os.environ.get("FAILURE_EVIDENCE_DIR"):
         pytest.skip("optional local JUnit regression: fetch the pinned importer (docs/junit-evidence.md)")
     assert importer.is_file(), "CI must provision the pinned test-only JUnit importer"
-    evidence = Path(os.environ.get("WEB_UI_FAILURE_EVIDENCE", tmp_path / "evidence")).resolve()
+    evidence = Path(os.environ.get("FAILURE_EVIDENCE_DIR", tmp_path / "evidence")).resolve()
     evidence.mkdir(parents=True, exist_ok=True)
     fixture = tmp_path / "test_probe.py"
     fixture.write_text('''

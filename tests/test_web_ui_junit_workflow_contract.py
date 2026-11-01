@@ -12,7 +12,7 @@ COLLECTOR = (
     "myon-bioinformatics/myon-bioinformatics/.github/workflows/"
     "reusable-junit-identity.yml@9e3da7ae1846e9604ebc24bb5178f7de094a4e77"
 )
-COMMAND = "uv run pytest -v --junitxml=build/test-results/pytest-3.15.xml"
+COMMAND = "uv run --group stagehand pytest -v --junitxml=build/test-results/pytest-3.15.xml"
 
 
 def _step(job, name):
@@ -37,7 +37,7 @@ def _assert_contract(workflow):
     assert run.get("if") is None
     # The exact normalized command rejects || true, set +e and trailing exit 0.
     assert " ".join(run["run"].split()) == COMMAND
-    assert run["env"]["WEB_UI_FAILURE_EVIDENCE"] == "build/controlled-failure"
+    assert run["env"]["FAILURE_EVIDENCE_DIR"] == "build/controlled-failure"
     for name, path in (
         ("junit-python-3.15", "build/test-results/pytest-3.15.xml"),
         ("junit-controlled-python-3.15", "build/controlled-failure/"),
