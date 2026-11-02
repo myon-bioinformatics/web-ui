@@ -3062,7 +3062,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.example:
         try:
-            sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
+            result = json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n"
+            if hasattr(sys.stdout, "buffer"):
+                sys.stdout.buffer.write(result.encode("utf-8"))
+            else:
+                sys.stdout.write(result)
         except ValueError as exc:
             parser.error(str(exc))
         return 0

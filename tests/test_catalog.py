@@ -133,6 +133,11 @@ class CatalogTests(unittest.TestCase):
                                         capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.decode('utf-8'), ui.catalog_document(spec))
+                example = subprocess.run([sys.executable, '-S', ui.__file__, '--example', name],
+                                         env={**os.environ, 'PYTHONIOENCODING': 'cp1252'},
+                                         capture_output=True, timeout=10)
+                self.assertEqual(example.returncode, 0, example.stderr)
+                self.assertEqual(json.loads(example.stdout.decode('utf-8')), spec)
 
     def test_isolated_single_file_and_cli(self):
         with tempfile.TemporaryDirectory() as directory:
