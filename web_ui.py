@@ -90,42 +90,91 @@ def _require_local_or_https(value: str, *, label: str, allow_query: bool = True)
         raise ValueError(f"{label} must not contain credentials, query or fragment")
 
 
-def shared_stylesheets(asset_base: str, *, theme: str = "modern", stub: bool = False) -> tuple[str, ...]:
-    """Return local/HTTPS asset links; consumers own copying or exact-SHA pinning."""
-    if theme not in THEMES + CANDIDATE_THEMES:
-        raise ValueError("unknown theme")
-    _require_local_or_https(asset_base, label="asset_base", allow_query=False)
-    files = ["tokens.css", "base.css", "components.css"]
-    if stub:
-        files.append("stub.css")
-    if theme in THEMES:
-        files.append(f"themes/{theme}.css")
-    return tuple(f'{asset_base.rstrip("/")}/css/{name}' for name in files)
-
-
+# The stylesheets, as data: Python is the only source (there are no css/ files). Names are kept so the bundle order is stable.
+_CSS = {
+    "tokens.css": r""":root{--ui-bg:#0d1117;--ui-panel:#101820;--ui-fg:#d1f7c4;--ui-muted:#8b949e;--ui-border:#58a6ff;--ui-accent:#7ee787;--ui-danger:#cf222e;--ui-radius:0;--ui-space:1rem;--ui-max:960px;--ui-font:Meiryo,メイリオ,sans-serif;--ui-font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+/* Green (candidate theme, token-only): the sage-and-teal light look first built by hand in Ironmate's studio. */
+body[data-ui-theme="green"]{--ui-bg:#edf0ec;--ui-panel:#ffffff;--ui-fg:#163b3b;--ui-muted:#546a61;--ui-border:#ccdcd4;--ui-accent:#126d66;--ui-danger:#a73528;--ui-radius:.5rem;color-scheme:light}
+""",
+    "base.css": r"""@layer base{*{box-sizing:border-box}body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:16px/1.6 var(--ui-font)}pre,code,kbd,samp{font-family:var(--ui-font-mono)!important}.ui-page{max-width:var(--ui-max);margin:auto;padding:1.25rem}a{color:inherit}}""",
+    "components.css": r"""@layer components{.ui-panel,.ui-card{background:var(--ui-panel);border:1px solid var(--ui-border);padding:1rem;margin:1rem 0;border-radius:var(--ui-radius)}.ui-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.ui-tag{display:inline-block;border:1px solid var(--ui-border);padding:.1rem .4rem}.ui-button,.ui-input{font:inherit;background:var(--ui-panel);color:var(--ui-fg);border:1px solid var(--ui-border);padding:.6rem;border-radius:var(--ui-radius)}.ui-muted{color:var(--ui-muted)}.ui-output{font:inherit;white-space:pre-wrap;overflow:auto;background:#d8dee4;color:#161b22;border:1px solid #8c959f;border-radius:4px;padding:.75rem}pre code,.ui-output code{font-family:inherit;color:inherit}pre.ui-output code{background:transparent}@media(max-width:480px){.ui-page{padding:.75rem}.ui-grid{grid-template-columns:1fr}.ui-card,.ui-panel{margin:.75rem 0;padding:.75rem}}.ui-lightbox{border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);padding:1rem;max-width:min(96vw,960px);max-height:96vh;border-radius:var(--ui-radius)}.ui-lightbox::backdrop{background:rgba(0,0,0,.72)}.ui-lightbox img{display:block;max-width:100%;max-height:calc(96vh - 8rem);margin:auto}.ui-lightbox-bar{display:flex;gap:.5rem;justify-content:space-between;margin-top:.75rem}body:has(.ui-lightbox[open]){overflow:hidden}}""",
+    "matrix.css": r"""@layer components{.ui-matrix:has(>section:target)>section:not(:target){display:none}.ui-matrix>section{scroll-margin-top:16px}.ui-matrix-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ui-matrix-col,160px),1fr));gap:var(--ui-matrix-gap,8px);padding:0;list-style:none}.ui-matrix-tiles li{border:1px solid var(--ui-border);padding:var(--ui-matrix-pad,8px);font-size:.8rem;overflow-wrap:anywhere}.ui-matrix-tiles img{display:block;width:100%;height:auto;margin:var(--ui-matrix-pad,8px) 0;background:#fff}.ui-matrix-tiles .is-missing{border-style:dashed;color:var(--ui-muted)}.ui-matrix-tiles .is-fail{outline:2px solid var(--ui-danger)}.ui-matrix-tiles .is-reference{outline:2px solid var(--ui-accent)}.ui-matrix-page>nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.ui-matrix-page>nav .ui-button{white-space:nowrap;text-decoration:none}.ui-matrix a{overflow-wrap:anywhere}}
+""",
+    "repository-diagnostics.css": r""".repo-diagnostics{box-sizing:border-box;border:1px solid var(--ui-border,#c9c9cf);border-radius:1rem;padding:1.25rem;background:var(--ui-surface,#fff);color:var(--ui-text,#222)}.repo-diagnostics h2{margin:0 0 .75rem;font-size:1.25rem}.repo-diagnostics__commit{overflow-wrap:anywhere}.repo-diagnostics__measurements{display:grid;grid-template-columns:minmax(8rem,1fr) 1fr;gap:.45rem 1rem;margin:1rem 0 0}.repo-diagnostics__measurements dt,.repo-diagnostics__measurements dd{margin:0}.repo-diagnostics__measurements dd{font-variant-numeric:tabular-nums}@media(max-width:30rem){.repo-diagnostics__measurements{grid-template-columns:1fr}.repo-diagnostics__measurements dd{margin-bottom:.35rem}}
+""",
+    "stub.css": r"""@layer components{
+.stub-shell{display:grid;gap:1rem}
+/* Keep title/description and metadata side-by-side when space permits; wrap rather than compress either region. */
+.stub-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.stub-toolbar{display:flex;gap:.5rem;flex-wrap:wrap}
+.stub-toolbar fieldset{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;width:100%;border:0;padding:0;margin:0}
+.stub-toolbar label{display:block}
+.stub-toolbar .ui-input{flex:1 1 16rem}
+.stub-status{margin:.75rem 0 0}
+.stub-meta{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
+/* Primary result pane + secondary evidence/history sidebar. */
+.stub-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(16rem,.45fr);gap:1rem}
+.stub-result,.stub-evidence,.stub-history{min-width:0}
+.stub-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--ui-border)}
+.stub-endpoint{overflow-wrap:anywhere}
+@media(max-width:720px){.stub-workspace{grid-template-columns:1fr}.stub-header{display:block}}
+}""",
+    "themes/github-like.css": r"""/* GitHub-like prioritizes familiar light GitHub visual cues while remaining a generic light theme. */
+@layer theme{
+body[data-ui-theme="github-like"]{
+  --ui-bg:#ffffff;
+  --ui-panel:#f6f8fa;
+  --ui-fg:#1f2328;
+  --ui-muted:#59636e;
+  --ui-border:#d0d7de;
+  --ui-accent:#0969da;
+}
+body[data-ui-theme="github-like"] .ui-panel,
+body[data-ui-theme="github-like"] .ui-card{
+  background:var(--ui-panel);
+  border-radius:.375rem;
+  box-shadow:none;
+}
+body[data-ui-theme="github-like"] .ui-button,
+body[data-ui-theme="github-like"] .ui-input{
+  background:#ffffff;
+}
+body[data-ui-theme="github-like"] .ui-title{
+  border-bottom:1px solid var(--ui-border);
+  padding-bottom:.5rem;
+}
+body[data-ui-theme="github-like"] .ui-tag{
+  border-radius:999px;
+  color:var(--ui-accent);
+}
+}
+""",
+    "themes/modern.css": r"""@layer theme{body[data-ui-theme="modern"]{color-scheme:dark}body[data-ui-theme="modern"] .ui-title::before,body[data-ui-theme="modern"] .ui-card>h2::before{content:"> ";color:var(--ui-accent)}body[data-ui-theme="modern"] .ui-panel,body[data-ui-theme="modern"] .ui-card{background:var(--ui-panel);box-shadow:4px 4px 0 rgba(88,166,255,.16)}body[data-ui-theme="modern"] .ui-tag::before{content:"#";color:var(--ui-accent)}}""",
+}
 _CSS_CORE = ("tokens.css", "base.css", "components.css")
 
 
-def bundled_css(root: str | Path | None = None) -> str:
-    """Every css/ source as one stylesheet, built in memory (nothing is written).
+def css_source(name: str) -> str:
+    """One stylesheet source by name, e.g. ``tokens.css`` or ``themes/modern.css`` (raw text)."""
+    try:
+        return _CSS[name]
+    except KeyError:
+        raise ValueError(f"unknown stylesheet: {name}") from None
+
+
+def bundled_css() -> str:
+    """Every stylesheet as one string, built in memory (nothing is written, there are no css/ files).
 
     ``render_document(css=bundled_css())`` gives a single-file page that works under every
     ``data-ui-theme``, so switching themes needs no stylesheet swap and no reload. Order is part
-    of the contract: tokens, base and components, then the other top-level files by name, then
+    of the contract: tokens, base and components, then the other top-level sources by name, then
     the themes by name; the ``@layer`` line fixes layer order whichever source comes first.
-    A checkout reads css/ beside this file; a standalone copy needs ``root`` to name a checkout.
     """
-    css_dir = (Path(root) if root is not None else Path(__file__).resolve().parent) / "css"
-
-    def names(directory: Path) -> list[str]:
-        return sorted(item.name for item in directory.glob("*.css") if item.is_file())
-
-    order = [*_CSS_CORE, *(n for n in names(css_dir) if n not in _CSS_CORE),
-             *(f"themes/{n}" for n in names(css_dir / "themes"))]
+    order = [*_CSS_CORE, *(n for n in sorted(_CSS) if "/" not in n and n not in _CSS_CORE),
+             *(n for n in sorted(_CSS) if n.startswith("themes/"))]
     parts = ["@layer base,components,theme;\n"]
     for name in order:
-        text = (css_dir / name).read_text(encoding="utf-8").replace("\r\n", "\n").strip("\n")
-        parts.append(f"/* css/{name} */\n{text}\n")
+        parts.append(f"/* css/{name} */\n{_CSS[name].replace(chr(13) + chr(10), chr(10)).strip(chr(10))}\n")
     return "".join(parts)
 
 
@@ -1305,15 +1354,17 @@ def route_links(registry, *, routing: str = "hash", label: str = "Pages") -> str
             f'<script type="application/json" id="ui-route-table" data-ui-routing="{routing}">{payload}</script>')
 
 
-def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] | None = None,
+def adopt_document(page: str, *, asset_base: str | None = None, class_aliases: dict[str, str] | None = None,
                    remove_stylesheets: tuple[str, ...] = (), theme: str = "modern") -> str:
     """Apply shared presentation to an audited, double-quoted static export.
 
     Preserve IDs, routes, script bodies and report content. This is not a
     visitor-input sanitizer or a general HTML parser. Consumers keep original
-    hashes and label the transformed publication separately.
+    hashes and label the transformed publication separately. The shared CSS is
+    embedded (bundled_css()); ``asset_base`` is accepted for old callers and unused.
     """
-    styles = shared_stylesheets(asset_base, theme=theme)
+    if theme not in THEMES + CANDIDATE_THEMES:
+        raise ValueError("unknown theme")
     aliases = class_aliases or {}
     if any(not re.fullmatch(r"[A-Za-z_][\w-]*", key) or
            any(not re.fullmatch(r"[A-Za-z_][\w-]*", value) for value in values.split())
@@ -1346,11 +1397,11 @@ def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] 
         chunks[index] = re.sub(r'<(body|main|header|div|section|span|p|h[1-6]|pre|input|select|textarea|button)\b([^>]*)>',
                                transform, chunks[index])
     page = ''.join(chunks)
-    links = ''.join(f'<link rel="stylesheet" href="{escape(path, quote=True)}" data-shared-ui="web-ui">' for path in styles)
+    style = '<style data-shared-ui="web-ui">' + bundled_css() + '</style>'
     if 'data-shared-ui="web-ui"' not in page:
         if '</head>' not in page:
             raise ValueError("shared presentation requires a document head")
-        page = page.replace('</head>', links + '</head>', 1)
+        page = page.replace('</head>', style + '</head>', 1)
     return page
 
 
@@ -1812,6 +1863,216 @@ def theme_wall_document(count: int) -> str:
     return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
 
 
+# --- Pages and examples as Python data: specs in, single-file pages out (no HTML files) ---------------
+# MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
+# is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
+
+STUB_SCHEMA = "web-ui-stub/1"
+# js/stub.js without its import line: it needs setText/prettyJson from ui.js, so the module is ui.js + this.
+EMBEDDED_STUB_JS = "export function bindStub({input=\"#query\",run=\"#run\",output=\"#output\",form=\"#stub-form\",handler}){const q=document.querySelector(input),b=document.querySelector(run),f=document.querySelector(form);if(!q||!b)return;const execute=async event=>{event?.preventDefault();b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result===\"string\"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}};(f??b).addEventListener(f?\"submit\":\"click\",execute)}\n"
+_STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
+                 't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
+
+
+def stub_response(template: Any, query: str) -> Any:
+    """What the mock answers for ``query``: ``template`` with every "$input" replaced by the query (same rule as the page)."""
+    if isinstance(template, str):
+        return template.replace("$input", query)
+    if isinstance(template, list):
+        return [stub_response(item, query) for item in template]
+    if isinstance(template, dict):
+        return {key: stub_response(value, query) for key, value in template.items()}
+    return template
+
+
+def stub_validate(spec: Any) -> dict[str, Any]:
+    """Checked ``web-ui-stub/1`` spec: id, title, heading, lead, tags, field, run, evidence, history and the mock template."""
+    keys = {"schema", "id", "title", "heading", "lead", "tags", "field", "run", "evidence", "history", "mock"}
+    if not isinstance(spec, dict) or spec.get("schema") != STUB_SCHEMA or set(spec) - keys:
+        raise ValueError(f"expected schema {STUB_SCHEMA} with keys {sorted(keys)}")
+    stub_id = spec.get("id", "stub")
+    if not isinstance(stub_id, str) or not _WORLD_ID.fullmatch(stub_id):
+        raise ValueError("id must be a lowercase token that starts with a letter")
+    tags = spec.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 6:
+        raise ValueError("tags must list at most 6 entries")
+    field = spec.get("field")
+    if not isinstance(field, dict) or set(field) - {"label", "placeholder", "value"} or "label" not in field:
+        raise ValueError("field has a label and optionally a placeholder or a value")
+    mock = spec.get("mock", {"status": "stub", "query": "$input"})
+    if len(json.dumps(mock)) > 4000:
+        raise ValueError("mock must be at most 4000 characters of JSON")
+    return {"schema": STUB_SCHEMA, "id": stub_id, "title": _world_text(spec.get("title", "Stub"), "title", 80),
+            "heading": _world_text(spec.get("heading", "Stub Explorer"), "heading", 80),
+            "lead": _world_text(spec.get("lead", ""), "lead", 200, required=False),
+            "tags": [_world_text(tag, "tag", 24) for tag in tags],
+            "field": {"label": _world_text(field["label"], "field label", 40),
+                      "placeholder": _world_text(field.get("placeholder", ""), "placeholder", 120, required=False),
+                      "value": _world_text(field.get("value", ""), "value", 120, required=False)},
+            "run": _world_text(spec.get("run", "Run"), "run", 24),
+            "evidence": _world_text(spec.get("evidence", ""), "evidence", 200, required=False),
+            "history": _world_text(spec.get("history", ""), "history", 200, required=False), "mock": mock}
+
+
+def stub_html(spec: Any, *, heading_level: int = 1) -> str:
+    """The stub workspace (request bar, result, evidence, history) with ids prefixed by the spec's id; text is escaped."""
+    s = stub_validate(spec)
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 1
+    sid, field = s["id"], s["field"]
+    attrs = (f' placeholder="{escape(field["placeholder"], quote=True)}"' if field["placeholder"] else "") + \
+            (f' value="{escape(field["value"], quote=True)}"' if field["value"] else "")
+    tags = "".join(f'<span class="ui-tag">{escape(tag)}</span>' for tag in s["tags"])
+    mock = json.dumps(s["mock"], ensure_ascii=False).replace("</", "<\\/")
+    return (f'<div class="stub-shell" id="{sid}"><header class="stub-header"><div><h{level} class="ui-title">{escape(s["heading"])}</h{level}>'
+            f'<p class="ui-muted">{escape(s["lead"])}</p></div><div class="stub-meta">{tags}</div></header>'
+            f'<section class="ui-panel"><form class="stub-toolbar" id="{sid}-form"><fieldset><legend>Stub request</legend>'
+            f'<label for="{sid}-query">{escape(field["label"])}</label><input class="ui-input" id="{sid}-query"{attrs}>'
+            f'<button class="ui-button" id="{sid}-run" type="submit">{escape(s["run"])}</button></fieldset></form>'
+            '<p class="stub-status ui-muted">Endpoint: <span class="stub-endpoint">consumer-owned</span></p></section>'
+            f'<div class="stub-workspace"><section class="ui-panel stub-result"><h2>Result</h2>'
+            f'<pre class="ui-output" id="{sid}-output" aria-live="polite">Ready.</pre></section>'
+            '<aside aria-label="Supporting information"><section class="ui-card stub-evidence"><h2>Evidence</h2>'
+            f'<p class="ui-muted">{escape(s["evidence"])}</p></section><section class="ui-card stub-history"><h2>History</h2>'
+            f'<p class="ui-muted">{escape(s["history"])}</p><div class="stub-actions"><button class="ui-button" type="button">Export</button>'
+            f'<button class="ui-button" type="button">Clear</button></div></section></aside></div>'
+            f'<script type="application/json" id="{sid}-mock">{mock}</script></div>')
+
+
+def stub_script(*specs: Any) -> str:
+    """One inline module for any number of stubs on a page: ui.js, stub.js, the mock evaluator and one bind per stub."""
+    binds = "".join(
+        f'bindStub({{input:"#{s["id"]}-query",run:"#{s["id"]}-run",output:"#{s["id"]}-output",form:"#{s["id"]}-form",'
+        f'handler:q=>fill(JSON.parse(document.getElementById("{s["id"]}-mock").textContent),q)}});\n'
+        for s in (stub_validate(spec) for spec in specs))
+    return EMBEDDED_UI_JS + EMBEDDED_STUB_JS + _STUB_FILL_JS + binds
+
+
+def stub_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page for one stub."""
+    s = stub_validate(spec)
+    return render_document(trusted_html='<main class="ui-page">' + stub_html(s) + "</main>"
+                           + module_script(stub_script(s)), title=s["title"], theme=theme, css=bundled_css())
+
+
+EXAMPLE_STUBS = {
+    "mcp": {"schema": STUB_SCHEMA, "id": "mcp", "title": "MCP Stub", "heading": "MCP Stub Explorer",
+            "lead": "Protocol behavior stays with the consumer; web-ui supplies presentation and generic interaction.",
+            "tags": ["mcp", "ready"], "field": {"label": "Tool or filter", "placeholder": "tools/list"}, "run": "Run",
+            "evidence": "Trace, source, SHA, or request metadata can be rendered here by the consumer.",
+            "history": "Consumer-owned history/export controls.",
+            "mock": {"kind": "mcp", "query": "$input", "status": "stub"}},
+    "api": {"schema": STUB_SCHEMA, "id": "api", "title": "API Stub", "heading": "API Stub Explorer",
+            "lead": "A generic request/result surface without API-specific logic in web-ui.",
+            "tags": ["api", "ready"], "field": {"label": "Path", "value": "/api/example"}, "run": "Send",
+            "evidence": "Status, headers, provenance, or timing metadata belongs here.",
+            "history": "Consumer-owned request history and export actions.",
+            "mock": {"method": "GET", "path": "$input", "status": 200, "body": {"stub": True}}},
+}
+
+
+def _example_cards() -> str:
+    return ('<section class="ui-grid"><article class="ui-card"><h2>Components</h2><p>Tokens, panels, cards, tags, controls and output surfaces.</p>'
+            '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
+            '<article class="ui-card"><h2>Stub examples</h2><p><a href="./mcp-stub.html">MCP Stub</a> · <a href="./api-stub.html">API Stub</a></p></article>'
+            '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article></section>')
+
+
+def example_pages() -> dict[str, str]:
+    """The pages that used to be examples/*.html and contract/v1/example.html, plus the front page, built in memory (path -> HTML)."""
+    css = bundled_css()
+    page = lambda body, title, theme="modern": render_document(trusted_html=body, title=title, theme=theme, css=css)
+    github_like = (
+        '<main class="ui-page"><h1 class="ui-title">web-ui · GitHub-like</h1>'
+        '<p class="ui-muted">The same semantic component contract with a different theme.</p><section class="ui-grid">'
+        '<article class="ui-card"><h2>Repository card</h2><p>Theme files change presentation without changing semantic classes.</p>'
+        '<span class="ui-tag">theme</span> <span class="ui-tag">contract-v1</span></article>'
+        '<article class="ui-card"><h2>Controls</h2><label for="example-input">Example input</label>'
+        '<input class="ui-input" id="example-input" value="shared semantic HTML"> <button class="ui-button" type="button">Example button</button></article>'
+        '</section><section class="ui-panel"><h2>Output</h2><pre class="ui-output">ui-page / ui-panel / ui-card / ui-button / ui-input</pre></section></main>')
+    contract = (
+        '<main class="ui-page"><h1 class="ui-title">HTML contract v1</h1><p class="ui-muted">Canonical semantic fixture.</p>'
+        '<section class="ui-panel"><div class="stub-toolbar"><label for="contract-query">Query</label>'
+        '<input class="ui-input" id="contract-query" value="example"> <button class="ui-button" type="button">Run</button></div>'
+        '<p class="stub-status ui-muted">Ready.</p><div class="stub-meta"><span class="ui-tag">contract-v1</span></div></section>'
+        '<section class="ui-grid"><article class="ui-card"><h2>Card</h2><p>Consumer-owned content.</p></article></section>'
+        '<pre class="ui-output">text-safe output</pre></main>')
+    return {
+        "examples/index.html": page('<main class="ui-page"><h1 class="ui-title">web-ui</h1><p class="ui-muted">Shared static UI contract for '
+                                    'myon-bioinformatics projects.</p>' + _example_cards() + "</main>", "web-ui examples"),
+        "examples/mcp-stub.html": stub_document(EXAMPLE_STUBS["mcp"]),
+        "examples/api-stub.html": stub_document(EXAMPLE_STUBS["api"]),
+        "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
+        "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
+        "index.html": _index_page(),
+    }
+
+
+# Sweep result for the layout switch on the front page (python tool/layout_presets.py sweep ... --out candidates.json).
+_INDEX_LAYOUT_CANDIDATES = {"schema": "web-ui-layout-candidates/1", "presets": {
+    name: {"passed": [320, 384, 768, 1280], "failed": []} for name in ("grid8", "compact", "device", "wide")}}
+
+
+def _index_page() -> str:
+    """The front page (index.html): one self-contained page holding every example. Needs a checkout (examples/, tool/)."""
+    import importlib
+    root = Path(__file__).resolve().parent
+    sys.path.insert(0, str(root / "tool"))
+    try:
+        layout_presets = importlib.import_module("layout_presets")
+    finally:
+        sys.path.pop(0)
+    world = json.loads((root / "examples/world.json").read_text(encoding="utf-8"))
+    presets = json.loads((root / "examples/layout-presets.json").read_text(encoding="utf-8"))
+    css = bundled_css() + layout_presets.css(presets) + world_css(world) + _WALL_CSS
+    theme_radios = "".join(
+        f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
+        for t in (*THEMES, *CANDIDATE_THEMES))
+    cards = "".join(
+        f'<article class="ui-card"><h2>{title}</h2><p>{text}</p><a href="#{anchor}">{link} →</a></article>'
+        for title, text, anchor, link in (
+            ("Try it", "Switch theme and layout live: no reload, no stylesheet swap.", "try", "Open the switches"),
+            ("MCP workspace", "Reusable MCP-style result/evidence/history structure, with a declarative mock.", "mcp", "Open MCP stub"),
+            ("API workspace", "Same semantic workspace with consumer-owned API behavior.", "api", "Open API stub"),
+            ("World (prototype)", "One page, a camera: scroll the shots, pan and zoom the map.", "world", "Open the world"),
+            ("Random themes", "Seeded palettes side by side; every text pair meets WCAG AA.", "wall", "Open the wall")))
+    tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
+    body = (
+        '<main class="ui-page"><header class="stub-header"><div>'
+        '<img src="./docs/brand/icon.png" width="80" height="80" alt="web-ui icon"><h1 class="ui-title">web-ui</h1>'
+        '<p class="ui-muted">Shared static-first UI contract for myon-bioinformatics projects.</p></div>'
+        '<div class="stub-meta"><span class="ui-tag">v1</span><span class="ui-tag">build-free</span></div></header>'
+        f'<section class="ui-grid">{cards}</section>'
+        '<section class="ui-panel" id="try"><h2>Try it</h2><p class="ui-muted">Both switches act at once: no reload. The theme is saved in '
+        'this browser; the layout is plain CSS.</p>'
+        f'<fieldset class="ui-layout-switch"><legend>Theme</legend>{theme_radios}</fieldset>'
+        f'{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'
+        f'<section>{stub_html(EXAMPLE_STUBS["mcp"], heading_level=2)}</section>'
+        f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
+        '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
+        'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
+        f'<code>examples/world.json</code>.</p>{world_html(world)}</section>'
+        '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
+        f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
+        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(WORLD_JS))
+    return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
+            '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
+            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>web-ui — static UI contract</title>\n'
+            f'  <style>{css}</style>\n<link rel="apple-touch-icon" href="./docs/brand/icon.png"></head>\n'
+            f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
+
+
+def write_site(directory: str | Path) -> list[str]:
+    """Write example_pages() under ``directory`` (for CI screenshots and local viewing); returns the paths written."""
+    written = []
+    for name, html in example_pages().items():
+        target = Path(directory) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(html)
+        written.append(name)
+    return written
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
@@ -1819,12 +2080,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--world", type=Path, metavar="FILE",
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+    parser.add_argument("--site", type=Path, metavar="DIR",
+                        help="write the example pages and the front page (index.html) under DIR and exit")
     parser.add_argument("--theme-wall", type=int, metavar="N",
                         help="print a page showing N seeded random themes side by side and exit")
     parser.add_argument("--css-bundle", action="store_true",
                         help="embed every web-ui stylesheet and theme (see bundled_css) in the page")
     parser.add_argument("--asset-base", help="local or pinned HTTPS shared asset directory")
-    parser.add_argument("--stub", action="store_true", help="include stub CSS with --asset-base")
     parser.add_argument(
         "--with-scripts",
         nargs="*",
@@ -1850,6 +2112,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         sys.stdout.write(f"{sri(raw)}\nsha256 {hashlib.sha256(raw).hexdigest()}\n")
         return 0
+    if args.site:
+        try:
+            for name in write_site(args.site):
+                print(name)
+        except OSError as exc:
+            parser.error(str(exc))
+        return 0
     if args.world or args.theme_wall:
         try:
             sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
@@ -1857,14 +2126,11 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
         return 0
-    if args.stub and not args.asset_base:
-        parser.error("--stub requires --asset-base")
     if args.with_scripts is not None and not args.asset_base:
         parser.error("--with-scripts requires --asset-base")
     try:
         content = sys.stdin.read()
         css = (bundled_css() if args.css_bundle else "") + (args.css.read_text(encoding="utf-8") if args.css else "")
-        styles = shared_stylesheets(args.asset_base, theme=args.theme, stub=args.stub) if args.asset_base else ()
         if args.with_scripts is None:
             scripts: tuple[str, ...] = ()
         else:
@@ -1876,7 +2142,6 @@ def main(argv: list[str] | None = None) -> int:
             title=args.title,
             theme=args.theme,
             css=css,
-            stylesheets=styles,
             scripts=scripts,
             remote_scripts=remote,
             embedded_modules=("ui.js",) if args.embed_ui else (),

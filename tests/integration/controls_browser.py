@@ -16,8 +16,8 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (bundled_css, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
-                    shared_scripts, theme_wall_document, world_document)
+from web_ui import (EXAMPLE_STUBS, bundled_css, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
+                    shared_scripts, stub_response, theme_wall_document, world_document)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -316,6 +316,40 @@ class WorldBrowserTests(unittest.TestCase):
                         self.assertGreaterEqual(contrast_ratio(row['muted'], row['bg']), 4.5, row)
                     self.assertEqual(len({row['bg'] for row in rows}) > 18, True)
                     self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 390)
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class StubBrowserTests(unittest.TestCase):
+    """Generated stub pages in Chromium: the mock answers exactly what Python's stub_response says."""
+
+    def test_mock_stubs_answer_like_python_on_their_own_page_and_on_the_front_page(self):
+        import json
+        from web_ui import stub_document
+        pages = {'mcp.html': stub_document(EXAMPLE_STUBS['mcp']), 'api.html': stub_document(EXAMPLE_STUBS['api']),
+                 'index.html': (ROOT / 'index.html').read_text(encoding='utf-8')}
+        server, origin = WorldBrowserTests.serve(pages)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    for name, ids in (('mcp.html', ['mcp']), ('api.html', ['api']), ('index.html', ['mcp', 'api'])):
+                        page = browser.new_page(viewport={'width': 800, 'height': 900})
+                        errors = []
+                        page.on('pageerror', lambda error: errors.append(str(error)))
+                        page.goto(f'{origin}/{name}')
+                        for sid in ids:
+                            for query in ('tools/list', 'a$&b <x> "q"'):
+                                page.fill(f'#{sid}-query', query)
+                                page.click(f'#{sid}-run')
+                                expected = json.dumps(stub_response(EXAMPLE_STUBS[sid]['mock'], query), indent=2, ensure_ascii=False)
+                                expect(page.locator(f'#{sid}-output')).to_have_text(expected)
+                            self.assertEqual(page.locator(f'#{sid}-output').evaluate('el => el.children.length'), 0)  # text, never HTML
+                        self.assertEqual(errors, [], name)
+                        page.close()
                 finally:
                     browser.close()
         finally:

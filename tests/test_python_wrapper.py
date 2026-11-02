@@ -11,8 +11,7 @@ from unittest import mock
 import json
 
 import web_ui
-from web_ui import (_node_launch_module, bundled_css, render_document, run_node, shared_scripts,
-                    shared_stylesheets)
+from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,15 +51,9 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('<style>body { color: #000; background: #fff; }</style>', html)
         self.assertIn('data-ui-theme="github-like"', html)
 
-    def test_existing_assets_and_theme_order(self):
-        links = shared_stylesheets('../vendor/web-ui', theme='github-like', stub=True)
-        self.assertEqual(
-            links[-2:],
-            ('../vendor/web-ui/css/stub.css', '../vendor/web-ui/css/themes/github-like.css'),
-        )
-        for href in shared_stylesheets('.'):
-            self.assertTrue((ROOT / href).is_file())
+    def test_external_stylesheets_are_still_escaped_links(self):
         self.assertIn('href="a&amp;b.css"', render_document(stylesheets=('a&b.css',)))
+        self.assertFalse(hasattr(web_ui, "shared_stylesheets"), "stylesheets are embedded, not linked from css/ files")
 
     def test_opt_in_shared_scripts_are_module_links(self):
         scripts = shared_scripts('.', names=('ui.js', 'stub.js'))
@@ -111,8 +104,6 @@ class PythonWrapperTests(unittest.TestCase):
             '<main class="ui-page"><section class="ui-panel"><h1 class="ui-title">Title</h1>'
             '<pre class="ui-output">A&amp;B</pre></section></main></body></html>\n',
         )
-        self.assertEqual(shared_stylesheets('https://example.test/pinned')[0],
-                         'https://example.test/pinned/css/tokens.css')
 
     def test_cli_remote_assets_are_css_only(self):
         command = [sys.executable, '-S', str(ROOT / 'web_ui.py'),
@@ -145,7 +136,7 @@ class PythonWrapperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_document(theme='unknown')
         with self.assertRaises(ValueError):
-            shared_stylesheets('https://example.test/main?ref=latest')
+            shared_scripts('https://example.test/main?ref=latest', names=('ui.js',))
         with self.assertRaises(ValueError):
             shared_scripts('.', names=('missing.js',))
 
@@ -166,7 +157,7 @@ class PythonWrapperTests(unittest.TestCase):
             self.assertNotIn('<script', run.stdout)
             self.assertEqual(css.read_bytes(), original)
         run = subprocess.run(
-            [sys.executable, '-S', str(ROOT / 'web_ui.py'), '--stub'],
+            [sys.executable, '-S', str(ROOT / 'web_ui.py'), '--stub'],  # removed flag: usage error
             input='',
             text=True,
             capture_output=True,
@@ -228,16 +219,18 @@ class BundledCssTests(unittest.TestCase):
         css = bundled_css()
         marks = re.findall(r"^/\* css/(\S+) \*/$", css, re.MULTILINE)
         self.assertEqual(marks[:3], ["tokens.css", "base.css", "components.css"])
-        self.assertEqual(sorted(marks), sorted(str(p.relative_to(ROOT / "css")) for p in (ROOT / "css").rglob("*.css")))
+        self.assertEqual(sorted(marks), sorted(web_ui._CSS))
         themes = [m for m in marks if m.startswith("themes/")]
         self.assertEqual(marks[-len(themes):], themes)
         self.assertEqual(themes, sorted(themes))
         self.assertTrue(css.startswith("@layer base,components,theme;\n"))
         self.assertLess(css.index("@layer base,components,theme;"), css.index("@layer base{"))
-        for path in (ROOT / "css").rglob("*.css"):
-            self.assertIn(path.read_text(encoding="utf-8").strip("\n"), css)
-        self.assertEqual(css, bundled_css(ROOT))
-        self.assertFalse((ROOT / "css" / "web-ui.css").exists(), "the bundle is never written to the repository")
+        for name in web_ui._CSS:
+            self.assertIn(web_ui.css_source(name).strip("\n"), css)
+        self.assertEqual(css, bundled_css())
+        self.assertFalse((ROOT / "css").exists(), "there are no css/ files: Python is the only source")
+        with self.assertRaises(ValueError):
+            web_ui.css_source("nope.css")
 
     def test_single_file_page_works_for_every_theme_without_links(self):
         css = bundled_css()
@@ -247,14 +240,9 @@ class BundledCssTests(unittest.TestCase):
             self.assertNotIn('rel="stylesheet"', html)
             self.assertIn(f'body[data-ui-theme="{theme}"]', css)
 
-    def test_candidate_theme_has_no_theme_file_to_link(self):
-        links = shared_stylesheets("../vendor/web-ui", theme="green")
-        self.assertEqual(links[-1], "../vendor/web-ui/css/components.css")
-        self.assertFalse((ROOT / "css/themes/green.css").exists())
-
-    def test_missing_checkout_is_a_plain_error(self):
-        with tempfile.TemporaryDirectory() as empty, self.assertRaises(OSError):
-            bundled_css(empty)
+    def test_candidate_theme_lives_in_tokens(self):
+        self.assertIn('body[data-ui-theme="green"]', web_ui.css_source("tokens.css"))
+        self.assertNotIn("themes/green.css", web_ui._CSS)
 
     @unittest.skipUnless(_node_at_least_26(), "Node 26+ not available")
     def test_node_reaches_the_bundle_through_the_shared_launcher(self):
@@ -353,13 +341,11 @@ class WorldTests(unittest.TestCase):
             seen.add(theme["--ui-bg"])
         self.assertGreater(len(seen), 150)
 
-    def test_front_page_regions_are_what_the_generators_write(self):
+    def test_front_page_is_what_the_generator_writes(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
-        region = lambda start, end: page.split(start)[1].split(end)[0]
-        self.assertEqual(region("<!--world-->", "<!--/world-->"), web_ui.world_html(WORLD))
-        self.assertEqual(region("<!--wall-->", "<!--/wall-->"), web_ui.theme_wall(range(12)))
-        self.assertEqual(region("/*world-css*/", "/*/world-css*/"), web_ui.world_css(WORLD) + web_ui._WALL_CSS)
-        self.assertEqual(region("/*world-js*/", "/*/world-js*/"), web_ui.WORLD_JS)
+        self.assertEqual(page, web_ui.example_pages()["index.html"])
+        for fragment in (web_ui.world_html(WORLD), web_ui.theme_wall(range(12)), web_ui.world_css(WORLD), web_ui.WORLD_JS):
+            self.assertIn(fragment, page)
 
     def test_theme_wall_and_cli(self):
         wall = web_ui.theme_wall(range(12))
@@ -371,6 +357,52 @@ class WorldTests(unittest.TestCase):
         self.assertEqual((shown.returncode, shown.stdout), (0, web_ui.world_document(WORLD, theme="green")))
         self.assertEqual(run("--theme-wall", "3").stdout, web_ui.theme_wall_document(3))
         self.assertEqual(run("--world", "no-such.json").returncode, 2)
+
+    def test_site_writes_every_page_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as out:
+            done = subprocess.run([sys.executable, "-S", "web_ui.py", "--site", out], cwd=ROOT, capture_output=True,
+                                  text=True, encoding="utf-8", timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            pages = web_ui.example_pages()
+            self.assertEqual(sorted(done.stdout.split()), sorted(pages))
+            for name, html in pages.items():
+                self.assertEqual((Path(out) / name).read_text(encoding="utf-8"), html)
+
+
+class StubTests(unittest.TestCase):
+    """MCP/API stubs and mocks are one function call; the mock is declarative and evaluated the same in Python and the page."""
+
+    def test_stub_spec_is_validated(self):
+        mcp = web_ui.EXAMPLE_STUBS["mcp"]
+        self.assertEqual(web_ui.stub_validate(web_ui.stub_validate(mcp)), web_ui.stub_validate(mcp))
+        for bad in ({**mcp, "schema": "x"}, {**mcp, "extra": 1}, {**mcp, "id": "1a"}, {**mcp, "tags": ["t"] * 7},
+                    {**mcp, "field": {"placeholder": "no label"}}, {**mcp, "field": {"label": "x", "extra": 1}},
+                    {**mcp, "heading": ""}, {**mcp, "mock": {"k": "x" * 4001}}):
+            with self.assertRaises(ValueError):
+                web_ui.stub_validate(bad)
+
+    def test_mock_template_substitutes_the_query_everywhere(self):
+        template = {"path": "/api/$input", "list": ["$input", 1, None, True], "nested": {"q": "$input$input"}}
+        self.assertEqual(web_ui.stub_response(template, "a$&b"),
+                         {"path": "/api/a$&b", "list": ["a$&b", 1, None, True], "nested": {"q": "a$&ba$&b"}})
+        self.assertEqual(template["path"], "/api/$input")
+
+    def test_html_is_escaped_ids_are_prefixed_and_the_mock_cannot_close_the_script(self):
+        spec = {**web_ui.EXAMPLE_STUBS["api"], "id": "x", "heading": "<b>h</b>", "evidence": "<i>e</i>",
+                "mock": {"note": "</script><script>1</script>"}}
+        html = web_ui.stub_html(spec, heading_level=2)
+        for raw in ("<b>h</b>", "<i>e</i>", "</script><script>"):
+            self.assertNotIn(raw, html)
+        for ident in ("x-query", "x-run", "x-output", "x-form", "x-mock"):
+            self.assertIn(f'id="{ident}"', html)
+        self.assertIn('<h2 class="ui-title">', html)
+        self.assertIn('value="/api/example"', html)
+
+    def test_stub_document_is_a_single_file_page(self):
+        page = web_ui.stub_document(web_ui.EXAMPLE_STUBS["mcp"], theme="github-like")
+        self.assertNotIn('rel="stylesheet"', page)
+        self.assertEqual(page.count('<script type="module">'), 1)
+        self.assertIn('bindStub({input:"#mcp-query"', page)
 
 
 if __name__ == '__main__':

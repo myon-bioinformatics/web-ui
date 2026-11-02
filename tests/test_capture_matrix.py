@@ -51,13 +51,13 @@ def test_viewer_sections_open_by_emoji_without_javascript():
     assert '<li class="is-fail">' in page and "fail \u00b7 build " + "a" * 12 in page
     # 7 pages without cells (both environments) plus the hub on iPhone; the reference column keeps its marker.
     assert page.count('class="is-missing"') == 8 and page.count('class="is-missing is-reference"') == 7
-    assert 'class="is-reference"' in page and 'href="./css/matrix.css"' in page
+    assert 'class="is-reference"' in page and ".ui-matrix-tiles{" in page and 'rel="stylesheet"' not in page
     assert "https://myon-bioinformatics.github.io/flutter_navigation_basic/#/screen1" in page
 
 
 def test_viewer_escapes_and_embeds_css():
     pages = {"pages": [{"route": "/x", "key": "<b>", "label": "<i>", "adapter": "a<b", "url": "https://e.test/#/x"}]}
-    page = cm.viewer(pages, report(pages=["a<b"], cells=[]), embed_css=True, theme="modern")
+    page = cm.viewer(pages, report(pages=["a<b"], cells=[]), theme="modern")
     assert "<b>" not in page.split("</head>")[1].split('<fieldset')[0] and "&lt;i&gt;" in page
     assert ".ui-matrix:has(" in page and '<body data-ui-theme="modern">' in page
 
@@ -96,13 +96,13 @@ def test_viewer_rejects_ambiguous_mode_aliases():
 def test_matrix_css_defaults_are_on_the_8px_grid():
     # Defaults only: layout presets (examples/layout-presets.json) may switch to other values.
     import re
-    css = (ROOT / "css/matrix.css").read_text(encoding="utf-8")
+    css = web_ui.css_source("matrix.css")
     sizes = [int(v) for v in re.findall(r"(?<![\d.])(\d+)px", css) if v not in ("1", "2")]  # borders/outlines
     assert sizes and all(v % 8 == 0 for v in sizes) and "rem" not in css.replace(".8rem", "")
 
 
 @pytest.mark.parametrize("change", [
-    {"report": {"schema": "other"}}, {"theme": "dark"}, {"tiles_base": "https://cdn"}, {"asset_base": "a\"b"},
+    {"report": {"schema": "other"}}, {"theme": "dark"}, {"tiles_base": "https://cdn"}, {"tiles_base": "a\"b"},
     {"pages": {"pages": [{"route": "/x", "key": "k", "adapter": "a", "url": "http://insecure/"}]}},
     {"pages": {"pages": [{"route": "/x", "key": "k", "url": "https://e/"}]}},
     {"pages": {"pages": [{"route": "/x", "key": "k", "adapter": "a", "url": "https://e/"},
@@ -120,8 +120,8 @@ def test_viewer_rejects_bad_inputs(change):
 def test_cli_writes_a_page_or_exits_2(tmp_path):
     (tmp_path / "report.json").write_text(json.dumps(report()), encoding="utf-8")
     run = subprocess.run([sys.executable, "-S", str(ROOT / "tool/capture_matrix.py"), "--pages",
-                          str(ROOT / "examples/flutter-pages.json"), "--report", str(tmp_path / "report.json"),
-                          "--embed-css"], capture_output=True, text=True, encoding="utf-8", cwd=tmp_path)
+                          str(ROOT / "examples/flutter-pages.json"), "--report", str(tmp_path / "report.json")],
+                         capture_output=True, text=True, encoding="utf-8", cwd=tmp_path)
     assert run.returncode == 0 and run.stdout.startswith("<!doctype html>") and "<style>" in run.stdout
     (tmp_path / "bad.json").write_text('{"schema": "x"}', encoding="utf-8")
     bad = subprocess.run([sys.executable, "-S", str(ROOT / "tool/capture_matrix.py"), "--pages",

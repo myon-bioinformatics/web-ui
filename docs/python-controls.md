@@ -32,7 +32,7 @@ Serve `sections.html` alongside `js/controls.js` over local HTTP (for example
 `python -m http.server`). Native controls/disclosures require no script;
 section switching requires explicit local `controls.js`. With JS disabled,
 full text stays visible and the section selector stays disabled. Supply
-`stylesheets=shared_stylesheets(".")` to opt into the shared CSS.
+`css=bundled_css()` to embed the shared CSS.
 
 `controls.js` also exposes `webUiControls.bindSelect(selectNode, outputNode)`.
 Its `update(items, fullText, fullLabel)` accepts `{value, label, body}` objects;

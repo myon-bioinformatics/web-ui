@@ -16,7 +16,7 @@ set is checked against browser-test-kit's list by fixture, not by import.
 # browser-test-kit platform-apps artifacts -> Ironmate sheet -> web-ui viewer
 python -S ../Ironmate/browser_matrix.py app-results --out matrix   # default shot width-384
 python -S tool/capture_matrix.py --pages examples/flutter-pages.json \
-  --report matrix/report.json [--dataset app-matrix/dataset.json] --embed-css > matrix/viewer.html
+  --report matrix/report.json [--dataset app-matrix/dataset.json] > matrix/viewer.html
 ```
 
 One section per page, opened from emoji links (`#/hub`). CSS `:target` shows the chosen

@@ -1,8 +1,12 @@
 from pathlib import Path
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import web_ui  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "js" / "repository-diagnostics.js").read_text(encoding="utf-8")
-CSS = (ROOT / "css" / "repository-diagnostics.css").read_text(encoding="utf-8")
+CSS = web_ui.css_source("repository-diagnostics.css")
 
 
 def test_renderer_is_reusable_and_schema_gated():

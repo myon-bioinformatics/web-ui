@@ -33,7 +33,7 @@ class LayoutPresetTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.page = Path(self.tmp.name) / "viewer.html"
-        self.page.write_text(capture_matrix.viewer(PAGES, REPORT, embed_css=True, layouts=BROKEN), encoding="utf-8")
+        self.page.write_text(capture_matrix.viewer(PAGES, REPORT, layouts=BROKEN), encoding="utf-8")
 
     def test_switching_relays_live_without_reload(self):
         with sync_playwright() as pw:
@@ -59,7 +59,7 @@ class LayoutPresetTests(unittest.TestCase):
         self.assertIn("poster", result["by_width"]["1280"])
         self.assertEqual(result["presets"]["poster"]["failed"], [320, 384])
         self.assertTrue(all(o["items"] > 0 for o in result["observations"]))
-        labelled = capture_matrix.viewer(PAGES, REPORT, embed_css=True, layouts=BROKEN, candidates=result)
+        labelled = capture_matrix.viewer(PAGES, REPORT, layouts=BROKEN, candidates=result)
         self.assertIn("ok at 1280px; check at 320px, 384px", labelled)
 
     def assert_no_candidates(self, result):

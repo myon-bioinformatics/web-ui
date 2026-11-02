@@ -2,12 +2,17 @@ from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
+import sys
 import unittest
+from posixpath import normpath
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLES = ROOT / "examples"
+sys.path.insert(0, str(ROOT))
+import web_ui  # noqa: E402
+
 CONTRACT = ROOT / "contract" / "v1"
+PAGES = web_ui.example_pages()  # the example pages are built in memory; there are no examples/*.html files
 
 
 def _relative_luminance(hex_color):
@@ -48,15 +53,17 @@ class ContractParser(HTMLParser):
 
 class StaticContractTest(unittest.TestCase):
     def parsed(self, path):
+        return self.parsed_text(path.read_text(encoding="utf-8"))
+
+    def parsed_text(self, text):
         parser = ContractParser()
-        parser.feed(path.read_text(encoding="utf-8"))
+        parser.feed(text)
         return parser
 
     def test_html_contract_v1_manifest_matches_fixture_and_css(self):
         manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
-        fixture = (CONTRACT / "example.html").read_text(encoding="utf-8")
-        css_files = list((ROOT / "css").rglob("*.css"))
-        css = "\n".join(path.read_text(encoding="utf-8") for path in css_files)
+        fixture = PAGES["contract/v1/example.html"]
+        css = web_ui.bundled_css()
         selectors = set(re.findall(r"\.(ui-[A-Za-z0-9_-]+|stub-[A-Za-z0-9_-]+)", css))
 
         self.assertEqual(manifest["version"], "1.0.0")
@@ -89,16 +96,15 @@ class StaticContractTest(unittest.TestCase):
     def test_html_contract_v1_declared_themes_exist_and_use_theme_layer(self):
         manifest = json.loads((CONTRACT / "contract.json").read_text(encoding="utf-8"))
         for theme in manifest["theme"]["values"]:
-            path = ROOT / "css" / "themes" / f"{theme}.css"
-            self.assertTrue(path.exists(), f"missing declared theme: {theme}")
-            text = path.read_text(encoding="utf-8")
+            self.assertIn(f"themes/{theme}.css", web_ui._CSS, f"missing declared theme: {theme}")
+            text = web_ui.css_source(f"themes/{theme}.css")
             self.assertIn("@layer theme", text, f"{theme} must stay in @layer theme")
             self.assertIn(f'data-ui-theme="{theme}"', text, f"{theme} selector must be scoped by data-ui-theme")
 
     def test_pages_entrypoints_resolve_the_repository_favicon(self):
         favicon = ROOT / "docs/brand/favicon.png"
         self.assertTrue(favicon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
-        for path in [ROOT / "index.html", *EXAMPLES.glob("*.html")]:
+        for path in [ROOT / "index.html"]:
             with self.subTest(page=str(path.relative_to(ROOT))):
                 links = self.parsed(path).icon_links
                 self.assertEqual(len(links), 1)
@@ -111,7 +117,7 @@ class StaticContractTest(unittest.TestCase):
     def test_pages_visible_and_touch_icons_resolve_to_canonical_asset(self):
         icon = ROOT / "docs/brand/icon.png"
         self.assertTrue(icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
-        for path in [ROOT / "index.html", *EXAMPLES.glob("*.html")]:
+        for path in [ROOT / "index.html"]:
             text = path.read_text(encoding="utf-8")
             patterns = [r'<link rel="apple-touch-icon" href="([^"]+)">']
             if path == ROOT / "index.html":
@@ -121,18 +127,18 @@ class StaticContractTest(unittest.TestCase):
                 self.assertFalse(urlsplit(href).scheme)
                 self.assertEqual((path.parent / href).resolve(), icon.resolve())
 
-    def test_examples_reference_shared_assets(self):
-        for path in EXAMPLES.glob("*.html"):
-            text = path.read_text(encoding="utf-8")
-            self.assertIn("../css/tokens.css", text)
-            self.assertIn("../css/base.css", text)
-            self.assertIn("../css/components.css", text)
-            self.assertIn("../css/themes/", text)
+    def test_example_pages_are_single_files_carrying_the_whole_bundle(self):
+        self.assertEqual(sorted(PAGES), ["contract/v1/example.html", "examples/api-stub.html", "examples/github-like.html",
+                                         "examples/index.html", "examples/mcp-stub.html", "index.html"])
+        self.assertEqual((ROOT / "index.html").read_text(encoding="utf-8"), PAGES["index.html"], "run: python -S web_ui.py --site DIR; copy DIR/index.html")
+        for name, text in PAGES.items():
+            self.assertNotIn('rel="stylesheet"', text, name)
+            self.assertIn(web_ui.bundled_css(), text, name)
+            self.assertNotIn("<script src", text, name)
 
     def test_theme_examples_keep_semantic_markup(self):
-        text = (EXAMPLES / "github-like.html").read_text(encoding="utf-8")
+        text = PAGES["examples/github-like.html"]
         self.assertIn('data-ui-theme="github-like"', text)
-        self.assertIn("../css/themes/github-like.css", text)
         # Extend this list when an alternate-theme example intentionally demonstrates
         # additional semantic components; not every future ui-* class is mandatory.
         for class_name in ("ui-page", "ui-panel", "ui-card", "ui-button", "ui-input", "ui-tag", "ui-output"):
@@ -142,39 +148,34 @@ class StaticContractTest(unittest.TestCase):
         # Normal text requires at least 4.5:1 under WCAG AA.
         self.assertGreaterEqual(_contrast_ratio("#59636e", "#ffffff"), 4.5)
 
-    def test_examples_do_not_embed_css(self):
-        for path in EXAMPLES.glob("*.html"):
-            self.assertNotIn("<style", path.read_text(encoding="utf-8").lower())
-
     def test_local_links_exist(self):
-        for path in EXAMPLES.glob("*.html"):
-            for href in self.parsed(path).hrefs:
+        for name, text in PAGES.items():
+            for href in self.parsed_text(text).hrefs:
                 parsed = urlsplit(href)
                 if parsed.scheme or parsed.netloc or href.startswith("#"):
                     continue
-                target = (path.parent / parsed.path).resolve()
-                self.assertTrue(target.exists(), f"{path.name}: broken href {href}")
+                target = normpath(str(Path(name).parent / parsed.path).replace("\\", "/"))
+                self.assertIn(target, PAGES, f"{name}: broken href {href}")
 
     def test_ui_classes_follow_namespaces(self):
-        for path in EXAMPLES.glob("*.html"):
-            for name in self.parsed(path).classes:
-                self.assertTrue(name.startswith(("ui-", "stub-")), f"{path.name}: unnamespaced class {name}")
+        for name, text in PAGES.items():
+            for cls in self.parsed_text(text).classes:
+                self.assertTrue(cls.startswith(("ui-", "stub-")), f"{name}: unnamespaced class {cls}")
 
     def test_labels_target_existing_controls(self):
-        for path in EXAMPLES.glob("*stub.html"):
-            parsed = self.parsed(path)
+        for name in ("examples/mcp-stub.html", "examples/api-stub.html"):
+            parsed = self.parsed_text(PAGES[name])
             self.assertTrue(parsed.labels_for)
             self.assertTrue(parsed.labels_for <= parsed.ids)
 
     def test_stub_examples_share_tool_workspace_structure(self):
         required = ("stub-shell", "stub-header", "stub-toolbar", "stub-workspace", "stub-result", "stub-evidence", "stub-history", "stub-actions")
-        for name in ("mcp-stub.html", "api-stub.html"):
-            text = (EXAMPLES / name).read_text(encoding="utf-8")
+        for name in ("examples/mcp-stub.html", "examples/api-stub.html"):
             for class_name in required:
-                self.assertIn(class_name, text, f"{name}: missing {class_name}")
+                self.assertIn(class_name, PAGES[name], f"{name}: missing {class_name}")
 
     def test_domain_protocols_not_in_generic_js(self):
-        text = (ROOT / "js" / "stub.js").read_text(encoding="utf-8").lower()
+        text = web_ui.EMBEDDED_STUB_JS.lower()
         for term in ("tools/list", "tools/call", "json-rpc", "authorization:"):
             self.assertNotIn(term, text)
 
@@ -183,17 +184,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_pages_root_links_to_public_examples():
+def test_pages_root_is_one_self_contained_page_with_the_examples_inside():
     root = (ROOT / "index.html").read_text(encoding="utf-8")
-    assert "./examples/" in root
-    assert "./examples/mcp-stub.html" in root
-    assert "./examples/api-stub.html" in root
-    assert "./contract/v1/example.html" in root
-    assert "./examples/github-like.html" in root
+    assert 'rel="stylesheet"' not in root and "<script src" not in root and 'src="./js/' not in root
+    for anchor in ("#try", "#mcp", "#api", "#world", "#wall"):
+        assert f'href="{anchor}"' in root and f'id="{anchor[1:]}"' in root, anchor
 
 
 def test_output_surface_uses_neutral_high_contrast_palette():
-    css = (ROOT / "css" / "components.css").read_text(encoding="utf-8")
+    css = web_ui.css_source("components.css")
     assert ".ui-output" in css
     assert "background:#d8dee4" in css
     assert "color:#161b22" in css
@@ -203,11 +202,11 @@ def test_output_surface_uses_neutral_high_contrast_palette():
 # --- Definition audit: CSS classes and custom properties may not pile up unnoticed. ---
 
 def _css_sources():
-    return sorted(path for path in (ROOT / "css").rglob("*.css") if path.name != "web-ui.css")
+    return sorted(web_ui._CSS)
 
 
-def _css_text(path):
-    return re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
+def _css_text(name):
+    return re.sub(r"/\*.*?\*/", "", web_ui.css_source(name), flags=re.S)
 
 
 def test_every_css_class_is_referenced_by_markup_scripts_or_generators():
@@ -216,16 +215,15 @@ def test_every_css_class_is_referenced_by_markup_scripts_or_generators():
     for path in _css_sources():
         defined |= set(re.findall(r"\.([A-Za-z_][A-Za-z0-9_-]*)", re.sub(r"\{[^{}]*\}", "{}", _css_text(path))))
     # Classes the Python generators emit (tool/capture_matrix.py, tool/layout_presets.py) count as used.
-    used_in = [*ROOT.glob("*.html"), *(ROOT / "examples").glob("*.html"), *(ROOT / "contract").rglob("*.html"),
-               *(ROOT / "js").glob("*.js"), ROOT / "web_ui.py", *(ROOT / "tool").glob("*.py")]
-    corpus = "\n".join(path.read_text(encoding="utf-8") for path in used_in)
+    used_in = [*ROOT.glob("*.html"), *(ROOT / "js").glob("*.js"), ROOT / "web_ui.py", *(ROOT / "tool").glob("*.py")]
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in used_in) + "\n".join(PAGES.values())
     unused = sorted(name for name in defined
                     if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", corpus))
     assert not unused, f"CSS classes nothing refers to: {unused}"
 
 
 def test_css_variables_are_defined_generated_or_a_listed_gap():
-    css = {path: _css_text(path) for path in _css_sources()}
+    css = {name: _css_text(name) for name in _css_sources()}
     defined = {name for text in css.values() for name in re.findall(r"(--ui-[a-z0-9-]+)\s*:", text)}
     used = {name for text in css.values() for name in re.findall(r"var\((--ui-[a-z0-9-]+)", text)}
     # layout presets (tool/layout_presets.py) set these; matrix.css carries the defaults as fallbacks.
@@ -235,20 +233,21 @@ def test_css_variables_are_defined_generated_or_a_listed_gap():
     assert used - defined - generated <= known_gaps, sorted(used - defined - generated - known_gaps)
     # Defined but unused here or in any consumer checked on 2026-11-03; drop it after a deprecation window.
     dead_tokens = {"--ui-space"}
-    tokens = set(re.findall(r"(--ui-[a-z0-9-]+)\s*:", css[ROOT / "css/tokens.css"]))
+    tokens = set(re.findall(r"(--ui-[a-z0-9-]+)\s*:", css["tokens.css"]))
     assert tokens - used - dead_tokens == set(), sorted(tokens - used - dead_tokens)
 
 
 def _theme_blocks():
     """Token values per theme: ``:root`` defaults, then each token-only block in tokens.css and each themes/ file."""
-    tokens = _css_text(ROOT / "css/tokens.css")
+    tokens = _css_text("tokens.css")
     declared = lambda text: dict(re.findall(r"(--ui-[a-z0-9-]+)\s*:\s*([^;}]+)", text))
     root = declared(re.search(r":root\{([^}]*)\}", tokens).group(1))
     blocks = {"modern": {}}
     for theme, body in re.findall(r'body\[data-ui-theme="([a-z-]+)"\]\{([^}]*)\}', tokens):
         blocks[theme] = declared(body)
-    for path in sorted((ROOT / "css/themes").glob("*.css")):
-        blocks.setdefault(path.stem, {}).update(declared(_css_text(path)))
+    for name in _css_sources():
+        if name.startswith("themes/"):
+            blocks.setdefault(name[len("themes/"):-len(".css")], {}).update(declared(_css_text(name)))
     return root, blocks
 
 

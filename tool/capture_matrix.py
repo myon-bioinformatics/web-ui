@@ -33,7 +33,7 @@ DEFAULT_LAYOUTS = ROOT / "examples" / "layout-presets.json"
 
 MAX_INPUT = 8 * 1024 * 1024
 THEMES = ("modern", "github-like")
-ASSETS = ("css/tokens.css", "css/base.css", "css/components.css", "css/matrix.css")
+ASSETS = ("tokens.css", "base.css", "components.css", "matrix.css")  # names in web_ui.css_source()
 
 
 def _load(path, schema):
@@ -103,16 +103,16 @@ def _tile(report, cells, verdicts, adapter, env, tiles_base):
     return f"<li{attr}>" + "<br>".join(lines) + "</li>"
 
 
-def viewer(pages, report, dataset=None, *, tiles_base=".", theme="github-like", asset_base=".", embed_css=False,
+def viewer(pages, report, dataset=None, *, tiles_base=".", theme="github-like",
            layouts=None, candidates=None):
     if theme not in THEMES:
         raise ValueError("unknown theme")
     if report.get("schema") != "ironmate-browser-matrix/1":
         raise ValueError("report must be ironmate-browser-matrix/1")
-    for value in (tiles_base, asset_base):
+    for value in (tiles_base,):
         if not isinstance(value, str) or not value or ":" in value or value.startswith("//") or any(
                 c in value for c in '<>"\'\\?#\n\r'):
-            raise ValueError("tiles_base and asset_base must be local paths")
+            raise ValueError("tiles_base must be a local path")
     rows = pages.get("pages")
     if not isinstance(rows, list):
         raise ValueError("pages must list the representative pages")
@@ -133,17 +133,12 @@ def viewer(pages, report, dataset=None, *, tiles_base=".", theme="github-like", 
             f'<p class="ui-muted"><a href="{escape(url, quote=True)}">{escape(url)}</a> · adapter {escape(adapter)}</p>'
             f'<ul class="ui-matrix-tiles">{tiles}</ul></section>')
     unknown = sorted(set(report.get("pages", [])) - set(adapters))
-    if embed_css:
-        styles = "\n".join((ROOT / name).read_text(encoding="utf-8") for name in (*ASSETS, f"css/themes/{theme}.css"))
-        if "</style" in styles.lower():
-            raise ValueError("unsafe stylesheet")
-        css = "<style>" + styles + "</style>"
-    else:
-        prefix = asset_base.rstrip("/")
-        css = "".join(f'<link rel="stylesheet" href="{escape(prefix + "/" + name, quote=True)}">'
-                      for name in (*ASSETS, f"css/themes/{theme}.css"))
+    styles = "\n".join(web_ui.css_source(name) for name in (*ASSETS, f"themes/{theme}.css"))
+    if "</style" in styles.lower():
+        raise ValueError("unsafe stylesheet")
+    css = "<style>" + styles + "</style>"
     # Layout presets switch the tile grid live (radio + CSS :has); the presets' own CSS is
-    # generated from validated lengths, so it is inlined even when the shared CSS is linked.
+    # generated from validated lengths, so it is inlined next to the shared CSS.
     layouts = layouts if layouts is not None else json.loads(DEFAULT_LAYOUTS.read_text(encoding="utf-8"))
     css += "<style>" + layout_presets.css(layouts) + "</style>"
     switch = layout_presets.controls_html(layouts, candidates, legend="Tile layout")
@@ -167,16 +162,13 @@ def main(argv=None):
     parser.add_argument("--dataset")
     parser.add_argument("--tiles-base", default=".", help="directory holding Ironmate's tiles/, relative to the output")
     parser.add_argument("--theme", choices=THEMES, default="github-like")
-    parser.add_argument("--asset-base", default=".")
-    parser.add_argument("--embed-css", action="store_true")
     parser.add_argument("--layouts", help="web-ui-layout-presets/1 (default examples/layout-presets.json)")
     parser.add_argument("--candidates", help="web-ui-layout-candidates/1 from layout_presets.py sweep, to label presets")
     args = parser.parse_args(argv)
     try:
         output = viewer(_load(args.pages, "web-ui-flutter-pages/1"), _load(args.report, "ironmate-browser-matrix/1"),
                         _load(args.dataset, "btk-platform-matrix/1") if args.dataset else None,
-                        tiles_base=args.tiles_base, theme=args.theme, asset_base=args.asset_base,
-                        embed_css=args.embed_css,
+                        tiles_base=args.tiles_base, theme=args.theme,
                         layouts=_load(args.layouts, "web-ui-layout-presets/1") if args.layouts else None,
                         candidates=_load(args.candidates, "web-ui-layout-candidates/1") if args.candidates else None)
     except (UnicodeError, ValueError, OSError, KeyError) as exc:

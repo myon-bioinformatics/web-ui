@@ -68,8 +68,8 @@ def test_cli_css_and_html(capsys):
 def test_front_page_demo_matches_the_presets():
     page = (ROOT / "index.html").read_text(encoding="utf-8")
     assert lp.css(SPEC) in page
-    region = page.split("<!--layout-controls-->")[1].split("<!--/layout-controls-->")[0]
     data = lp.validate(SPEC)
-    assert re.findall(r'name="ui-layout" value="([a-z0-9-]+)"', region) == [p["id"] for p in data["presets"]]
-    assert region.count(" checked") == 1 and "disabled" not in region
+    assert re.findall(r'name="ui-layout" value="([a-z0-9-]+)"', page) == [p["id"] for p in data["presets"]]
+    layout = page.split("<legend>Layout</legend>")[1].split("</fieldset>")[0]
+    assert layout.count('type="radio" name="ui-layout"') == len(data["presets"]) and "disabled" not in layout
     assert page.count('name="ui-theme"') == 3 and 'class="ui-matrix-tiles"' in page
