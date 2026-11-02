@@ -30,8 +30,8 @@
     },
     {
       "repository": "myon-bioinformatics/myon-bioinformatics",
-      "ref": "1f6f1e345f640827703e2872151a73b4cbdfd382",
-      "commit": "1f6f1e345f640827703e2872151a73b4cbdfd382",
+      "ref": "384f5dd532076062f7833038764e9a62322c387c",
+      "commit": "384f5dd532076062f7833038764e9a62322c387c",
       "source": "node_launch.py",
       "destination": "vendor/node_launch.py",
       "blob_sha": "08b4027bb5e3e9248eb3be88de2c2484f2e184bb",
@@ -39,12 +39,12 @@
     },
     {
       "repository": "myon-bioinformatics/myon-bioinformatics",
-      "ref": "1116d5c4f55d25af4d21cfe9b3c88f49d3a476fa",
-      "commit": "1116d5c4f55d25af4d21cfe9b3c88f49d3a476fa",
+      "ref": "384f5dd532076062f7833038764e9a62322c387c",
+      "commit": "384f5dd532076062f7833038764e9a62322c387c",
       "source": "py_launch.cjs",
       "destination": "vendor/py_launch.cjs",
-      "blob_sha": "2c6cbfef3da3a9f060fb93bd61ad1a2b137cb99a",
-      "sha256": "f2f3cb721e8489dd8e4f49571da568ad6e6dce5f67501a5af25bf5b04b9746dc"
+      "blob_sha": "4a35b158b4a4cbd3a5d672ded1337a138a44bbd2",
+      "sha256": "f900e2662e7065a087897f4b927815d34a81f0e9ca811c0412151b38a218a501"
     }
   ]
 }

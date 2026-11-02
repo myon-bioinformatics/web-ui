@@ -392,6 +392,17 @@ def test_node_v20_rejected_while_legacy_would_run(tmp_path):
         ui.run_node(entry, node=script, timeout=30)
 
 
+@pytest.mark.parametrize("major", [24, 25])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_below_node_26_names_found_version(tmp_path, monkeypatch, major, explicit):
+    script = _write_fake_node(tmp_path, version=f"v{major}.0.0", on_eval="pass")
+    monkeypatch.setattr(shutil, "which", lambda name, **kw: str(script) if name == "node" else None)
+    ui._node_launch_module().clear_probe_cache()
+    kwargs = {"node": script} if explicit else {}
+    with pytest.raises(RuntimeError, match=rf"Node 26 or newer.*found Node {major}"):
+        ui.run_node(ROOT / "tests" / "navigation.node.js", **kwargs)
+
+
 def test_nonzero_exit_preserves_stderr(tmp_path):
     script = _write_fake_node(
         tmp_path,

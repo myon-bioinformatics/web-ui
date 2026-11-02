@@ -1372,7 +1372,7 @@ def _raise_node_not_found(exc: BaseException, node: str | os.PathLike[str] | Non
     if node is not None and "node executable not found: " in message:
         path = os.fspath(node)
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path) from exc
-    version = re.search(r"must be 24 or newer \(found (\d+)\)", message)
+    version = re.search(r"must be \d+ or newer \(found (\d+)\)", message)
     if version is not None:
         raise RuntimeError(
             f"node requires Node 26 or newer; found Node {version.group(1)}"
@@ -1384,7 +1384,7 @@ def _raise_node_not_found(exc: BaseException, node: str | os.PathLike[str] | Non
             try:
                 node_launch._probe_node_once(discovered, node_launch.DEFAULT_PROBE_TIMEOUT)
             except node_launch.NodeNotFoundError as probe_exc:
-                version = re.search(r"must be 24 or newer \(found (\d+)\)", str(probe_exc))
+                version = re.search(r"must be \d+ or newer \(found (\d+)\)", str(probe_exc))
                 if version is not None:
                     raise RuntimeError(
                         f"node requires Node 26 or newer; found Node {version.group(1)}"

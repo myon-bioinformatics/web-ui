@@ -55,6 +55,16 @@ def test_vendor_lock_lists_expected_sources():
     assert all(e["ref"] == e["commit"] for e in _lock_entries())
 
 
+@pytest.mark.parametrize("destination", ["vendor/node_launch.py", "vendor/py_launch.cjs"])
+def test_launchers_pin_the_accepted_parent_merge(destination):
+    entry = next(e for e in _lock_entries() if e["destination"] == destination)
+    assert entry["repository"] == "myon-bioinformatics/myon-bioinformatics"
+    assert entry["ref"] == entry["commit"] == "384f5dd532076062f7833038764e9a62322c387c"
+    data = (ROOT / destination).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == entry["sha256"]
+    assert hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() == entry["blob_sha"]
+
+
 def test_public_vendor_ci_updates_without_repository_writes():
     ci = _workflow()
     assert {"push", "pull_request"} <= set(ci["on"])
