@@ -8,7 +8,7 @@ import pytest
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def _node_at_least_24() -> bool:
+def _node_at_least_26() -> bool:
     if shutil.which("node") is None:
         return False
     try:
@@ -18,7 +18,7 @@ def _node_at_least_24() -> bool:
     match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
     return bool(match and int(match.group(1)) >= 24)
 spec=importlib.util.spec_from_file_location('web_ui_navigation',ROOT/'web_ui.py');ui=importlib.util.module_from_spec(spec);spec.loader.exec_module(ui)
-@pytest.mark.skipif(not _node_at_least_24(), reason="run_node requires Node 24+")
+@pytest.mark.skipif(not _node_at_least_26(), reason="run_node requires Node 26+")
 def test_node_navigation_contract():
     result=ui.run_node(ROOT/'tests/navigation.node.js')
     assert result.returncode==0,result.stderr
