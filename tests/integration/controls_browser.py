@@ -16,8 +16,9 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds, clamp_focus,
-                    contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label, world_document)
+from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
+                    clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label,
+                    world_document, zone_offset, zone_rows)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -382,6 +383,8 @@ class WorldBrowserTests(unittest.TestCase):
         import datetime
         from web_ui import example_data
         spec = example_data('world')
+        spec['board']['zones'] = []                                         # authored zone labels are the page's own words; here only the viewer's clock is shown
+        spec['board']['items'] = [i for i in spec['board']['items'] if not i.get('zone')]
         server, origin = self.serve({'index.html': world_document(spec)})
         try:
             with sync_playwright() as playwright:
@@ -408,6 +411,64 @@ class WorldBrowserTests(unittest.TestCase):
                                 self.assertNotIn(place.replace('_', ' '), board_text)
                             self.assertNotIn('/', board_text)
                             context.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_board_zone_clocks_and_items_follow_the_tz_database_not_the_viewer(self):
+        import datetime
+        import random
+        from web_ui import example_data
+        spec = example_data('world')
+        spec['board']['items'].append({'text': 'Tokyo hours', 'gauge': {'from': '09:00', 'to': '18:00', 'cells': 10}, 'zone': 'tokyo'})
+        server, origin = self.serve({'index.html': world_document(spec)})
+        utc = lambda *a: datetime.datetime(*a, tzinfo=datetime.timezone.utc)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    # The page's lookup agrees with Python's: every change to the second, and thousands of seeded instants.
+                    rng = random.Random(20261103)
+                    for tz in ('Europe/London', 'America/New_York', 'Australia/Sydney', 'Asia/Kolkata', 'Pacific/Auckland'):
+                        rows = list(zone_rows(tz))
+                        instants = [t + d for t in rows[2::2] for d in (-1, 0, 1)] + [rng.randrange(1_500_000_000, 2_300_000_000) for _ in range(2000)] + [0, 4_000_000_000]
+                        page = browser.new_page()
+                        page.goto(origin + '/index.html')
+                        got = page.evaluate('([rows, ts]) => ts.map(t => webUiWorld.zoneOffset(rows, t))', [rows, instants])
+                        self.assertEqual(got, [zone_offset(rows, t) for t in instants], tz)
+                        page.close()
+                    # Either side of a change, seen by a viewer in New York: London's clock jumps, New York repeats an hour.
+                    cases = [(utc(2026, 3, 29, 0, 59), {'tokyo': '09:59', 'london': '00:59', 'ny': '20:59'}),
+                             (utc(2026, 3, 29, 1, 0), {'tokyo': '10:00', 'london': '02:00', 'ny': '21:00'}),
+                             (utc(2026, 11, 1, 5, 59), {'tokyo': '14:59', 'london': '05:59', 'ny': '01:59'}),
+                             (utc(2026, 11, 1, 6, 0), {'tokyo': '15:00', 'london': '06:00', 'ny': '01:00'})]
+                    for moment, expected in cases:
+                        with self.subTest(moment=moment.isoformat()):
+                            context = browser.new_context(viewport={'width': 800, 'height': 900}, timezone_id='America/New_York')
+                            page = context.new_page()
+                            page.clock.set_fixed_time(moment)
+                            page.goto(origin + '/index.html')
+                            shown = {z: page.locator(f'[data-zone-id="{z}"] [data-zone-clock]').text_content() for z in expected}
+                            self.assertEqual(shown, expected)
+                            for z, tz in (('tokyo', 'Asia/Tokyo'), ('london', 'Europe/London'), ('ny', 'America/New_York')):    # and Python says the same
+                                self.assertEqual(shown[z], board_clock(moment.timestamp(), zone_offset(zone_rows(tz), moment.timestamp()))['clock'])
+                            context.close()
+                    # Items with a zone count in that zone's local time (London lunch 12:00, Tokyo hours 09:00..18:00); the others use the viewer's.
+                    context = browser.new_context(viewport={'width': 800, 'height': 900}, timezone_id='America/New_York')
+                    page = context.new_page()
+                    page.clock.set_fixed_time(utc(2026, 11, 3, 1, 0))                       # Tokyo 10:00, London 01:00, viewer 20:00 the day before
+                    page.goto(origin + '/index.html')
+                    texts = page.locator('.ui-board-run [data-at]').all_text_contents()
+                    viewer, london = 20 * 60, 60
+                    expected = [f'あと{minutes_until(viewer, h * 60 + m)}分' for h, m in ((10, 30), (14, 0), (17, 30))] + [f'あと{minutes_until(london, 12 * 60)}分']
+                    self.assertEqual(texts, expected * 2)
+                    last = page.locator('.ui-board-run .ui-board-gauge').last
+                    filled, percent, _ = gauge_state(10 * 60, 540, 1080, 10)
+                    self.assertEqual((last.locator('.ui-board-cells').text_content(), last.locator('.ui-board-pct').text_content()), (gauge_cells(filled, 10, ('⌛', '⏳')), f'{percent}%'))
+                    self.assertEqual(percent, 11)
+                    context.close()
                 finally:
                     browser.close()
         finally:
@@ -510,7 +571,7 @@ class WorldBrowserTests(unittest.TestCase):
                     # Board: the clock and "in N min" come from the page's clock, by the same rule as Python.
                     expect(page.locator('[data-clock]')).to_have_text('10:00 UTC')
                     texts = page.locator('.ui-board-run [data-at]').all_text_contents()
-                    expected = [f'あと{minutes_until(600, h * 60 + m)}分' for h, m in ((10, 30), (14, 0), (17, 30))] * 2
+                    expected = [f'あと{minutes_until(600, h * 60 + m)}分' for h, m in ((10, 30), (14, 0), (17, 30), (12, 0))] * 2   # the last one follows London (GMT in November)
                     self.assertEqual(texts, expected)
                     cases = [(600, 630), (600, 600), (1430, 10), (0, 1439)]
                     self.assertEqual(page.evaluate('cases => cases.map(c => webUiWorld.minutesUntil(...c))', cases), [minutes_until(*c) for c in cases])

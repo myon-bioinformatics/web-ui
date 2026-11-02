@@ -53,11 +53,13 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 
 Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a
-`player` that walks to the spot you tap, and an info `board`. The board has a clock (`"zone": true` adds the UTC offset such as `UTC+9`,
-never a place name), items with `"at": "HH:MM"` ("in N min"), and **gauges**: `{"text": "Open", "gauge": {"from": "09:00", "to": "18:00",
+`player` that walks to the spot you tap, and an info `board`. The board has a clock (`"offset_label": true` adds the UTC offset such as
+`UTC+9`, never a place name), optional **zone clocks** (`"zones": [{"id": "tokyo", "label": "Tokyo", "tz": "Asia/Tokyo"}]`, up to 6;
+Python builds each zone's offset table from the system tz database with `zoneinfo`, so DST is never hand-written, and the page only looks it
+up; the table covers 2020-2040, `zone_rows` / `zone_offset`), items with `"at": "HH:MM"` ("in N min"), and **gauges**: `{"text": "Open", "gauge": {"from": "09:00", "to": "18:00",
 "cells": 10, "glyphs": "hourglass"}}` fills `cells` glyphs as the window passes (`from` after `to` runs past midnight). `glyphs` is a preset
 (`GAUGE_GLYPHS`: hourglass, moon, heart, square, dot, block, star) or any two short symbols `["🔥", "🪵"]` (elapsed, remaining); the
-hourglass is just one choice. `"post": true` adds a one-line form: what a visitor writes is cleaned (`clean_message`), stamped `HH:MM`
+hourglass is just one choice. An item with `"zone": "tokyo"` (an `at` or a `gauge`) counts in that zone's local time instead of the viewer's. `"post": true` adds a one-line form: what a visitor writes is cleaned (`clean_message`), stamped `HH:MM`
 and shown **on that page view only**: no storage, cookie, cache or request, and a reload clears it (Python and Chromium tests check
 this). It is not shared with other visitors. All rules (`gauge_state`, `clock_label`, `utc_offset_label`, `travel_seconds`, ...) live in Python and
 the page's script is tested to give identical results.

@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -274,6 +275,15 @@ class BundledCssTests(unittest.TestCase):
 WORLD = web_ui.example_data("world")
 
 
+def _has_tzdata() -> bool:
+    try:
+        import zoneinfo
+        zoneinfo.ZoneInfo("Europe/London")
+        return True
+    except Exception:
+        return False
+
+
 class WorldTests(unittest.TestCase):
     """One page, a camera: Python validates, does the arithmetic and writes HTML, CSS and a thin JS module."""
 
@@ -429,26 +439,88 @@ class WorldTests(unittest.TestCase):
             with self.subTest(bad=str(bad)[-70:]), self.assertRaises(ValueError):
                 web_ui.world_validate(board(bad))
         with self.assertRaises(ValueError):
-            web_ui.world_validate(board({"text": "x"}, zone="yes"))
+            web_ui.world_validate(board({"text": "x"}, offset_label="yes"))
         # Every preset works, defaults are filled in, and a custom pair keeps its own glyphs.
         for name, pair in web_ui.GAUGE_GLYPHS.items():
             got = web_ui.world_validate(board({"text": "x", "gauge": {**window, "glyphs": name}}))["board"]["items"][0]["gauge"]
             self.assertEqual(got["glyphs"], list(pair), name)
         plain = web_ui.world_validate(board({"text": "x", "gauge": window}))
         self.assertEqual(plain["board"]["items"][0]["gauge"], {**window, "cells": 10, "glyphs": ["⌛", "⏳"]})
-        self.assertEqual(plain["board"]["zone"], False)
+        self.assertEqual((plain["board"]["offset_label"], plain["board"]["zones"]), (False, []))
         self.assertEqual(web_ui.world_validate(plain), plain)                                      # normalizing twice changes nothing
         custom = web_ui.world_validate(board({"text": "x", "gauge": {**window, "glyphs": ["🔥", "🪵"], "cells": 5}}))
         self.assertEqual(custom["board"]["items"][0]["gauge"]["glyphs"], ["🔥", "🪵"])
         # Markup: the window and glyphs are data attributes (escaped), the cells start empty so the page works before its script runs.
-        html = web_ui.world_html(board({"text": "<b>Open</b>", "gauge": {**window, "glyphs": ['"<', "&>"], "cells": 3}}, zone=True))
+        html = web_ui.world_html(board({"text": "<b>Open</b>", "gauge": {**window, "glyphs": ['"<', "&>"], "cells": 3}}, offset_label=True))
         for raw in ("<b>Open</b>", 'data-done=""<"', 'data-todo="&>"'):
             self.assertNotIn(raw, html)
         self.assertIn('data-done="&quot;&lt;" data-todo="&amp;&gt;"', html)
         self.assertIn('data-from="09:00" data-to="18:00" data-cells="3"', html)
         self.assertIn('<span class="ui-board-cells" aria-hidden="true">&amp;&gt;&amp;&gt;&amp;&gt;</span> <span class="ui-board-pct">0%</span>', html)
-        self.assertIn(" data-zone>", html)
-        self.assertNotIn("data-zone", web_ui.world_html(board({"text": "x"})))
+        self.assertIn(" data-offset-label>", html)
+        self.assertNotIn("data-offset-label", web_ui.world_html(board({"text": "x"})))
+
+    @unittest.skipUnless(_has_tzdata(), "needs the system tz database")
+    def test_zone_table_follows_the_tz_database_and_known_transitions(self):
+        import datetime as dt
+        import zoneinfo
+        utc = lambda *a: int(dt.datetime(*a, tzinfo=dt.timezone.utc).timestamp())
+        # Golden instants written down by hand (the first second of the new offset), not read back from zoneinfo.
+        golden = {"Europe/London": [(utc(2026, 3, 29, 1), 0, 60), (utc(2026, 10, 25, 1), 60, 0)],
+                  "America/New_York": [(utc(2026, 3, 8, 7), -300, -240), (utc(2026, 11, 1, 6), -240, -300)],
+                  "Australia/Sydney": [(utc(2026, 4, 4, 16), 660, 600), (utc(2026, 10, 3, 16), 600, 660)]}
+        for tz, cases in golden.items():
+            rows = web_ui.zone_rows(tz)
+            for at, before, after in cases:
+                with self.subTest(tz=tz, at=at):
+                    self.assertEqual((web_ui.zone_offset(rows, at - 1), web_ui.zone_offset(rows, at)), (before, after))
+        self.assertEqual(web_ui.zone_rows("Asia/Tokyo"), (utc(2020, 1, 1), 540))               # no changes: the start row only
+        self.assertEqual(web_ui.zone_offset(web_ui.zone_rows("Asia/Kathmandu"), utc(2026, 6, 1)), 345)
+        # Every row is exact against the database, and so are thousands of random instants (reproducible seed).
+        rng = random.Random(20261103)
+        lo, hi = utc(2020, 1, 1), utc(2040, 1, 1)
+        for tz in ("Europe/London", "America/New_York", "Australia/Sydney", "Asia/Kolkata", "America/Sao_Paulo", "Pacific/Auckland", "Africa/Cairo"):
+            rows, zone = web_ui.zone_rows(tz), zoneinfo.ZoneInfo(tz)
+            oracle = lambda t: int(dt.datetime.fromtimestamp(t, dt.timezone.utc).astimezone(zone).utcoffset().total_seconds() // 60)
+            for t, offset in zip(rows[2::2], rows[3::2]):
+                self.assertEqual((oracle(t - 1) == offset, oracle(t) == offset), (False, True), (tz, t))
+            for _ in range(1500):
+                t = rng.randrange(lo, hi)
+                self.assertEqual(web_ui.zone_offset(rows, t), oracle(t), (tz, t))
+        london = web_ui.zone_rows("Europe/London")
+        self.assertEqual((web_ui.zone_offset(london, 0), web_ui.zone_offset(london, 4_000_000_000)), (0, 0))   # outside the window: nearest end
+        for bad in ("Mars/Base", "../etc/passwd", "Asia//Tokyo", "", "Asia/Tokyo ", 5, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                web_ui.zone_rows(bad)
+
+    @unittest.skipUnless(_has_tzdata(), "needs the system tz database")
+    def test_board_zones_are_validated_and_rendered_with_their_tables(self):
+        zones = [{"id": "tokyo", "label": "Tokyo", "tz": "Asia/Tokyo"}, {"id": "london", "label": "<b>London</b>", "tz": "Europe/London"}]
+        def board(*items, zones=zones):
+            return {**WORLD, "board": {"title": "T", "items": list(items), "zones": zones}}
+        for bad in (board({"text": "x"}, zones=[{**zones[0], "tz": "Mars/Base"}]), board({"text": "x"}, zones=[zones[0], zones[0]]),
+                    board({"text": "x"}, zones=[{**zones[0], "id": "Tokyo"}]), board({"text": "x"}, zones=[{**zones[0], "extra": 1}]),
+                    board({"text": "x"}, zones=[{**zones[0], "id": f"z{i}"} for i in range(7)]), board({"text": "x"}, zones="Asia/Tokyo"),
+                    board({"text": "x", "at": "10:00", "zone": "paris"}),                        # a zone the board does not have
+                    board({"text": "x", "zone": "tokyo"}),                                       # a zone needs at or gauge
+                    board({"text": "x", "at": "10:00", "zone": 5})):
+            with self.subTest(bad=str(bad["board"])[-70:]), self.assertRaises(ValueError):
+                web_ui.world_validate(bad)
+        spec = board({"text": "Opens", "at": "09:00", "zone": "tokyo"}, {"text": "Open", "gauge": {"from": "09:00", "to": "18:00"}, "zone": "london"},
+                     {"text": "Local", "at": "09:00"})
+        world = web_ui.world_validate(spec)
+        self.assertEqual(web_ui.world_validate(world), world)
+        self.assertEqual([i["zone"] for i in world["board"]["items"]], ["tokyo", "london", None])
+        html = web_ui.world_html(spec)
+        self.assertNotIn("<b>London</b>", html)
+        for z in world["board"]["zones"]:
+            match = re.search(rf'data-zone-id="{z["id"]}" data-rows="([^"]*)"', html)
+            self.assertEqual(json.loads(match.group(1)), list(web_ui.zone_rows(z["tz"])))
+        self.assertEqual(html.count('data-at="09:00" data-zone="tokyo"'), 2)                    # the visible line and its twin
+        self.assertEqual(html.count('data-cells="10" data-zone="london"'), 2)
+        self.assertEqual(html.count('data-at="09:00"></span>'), 2)                              # no zone: the viewer's own clock
+        self.assertEqual(html.count('class="ui-board-zones"'), 1)                                # the clocks share one row
+        self.assertNotIn("ui-board-zone", web_ui.world_html({**WORLD, "board": {"title": "T", "items": [{"text": "x"}]}}))
 
     def test_world_script_stores_and_sends_nothing(self):
         # The board keeps what a visitor writes in the page only: no storage, no cookies, no network, no place names.

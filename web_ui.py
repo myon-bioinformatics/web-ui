@@ -9,8 +9,10 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 from __future__ import annotations
 
 import argparse
+import bisect
 import colorsys
 import errno
+import functools
 import hashlib
 import hmac
 import http.client
@@ -2003,6 +2005,46 @@ def clock_label(minutes: int) -> str:
     return f"{minutes // 60 % 24:02d}:{minutes % 60:02d}"
 
 
+ZONE_YEARS = (2020, 2040)   # the window a board's zone table covers, [start, end); outside it the nearest end's offset is kept
+
+
+@functools.lru_cache(maxsize=None)
+def zone_rows(tz: str) -> tuple[int, ...]:
+    """Flat ``(utc_epoch_seconds, offset_minutes, ...)`` pairs: the offset in force from each instant on, from the start of ``ZONE_YEARS``.
+    Built from the system IANA database with ``zoneinfo`` (no hand-written DST rules); the page only looks the table up.
+    The scan and the bisection of each change to the second follow flutter_navigation_basic ``python/generate_zone_table.py``."""
+    import datetime as dt
+    import zoneinfo
+    if not isinstance(tz, str) or not re.fullmatch(r"[A-Za-z0-9_+\-]+(?:/[A-Za-z0-9_+\-]+){0,2}", tz):
+        raise ValueError(f"not a time zone name: {tz!r}")
+    try:
+        zone = zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(f"time zone {tz!r} is unknown or the system has no time zone data (install tzdata)") from error
+    utc = dt.timezone.utc
+    offset = lambda at: int(at.astimezone(zone).utcoffset().total_seconds() // 60)
+    start, end = dt.datetime(ZONE_YEARS[0], 1, 1, tzinfo=utc), dt.datetime(ZONE_YEARS[1], 1, 1, tzinfo=utc)
+    now, here = start, offset(start)
+    rows = [int(start.timestamp()), here]
+    while now < end:
+        nxt = min(now + dt.timedelta(hours=6), end)
+        there = offset(nxt)
+        if there != here and nxt < end:
+            low, high = int(now.timestamp()), int(nxt.timestamp())
+            while high - low > 1:                                   # the first second the new offset applies
+                mid = (low + high) // 2
+                low, high = (mid, high) if offset(dt.datetime.fromtimestamp(mid, utc)) == here else (low, mid)
+            rows += [high, there]
+            here = there
+        now = nxt
+    return tuple(rows)
+
+
+def zone_offset(rows: tuple[int, ...] | list[int], utc_seconds: float) -> int:
+    """Minutes east of UTC in force at ``utc_seconds`` according to ``zone_rows``; before the first row, the first row's offset."""
+    return rows[2 * max(bisect.bisect_right(rows[0::2], utc_seconds) - 1, 0) + 1]
+
+
 def utc_offset_label(offset_minutes: int) -> str:
     """The time zone the board may show beside its clock: ``UTC``, ``UTC+9``, ``UTC+5:30``, ``UTC-5``. The offset only, never a place name."""
     if offset_minutes == 0:
@@ -2186,23 +2228,36 @@ def world_validate(spec: Any) -> dict[str, Any]:
                        "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
     board = spec.get("board")
     if board is not None:
-        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "zone", "offset_minutes"} or not isinstance(board.get("items"), list) \
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_label", "offset_minutes", "zones"} or not isinstance(board.get("items"), list) \
                 or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool) \
-                or not isinstance(board.get("zone", False), bool):
-            raise ValueError("a board has a title, 1..12 items, and optional post, zone and offset_minutes")
+                or not isinstance(board.get("offset_label", False), bool):
+            raise ValueError("a board has a title, 1..12 items, and optional post, offset_label, offset_minutes and zones")
+        zones, seen_zones = [], set()
+        zones_in = board.get("zones", [])
+        if not isinstance(zones_in, list) or len(zones_in) > 6:
+            raise ValueError("zones is a list of up to 6 clocks")
+        for entry in zones_in:
+            if not isinstance(entry, dict) or set(entry) - {"id", "label", "tz"}:
+                raise ValueError("a zone has id, label and tz")
+            zone_rows(entry.get("tz"))                                                         # unknown names are refused here
+            zones.append({"id": _world_id(entry.get("id"), "zone id", seen_zones), "label": _world_text(entry.get("label"), "label", 24),
+                          "tz": entry["tz"]})
         items = []
         for item in board["items"]:
-            if not isinstance(item, dict) or set(item) - {"text", "at", "gauge"}:
-                raise ValueError("a board item has text and an optional at or gauge")
+            if not isinstance(item, dict) or set(item) - {"text", "at", "gauge", "zone"}:
+                raise ValueError("a board item has text and an optional at or gauge, and an optional zone")
             at, gauge = item.get("at"), item.get("gauge")
             if at is not None and gauge is not None:
                 raise ValueError("a board item has either at or gauge, not both")
             if at is not None:
                 _world_hhmm(at, "at")
+            where = item.get("zone")
+            if where is not None and (at is None and gauge is None or where not in seen_zones):
+                raise ValueError("an item's zone names one of the board's zones and goes with at or gauge")
             items.append({"text": _world_text(item.get("text"), "text", 120), "at": at,
-                          "gauge": None if gauge is None else _world_gauge(gauge)})
+                          "gauge": None if gauge is None else _world_gauge(gauge), "zone": where})
         board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
-                 "zone": board.get("zone", False),
+                 "offset_label": board.get("offset_label", False), "zones": zones,
                  "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
@@ -2225,13 +2280,13 @@ def _board_html(board: dict[str, Any] | None) -> str:
     if not board:
         return ""
     def item(entry: dict[str, Any], hidden: bool) -> str:
-        extra = ""
+        extra, where = "", f' data-zone="{entry["zone"]}"' if entry["zone"] else ""
         if entry["at"]:
-            extra = f' <span class="ui-board-min" data-at="{entry["at"]}"></span>'
+            extra = f' <span class="ui-board-min" data-at="{entry["at"]}"{where}></span>'
         elif entry["gauge"]:
             g = entry["gauge"]
             done, todo = (escape(glyph, quote=True) for glyph in g["glyphs"])
-            extra = (f' <span class="ui-board-gauge" data-from="{g["from"]}" data-to="{g["to"]}" data-cells="{g["cells"]}" '
+            extra = (f' <span class="ui-board-gauge" data-from="{g["from"]}" data-to="{g["to"]}" data-cells="{g["cells"]}"{where} '
                      f'data-done="{done}" data-todo="{todo}"><span class="ui-board-cells" aria-hidden="true">'
                      f'{escape(gauge_cells(0, g["cells"], g["glyphs"]))}</span> <span class="ui-board-pct">0%</span></span>')
         aria_hidden = ' aria-hidden="true"' if hidden else ""
@@ -2241,9 +2296,12 @@ def _board_html(board: dict[str, Any] | None) -> str:
     form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
             'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
             if board["post"] else "")
-    zone = " data-zone" if board["zone"] else ""
+    label = " data-offset-label" if board["offset_label"] else ""
+    chips = "".join(f'<span class="ui-board-zone" data-zone-id="{z["id"]}" data-rows="{json.dumps(list(zone_rows(z["tz"])), separators=(",", ":"))}">'
+                    f'{escape(z["label"])} <b data-zone-clock>--:--</b></span>' for z in board["zones"])
+    chips = f'<span class="ui-board-zones">{chips}</span>' if chips else ""
     offset = board["offset_minutes"] if board["offset_minutes"] is not None else ""
-    return (f'<div class="ui-board" aria-live="off" data-offset="{offset}" data-chars="{chars}"{zone}><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
+    return (f'<div class="ui-board" aria-live="off" data-offset="{offset}" data-chars="{chars}"{label}><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>{chips}'
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
 
 
@@ -2332,6 +2390,8 @@ _WORLD_CSS = (
     ".ui-board-track{flex:4 1 14rem;min-width:0;overflow:hidden;white-space:nowrap}"
     ".ui-board-run{display:inline-flex;animation:ui-board-scroll 24s linear infinite}"
     ".ui-board-item{padding-right:3rem}"
+    ".ui-board-zones{display:flex;flex-wrap:wrap;gap:0 12px}"
+    ".ui-board-zone{flex:none;white-space:nowrap;color:var(--ui-muted)}.ui-board-zone b{color:var(--ui-fg);font-weight:400;font-variant-numeric:tabular-nums}"
     ".ui-board-stamp{margin-right:.25rem;color:var(--ui-muted);font-variant-numeric:tabular-nums}"
     ".ui-board-gauge{white-space:nowrap}.ui-board-cells{letter-spacing:.05em}.ui-board-pct{font-variant-numeric:tabular-nums}"
     ".ui-board-post{display:flex;gap:4px;flex:1 1 13rem}.ui-board-post .ui-input{flex:1;min-width:0;width:auto;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
@@ -2413,6 +2473,7 @@ export function boardSeconds(chars,cps=8){return Math.max(8,Math.round(chars/cps
 export function gaugeState(now,start,end,cells){const m=n=>((n%1440)+1440)%1440,span=m(end-start)||1440,el=m(now-start);if(el<span)return[Math.floor(el*cells/span),Math.floor(el*100/span),"active"];return m(start-now)<=m(now-end)?[0,0,"before"]:[cells,100,"after"]}
 export function gaugeCells(filled,cells,done,todo){return done.repeat(filled)+todo.repeat(cells-filled)}
 export function clockLabel(minutes){const h=Math.floor(minutes/60)%24,m=minutes%60;return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")}
+export function zoneOffset(rows,t){let lo=0,hi=rows.length/2-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(rows[2*mid]<=t)lo=mid;else hi=mid-1}return rows[2*lo+1]}
 export function utcOffsetLabel(offset){if(offset===0)return"UTC";const a=Math.abs(offset),h=Math.floor(a/60),m=a%60;return"UTC"+(offset>0?"+":"-")+h+(m?":"+String(m).padStart(2,"0"):"")}
 export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
@@ -2425,7 +2486,7 @@ const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
 const walk=bindPlayer(el,floor);
-const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},tick=()=>{const clock=clockNow(),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.zone!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(now,hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(now),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
+const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},chips=[...board.querySelectorAll("[data-zone-id]")].map(z=>({id:z.dataset.zoneId,rows:JSON.parse(z.dataset.rows),out:z.querySelector("[data-zone-clock]")})),tick=()=>{const clock=clockNow(),t=new Date().getTime()/1000,zones=new Map(chips.map(z=>{const c=boardClock(t,zoneOffset(z.rows,t));z.out.textContent=c.clock;return[z.id,c]})),at=m=>(m.dataset.zone?zones.get(m.dataset.zone):clock).minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.offsetLabel!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(at(m),hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(at(g)),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
 form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift({text,at:clockNow().clock});notes.splice(5);run.replaceChildren();
@@ -2447,7 +2508,7 @@ const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,cleanMessage,motionWalk,motionSample,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,bindWorlds};
 bindWorlds();
 """
 
@@ -2871,10 +2932,14 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                {'text': 'Show starts', 'at': '10:30'},
                                {'text': 'Guided walk', 'at': '14:00'},
                                {'text': 'Last entry', 'at': '17:30'},
+                               {'text': 'London lunch', 'at': '12:00', 'zone': 'london'},
                                {'text': 'Open hours', 'gauge': {'from': '09:00', 'to': '18:00', 'cells': 10, 'glyphs': 'hourglass'}},
                                {'text': 'Daylight', 'gauge': {'from': '06:00', 'to': '22:00', 'cells': 8, 'glyphs': 'moon'}}],
                      'post': True,
-                     'zone': True}}}
+                     'offset_label': True,
+                     'zones': [{'id': 'tokyo', 'label': 'Tokyo', 'tz': 'Asia/Tokyo'},
+                               {'id': 'london', 'label': 'London', 'tz': 'Europe/London'},
+                               {'id': 'ny', 'label': 'New York', 'tz': 'America/New_York'}]}}}
 
 
 def example_data(name: str) -> Any:
