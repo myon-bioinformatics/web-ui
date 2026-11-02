@@ -2118,9 +2118,13 @@ def world_validate(spec: Any) -> dict[str, Any]:
                        "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
     board = spec.get("board")
     if board is not None:
-        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes"} or not isinstance(board.get("items"), list) \
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes", "shared_issue"} or not isinstance(board.get("items"), list) \
                 or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
-            raise ValueError("a board has a title, 1..12 items and an optional post flag")
+            raise ValueError("a board has title, 1..12 items, and optional post, offset_minutes, shared_issue")
+        shared_issue = board.get("shared_issue")
+        if shared_issue is not None and (not isinstance(shared_issue, str) or (len(shared_issue.split("/")) == 3 and shared_issue.split("/")[1] in {".", ".."}) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}/[1-9][0-9]{0,8}", shared_issue)):
+            raise ValueError("shared_issue must be owner/repository/positive-issue-number")
         items = []
         for item in board["items"]:
             if not isinstance(item, dict) or set(item) - {"text", "at"}:
@@ -2129,7 +2133,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
             if at is not None and not (isinstance(at, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)):
                 raise ValueError("at must be HH:MM")
             items.append({"text": _world_text(item.get("text"), "text", 120), "at": at})
-        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
+        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False), "shared_issue": shared_issue,
                  "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
@@ -2160,8 +2164,21 @@ def _board_html(board: dict[str, Any] | None) -> str:
     form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
             'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
             if board["post"] else "")
+    shared = ""
+    if board.get("shared_issue"):
+        owner, repo, number = board["shared_issue"].split("/")
+        issue_url = f"https://github.com/{owner}/{repo}/issues/{number}"
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{number}/comments?per_page=100"
+        shared = (f'<details class="ui-board-shared" data-api="{escape(api_url, quote=True)}">'
+                  '<summary>共有掲示板（GitHub公開コメント）</summary>'
+                  '<p>投稿はGitHubへのログインが必要です。本文・アカウント名・投稿時刻はインターネットに公開されます。'
+                  '個人情報や秘密の待ち合わせ情報は書かないでください。ページ内Postはこのページだけで、共有されません。</p>'
+                  f'<a href="{escape(issue_url, quote=True)}#new_comment_field" target="_blank" rel="noopener noreferrer">GitHubで公開投稿（別タブ）</a> '
+                  '<button type="button" data-shared-refresh>共有コメントを取得・更新</button>'
+                  '<p role="status" data-shared-status>未取得。自動更新なし。更新間隔は最低120秒。</p>'
+                  '<ul data-shared-comments></ul></details>')
     return (f'<div class="ui-board" aria-live="off" data-offset="{board["offset_minutes"] if board["offset_minutes"] is not None else ""}" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
-            f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
+            f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}{shared}</div>')
 
 
 def _map_html(world: dict[str, Any]) -> str:
@@ -2245,6 +2262,7 @@ _WORLD_CSS = (
     "transition:transform var(--walk,0s) linear}"
     ".ui-board{display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--ui-border);background:var(--ui-panel);"
     "font-family:var(--ui-font-mono);font-size:.85rem;overflow:hidden}"
+    ".ui-board:has(.ui-board-shared){flex-wrap:wrap}.ui-board-shared{flex-basis:100%;white-space:normal;font-family:var(--ui-font);overflow-wrap:anywhere}.ui-board-shared ul{max-height:14rem;overflow:auto}"
     ".ui-board-clock{flex:none;border:1px solid var(--ui-accent);padding:0 .5rem;border-radius:var(--ui-radius)}"
     ".ui-board-track{flex:1;min-width:0;overflow:hidden;white-space:nowrap}"
     ".ui-board-run{display:inline-flex;animation:ui-board-scroll 24s linear infinite}"
@@ -2318,7 +2336,43 @@ function bindPlayer(el,floor){
 """
 
 
-WORLD_JS = WORLD_MOTION_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+WORLD_SHARED_JS = r"""
+// GET only. No credentials, storage, Markdown rendering, or automatic polling.
+export function sharedLines(comments){
+ if(!Array.isArray(comments))throw new Error("Invalid comments response");
+ return comments.slice(0,100).filter(c=>c&&typeof c.body==="string"&&typeof c.user?.login==="string")
+ .slice(-5).reverse().map(c=>({text:cleanMessage(c.body),author:c.user.login.slice(0,100),
+ time:typeof c.created_at==="string"?c.created_at.slice(0,30):""})).filter(line=>line.text);
+}
+export function sharedWait(response,now){
+ const retry=response.headers.get("retry-after"),reset=response.headers.get("x-ratelimit-reset");
+ return Math.max(now+120000, retry&&Number.isFinite(Number(retry))?now+Number(retry)*1000:0,
+ response.headers.get("x-ratelimit-remaining")==="0"&&Number.isFinite(Number(reset))?Number(reset)*1000:0);
+}
+export function bindSharedBoard(board){
+ const panel=board.querySelector(".ui-board-shared");if(!panel)return;
+ const button=panel.querySelector("[data-shared-refresh]"),status=panel.querySelector("[data-shared-status]"),list=panel.querySelector("[data-shared-comments]");
+ let next=0,busy=false;
+ button.addEventListener("click",async()=>{
+  if(busy)return;
+  if(Date.now()<next){status.textContent="更新待機中。"+Math.ceil((next-Date.now())/1000)+"秒後に再試行できます。";return}
+  busy=true;button.disabled=true;next=Date.now()+120000;
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
+  try{
+   const response=await fetch(panel.dataset.api,{method:"GET",cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",headers:{Accept:"application/vnd.github+json"},signal:controller.signal});
+   next=sharedWait(response,Date.now());
+   if(!response.ok)throw new Error("HTTP "+response.status);
+   const lines=sharedLines(await response.json());if(!panel.isConnected)return;
+   const nodes=lines.map(line=>{const li=document.createElement("li");li.textContent=line.author+" · "+line.time+" — "+line.text;return li});
+   list.replaceChildren(...nodes);
+   status.textContent="取得済み（"+new Date().toLocaleTimeString()+"）。先頭100コメント内の末尾最大5件、本文60文字。"+(response.headers.get("link")?.includes('rel="next"')?"続きはGitHubで確認してください。":"");
+  }catch(error){if(panel.isConnected)status.textContent="取得できませんでした（通信・API制限・公開設定を確認）。前回の表示を保持します。"}
+  finally{clearTimeout(timeout);busy=false;button.disabled=false}
+ });
+}
+"""
+
+WORLD_JS = WORLD_MOTION_JS + WORLD_SHARED_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
 export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
@@ -2337,7 +2391,7 @@ const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)}
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
 const walk=bindPlayer(el,floor);
 const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),clock=boardClock(d.getTime()/1000,board.dataset.offset===""?-d.getTimezoneOffset():Number(board.dataset.offset)),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock;for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"いま":"あと"+left+"分"}};
-if(board){tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
+if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
 form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift(text);notes.splice(5);run.replaceChildren();
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");span.textContent=note;run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
@@ -2782,6 +2836,7 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                {'text': 'Show starts', 'at': '10:30'},
                                {'text': 'Guided walk', 'at': '14:00'},
                                {'text': 'Last entry', 'at': '17:30'}],
+                     'shared_issue': 'myon-bioinformatics/web-ui/110',
                      'post': True}}}
 
 
