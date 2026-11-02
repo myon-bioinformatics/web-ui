@@ -188,7 +188,7 @@ class PythonWrapperTests(unittest.TestCase):
 
     def test_run_node_wraps_diagnostics_script(self):
         if not _node_at_least_26():
-            self.skipTest('node 24+ not available')
+            self.skipTest('node 26+ not available')
         result = run_node(ROOT / 'tests' / 'repository_diagnostics.node.js')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '')
