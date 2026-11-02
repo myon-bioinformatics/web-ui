@@ -2120,7 +2120,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
     if board is not None:
         if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes", "shared_issue"} or not isinstance(board.get("items"), list) \
                 or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
-            raise ValueError("a board has a title, 1..12 items and an optional post flag")
+            raise ValueError("a board has title, 1..12 items, and optional post, offset_minutes, shared_issue")
         shared_issue = board.get("shared_issue")
         if shared_issue is not None and (not isinstance(shared_issue, str) or (len(shared_issue.split("/")) == 3 and shared_issue.split("/")[1] in {".", ".."}) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}/[1-9][0-9]{0,8}", shared_issue)):
@@ -2342,7 +2342,7 @@ export function sharedLines(comments){
  if(!Array.isArray(comments))throw new Error("Invalid comments response");
  return comments.slice(0,100).filter(c=>c&&typeof c.body==="string"&&typeof c.user?.login==="string")
  .slice(-5).reverse().map(c=>({text:cleanMessage(c.body),author:c.user.login.slice(0,100),
- time:typeof c.created_at==="string"?c.created_at.slice(0,30):""}));
+ time:typeof c.created_at==="string"?c.created_at.slice(0,30):""})).filter(line=>line.text);
 }
 export function sharedWait(response,now){
  const retry=response.headers.get("retry-after"),reset=response.headers.get("x-ratelimit-reset");

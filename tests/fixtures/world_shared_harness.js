@@ -1,6 +1,8 @@
 const assert = (await import('node:assert/strict')).default;
 assert.equal(sharedLines([{body:'<img src=x onerror=alert(1)>',user:{login:'alice'},created_at:'today'}])[0].text,'<img src=x onerror=alert(1)>');
 assert.throws(()=>sharedLines({}));
+assert.deepEqual(sharedLines([{body:'  \n\t',user:{login:'a'}},{body:'\u0000',user:{login:'b'}}]),[]);
+assert.equal(sharedLines([{body:'valid',user:{login:'a'}},{body:' ',user:{login:'b'}}])[0].text,'valid');
 assert.equal(sharedLines(Array.from({length:110},(_,i)=>({body:String(i),user:{login:'a'}})))[0].text,'99');
 assert.equal(sharedLines([{body:'x',user:null}]).length,0);
 assert.equal(sharedWait({headers:new Headers({'retry-after':'300'})},1000),301000);

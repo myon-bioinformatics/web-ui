@@ -1,5 +1,4 @@
 """Opt-in shared board contract; no network calls or public writes."""
-import json
 import shutil
 import subprocess
 from pathlib import Path

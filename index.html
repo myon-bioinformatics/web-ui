@@ -130,7 +130,7 @@ export function sharedLines(comments){
  if(!Array.isArray(comments))throw new Error("Invalid comments response");
  return comments.slice(0,100).filter(c=>c&&typeof c.body==="string"&&typeof c.user?.login==="string")
  .slice(-5).reverse().map(c=>({text:cleanMessage(c.body),author:c.user.login.slice(0,100),
- time:typeof c.created_at==="string"?c.created_at.slice(0,30):""}));
+ time:typeof c.created_at==="string"?c.created_at.slice(0,30):""})).filter(line=>line.text);
 }
 export function sharedWait(response,now){
  const retry=response.headers.get("retry-after"),reset=response.headers.get("x-ratelimit-reset");
