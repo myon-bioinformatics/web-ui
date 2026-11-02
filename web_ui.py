@@ -807,6 +807,92 @@ def card(
     return f'<article class="ui-card">{heading}{body}</article>'
 
 
+
+def catalog_document(spec: Any, *, theme: str = "modern") -> str:
+    """Build a self-contained, script-free catalog from consumer-owned data.
+
+    ``web-ui-catalog/1`` accepts title, optional description and items. Each
+    item has id/title and optional summary/category/details/links. Links have
+    label/href. Text is never HTML; links are relative paths or HTTPS URLs.
+    File writing, data collection and publication remain consumer-owned.
+    """
+    def mapping(value: Any, required: set[str], optional: set[str], label: str) -> dict:
+        if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
+            raise ValueError(f"invalid {label} fields")
+        return value
+
+    def text(value: Any, label: str, *, limit: int = 4000, required: bool = False) -> str:
+        if (not isinstance(value, str) or len(value) > limit
+                or any(ord(c) < 32 and c not in "\n\t" for c in value)
+                or any(0xD800 <= ord(c) <= 0xDFFF for c in value)
+                or required and not value.strip()):
+            raise ValueError(f"invalid {label}")
+        return value
+
+    def href(value: Any) -> str:
+        value = text(value, "link href", limit=2048, required=True)
+        # Do not let browser URL preprocessing turn whitespace/backslashes into
+        # an executable scheme or a protocol-relative external destination.
+        if any(c.isspace() for c in value) or "\\" in value:
+            raise ValueError("link href must not contain whitespace or backslashes")
+        parsed = urlsplit(value)
+        if parsed.scheme:
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+                raise ValueError("external links must be HTTPS without credentials")
+            try:
+                parsed.port
+            except ValueError:
+                raise ValueError("invalid HTTPS port") from None
+        elif parsed.netloc or value.startswith("/") or ":" in parsed.path.split("/", 1)[0]:
+            raise ValueError("local links must be relative to the generated page")
+        return value
+
+    mapping(spec, {"schema", "title", "items"}, {"description"}, "catalog")
+    if spec["schema"] != "web-ui-catalog/1":
+        raise ValueError("expected web-ui-catalog/1")
+    title = text(spec["title"], "title", limit=200, required=True)
+    description = text(spec.get("description", ""), "description")
+    items = spec["items"]
+    if not isinstance(items, list) or len(items) > 512:
+        raise ValueError("items must be a list of at most 512 entries")
+    seen, navigation, articles = set(), [], []
+    for item in items:
+        mapping(item, {"id", "title"}, {"summary", "category", "details", "links"}, "item")
+        identity = _element_id(text(item["id"], "item id", limit=128, required=True))
+        if identity in seen:
+            raise ValueError("duplicate item id")
+        seen.add(identity)
+        heading = text(item["title"], "item title", limit=200, required=True)
+        summary = text(item.get("summary", ""), "summary")
+        category = text(item.get("category", ""), "category", limit=100)
+        extra = text(item.get("details", ""), "details", limit=16000)
+        links = item.get("links", [])
+        if not isinstance(links, list) or len(links) > 32:
+            raise ValueError("links must be a list of at most 32 entries")
+        rendered_links = []
+        for link in links:
+            mapping(link, {"label", "href"}, set(), "link")
+            label = text(link["label"], "link label", limit=200, required=True)
+            target = href(link["href"])
+            rendered_links.append(f'<li><a href="{escape(target, quote=True)}">{escape(label)}</a></li>')
+        content = ((badge(category) if category else "") + f'<p>{escape(summary)}</p>'
+                   + (details(heading, extra) if extra else "")
+                   + ("<ul>" + "".join(rendered_links) + "</ul>" if rendered_links else ""))
+        # Prefix consumer IDs so names like 'top' cannot collide with our index.
+        articles.append(f'<section id="catalog-item-{identity}" tabindex="-1">'
+                        + card(title=heading, trusted_html=content) + '</section>')
+        navigation.append(f'<li><a href="#catalog-item-{identity}">{escape(heading)}</a></li>')
+    body = (f'<main class="ui-page ui-catalog"><header><h1>{escape(title)}</h1>'
+            f'<p>{escape(description)}</p></header>'
+            f'<nav aria-label="{escape(title, quote=True)}"><ul>{"".join(navigation)}</ul></nav>'
+            + "".join(articles) + '</main>')
+    # Only the three shared core sheets and selected theme, not every feature's
+    # CSS or JavaScript. No images, remote fonts, fetches or storage are needed.
+    names = (*_CSS_CORE, f"themes/{theme}.css") if theme in THEMES else _CSS_CORE
+    css = "@layer base,components,theme;" + "".join(css_source(name) for name in names)
+    css += ".ui-catalog{overflow-wrap:anywhere}.ui-catalog section{scroll-margin-top:1rem}"
+    return render_document(title=title, theme=theme, css=css, trusted_html=body)
+
 def button(label: str, *, id: str | None = None, type: str = "button", disabled: bool = False) -> str:
     """An escaped native button; custom actions remain consumer-owned."""
     if type not in ("button", "submit", "reset"):
@@ -2785,8 +2871,38 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                      'post': True}}}
 
 
+# Synthetic consumer data, not fetched research results or a second source of
+# repository metadata. Consumers adapt their existing source of truth to this.
+EXAMPLES.update({
+    "catalog-report": {
+        "schema": "web-ui-catalog/1", "title": "Analysis report",
+        "description": "Synthetic example: compare observations and inspect their evidence.",
+        "items": [
+            {"id": "comparison", "title": "Output comparison", "category": "Verification",
+             "summary": "The sample outputs match.", "details": "Fixture only; no performance claim.",
+             "links": [{"label": "Comparison data", "href": "./evidence/comparison.json"}]},
+            {"id": "timing", "title": "Installation time", "category": "Measurement",
+             "summary": "Not measured.", "details": "Do not replace unknown values with zero.",
+             "links": [{"label": "Method", "href": "./evidence/method.txt"}]},
+        ],
+    },
+    "catalog-projects": {
+        "schema": "web-ui-catalog/1", "title": "Project directory",
+        "description": "Synthetic example: repository-owned metadata, shared presentation.",
+        "items": [
+            {"id": "viewer", "title": "資料ビューア 📚", "category": "Tools",
+             "summary": "Browse local documents.", "details": "Python generates the page; no runtime server is required.",
+             "links": [{"label": "Documentation", "href": "./guide.html"}]},
+            {"id": "reports", "title": "Research reports", "category": "Research",
+             "summary": "Inspect results and limitations.",
+             "links": [{"label": "Reports", "href": "./reports/index.html"}]},
+        ],
+    },
+})
+
+
 def example_data(name: str) -> Any:
-    """A copy of one example spec: ``flutter-pages``, ``layout-presets`` or ``world``."""
+    """A deep copy of a named EXAMPLES spec, including the two consumer catalogs."""
     try:
         return json.loads(json.dumps(EXAMPLES[name]))
     except KeyError:
@@ -2907,9 +3023,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default="web-ui")
     parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
+    parser.add_argument("--catalog", type=Path, metavar="FILE",
+                        help="print a script-free page for a web-ui-catalog/1 JSON spec and exit")
     parser.add_argument("--world", type=Path, metavar="FILE",
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
-    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world)")
+    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (including catalog-report, catalog-projects)")
     parser.add_argument("--site", type=Path, metavar="DIR",
                         help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
     parser.add_argument("--theme-wall", type=int, metavar="N",
@@ -2954,6 +3072,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(name)
         except OSError as exc:
             parser.error(str(exc))
+        return 0
+    if args.catalog:
+        try:
+            result = catalog_document(json.loads(args.catalog.read_text(encoding="utf-8")), theme=args.theme)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(result.encode("utf-8"))
+        else:
+            sys.stdout.write(result)
         return 0
     if args.world or args.theme_wall is not None:
         try:

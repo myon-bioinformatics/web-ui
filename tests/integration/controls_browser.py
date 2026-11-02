@@ -551,5 +551,85 @@ class GeneratedSiteBrowserTests(unittest.TestCase):
                     browser.close()
 
 
+class CatalogBrowserTests(unittest.TestCase):
+    """The same data adapter works at project subpaths and with JavaScript off."""
+
+    def test_catalog_native_navigation_and_disclosure(self):
+        from web_ui import catalog_document, example_data
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('catalog-report', 'catalog-projects'):
+                output = root / 'project' / name
+                output.mkdir(parents=True)
+                spec = example_data(name)
+                spec['items'][0]['links'] = [{'label': 'Local evidence', 'href': './evidence.txt'}]
+                (output / 'index.html').write_text(catalog_document(spec), encoding='utf-8')
+                (output / 'evidence.txt').write_text('fixture evidence', encoding='utf-8')
+            server = http.server.ThreadingHTTPServer(('127.0.0.1', 0),
+                functools.partial(QuietHandler, directory=directory))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            origin = f'http://127.0.0.1:{server.server_port}'
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch()
+                    try:
+                        for name in ('catalog-report', 'catalog-projects'):
+                            for width in (390, 1440):
+                                for transport in ('file', 'http'):
+                                    with self.subTest(name=name, width=width, transport=transport):
+                                        context = browser.new_context(java_script_enabled=False,
+                                                                      viewport={'width': width, 'height': 844})
+                                        try:
+                                            page = context.new_page()
+                                            errors, external = [], []
+                                            page.on('pageerror', lambda error: errors.append(str(error)))
+                                            page.on('request', lambda request: external.append(request.url)
+                                                    if not request.url.startswith((origin + '/', 'file://')) else None)
+                                            path = f'/project/{name}/index.html'
+                                            url = (root / path.lstrip('/')).as_uri() if transport == 'file' else origin + path
+                                            page.goto(url)
+                                            expect(page.locator('article')).to_have_count(2)
+                                            expect(page.locator('script')).to_have_count(0)
+                                            nav = page.locator('nav a')
+                                            nav.nth(0).click()
+                                            first = page.url
+                                            nav.nth(1).click()
+                                            second = page.url
+                                            self.assertNotEqual(first, second)
+                                            page.go_back()
+                                            self.assertEqual(page.url, first)
+                                            page.go_forward()
+                                            self.assertEqual(page.url, second)
+                                            nav.nth(0).click()
+                                            summary = page.locator('summary').first
+                                            disclosure = page.locator('details').first
+                                            summary.focus()
+                                            page.keyboard.press('Enter')
+                                            expect(disclosure).to_have_attribute('open', '')
+                                            page.keyboard.press('Enter')
+                                            expect(disclosure).not_to_have_attribute('open', '')
+                                            summary.click()
+                                            expect(disclosure).to_have_attribute('open', '')
+                                            self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), width)
+                                            evidence = Path('build/gradio-dom')
+                                            evidence.mkdir(parents=True, exist_ok=True)
+                                            if transport == 'http':
+                                                page.screenshot(path=str(evidence / f'{name}-{width}.png'), full_page=True)
+                                            page.get_by_role('link', name='Local evidence', exact=True).click()
+                                            self.assertTrue(page.url.endswith('/project/' + name + '/evidence.txt'))
+                                            self.assertIn('fixture evidence', page.locator('body').inner_text())
+                                            self.assertEqual(errors, [])
+                                            self.assertEqual(external, [])
+                                        finally:
+                                            context.close()
+                    finally:
+                        browser.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+
 if __name__ == '__main__':
     unittest.main()

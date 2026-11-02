@@ -24,6 +24,13 @@ There are no css/ files and no example HTML files: the stylesheets are Python da
 
 Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
 
+## Consumer-owned catalog pages
+
+`catalog_document(spec)` builds a script-free page from repository-owned items,
+settings and evidence links using the existing shared components. Analysis reports
+and project directories use the same entry; data collection and Pages publication
+stay with each consumer. [Schema, examples and adoption boundary](docs/catalog-pages.md).
+
 ## Python-first flow replacement
 
 Card-style flow diagrams and atomic flow edits now belong to [ascii_artist's accepted Python implementation](https://github.com/myon-bioinformatics/ascii_artist/blob/a9af65cc443e6129176f83268142bff2c2397b66/docs/card-flows.md).
