@@ -1,6 +1,6 @@
 # Representative Flutter pages and the multi-browser viewer
 
-## Page table (`examples/flutter-pages.json`)
+## Page table (`web_ui.EXAMPLES["flutter-pages"]`)
 
 `web-ui-flutter-pages/1` lists the representative flutter_navigation_basic pages that
 browser-test-kit captures (`adapters/flutter-*.json`): route, emoji key, label, the
@@ -15,8 +15,8 @@ set is checked against browser-test-kit's list by fixture, not by import.
 ```sh
 # browser-test-kit platform-apps artifacts -> Ironmate sheet -> web-ui viewer
 python -S ../Ironmate/browser_matrix.py app-results --out matrix   # default shot width-384
-python -S tool/capture_matrix.py --pages examples/flutter-pages.json \
-  --report matrix/report.json [--dataset app-matrix/dataset.json] --embed-css > matrix/viewer.html
+python -S tool/capture_matrix.py --pages flutter-pages.json \
+  --report matrix/report.json [--dataset app-matrix/dataset.json] > matrix/viewer.html
 ```
 
 One section per page, opened from emoji links (`#/hub`). CSS `:target` shows the chosen

@@ -9,10 +9,10 @@ widths where it held, without disabling any (a person may still prefer another o
 ``sweep()`` (Playwright, imported lazily) opens a page at each width, clicks each preset's
 radio like a person would, and checks the layout: no horizontal overflow, and the listed
 items neither overlap nor leave the viewport. Several presets may pass; all passing presets
-are candidates. js/layout-presets.cjs produces byte-identical CSS and controls for Node.
+are candidates. Node reaches this tool through vendor/py_launch.cjs (no Node twin).
 
-    python -S tool/layout_presets.py css examples/layout-presets.json
-    python tool/layout_presets.py sweep viewer.html --presets examples/layout-presets.json \\
+    python -S tool/layout_presets.py css layout-presets.json   # python -S web_ui.py --example layout-presets > layout-presets.json
+    python tool/layout_presets.py sweep viewer.html --presets layout-presets.json \\
         --widths 320 384 768 1280 --items ".ui-matrix-tiles li" --out candidates.json
 """
 from __future__ import annotations

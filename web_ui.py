@@ -9,6 +9,7 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import errno
 import hashlib
 import hmac
@@ -20,6 +21,7 @@ import base64
 import os
 from html import escape
 from pathlib import Path
+import random
 import re
 import shutil
 import subprocess
@@ -27,11 +29,321 @@ import sys
 from typing import Any
 import urllib.error
 import urllib.request
+import zlib
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
-# Snapshot of js/ui.js; update together with the upstream source and regression test.
-EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
+# Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.
+CANDIDATE_THEMES = ("green", "red", "blue")
+# The browser modules, as data: Python is the only source (there are no js/ files). write_js()/--site writes them under DIR/js/.
+_JS = {
+    "ui.js": r"""/** Set text-only content. User-controlled values are never interpreted as HTML. */
+export function setText(target,value){const node=typeof target==="string"?document.querySelector(target):target;if(node)node.textContent=String(value)}
+/** Serialize a value for human-readable text output. */
+export function prettyJson(value){return JSON.stringify(value,null,2)}
+/** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */
+export async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement("textarea");box.value=text;box.setAttribute("readonly","");box.style.cssText="position:fixed;opacity:0";try{document.body.append(box);box.select();if(typeof document.execCommand!=="function"||!document.execCommand("copy"))throw error}finally{box.remove()}}}
+/** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */
+export function bindTheme(root=document,{key="web-ui-theme"}={}){const body=document.body,controls=[...root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]")];const known=name=>controls.some(c=>c.tagName==="SELECT"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName==="SELECT")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener("change",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}
+/** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */
+export function observeLit(targets,{threshold=0.4,root=null}={}){const nodes=typeof targets==="string"?[...document.querySelectorAll(targets)]:[...targets];if(typeof IntersectionObserver==="undefined"){for(const n of nodes)n.dataset.lit="";return()=>{}}const io=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{threshold,root});for(const n of nodes)io.observe(n);return()=>io.disconnect()}
+/** Click-to-enlarge for <a href="full.png"><img alt="..."></a> items inside [data-ui-lightbox]: one <dialog>; Esc, the backdrop and the close button shut it, arrows, buttons and a 48px swipe step through. Returns {open, close, dialog}, or null without items or <dialog>. */
+export function bindLightbox(root=document){const items=[...root.querySelectorAll("[data-ui-lightbox] a[href]")];if(!items.length||typeof HTMLDialogElement==="undefined")return null;const dialog=document.createElement("dialog");dialog.className="ui-lightbox";dialog.setAttribute("aria-label","Image viewer");dialog.innerHTML='<img alt=""><p class="ui-muted"></p><div class="ui-lightbox-bar"><button class="ui-button" type="button" data-step="-1" aria-label="Previous">\u2190</button><button class="ui-button" type="button" data-step="1" aria-label="Next">\u2192</button><button class="ui-button" type="button" data-step="0" aria-label="Close">\u00d7</button></div>';const img=dialog.querySelector("img"),note=dialog.querySelector("p");let at=0,x=null;const show=i=>{at=(i+items.length)%items.length;const a=items[at],t=a.querySelector("img");img.src=a.href;img.alt=note.textContent=t?t.alt:""};const open=i=>{show(i);if(!dialog.open)dialog.showModal()};items.forEach((a,i)=>a.addEventListener("click",e=>{e.preventDefault();open(i)}));dialog.addEventListener("click",e=>{const b=e.target.closest("[data-step]");if(b){const s=Number(b.dataset.step);if(s)show(at+s);else dialog.close()}else if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close()}});dialog.addEventListener("keydown",e=>{if(e.key==="ArrowLeft")show(at-1);if(e.key==="ArrowRight")show(at+1)});dialog.addEventListener("pointerdown",e=>{x=e.clientX});dialog.addEventListener("pointerup",e=>{if(x!==null&&Math.abs(e.clientX-x)>=48)show(at+(e.clientX<x?1:-1));x=null});document.body.append(dialog);return{open,close:()=>dialog.close(),dialog}}
+""",
+    "stub.js": r"""import{setText,prettyJson}from"./ui.js";
+/**
+ * Bind one text input to an async or sync consumer handler.
+ *
+ * handler receives the input string and may return either text or any
+ * JSON-serializable value. Protocol-specific validation and semantics belong
+ * to the consuming repository, not web-ui.
+ */
+export function bindStub({input="#query",run="#run",output="#output",form="#stub-form",handler}){const q=document.querySelector(input),b=document.querySelector(run),f=document.querySelector(form);if(!q||!b)return;const execute=async event=>{event?.preventDefault();b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result==="string"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}};(f??b).addEventListener(f?"submit":"click",execute)}
+""",
+    "controls.js": r"""/* Provider-independent, text-only dropdown binding. No fetches or HTML input. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === "object" && module.exports) module.exports = api;
+  else {
+    root.webUiControls = api;
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => api.mount(document));
+      else api.mount(document);
+    }
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+  function bindSelect(select, output) {
+    let entries = new Map(), fullText = "";
+    function change() {
+      output.textContent = entries.has(select.value) ? entries.get(select.value) : fullText;
+    }
+    select.addEventListener("change", change);
+    return {
+      update(items, text, fullLabel = "(full extract)") {
+        const next = new Map();
+        const options = [{value: "", label: fullLabel}];
+        for (const item of items) {
+          const value = String(item.value);
+          if (!value || next.has(value)) throw new Error("section values must be nonempty and unique");
+          next.set(value, String(item.body));
+          options.push({value, label: String(item.label)});
+        }
+        const nodes = options.map(item => {
+          const option = select.ownerDocument.createElement("option");
+          option.value = item.value;
+          option.textContent = item.label;
+          return option;
+        });
+        entries = next;
+        fullText = String(text);
+        select.replaceChildren(...nodes);
+        select.value = "";
+        select.disabled = items.length === 0;
+        change();
+      },
+      clear() { this.update([], ""); },
+      destroy() { select.removeEventListener("change", change); }
+    };
+  }
+  const mounted = new WeakSet();
+  function mount(root) {
+    root.querySelectorAll("[data-ui-section-browser]").forEach(panel => {
+      if (mounted.has(panel)) return;
+      const data = JSON.parse(panel.querySelector("[data-ui-section-data]").textContent);
+      const control = bindSelect(panel.querySelector("select"), panel.querySelector("[data-ui-section-output]"));
+      control.update(data.items, data.fullText, data.fullLabel);
+      mounted.add(panel);
+    });
+  }
+  return {bindSelect, mount};
+});
+""",
+    "collection.js": r"""/* Portable, DOM-free collection filtering. Domain semantics stay with consumers. */
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.WebUICollections = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  function normalizeText(value) {
+    return String(value == null ? '' : value).trim().toLowerCase();
+  }
+
+  function matchesFacet(actual, expected) {
+    if (Array.isArray(actual)) return actual.includes(expected);
+    return actual === expected;
+  }
+
+  /**
+   * Filter without modifying items or relying on DOM/network globals.
+   *
+   * text(item) may return a scalar or an array of searchable fields.
+   * facets is an object of exact selected values. If an item's facet value
+   * is an array, membership is tested. Omit inactive facets (no 'all' magic).
+   * facetValues optionally maps facet names to item accessors.
+   * predicates is an optional array of additional AND conditions.
+   */
+  function filterItems(items, options = {}) {
+    if (!Array.isArray(items)) throw new TypeError('items must be an array');
+    if (!options || typeof options !== 'object') throw new TypeError('options must be an object');
+    const { query = '', text = item => item, facets = {}, facetValues = {}, predicates = [] } = options;
+    if (typeof text !== 'function') throw new TypeError('text must be a function');
+    if (!facets || typeof facets !== 'object' || Array.isArray(facets)) throw new TypeError('facets must be an object');
+    if (!facetValues || typeof facetValues !== 'object' || Array.isArray(facetValues)) throw new TypeError('facetValues must be an object');
+    if (!Array.isArray(predicates) || predicates.some(fn => typeof fn !== 'function')) throw new TypeError('predicates must be functions');
+    const needle = normalizeText(query);
+    const selected = Object.entries(facets).filter(([, value]) => value !== undefined);
+    for (const [key] of selected) {
+      if (Object.prototype.hasOwnProperty.call(facetValues, key) && typeof facetValues[key] !== 'function') {
+        throw new TypeError('facetValues entries must be functions');
+      }
+    }
+    return items.filter(item => {
+      if (needle) {
+        const raw = text(item);
+        const fields = Array.isArray(raw) ? raw : [raw];
+        if (!fields.some(field => normalizeText(field).includes(needle))) return false;
+      }
+      for (const [key, expected] of selected) {
+        const actual = Object.prototype.hasOwnProperty.call(facetValues, key) ? facetValues[key](item) : item?.[key];
+        if (!matchesFacet(actual, expected)) return false;
+      }
+      return predicates.every(predicate => predicate(item));
+    });
+  }
+
+  return { filterItems, normalizeText };
+});
+""",
+    "navigation.js": r"""/** Shared declarative source links and view switching; no fetch or storage.
+ * UMD for legacy consumers, also usable as a side-effect ES module.
+ */
+(function(root,factory){
+  const api=factory();
+  if(typeof module==='object' && module.exports) module.exports=api;
+  else {root.webUiNavigation=api; if(root.document){const start=()=>api.bindNavigation(root);if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});else start();}}
+})(typeof globalThis==='undefined'?this:globalThis,function(){
+  'use strict';
+  function sourceURL(value){
+    if(typeof value!=='string' || !/^https?:\/\//.test(value) || /[\s\\]/.test(value))throw Error('取得元は絶対HTTP(S) URLを指定してください。');
+    const u=new URL(value);if(!u.hostname || u.username || u.password)throw Error('取得元URLに認証情報は指定できません。');
+    return value;
+  }
+  function openExternalURL(value,win){
+    const url=sourceURL(value);return win.open(url,'_blank','noopener,noreferrer');
+  }
+  const sourceBindings=new WeakMap(),viewBindings=new WeakMap();
+  function bindSourceLink(input,link){
+    if(!input || !link || link.tagName.toLowerCase()!=='a')throw Error('source link requires an input and anchor');
+    if(sourceBindings.has(link))return sourceBindings.get(link);
+    const update=()=>{
+      link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
+      try{link.href=sourceURL(input.value.trim());link.hidden=false;link.removeAttribute('aria-disabled');}
+      catch{link.removeAttribute('href');link.hidden=true;link.setAttribute('aria-disabled','true');}
+    };
+    const check=event=>{update();if(link.hidden)event.preventDefault();};
+    input.addEventListener('input',update);input.addEventListener('change',update);link.addEventListener('click',check);
+    const handle={update,destroy(){input.removeEventListener('input',update);input.removeEventListener('change',update);link.removeEventListener('click',check);sourceBindings.delete(link);}};
+    sourceBindings.set(link,handle);update();return handle;
+  }
+  function viewFromLocation(hash,search,views,defaultView,queryAliases={}){
+    const fragment=String(hash||'').replace(/^#/,'').split('?')[0];
+    const query=new URLSearchParams(String(search||'')).get('view');
+    // A declared legacy query alias may retain precedence over an old hash.
+    if(query && Object.prototype.hasOwnProperty.call(queryAliases,query) && views.includes(queryAliases[query]))return queryAliases[query];
+    return views.includes(fragment)?fragment:defaultView;
+  }
+  function bindViews(win,{viewAttribute='data-ui-view',navAttribute='data-ui-nav',defaultView='home',queryAliases={}}={}){
+    const doc=win.document;
+    if(!/^data-[a-z][a-z0-9-]*$/.test(viewAttribute) || !/^data-[a-z][a-z0-9-]*$/.test(navAttribute))throw Error('view attributes must be data-* names');
+    if(viewBindings.has(doc))return viewBindings.get(doc);
+    const panels=[...doc.querySelectorAll('['+viewAttribute+']')],navs=[...doc.querySelectorAll('['+navAttribute+']')];
+    const views=panels.map(p=>p.getAttribute(viewAttribute));
+    if(new Set(views).size!==views.length || !views.includes(defaultView))throw Error('views require unique names and an existing default');
+    const sync=()=>{
+      const view=viewFromLocation(win.location.hash,win.location.search,views,defaultView,queryAliases);
+      panels.forEach(p=>p.hidden=p.getAttribute(viewAttribute)!==view);
+      navs.forEach(n=>{if(n.getAttribute(navAttribute)===view)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});
+      const params=new URLSearchParams(win.location.search),alias=params.get('view');
+      if(alias && Object.prototype.hasOwnProperty.call(queryAliases,alias) && queryAliases[alias]===view && win.history?.replaceState){
+        const url=new URL(win.location.href);url.hash=view;url.searchParams.delete('view');win.history.replaceState(null,'',url.pathname+url.search+url.hash);
+      }
+      return view;
+    };
+    win.addEventListener('hashchange',sync);win.addEventListener('popstate',sync);
+    const handle={sync,destroy(){win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);viewBindings.delete(doc);}};
+    viewBindings.set(doc,handle);sync();return handle;
+  }
+  // Route table: a visible identity (emoji or short name) -> app route, as in
+  // browser-test-kit route_trail.py registries ({"/route": "\u{1F3E0}"}). Identity
+  // drops U+FE0F, so both spellings of a heading emoji resolve to one route.
+  const emojiIdentity=value=>String(value).replace(/️/g,'');
+  function routeTable(registry){
+    const rows=Array.isArray(registry)?registry:Object.entries(registry||{}).map(([route,key])=>({route,key}));
+    const byKey=new Map(),routes=new Set(),entries=[];
+    for(const row of rows){
+      const route=row.route,key=row.key??row.emoji;
+      if(typeof route!=='string' || !/^\/[^\s#?\\]*$/.test(route) || route.includes('//'))throw Error('route must be an absolute app path such as /map: '+route);
+      if(typeof key!=='string' || !key.trim() || /\s/.test(key))throw Error('route key must be a nonempty token: '+route);
+      const id=emojiIdentity(key);
+      if(routes.has(route))throw Error('duplicate route: '+route);
+      if(byKey.has(id))throw Error('route key names two routes: '+key);
+      routes.add(route);byKey.set(id,route);entries.push({route,key,identity:id,label:typeof row.label==='string'?row.label:null});
+    }
+    if(!entries.length)throw Error('route table is empty');
+    const lookup=value=>{const id=emojiIdentity(String(value??'').trim());return byKey.get(id)??(routes.has(id)?id:null);};
+    return {entries,lookup};
+  }
+  function routeHref(route,{base='',routing='hash'}={}){
+    if(routing!=='hash' && routing!=='path')throw Error('routing must be hash or path');
+    return routing==='hash'?base+'#'+route:String(base).replace(/\/$/,'')+route;
+  }
+  const routeBindings=new WeakMap();
+  function bindRouteTable(win,registry,{routing='hash',attribute='data-ui-go'}={}){
+    const doc=win.document;
+    if(routeBindings.has(doc))return routeBindings.get(doc);
+    const table=routeTable(registry);
+    const current=()=>routing==='hash'?(String(win.location.hash).replace(/^#/,'').split('?')[0]||'/'):win.location.pathname;
+    const go=key=>{const route=table.lookup(key);if(route===null)throw Error('unknown route key: '+key);
+      if(routing==='hash')win.location.hash=route;else win.location.assign(routeHref(route,{routing}));return route;};
+    const controls=[...doc.querySelectorAll('['+attribute+']')];
+    const sync=()=>{const here=current();for(const el of controls){const route=table.lookup(el.getAttribute(attribute));
+      if(route===null){el.setAttribute('aria-disabled','true');continue;}
+      if(el.tagName.toLowerCase()==='a')el.setAttribute('href',routeHref(route,{routing}));
+      if(route===here)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');}
+      return here;};
+    const click=event=>{const el=event.target.closest?.('['+attribute+']');if(!el || el.tagName.toLowerCase()==='a')return;
+      if(table.lookup(el.getAttribute(attribute))!==null){event.preventDefault();go(el.getAttribute(attribute));}};
+    doc.addEventListener('click',click);win.addEventListener('hashchange',sync);win.addEventListener('popstate',sync);
+    const handle={table,go,sync,current,destroy(){doc.removeEventListener('click',click);win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);routeBindings.delete(doc);}};
+    routeBindings.set(doc,handle);sync();return handle;
+  }
+  function bindNavigation(win){
+    const doc=win.document;
+    const links=[...doc.querySelectorAll('[data-ui-source-for]')].map(link=>bindSourceLink(doc.getElementById(link.getAttribute('data-ui-source-for')),link));
+    const views=doc.querySelectorAll('[data-ui-view]').length?bindViews(win,{defaultView:doc.querySelector('[data-ui-default-view]')?.getAttribute('data-ui-default-view')||'home'}):null;
+    const tableScript=doc.getElementById('ui-route-table');
+    const routes=tableScript?bindRouteTable(win,JSON.parse(tableScript.textContent),{routing:tableScript.getAttribute('data-ui-routing')||'hash'}):null;
+    return {links,views,routes};
+  }
+  return {sourceURL,openExternalURL,bindSourceLink,viewFromLocation,bindViews,emojiIdentity,routeTable,routeHref,bindRouteTable,bindNavigation};
+});
+""",
+    "repository-diagnostics.js": r"""(function (global) {
+  "use strict";
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+
+  function bytes(value) {
+    if (value === null || value === undefined) return "not measured";
+    if (!Number.isInteger(value) || value < 0) throw new Error("invalid byte measurement");
+    var units = ["B", "KiB", "MiB", "GiB"], n = value, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return (i === 0 ? String(n) : n.toFixed(2)) + " " + units[i];
+  }
+
+  function validate(record) {
+    if (!record || record.schema_version !== "1.0") throw new Error("unsupported metadata schema");
+    if (!record.head || !record.repository || !record.measurements) throw new Error("incomplete metadata");
+    if (typeof record.repository.full_name !== "string" || !record.repository.full_name) throw new Error("invalid repository");
+    if (record.head.short_sha !== record.head.sha.slice(0, 8)) throw new Error("invalid short sha");
+    return record;
+  }
+
+  function commitLine(record) {
+    validate(record);
+    var h = record.head;
+    return "Commit " + h.short_sha + " · " + h.branch + " · " + h.timestamp + " · " + h.subject;
+  }
+
+  function render(record) {
+    validate(record);
+    var m = record.measurements;
+    return '<section class="repo-diagnostics" data-schema-version="' + esc(record.schema_version) + '">' +
+      '<h2>Repository diagnostics</h2>' +
+      '<p class="repo-diagnostics__repository">' + esc(record.repository.full_name) + '</p>' +
+      '<p class="repo-diagnostics__commit">' + esc(commitLine(record)) + '</p>' +
+      '<dl class="repo-diagnostics__measurements">' +
+      '<dt>GitHub reported</dt><dd>' + esc(bytes(m.github_reported_size_bytes)) + '</dd>' +
+      '<dt>Working tree</dt><dd>' + esc(bytes(m.working_tree_bytes)) + '</dd>' +
+      '<dt>Release artifact</dt><dd>' + esc(bytes(m.release_artifact_bytes)) + '</dd>' +
+      '</dl></section>';
+  }
+
+  var api = {validate: validate, formatBytes: bytes, commitLine: commitLine, render: render};
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  global.RepositoryDiagnostics = api;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+""",
+}
+EMBEDDED_UI_JS = _JS["ui.js"]
 
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
 # Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
@@ -86,16 +398,93 @@ def _require_local_or_https(value: str, *, label: str, allow_query: bool = True)
         raise ValueError(f"{label} must not contain credentials, query or fragment")
 
 
-def shared_stylesheets(asset_base: str, *, theme: str = "modern", stub: bool = False) -> tuple[str, ...]:
-    """Return local/HTTPS asset links; consumers own copying or exact-SHA pinning."""
-    if theme not in THEMES:
-        raise ValueError("unknown theme")
-    _require_local_or_https(asset_base, label="asset_base", allow_query=False)
-    files = ["tokens.css", "base.css", "components.css"]
-    if stub:
-        files.append("stub.css")
-    files.append(f"themes/{theme}.css")
-    return tuple(f'{asset_base.rstrip("/")}/css/{name}' for name in files)
+# The stylesheets, as data: Python is the only source (there are no css/ files). Names are kept so the bundle order is stable.
+_CSS = {
+    "tokens.css": r""":root{--ui-bg:#0d1117;--ui-panel:#101820;--ui-fg:#d1f7c4;--ui-muted:#8b949e;--ui-border:#58a6ff;--ui-accent:#7ee787;--ui-danger:#cf222e;--ui-radius:0;--ui-space:1rem;--ui-max:960px;--ui-font:Meiryo,メイリオ,sans-serif;--ui-font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+""",
+    "base.css": r"""@layer base{*{box-sizing:border-box}body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:16px/1.6 var(--ui-font)}pre,code,kbd,samp{font-family:var(--ui-font-mono)!important}.ui-page{max-width:var(--ui-max);margin:auto;padding:1.25rem}a{color:inherit}}""",
+    "components.css": r"""@layer components{.ui-panel,.ui-card{background:var(--ui-panel);border:1px solid var(--ui-border);padding:1rem;margin:1rem 0;border-radius:var(--ui-radius)}.ui-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.ui-tag{display:inline-block;border:1px solid var(--ui-border);padding:.1rem .4rem}.ui-button,.ui-input{font:inherit;background:var(--ui-panel);color:var(--ui-fg);border:1px solid var(--ui-border);padding:.6rem;border-radius:var(--ui-radius)}.ui-muted{color:var(--ui-muted)}.ui-output{font:inherit;white-space:pre-wrap;overflow:auto;background:#d8dee4;color:#161b22;border:1px solid #8c959f;border-radius:4px;padding:.75rem}pre code,.ui-output code{font-family:inherit;color:inherit}pre.ui-output code{background:transparent}@media(max-width:480px){.ui-page{padding:.75rem}.ui-grid{grid-template-columns:1fr}.ui-card,.ui-panel{margin:.75rem 0;padding:.75rem}}.ui-lightbox{border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);padding:1rem;max-width:min(96vw,960px);max-height:96vh;border-radius:var(--ui-radius)}.ui-lightbox::backdrop{background:rgba(0,0,0,.72)}.ui-lightbox img{display:block;max-width:100%;max-height:calc(96vh - 8rem);margin:auto}.ui-lightbox-bar{display:flex;gap:.5rem;justify-content:space-between;margin-top:.75rem}body:has(.ui-lightbox[open]){overflow:hidden}}""",
+    "matrix.css": r"""@layer components{.ui-matrix:has(>section:target)>section:not(:target){display:none}.ui-matrix>section{scroll-margin-top:16px}.ui-matrix-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--ui-matrix-col,160px),1fr));gap:var(--ui-matrix-gap,8px);padding:0;list-style:none}.ui-matrix-tiles li{border:1px solid var(--ui-border);padding:var(--ui-matrix-pad,8px);font-size:.8rem;overflow-wrap:anywhere}.ui-matrix-tiles img{display:block;width:100%;height:auto;margin:var(--ui-matrix-pad,8px) 0;background:#fff}.ui-matrix-tiles .is-missing{border-style:dashed;color:var(--ui-muted)}.ui-matrix-tiles .is-fail{outline:2px solid var(--ui-danger)}.ui-matrix-tiles .is-reference{outline:2px solid var(--ui-accent)}.ui-matrix-page>nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.ui-matrix-page>nav .ui-button{white-space:nowrap;text-decoration:none}.ui-matrix a{overflow-wrap:anywhere}}
+""",
+    "repository-diagnostics.css": r""".repo-diagnostics{box-sizing:border-box;border:1px solid var(--ui-border,#c9c9cf);border-radius:1rem;padding:1.25rem;background:var(--ui-surface,#fff);color:var(--ui-text,#222)}.repo-diagnostics h2{margin:0 0 .75rem;font-size:1.25rem}.repo-diagnostics__commit{overflow-wrap:anywhere}.repo-diagnostics__measurements{display:grid;grid-template-columns:minmax(8rem,1fr) 1fr;gap:.45rem 1rem;margin:1rem 0 0}.repo-diagnostics__measurements dt,.repo-diagnostics__measurements dd{margin:0}.repo-diagnostics__measurements dd{font-variant-numeric:tabular-nums}@media(max-width:30rem){.repo-diagnostics__measurements{grid-template-columns:1fr}.repo-diagnostics__measurements dd{margin-bottom:.35rem}}
+""",
+    "stub.css": r"""@layer components{
+.stub-shell{display:grid;gap:1rem}
+/* Keep title/description and metadata side-by-side when space permits; wrap rather than compress either region. */
+.stub-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.stub-toolbar{display:flex;gap:.5rem;flex-wrap:wrap}
+.stub-toolbar fieldset{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;width:100%;border:0;padding:0;margin:0}
+.stub-toolbar label{display:block}
+.stub-toolbar .ui-input{flex:1 1 16rem}
+.stub-status{margin:.75rem 0 0}
+.stub-meta{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
+/* Primary result pane + secondary evidence/history sidebar. */
+.stub-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(16rem,.45fr);gap:1rem}
+.stub-result,.stub-evidence,.stub-history{min-width:0}
+.stub-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--ui-border)}
+.stub-endpoint{overflow-wrap:anywhere}
+@media(max-width:720px){.stub-workspace{grid-template-columns:1fr}.stub-header{display:block}}
+}""",
+    "themes/github-like.css": r"""/* GitHub-like prioritizes familiar light GitHub visual cues while remaining a generic light theme. */
+@layer theme{
+body[data-ui-theme="github-like"]{
+  --ui-bg:#ffffff;
+  --ui-panel:#f6f8fa;
+  --ui-fg:#1f2328;
+  --ui-muted:#59636e;
+  --ui-border:#d0d7de;
+  --ui-accent:#0969da;
+}
+body[data-ui-theme="github-like"] .ui-panel,
+body[data-ui-theme="github-like"] .ui-card{
+  background:var(--ui-panel);
+  border-radius:.375rem;
+  box-shadow:none;
+}
+body[data-ui-theme="github-like"] .ui-button,
+body[data-ui-theme="github-like"] .ui-input{
+  background:#ffffff;
+}
+body[data-ui-theme="github-like"] .ui-title{
+  border-bottom:1px solid var(--ui-border);
+  padding-bottom:.5rem;
+}
+body[data-ui-theme="github-like"] .ui-tag{
+  border-radius:999px;
+  color:var(--ui-accent);
+}
+}
+""",
+    "themes/modern.css": r"""@layer theme{body[data-ui-theme="modern"]{color-scheme:dark}body[data-ui-theme="modern"] .ui-title::before,body[data-ui-theme="modern"] .ui-card>h2::before{content:"> ";color:var(--ui-accent)}body[data-ui-theme="modern"] .ui-panel,body[data-ui-theme="modern"] .ui-card{background:var(--ui-panel);box-shadow:4px 4px 0 rgba(88,166,255,.16)}body[data-ui-theme="modern"] .ui-tag::before{content:"#";color:var(--ui-accent)}}""",
+}
+_CSS_CORE = ("tokens.css", "base.css", "components.css")
+
+
+def css_source(name: str) -> str:
+    """One stylesheet source by name, e.g. ``tokens.css`` or ``themes/modern.css`` (raw text).
+
+    ``tokens.css`` is the ``:root`` defaults plus one generated block per token-only theme (CANDIDATE_THEMES)."""
+    try:
+        text = _CSS[name]
+    except KeyError:
+        raise ValueError(f"unknown stylesheet: {name}") from None
+    return text.rstrip("\n") + "\n" + _token_theme_css() if name == "tokens.css" else text
+
+
+def bundled_css() -> str:
+    """Every stylesheet as one string, built in memory (nothing is written, there are no css/ files).
+
+    ``render_document(css=bundled_css())`` gives a single-file page that works under every
+    ``data-ui-theme``, so switching themes needs no stylesheet swap and no reload. Order is part
+    of the contract: tokens, base and components, then the other top-level sources by name, then
+    the themes by name; the ``@layer`` line fixes layer order whichever source comes first.
+    """
+    order = [*_CSS_CORE, *(n for n in sorted(_CSS) if "/" not in n and n not in _CSS_CORE),
+             *(n for n in sorted(_CSS) if n.startswith("themes/"))]
+    parts = ["@layer base,components,theme;\n"]
+    for name in order:
+        parts.append(f"/* css/{name} */\n{css_source(name).replace(chr(13) + chr(10), chr(10)).strip(chr(10))}\n")
+    return "".join(parts)
 
 
 def _require_local_script_path(value: str, *, label: str) -> None:
@@ -288,9 +677,9 @@ def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> t
 
 def module_asset(name: str = "ui.js") -> tuple[bytes, str]:
     """Return immutable bundled module bytes and the JavaScript MIME type."""
-    if name != "ui.js":
+    if name not in ("ui.js", "world.js"):
         raise ValueError("unknown embedded module")
-    return EMBEDDED_UI_JS.encode("utf-8"), "text/javascript; charset=utf-8"
+    return (EMBEDDED_UI_JS if name == "ui.js" else WORLD_JS).encode("utf-8"), "text/javascript; charset=utf-8"
 
 
 def classic_script(source: str, *, nonce: str | None = None) -> str:
@@ -362,7 +751,7 @@ def render_document(
     base element); it must only contain caller-audited HTML. This is an HTML
     emitter, not a general HTML/CSS/JS sanitizer or provenance verifier.
     """
-    if theme not in THEMES:
+    if theme not in THEMES + CANDIDATE_THEMES:
         raise ValueError("unknown theme")
     if re.search(r"</style(?=[\s/>])", css, re.IGNORECASE):
         raise ValueError("CSS must not contain a style end tag")
@@ -1274,15 +1663,17 @@ def route_links(registry, *, routing: str = "hash", label: str = "Pages") -> str
             f'<script type="application/json" id="ui-route-table" data-ui-routing="{routing}">{payload}</script>')
 
 
-def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] | None = None,
+def adopt_document(page: str, *, asset_base: str | None = None, class_aliases: dict[str, str] | None = None,
                    remove_stylesheets: tuple[str, ...] = (), theme: str = "modern") -> str:
     """Apply shared presentation to an audited, double-quoted static export.
 
     Preserve IDs, routes, script bodies and report content. This is not a
     visitor-input sanitizer or a general HTML parser. Consumers keep original
-    hashes and label the transformed publication separately.
+    hashes and label the transformed publication separately. The shared CSS is
+    embedded (bundled_css()); ``asset_base`` is accepted for old callers and unused.
     """
-    styles = shared_stylesheets(asset_base, theme=theme)
+    if theme not in THEMES + CANDIDATE_THEMES:
+        raise ValueError("unknown theme")
     aliases = class_aliases or {}
     if any(not re.fullmatch(r"[A-Za-z_][\w-]*", key) or
            any(not re.fullmatch(r"[A-Za-z_][\w-]*", value) for value in values.split())
@@ -1315,11 +1706,11 @@ def adopt_document(page: str, *, asset_base: str, class_aliases: dict[str, str] 
         chunks[index] = re.sub(r'<(body|main|header|div|section|span|p|h[1-6]|pre|input|select|textarea|button)\b([^>]*)>',
                                transform, chunks[index])
     page = ''.join(chunks)
-    links = ''.join(f'<link rel="stylesheet" href="{escape(path, quote=True)}" data-shared-ui="web-ui">' for path in styles)
+    style = '<style data-shared-ui="web-ui">' + bundled_css() + '</style>'
     if 'data-shared-ui="web-ui"' not in page:
         if '</head>' not in page:
             raise ValueError("shared presentation requires a document head")
-        page = page.replace('</head>', links + '</head>', 1)
+        page = page.replace('</head>', style + '</head>', 1)
     return page
 
 
@@ -1470,13 +1861,1062 @@ def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> su
     return _web_ui_node_run(*argv, timeout=timeout, **run_kwargs)
 
 
+# --- World: one page, a camera, no page changes (scrolling "shots" and a pan/zoom map) -----------------
+# Everything is built here in memory: Python validates the data, does the arithmetic, and emits the HTML,
+# the CSS and a thin JavaScript module. JS only applies state (data-lit, camera variables); CSS does the rest.
+
+WORLD_SCHEMA = "web-ui-world/1"
+_WORLD_ID = re.compile(r"[a-z][a-z0-9-]{0,31}")  # the world itself: it prefixes element ids, so it starts with a letter
+_WORLD_TOKEN = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # floors, shots, spots, categories (1f is fine)
+_WORLD_HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def _luminance(color: str) -> float:
+    channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """WCAG contrast ratio of two #rrggbb colors."""
+    light, dark = sorted((_luminance(foreground), _luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def ink_for(background: str) -> str:
+    """Black or white text, whichever reads better on ``background``."""
+    return "#0b0b0c" if contrast_ratio("#0b0b0c", background) >= contrast_ratio("#ffffff", background) else "#ffffff"
+
+
+def fit_zoom(width: float, height: float, view_w: float, view_h: float) -> float:
+    """Zoom at which a width x height map just fits a view_w x view_h view."""
+    return min(view_w / width, view_h / height)
+
+
+def clamp_focus(fx: float, fy: float, zoom: float, width: float, height: float,
+                view_w: float, view_h: float) -> tuple[float, float]:
+    """Keep the camera's focal point (map units) so the view never leaves the map; a map smaller than the view is centered."""
+    half_w, half_h = view_w / (2 * zoom), view_h / (2 * zoom)
+    return (min(max(fx, half_w), width - half_w) if width > 2 * half_w else width / 2,
+            min(max(fy, half_h), height - half_h) if height > 2 * half_h else height / 2)
+
+
+# Motion uses elapsed monotonic seconds; boards use Unix UTC seconds. All inputs
+# are bounded so static documents cannot request unbounded plans or DOM nodes.
+def _motion_number(value: Any, label: str, low: float, high: float) -> float:
+    if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
+        raise ValueError(f"{label} must be finite and from {low} to {high}")
+    return float(value)
+
+
+def world_walk(start: list[float], target: list[float], *, at: float = 0,
+               speed: float = 40, width: float = 1024, height: float = 768) -> dict[str, Any]:
+    """One constant-velocity segment. Targets clamp at map edges; no overshoot.
+
+    For retarget/pause/resume first sample the old segment at the event's time,
+    then start a new segment from that point. Never integrate per frame.
+    """
+    width = _motion_number(width, "width", 64, 4096)
+    height = _motion_number(height, "height", 64, 4096)
+    at = _motion_number(at, "at", 0, 1e9)
+    speed = _motion_number(speed, "speed", 1, 480)
+    points = []
+    for point in (start, target):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("point must have two coordinates")
+        points.append([min(bound, max(0., _motion_number(v, "coordinate", -1e6, 1e6)))
+                       for v, bound in zip(point, (width, height))])
+    a, b = points
+    return {"at": at, "duration": math.hypot(b[0] - a[0], b[1] - a[1]) / speed, "from": a, "to": b}
+
+
+def world_motion_sample(segment: dict[str, Any], elapsed: float) -> list[float]:
+    """Project a validated/generated segment at absolute elapsed seconds; endpoints hold."""
+    elapsed = _motion_number(elapsed, "elapsed", 0, 1e9)
+    at = _motion_number(segment["at"], "at", 0, 1e9)
+    duration = _motion_number(segment["duration"], "duration", 0, 1e6)
+    points = [segment[key] for key in ("from", "to")]
+    if any(not isinstance(p, (list, tuple)) or len(p) != 2 for p in points):
+        raise ValueError("point must have two coordinates")
+    a, b = [[_motion_number(v, "coordinate", 0, 4096) for v in p] for p in points]
+    fraction = (1. if elapsed >= at else 0.) if duration == 0 else min(1., max(0., (elapsed - at) / duration))
+    return [a[i] + (b[i] - a[i]) * fraction for i in (0, 1)]
+
+
+def travel_seconds(x0: float, y0: float, x1: float, y1: float, speed: float) -> float:
+    """Seconds to walk in a straight line at constant ``speed`` (map units per second)."""
+    x0, y0, x1, y1 = [_motion_number(v, "coordinate", -1e6, 1e6) for v in (x0, y0, x1, y1)]
+    speed = _motion_number(speed, "speed", 1, 480)
+    return math.hypot(x1 - x0, y1 - y0) / speed
+
+
+def minutes_until(now: float, at: int) -> int:
+    """Ceil minutes to the daily next occurrence; zero only at the exact target.
+
+    ``now`` is fractional minutes since midnight, ``at`` is an HH:MM minute.
+    Immediately after the target, the next occurrence is tomorrow (up to 1440).
+    """
+    now = _motion_number(now, "now (minutes since midnight)", 0, 1440)
+    at = _world_int(at, "at (minutes since midnight)", 0, 1439)
+    return math.ceil((at - now) % 1440)
+
+
+def board_clock(now: float, offset_minutes: int) -> dict[str, Any]:
+    """Injected Unix seconds + fixed UTC-offset minutes, independent of host TZ."""
+    now = _motion_number(now, "now (Unix seconds)", 0, 253402214400)
+    offset_minutes = _world_int(offset_minutes, "offset_minutes", -840, 840)
+    seconds = (now + offset_minutes * 60) % 86400
+    whole = math.floor(seconds)
+    return {"clock": f"{whole // 3600:02d}:{whole // 60 % 60:02d}", "minutes": seconds / 60}
+
+
+def board_seconds(chars: int, chars_per_second: float = 8.0) -> float:
+    """Seconds for one lap of the scrolling board: constant speed, never quicker than 8 s."""
+    return max(8.0, math.floor(chars / chars_per_second * 10 + 0.5) / 10)
+
+
+# The spaces the board collapses (ASCII spaces, NBSP, the Unicode space separators, line/paragraph separators); the page uses the same set.
+_MESSAGE_SPACE = frozenset(" \t\n\r\f\v\u00a0\u1680\u2028\u2029\u202f\u205f\u3000") | {chr(c) for c in range(0x2000, 0x200B)}
+
+
+def clean_message(text: Any, limit: int = 60) -> str | None:
+    """What the board shows for a visitor's line: control characters dropped (a zero-width joiner stays, so emoji sequences survive),
+    whitespace collapsed, cut to ``limit`` characters;
+    ``None`` when nothing is left. The page applies the same rule and puts the result in as text, never as HTML."""
+    if not isinstance(text, str):
+        return None
+    kept = "".join(" " if c in _MESSAGE_SPACE else c for c in text if c in _MESSAGE_SPACE or c == "\u200d" or c.isprintable())
+    kept = " ".join(word for word in kept.split(" ") if word)[:limit].rstrip()
+    return kept or None
+
+
+def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, margin: int = 32, stops: int = 4) -> dict[str, Any]:
+    """A seeded loop for one villager: straight walks at constant ``speed`` to random points, a random pause at each (1..4 s),
+    then a walk back to the start so the loop is seamless. Returns ``{"duration": seconds, "keys": [(percent, x, y), ...]}``;
+    between keys the motion is linear, a pause is two keys at the same point."""
+    seed = _world_int(seed, "seed", 0, 2**32 - 1)
+    width = _world_int(width, "width", 64, 4096)
+    height = _world_int(height, "height", 64, 4096)
+    margin = _world_int(margin, "margin", 0, min(width, height) // 2)
+    stops = _world_int(stops, "stops", 1, 64)
+    speed = _motion_number(speed, "speed", 1, 480)
+    rng = random.Random(seed)
+    point = lambda: (round(margin + rng.random() * max(0, width - 2 * margin), 1), round(margin + rng.random() * max(0, height - 2 * margin), 1))
+    start = point()
+    here, clock, steps = start, 0.0, [(0.0, start)]
+    for _ in range(stops):
+        target = point()
+        clock += travel_seconds(*here, *target, speed)
+        steps.append((clock, target))
+        clock += 1.0 + rng.random() * 3.0
+        steps.append((clock, target))
+        here = target
+    clock += travel_seconds(*here, *start, speed)
+    steps.append((clock, start))
+    total = max(clock, 1.0)
+    return {"duration": total, "keys": [((t / total) * 100, x, y) for t, (x, y) in steps]}
+
+
+def _world_text(value: Any, label: str, limit: int, *, required: bool = True) -> str:
+    if not isinstance(value, str) or (required and not value.strip()) or len(value) > limit:
+        raise ValueError(f"{label} must be {1 if required else 0}..{limit} characters")
+    return value
+
+
+def _world_id(value: Any, label: str, seen: set[str]) -> str:
+    if not isinstance(value, str) or not _WORLD_TOKEN.fullmatch(value) or value in seen:
+        raise ValueError(f"{label} must be a unique lowercase token: {value!r}")
+    seen.add(value)
+    return value
+
+
+def _world_emoji(value: Any) -> str:
+    """An emoji (or any short non-ASCII symbol string); plain ASCII is refused so text cannot pose as a character."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 16 or any(c.isascii() for c in value):
+        raise ValueError("emoji must be 1..16 non-ASCII characters")
+    return value
+
+
+def _world_int(value: Any, label: str, low: int, high: int) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"{label} must be an integer from {low} to {high}")
+    return value
+
+
+def world_validate(spec: Any) -> dict[str, Any]:
+    """Checked copy of a ``web-ui-world/1`` spec: optional ``shots`` (scroll scenes) and ``floors`` (maps with spots)."""
+    if not isinstance(spec, dict) or spec.get("schema") != WORLD_SCHEMA:
+        raise ValueError(f"expected schema {WORLD_SCHEMA}")
+    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board"}:
+        raise ValueError("a world has schema, id, title, shots, floors, zoom_max and board")
+    world_id = spec.get("id", "world")
+    if not isinstance(world_id, str) or not _WORLD_ID.fullmatch(world_id):
+        raise ValueError("id must be a lowercase token")
+    shots_in, floors_in = spec.get("shots", []), spec.get("floors", [])
+    if not isinstance(shots_in, list) or not isinstance(floors_in, list) or not (shots_in or floors_in):
+        raise ValueError("a world needs shots or floors")
+    if len(shots_in) > 12 or len(floors_in) > 8:
+        raise ValueError("at most 12 shots and 8 floors")
+    zoom_max = spec.get("zoom_max", 4)
+    if type(zoom_max) not in (int, float) or not 1 <= zoom_max <= 8:
+        raise ValueError("zoom_max must be from 1 to 8")
+    ids: set[str] = set()
+    shots = []
+    for shot in shots_in:
+        if not isinstance(shot, dict) or set(shot) - {"id", "label", "title", "body", "bg"}:
+            raise ValueError("a shot has id, label, title, body and an optional bg")
+        bg = shot.get("bg")
+        if bg is not None and not (isinstance(bg, str) and _WORLD_HEX.fullmatch(bg)):
+            raise ValueError("bg must be #rrggbb")
+        shots.append({"id": _world_id(shot.get("id"), "shot id", ids), "label": _world_text(shot.get("label"), "label", 40),
+                      "title": _world_text(shot.get("title"), "title", 80),
+                      "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
+    floors, spot_ids = [], set()
+    for floor in floors_in:
+        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player"}:
+            raise ValueError("a floor has id, label, width, height, spots, actors and player")
+        width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
+        spots_in = floor.get("spots")
+        if not isinstance(spots_in, list) or not 1 <= len(spots_in) <= 64:
+            raise ValueError("a floor lists 1..64 spots")
+        spots = []
+        for spot in spots_in:
+            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body"}:
+                raise ValueError("a spot has id, x, y, label, category and body")
+            category = spot.get("category", "")
+            if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
+                raise ValueError("category must be a lowercase token")
+            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _world_int(spot.get("x"), "x", 0, width),
+                          "y": _world_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
+                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
+        actors = []
+        actors_in = floor.get("actors", [])
+        if not isinstance(actors_in, list) or len(actors_in) > 16:
+            raise ValueError("a floor lists at most 16 actors")
+        for actor in actors_in:
+            if not isinstance(actor, dict) or set(actor) - {"id", "emoji", "label", "body", "seed", "speed"}:
+                raise ValueError("an actor has id, emoji, label, body, seed and speed")
+            seed = actor.get("seed")
+            if seed is not None:
+                _world_int(seed, "seed", 0, 2**31 - 1)
+            speed = actor.get("speed", 48)
+            if type(speed) not in (int, float) or not 8 <= speed <= 240:
+                raise ValueError("speed must be from 8 to 240 (map units per second)")
+            actors.append({"id": _world_id(actor.get("id"), "actor id", spot_ids), "emoji": _world_emoji(actor.get("emoji")),
+                           "label": _world_text(actor.get("label"), "label", 40),
+                           "body": _world_text(actor.get("body", ""), "body", 400, required=False), "seed": seed, "speed": speed})
+        player = floor.get("player")
+        if player is not None:
+            if not isinstance(player, dict) or set(player) - {"emoji", "x", "y", "speed"}:
+                raise ValueError("a player has emoji, x, y and speed")
+            speed = player.get("speed", 96)
+            if type(speed) not in (int, float) or not 8 <= speed <= 480:
+                raise ValueError("speed must be from 8 to 480 (map units per second)")
+            player = {"emoji": _world_emoji(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
+                      "y": _world_int(player.get("y"), "y", 0, height), "speed": speed}
+        floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
+                       "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
+    board = spec.get("board")
+    if board is not None:
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes"} or not isinstance(board.get("items"), list) \
+                or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
+            raise ValueError("a board has a title, 1..12 items and an optional post flag")
+        items = []
+        for item in board["items"]:
+            if not isinstance(item, dict) or set(item) - {"text", "at"}:
+                raise ValueError("a board item has text and an optional at")
+            at = item.get("at")
+            if at is not None and not (isinstance(at, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)):
+                raise ValueError("at must be HH:MM")
+            items.append({"text": _world_text(item.get("text"), "text", 120), "at": at})
+        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
+                 "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
+                                    if board.get("offset_minutes") is not None else None)}
+    return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
+            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board}
+
+
+def _shots_html(world: dict[str, Any]) -> str:
+    wid, shots = world["id"], world["shots"]
+    articles = "".join(
+        f'<article class="ui-shot" data-i="{i}"><p class="ui-shot-hud">{escape(s["label"])} / {len(shots):02d}</p>'
+        f'<h3>{escape(s["title"])}</h3><p>{escape(s["body"])}</p></article>' for i, s in enumerate(shots))
+    marks = "".join(f'<div class="ui-shot-mark" data-i="{i}" style="--i:{i}"></div>' for i in range(len(shots)))
+    return (f'<section class="ui-world ui-world-shots" id="{wid}-shots" data-ui-world="shots" style="--shots:{len(shots)}" '
+            f'aria-label="{escape(world["title"], quote=True)}"><div class="ui-shots-scroll"><div class="ui-shots-track">'
+            f'<div class="ui-shots-stage">{articles}</div>{marks}</div></div></section>')
+
+
+def _board_html(board: dict[str, Any] | None) -> str:
+    """The info board: a clock and a constant-speed scrolling line; items with ``at`` get "in N min" from the page's clock."""
+    if not board:
+        return ""
+    def item(entry: dict[str, Any], hidden: bool) -> str:
+        countdown = f' <span class="ui-board-min" data-at="{entry["at"]}"></span>' if entry["at"] else ""
+        aria_hidden = ' aria-hidden="true"' if hidden else ""
+        return f'<span class="ui-board-item"{aria_hidden}>{escape(entry["text"])}{countdown}</span>'
+    chars = sum(len(e["text"]) + (10 if e["at"] else 0) for e in board["items"])
+    run = "".join(item(e, False) for e in board["items"]) + "".join(item(e, True) for e in board["items"])
+    form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
+            'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
+            if board["post"] else "")
+    return (f'<div class="ui-board" aria-live="off" data-offset="{board["offset_minutes"] if board["offset_minutes"] is not None else ""}" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
+            f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
+
+
+def _map_html(world: dict[str, Any]) -> str:
+    wid, floors = world["id"], world["floors"]
+    radios = "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-floor" id="{wid}-floor-{f["id"]}" value="{f["id"]}"'
+        f'{" checked" if i == 0 else ""}>' for i, f in enumerate(floors))
+    categories = sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
+    cat_ids = [""] + categories
+    radios += "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
+        f'{" checked" if not c else ""}>' for c in cat_ids)
+    labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
+    if categories:
+        labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+    stages, sheet = [], []
+    for f in floors:
+        spots = "".join(
+            f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
+            f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
+        actors = "".join(
+            f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
+            f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
+        pl = f["player"]
+        player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
+                  f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
+        stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}" '
+                      f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}{actors}{player}</div>')
+        sheet.extend(
+            f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
+            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
+    return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}" '
+            f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
+            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>' +
+            ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+             '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+             '<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form></div>'
+             if world["board"] or any(f["player"] or f["actors"] for f in floors) else "") +
+            f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside></section>')
+
+
+def world_html(spec: Any) -> str:
+    """Semantic HTML for a world; every label and body is escaped. Works without JavaScript (scroll, :target, radios)."""
+    world = world_validate(spec)
+    return (_shots_html(world) if world["shots"] else "") + (_map_html(world) if world["floors"] else "")
+
+
+_WORLD_CSS = (
+    ".ui-world{--ui-world-h:min(70vh,560px);position:relative;margin:1rem 0;border:1px solid var(--ui-border);background:var(--ui-bg);"
+    "color:var(--ui-fg);border-radius:var(--ui-radius);overflow:hidden}"
+    ".ui-world-motion-controls{padding:8px}.ui-world-walk{display:flex;gap:8px;flex-wrap:wrap}.ui-world-walk input{width:6em}.ui-world-walk[hidden]{display:none}.ui-world[data-js] .ui-player{transition:none}.ui-world[data-motion-paused] .ui-actor,.ui-world[data-motion-paused] .ui-board-run{animation-play-state:paused!important}"
+    ".ui-world-radio{position:absolute;opacity:0;pointer-events:none}"
+    ".ui-world-bar{display:flex;flex-wrap:wrap;gap:8px;padding:8px;border-bottom:1px solid var(--ui-border)}"
+    ".ui-world-bar label{border:1px solid var(--ui-border);padding:.35rem .75rem;cursor:pointer;background:var(--ui-panel);border-radius:var(--ui-radius)}"
+    ".ui-world-view{position:relative;overflow:auto;height:var(--ui-world-h);container-type:size}"
+    ".ui-world[data-js] .ui-world-view{overflow:hidden;touch-action:none;cursor:grab}"
+    ".ui-world[data-js][data-drag] .ui-world-view{cursor:grabbing}"
+    ".ui-world-cam{position:relative;transform-origin:0 0}"
+    ".ui-world[data-js] .ui-world-cam{transform:translate(calc(50cqw - var(--fx,0) * var(--z,1) * 1px),calc(50cqh - var(--fy,0) * var(--z,1) * 1px)) "
+    "scale(var(--z,1));transition:transform .24s ease-out}"
+    ".ui-world[data-js][data-drag] .ui-world-cam{transition:none}"
+    ".ui-floor{position:relative;display:none;background-color:var(--ui-panel);background-image:linear-gradient(var(--ui-border) 1px,transparent 1px),"
+    "linear-gradient(90deg,var(--ui-border) 1px,transparent 1px);background-size:64px 64px}"
+    ".ui-spot{position:absolute;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));white-space:nowrap;border:1px solid var(--ui-accent);"
+    "background:var(--ui-bg);color:var(--ui-fg);padding:.2rem .6rem;border-radius:999px;text-decoration:none;font-size:.85rem}"
+    ".ui-sheet{position:absolute;left:8px;right:8px;bottom:8px;max-height:45%;overflow:auto;border:1px solid var(--ui-border);"
+    "background:var(--ui-panel);border-radius:var(--ui-radius);padding:1rem}"
+    ".ui-world:not([data-js]) .ui-sheet:not(:has(.ui-sheet-item:target)){display:none}"
+    ".ui-world[data-js] .ui-sheet:not(:has(.ui-sheet-item[data-open])){display:none}"
+    ".ui-sheet-item{display:none}.ui-world:not([data-js]) .ui-sheet-item:target,.ui-world[data-js] .ui-sheet-item[data-open]{display:block}.ui-sheet h3{margin:0 0 .5rem}"
+    ".ui-shot{padding:1.5rem;transition:opacity .4s,transform .4s}"
+    ".ui-shot-hud{font-family:var(--ui-font-mono);letter-spacing:.12em;margin:0 0 .5rem;font-size:.8rem}"
+    ".ui-world[data-js] .ui-shots-scroll{height:var(--ui-world-h);overflow:auto;position:relative}"
+    ".ui-world[data-js] .ui-shots-track{position:relative;height:calc(var(--shots) * var(--ui-world-h))}"
+    ".ui-world[data-js] .ui-shots-stage{position:sticky;top:0;height:var(--ui-world-h);overflow:hidden;background:var(--ui-bg);transition:background .6s}"
+    ".ui-world[data-js] .ui-shot{position:absolute;inset:0;opacity:0;transform:translateY(16px)}"
+    ".ui-shot-mark{position:absolute;left:0;top:calc(var(--i) * var(--ui-world-h));width:1px;height:var(--ui-world-h);pointer-events:none}"
+    ".ui-actor{position:absolute;left:0;top:0;text-decoration:none;color:inherit}"
+    ".ui-actor span,.ui-player span{display:block;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));font-size:1.5rem;line-height:1}"
+    ".ui-player{position:absolute;left:0;top:0;pointer-events:none;transform:translate(calc(var(--px,0) * 1px),calc(var(--py,0) * 1px));"
+    "transition:transform var(--walk,0s) linear}"
+    ".ui-board{display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--ui-border);background:var(--ui-panel);"
+    "font-family:var(--ui-font-mono);font-size:.85rem;overflow:hidden}"
+    ".ui-board-clock{flex:none;border:1px solid var(--ui-accent);padding:0 .5rem;border-radius:var(--ui-radius)}"
+    ".ui-board-track{flex:1;min-width:0;overflow:hidden;white-space:nowrap}"
+    ".ui-board-run{display:inline-flex;animation:ui-board-scroll 24s linear infinite}"
+    ".ui-board-item{padding-right:3rem}"
+    ".ui-board-post{display:flex;gap:4px;flex:none}.ui-board-post .ui-input{width:10rem;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
+    "@keyframes ui-board-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
+    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
+)
+
+_WALL_CSS = (
+    ".ui-wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}"
+    ".ui-wall-cell{border:1px solid var(--ui-border);padding:16px;border-radius:var(--ui-radius);background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-wall-cell h3{margin:0 0 8px}"
+)
+
+
+def world_css(spec: Any) -> str:
+    """CSS for a world: fixed rules plus one rule per floor, category and shot (radios and data-lit drive them through :has)."""
+    world = world_validate(spec)
+    wid, rules = world["id"], [_WORLD_CSS]
+    for f in world["floors"]:
+        radio = f"#{wid}-floor-{f['id']}"
+        rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
+        rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
+    categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    for f in world["floors"]:
+        for a in f["actors"]:
+            path = villager_path(a["seed"] if a["seed"] is not None else zlib.crc32(f"{wid}:{a['id']}".encode()),
+                                 f["width"], f["height"], speed=a["speed"])
+            name = f"ui-walk-{wid}-{a['id']}"
+            frames = "".join(f"{pct}%{{transform:translate({x}px,{y}px)}}" for pct, x, y in path["keys"])
+            rules.append(f"@keyframes {name}{{{frames}}}#{wid}-actor-{a['id']}{{animation:{name} {path['duration']}s linear infinite}}")
+    for c in categories:
+        radio = f"#{wid}-cat-value-{c}"
+        rules.append(f'.ui-world:has({radio}:checked) .ui-spot:not([data-category="{c}"]){{display:none}}')
+    for c in [""] + categories if categories else []:
+        rules.append(f'.ui-world:has(#{wid}-cat-{"value-" + c if c else "all"}:checked) label[for="{wid}-cat-{"value-" + c if c else "all"}"]'
+                     f'{{background:var(--ui-accent);color:var(--ui-bg)}}')
+    if world["shots"]:
+        rules.append('.ui-world-shots[data-js]:not(:has(.ui-shot-mark[data-lit])) .ui-shot[data-i="0"]{opacity:1;transform:none}')
+    for i, s in enumerate(world["shots"]):
+        lit = f'#{wid}-shots:has(.ui-shot-mark[data-i="{i}"][data-lit])'
+        rules.append(f'{lit} .ui-shot[data-i="{i}"]{{opacity:1;transform:none}}')
+        if s["bg"]:
+            rules.append(f'{lit} .ui-shots-stage{{background:{s["bg"]};color:{ink_for(s["bg"])}}}')
+    return "@layer components{" + "".join(rules) + "}"
+
+
+# Browser arithmetic is a projection of the Python oracle, not Python execution.
+WORLD_MOTION_JS = r"""
+export function motionSample(s,t){const f=s.duration===0?(t>=s.at?1:0):Math.min(1,Math.max(0,(t-s.at)/s.duration));return s.from.map((v,i)=>v+(s.to[i]-v)*f)}
+export function motionWalk(a,b,t,speed,w,h){const point=p=>p.map((v,i)=>Math.min(i?h:w,Math.max(0,v)));a=point(a);b=point(b);return{at:t,duration:Math.hypot(b[0]-a[0],b[1]-a[1])/speed,from:a,to:b}}
+function bindPlayer(el,floor){
+ const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
+ const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form');
+ let paused=false,base=performance.now(),elapsed=0;
+ const time=()=>Math.min(1e9,elapsed+(paused||reduced.matches?0:(performance.now()-base)/1000));
+ const freeze=()=>{elapsed=time();base=performance.now()};
+ for(const f of el.querySelectorAll('.ui-floor')){const player=f.querySelector('.ui-player');if(!player)continue;const w=+f.dataset.w,h=+f.dataset.h,speed=+player.dataset.speed,point=[+player.dataset.x,+player.dataset.y];states.set(f,{w,h,speed,player,own:motionWalk(point,point,0,speed,w,h)});}
+ const place=(s,t)=>{const p=motionSample(s.own,t);s.player.style.setProperty('--px',p[0]);s.player.style.setProperty('--py',p[1]);};
+ const walk=(x,y)=>{const s=states.get(floor());if(!s||![x,y].every(Number.isFinite))return;const t=time(),a=motionSample(s.own,t);s.own=motionWalk(a,[x,y],t,s.speed,s.w,s.h);if(reduced.matches)s.own=motionWalk(s.own.to,s.own.to,t,s.speed,s.w,s.h);s.player.style.setProperty('--walk',s.own.duration+'s');s.player.dataset.targetX=s.own.to[0];s.player.dataset.targetY=s.own.to[1];place(s,t);};
+ button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?'動きを再開':'動きを停止';});
+ let wasReduced=reduced.matches;
+ reduced.addEventListener('change',()=>{if(!wasReduced&&!paused)elapsed=Math.min(1e9,elapsed+(performance.now()-base)/1000);base=performance.now();wasReduced=reduced.matches;for(const s of states.values())place(s,time());});
+ form.addEventListener('submit',e=>{e.preventDefault();if(form.reportValidity())walk(+form.elements.x.value,+form.elements.y.value)});
+ const tick=()=>{if(!el.isConnected)return;controls.hidden=false;const active=states.get(floor()),t=time();form.hidden=!active;
+  if(active){form.elements.x.max=active.w;form.elements.y.max=active.h;place(active,t);}
+  requestAnimationFrame(tick);
+ };requestAnimationFrame(tick);return walk;
+}
+"""
+
+
+WORLD_JS = WORLD_MOTION_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
+export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
+export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
+export function minutesUntil(now,at){return Math.ceil(((at-now)%1440+1440)%1440)}
+export function boardClock(now,offset){const seconds=((now+offset*60)%86400+86400)%86400,whole=Math.floor(seconds);return{clock:[Math.floor(whole/3600),Math.floor(whole/60)%60].map(v=>String(v).padStart(2,"0")).join(":"),minutes:seconds/60}}
+export function boardSeconds(chars,cps=8){return Math.max(8,Math.round(chars/cps*10)/10)}
+export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
+export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
+function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
+function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
+const floor=()=>{const r=el.querySelector('input[name$="-floor"]:checked');return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
+const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
+const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z)};
+const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
+const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
+const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
+const walk=bindPlayer(el,floor);
+const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),clock=boardClock(d.getTime()/1000,board.dataset.offset===""?-d.getTimezoneOffset():Number(board.dataset.offset)),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock;for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"いま":"あと"+left+"分"}};
+if(board){tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
+const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
+form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift(text);notes.splice(5);run.replaceChildren();
+for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");span.textContent=note;run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
+const chars=baseChars+notes.reduce((n,text)=>n+[...text].length,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
+
+const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
+const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
+view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
+view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
+const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
+addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
+view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
+el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot,.ui-actor");if(a){e.preventDefault();if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+el.addEventListener("keydown",e=>{if(e.key==="Escape")close()});
+el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
+if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
+const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"],.ui-actor[href="#${CSS.escape(hash)}"]`);if(a){open(hash);if(a.dataset.x!==undefined)focusSpot(a)}else open(null)};
+addEventListener("hashchange",fromHash);home();fromHash();
+return el}
+export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,cleanMessage,motionWalk,motionSample,bindWorlds};
+bindWorlds();
+"""
+
+
+def world_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page: bundled CSS, the world's CSS, the world's HTML and one inline module."""
+    world = world_validate(spec)
+    return render_document(trusted_html=world_html(world), title=world["title"], theme=theme,
+                           css=bundled_css() + world_css(world), embedded_modules=("world.js",))
+
+
+def random_theme(seed: int) -> dict[str, str]:
+    """A seeded palette plus corner radius as ``--ui-*`` tokens; every text pair meets WCAG AA by construction."""
+    rng = random.Random(seed)
+    hue, dark, sat = rng.random(), rng.random() < 0.5, 0.15 + rng.random() * 0.35
+    bg_l = 0.07 + rng.random() * 0.07 if dark else 0.92 + rng.random() * 0.06
+    bg, panel = _hsl(hue, sat, bg_l), _hsl(hue, sat, min(1.0, bg_l + (0.05 if dark else 0.04)))
+    grounds = (bg, panel)
+    return {
+        "--ui-bg": bg, "--ui-panel": panel,
+        "--ui-fg": _readable(hue + (rng.random() - 0.5) * 0.1, 0.25, grounds, 7),
+        "--ui-muted": _readable(hue, 0.12, grounds, 4.5),
+        "--ui-border": _hsl(hue, 0.2, bg_l + (0.16 if dark else -0.16)),
+        "--ui-accent": _readable(hue + 0.15 + rng.random() * 0.5, 0.55 + rng.random() * 0.3, grounds, 4.5),
+        "--ui-danger": _readable(rng.random() * 0.03, 0.7, grounds, 4.5),
+        "--ui-radius": ("0", ".25rem", ".5rem", "1rem")[int(rng.random() * 4)],
+    }
+
+
+def theme_palette(hue: float, *, dark: bool = False, sat: float = 0.3, radius: str = ".5rem") -> dict[str, str]:
+    """A palette for one hue (0..1): not random, and every text pair meets WCAG AA by construction.
+
+    The same recipe as random_theme(), with the choices fixed: any hue gives a theme, so red, blue or any other color
+    needs no hand-tuning. ``dark`` flips the grounds."""
+    bg_l = 0.1 if dark else 0.95
+    bg, panel = _hsl(hue, sat, bg_l), _hsl(hue, sat, min(1.0, bg_l + (0.05 if dark else 0.04)))
+    grounds = (bg, panel)
+    return {"--ui-bg": bg, "--ui-panel": panel, "--ui-fg": _readable(hue, 0.25, grounds, 7),
+            "--ui-muted": _readable(hue, 0.12, grounds, 4.5), "--ui-border": _hsl(hue, 0.2, bg_l + (0.16 if dark else -0.16)),
+            "--ui-accent": _readable(hue, 0.6, grounds, 4.5), "--ui-danger": _readable(0.0, 0.7, grounds, 4.5),
+            "--ui-radius": radius}
+
+
+def theme_palettes() -> dict[str, dict[str, str]]:
+    """The token-only themes by name. ``green`` is the one first built by hand in Ironmate's studio (measured against its
+    palette); the others are theme_palette(hue). Add a theme by adding its name to CANDIDATE_THEMES and a line here."""
+    return {
+        "green": {"--ui-bg": "#edf0ec", "--ui-panel": "#ffffff", "--ui-fg": "#163b3b", "--ui-muted": "#546a61",
+                  "--ui-border": "#ccdcd4", "--ui-accent": "#126d66", "--ui-danger": "#a73528", "--ui-radius": ".5rem"},
+        "red": theme_palette(0.0), "blue": theme_palette(0.6),
+    }
+
+
+def _token_theme_css() -> str:
+    blocks = ["/* Candidate themes, token-only: palettes, no theme files (see theme_palettes()). */"]
+    for name in CANDIDATE_THEMES:
+        tokens = theme_palettes()[name]
+        scheme = "dark" if _luminance(tokens["--ui-bg"]) < 0.18 else "light"
+        blocks.append(f'body[data-ui-theme="{name}"]{{' + ";".join(f"{k}:{v}" for k, v in tokens.items()) + f";color-scheme:{scheme}}}")
+    return "\n".join(blocks) + "\n"
+
+
+def _hsl(hue: float, sat: float, light: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(hue % 1.0, min(max(light, 0.0), 1.0), min(max(sat, 0.0), 1.0))
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
+
+def _readable(hue: float, sat: float, grounds: tuple[str, ...], minimum: float) -> str:
+    """Start at mid lightness and move away from the grounds until the color reads on all of them."""
+    step = -0.02 if sum(_luminance(g) for g in grounds) / len(grounds) > 0.18 else 0.02
+    light = 0.5
+    for _ in range(50):
+        color = _hsl(hue, sat, light)
+        if all(contrast_ratio(color, g) >= minimum for g in grounds):
+            return color
+        light += step
+    return "#000000" if step < 0 else "#ffffff"
+
+
+def theme_wall(seeds: Any) -> str:
+    """One block of cells, each under its own random theme (inline ``--ui-*`` tokens): themes side by side for review."""
+    cells = []
+    for seed in seeds:
+        theme = random_theme(int(seed))
+        style = ";".join(f"{name}:{value}" for name, value in theme.items())
+        cells.append(
+            f'<section class="ui-wall-cell" data-seed="{int(seed)}" style="{style}"><h3>seed {int(seed)}</h3>'
+            '<p class="ui-muted">Muted text on the panel.</p><span class="ui-tag">tag</span> '
+            '<button class="ui-button" type="button">Button</button> <a href="#" style="color:var(--ui-accent)">Accent</a> '
+            '<span style="color:var(--ui-danger)">Danger</span><div class="ui-card">Card</div></section>')
+    return f'<div class="ui-wall">{"".join(cells)}</div>'
+
+
+def theme_wall_document(count: int) -> str:
+    if type(count) is not int or count < 0:
+        raise ValueError("theme wall count must be a nonnegative integer")
+    return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
+
+
+# --- Pages and examples as Python data: specs in, single-file pages out (no HTML files) ---------------
+# MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
+# is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
+
+STUB_SCHEMA = "web-ui-stub/1"
+# stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
+EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
+_STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
+                 't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
+
+
+def stub_response(template: Any, query: str) -> Any:
+    """What the mock answers for ``query``: ``template`` with every "$input" replaced by the query (same rule as the page)."""
+    if isinstance(template, str):
+        return template.replace("$input", query)
+    if isinstance(template, list):
+        return [stub_response(item, query) for item in template]
+    if isinstance(template, dict):
+        return {key: stub_response(value, query) for key, value in template.items()}
+    return template
+
+
+def stub_validate(spec: Any) -> dict[str, Any]:
+    """Checked ``web-ui-stub/1`` spec: id, title, heading, lead, tags, field, run, evidence, history and the mock template."""
+    keys = {"schema", "id", "title", "heading", "lead", "tags", "field", "run", "evidence", "history", "mock"}
+    if not isinstance(spec, dict) or spec.get("schema") != STUB_SCHEMA or set(spec) - keys:
+        raise ValueError(f"expected schema {STUB_SCHEMA} with keys {sorted(keys)}")
+    stub_id = spec.get("id", "stub")
+    if not isinstance(stub_id, str) or not _WORLD_ID.fullmatch(stub_id):
+        raise ValueError("id must be a lowercase token that starts with a letter")
+    tags = spec.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 6:
+        raise ValueError("tags must list at most 6 entries")
+    field = spec.get("field")
+    if not isinstance(field, dict) or set(field) - {"label", "placeholder", "value"} or "label" not in field:
+        raise ValueError("field has a label and optionally a placeholder or a value")
+    mock = spec.get("mock", {"status": "stub", "query": "$input"})
+    try:
+        encoded_mock = json.dumps(mock, allow_nan=False)
+        mock = json.loads(encoded_mock)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("mock must be finite JSON data") from exc
+    if len(encoded_mock) > 4000:
+        raise ValueError("mock must be at most 4000 characters of JSON")
+    return {"schema": STUB_SCHEMA, "id": stub_id, "title": _world_text(spec.get("title", "Stub"), "title", 80),
+            "heading": _world_text(spec.get("heading", "Stub Explorer"), "heading", 80),
+            "lead": _world_text(spec.get("lead", ""), "lead", 200, required=False),
+            "tags": [_world_text(tag, "tag", 24) for tag in tags],
+            "field": {"label": _world_text(field["label"], "field label", 40),
+                      "placeholder": _world_text(field.get("placeholder", ""), "placeholder", 120, required=False),
+                      "value": _world_text(field.get("value", ""), "value", 120, required=False)},
+            "run": _world_text(spec.get("run", "Run"), "run", 24),
+            "evidence": _world_text(spec.get("evidence", ""), "evidence", 200, required=False),
+            "history": _world_text(spec.get("history", ""), "history", 200, required=False), "mock": mock}
+
+
+def stub_html(spec: Any, *, heading_level: int = 1) -> str:
+    """The stub workspace (request bar, result, evidence, history) with ids prefixed by the spec's id; text is escaped."""
+    s = stub_validate(spec)
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 1
+    sid, field = s["id"], s["field"]
+    attrs = (f' placeholder="{escape(field["placeholder"], quote=True)}"' if field["placeholder"] else "") + \
+            (f' value="{escape(field["value"], quote=True)}"' if field["value"] else "")
+    tags = "".join(f'<span class="ui-tag">{escape(tag)}</span>' for tag in s["tags"])
+    mock = json.dumps(s["mock"], ensure_ascii=False).replace("</", "<\\/")
+    return (f'<div class="stub-shell" id="{sid}"><header class="stub-header"><div><h{level} class="ui-title">{escape(s["heading"])}</h{level}>'
+            f'<p class="ui-muted">{escape(s["lead"])}</p></div><div class="stub-meta">{tags}</div></header>'
+            f'<section class="ui-panel"><form class="stub-toolbar" id="{sid}-form"><fieldset><legend>Stub request</legend>'
+            f'<label for="{sid}-query">{escape(field["label"])}</label><input class="ui-input" id="{sid}-query"{attrs}>'
+            f'<button class="ui-button" id="{sid}-run" type="submit">{escape(s["run"])}</button></fieldset></form>'
+            '<p class="stub-status ui-muted">Endpoint: <span class="stub-endpoint">consumer-owned</span></p></section>'
+            f'<div class="stub-workspace"><section class="ui-panel stub-result"><h2>Result</h2>'
+            f'<pre class="ui-output" id="{sid}-output" aria-live="polite">Ready.</pre></section>'
+            '<aside aria-label="Supporting information"><section class="ui-card stub-evidence"><h2>Evidence</h2>'
+            f'<p class="ui-muted">{escape(s["evidence"])}</p></section><section class="ui-card stub-history"><h2>History</h2>'
+            f'<p class="ui-muted">{escape(s["history"])}</p><div class="stub-actions"><button class="ui-button" type="button">Export</button>'
+            f'<button class="ui-button" type="button">Clear</button></div></section></aside></div>'
+            f'<script type="application/json" id="{sid}-mock">{mock}</script></div>')
+
+
+def stub_script(*specs: Any) -> str:
+    """One inline module for any number of stubs on a page: ui.js, stub.js, the mock evaluator and one bind per stub."""
+    binds = "".join(
+        f'bindStub({{input:"#{s["id"]}-query",run:"#{s["id"]}-run",output:"#{s["id"]}-output",form:"#{s["id"]}-form",'
+        f'handler:q=>fill(JSON.parse(document.getElementById("{s["id"]}-mock").textContent),q)}});\n'
+        for s in (stub_validate(spec) for spec in specs))
+    return EMBEDDED_UI_JS + EMBEDDED_STUB_JS + _STUB_FILL_JS + binds
+
+
+def stub_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page for one stub."""
+    s = stub_validate(spec)
+    return render_document(trusted_html='<main class="ui-page">' + stub_html(s) + "</main>"
+                           + module_script(stub_script(s)), title=s["title"], theme=theme, css=bundled_css())
+
+
+EXAMPLE_STUBS = {
+    "mcp": {"schema": STUB_SCHEMA, "id": "mcp", "title": "MCP Stub", "heading": "MCP Stub Explorer",
+            "lead": "Protocol behavior stays with the consumer; web-ui supplies presentation and generic interaction.",
+            "tags": ["mcp", "ready"], "field": {"label": "Tool or filter", "placeholder": "tools/list"}, "run": "Run",
+            "evidence": "Trace, source, SHA, or request metadata can be rendered here by the consumer.",
+            "history": "Consumer-owned history/export controls.",
+            "mock": {"kind": "mcp", "query": "$input", "status": "stub"}},
+    "api": {"schema": STUB_SCHEMA, "id": "api", "title": "API Stub", "heading": "API Stub Explorer",
+            "lead": "A generic request/result surface without API-specific logic in web-ui.",
+            "tags": ["api", "ready"], "field": {"label": "Path", "value": "/api/example"}, "run": "Send",
+            "evidence": "Status, headers, provenance, or timing metadata belongs here.",
+            "history": "Consumer-owned request history and export actions.",
+            "mock": {"method": "GET", "path": "$input", "status": 200, "body": {"stub": True}}},
+}
+
+
+def _example_cards() -> str:
+    return ('<section class="ui-grid"><article class="ui-card"><h2>Components</h2><p>Tokens, panels, cards, tags, controls and output surfaces.</p>'
+            '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
+            '<article class="ui-card"><h2>Stub examples</h2><p><a href="./mcp-stub.html">MCP Stub</a> · <a href="./api-stub.html">API Stub</a></p></article>'
+            '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article></section>')
+
+
+def example_pages() -> dict[str, str]:
+    """The pages that used to be examples/*.html and contract/v1/example.html, plus the front page, built in memory (path -> HTML)."""
+    css = bundled_css()
+    page = lambda body, title, theme="modern": render_document(trusted_html=body, title=title, theme=theme, css=css)
+    github_like = (
+        '<main class="ui-page"><h1 class="ui-title">web-ui · GitHub-like</h1>'
+        '<p class="ui-muted">The same semantic component contract with a different theme.</p><section class="ui-grid">'
+        '<article class="ui-card"><h2>Repository card</h2><p>Theme files change presentation without changing semantic classes.</p>'
+        '<span class="ui-tag">theme</span> <span class="ui-tag">contract-v1</span></article>'
+        '<article class="ui-card"><h2>Controls</h2><label for="example-input">Example input</label>'
+        '<input class="ui-input" id="example-input" value="shared semantic HTML"> <button class="ui-button" type="button">Example button</button></article>'
+        '</section><section class="ui-panel"><h2>Output</h2><pre class="ui-output">ui-page / ui-panel / ui-card / ui-button / ui-input</pre></section></main>')
+    contract = (
+        '<main class="ui-page"><h1 class="ui-title">HTML contract v1</h1><p class="ui-muted">Canonical semantic fixture.</p>'
+        '<section class="ui-panel"><div class="stub-toolbar"><label for="contract-query">Query</label>'
+        '<input class="ui-input" id="contract-query" value="example"> <button class="ui-button" type="button">Run</button></div>'
+        '<p class="stub-status ui-muted">Ready.</p><div class="stub-meta"><span class="ui-tag">contract-v1</span></div></section>'
+        '<section class="ui-grid"><article class="ui-card"><h2>Card</h2><p>Consumer-owned content.</p></article></section>'
+        '<pre class="ui-output">text-safe output</pre></main>')
+    return {
+        "examples/index.html": page('<main class="ui-page"><h1 class="ui-title">web-ui</h1><p class="ui-muted">Shared static UI contract for '
+                                    'myon-bioinformatics projects.</p>' + _example_cards() + "</main>", "web-ui examples"),
+        "examples/mcp-stub.html": stub_document(EXAMPLE_STUBS["mcp"]),
+        "examples/api-stub.html": stub_document(EXAMPLE_STUBS["api"]),
+        "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
+        "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
+        "index.html": _index_page(),
+    }
+
+
+# --- Example data as Python (no examples/ files): specs the tools and pages use; `--example NAME` prints one as JSON ----------
+
+EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1',
+                   'base_url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/',
+                   'source': 'flutter_navigation_basic lib/shared/navigation/page_identities.g.dart',
+                   'pages': [{'route': '/',
+                              'key': '🏠',
+                              'label': 'Home',
+                              'adapter': 'flutter-home',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/'},
+                             {'route': '/hub',
+                              'key': '🗺️',
+                              'label': 'Navigation Hub',
+                              'adapter': 'flutter-hub',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/hub'},
+                             {'route': '/core/clipboard-shelf',
+                              'key': '📋',
+                              'label': 'Clipboard Shelf',
+                              'adapter': 'flutter-clipboard-shelf',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/core/clipboard-shelf'},
+                             {'route': '/tools/time/now-timeline',
+                              'key': '🕒',
+                              'label': 'Now Timeline',
+                              'adapter': 'flutter-now-timeline',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/time/now-timeline'},
+                             {'route': '/tools/media/photo-studio',
+                              'key': '🖼️',
+                              'label': 'Photo Studio',
+                              'adapter': 'flutter-photo-studio',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/media/photo-studio'},
+                             {'route': '/tools/http/request-draft',
+                              'key': '🌐',
+                              'label': 'HTTP Request Draft',
+                              'adapter': 'flutter-http-request-draft',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/http/request-draft'},
+                             {'route': '/examples/ui-showcase',
+                              'key': '🎨',
+                              'label': 'UI Showcase',
+                              'adapter': 'flutter-ui-showcase',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/ui-showcase'},
+                             {'route': '/examples/counter-playground',
+                              'key': '👾',
+                              'label': 'Counter Playground',
+                              'adapter': 'flutter-counter',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/counter-playground'},
+                             {'route': '/screen1',
+                              'key': '🌍',
+                              'label': 'Screen 1',
+                              'adapter': 'flutter-screen1',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/screen1'}]},
+ 'layout-presets': {'schema': 'web-ui-layout-presets/1',
+                    'default': 'grid8',
+                    'presets': [{'id': 'grid8',
+                                 'label': '8px grid',
+                                 'note': 'default: 160px tiles, 8px spacing',
+                                 'vars': {'--ui-matrix-col': '160px',
+                                          '--ui-matrix-gap': '8px',
+                                          '--ui-matrix-pad': '8px'}},
+                                {'id': 'compact',
+                                 'label': 'Compact',
+                                 'note': 'more tiles per row on small screens',
+                                 'vars': {'--ui-matrix-col': '120px',
+                                          '--ui-matrix-gap': '4px',
+                                          '--ui-matrix-pad': '4px'}},
+                                {'id': 'device',
+                                 'label': 'Device width',
+                                 'note': '195px = half an iPhone (390px)',
+                                 'vars': {'--ui-matrix-col': '195px',
+                                          '--ui-matrix-gap': '6px',
+                                          '--ui-matrix-pad': '6px'}},
+                                {'id': 'wide',
+                                 'label': 'Wide',
+                                 'note': 'larger tiles for detail',
+                                 'vars': {'--ui-matrix-col': '240px',
+                                          '--ui-matrix-gap': '16px',
+                                          '--ui-matrix-pad': '8px'}}]},
+ 'world': {'schema': 'web-ui-world/1',
+           'id': 'demo',
+           'title': 'web-ui world (prototype)',
+           'zoom_max': 4,
+           'shots': [{'id': 'gate',
+                      'label': 'SHOT 01',
+                      'title': 'Arrive',
+                      'body': 'One page, no page changes. Scroll to move the camera through the shots.',
+                      'bg': '#0d1f3a'},
+                     {'id': 'hall',
+                      'label': 'SHOT 02',
+                      'title': 'Look around',
+                      'body': 'Each shot is data: a label, a title, a text and a color. Python writes the HTML and '
+                              'CSS.',
+                      'bg': '#164a41'},
+                     {'id': 'deck',
+                      'label': 'SHOT 03',
+                      'title': 'Zoom in',
+                      'body': 'The only JavaScript marks what is on screen; CSS reacts to that mark.',
+                      'bg': '#5a2a1a'},
+                     {'id': 'exit',
+                      'label': 'SHOT 04',
+                      'title': 'Find it',
+                      'body': 'Scrolling reaches the information you came for.',
+                      'bg': '#2a2a5a'}],
+           'floors': [{'id': '1f',
+                       'label': '1F',
+                       'width': 960,
+                       'height': 640,
+                       'spots': [{'id': 'gate',
+                                  'x': 120,
+                                  'y': 320,
+                                  'label': 'Gate',
+                                  'category': 'info',
+                                  'body': 'Entrance and help desk.'},
+                                 {'id': 'hall',
+                                  'x': 480,
+                                  'y': 320,
+                                  'label': 'Hall',
+                                  'category': 'info',
+                                  'body': 'The central hall connects every area.'},
+                                 {'id': 'cafe',
+                                  'x': 800,
+                                  'y': 160,
+                                  'label': 'Cafe',
+                                  'category': 'food',
+                                  'body': 'Drinks and light meals.'},
+                                 {'id': 'shop',
+                                  'x': 800,
+                                  'y': 480,
+                                  'label': 'Shop',
+                                  'category': 'food',
+                                  'body': 'Snacks and souvenirs.'}],
+                       'actors': [{'id': 'farmer',
+                                   'emoji': '🧑\u200d🌾',
+                                   'label': 'Farmer',
+                                   'body': 'Walks at a steady pace and stops to look around. Tap to ask.'},
+                                  {'id': 'cat',
+                                   'emoji': '🐈',
+                                   'label': 'Cat',
+                                   'body': 'Wanders; no destination.',
+                                   'speed': 64},
+                                  {'id': 'duck',
+                                   'emoji': '🦆',
+                                   'label': 'Duck',
+                                   'body': 'Slow and sure.',
+                                   'speed': 32},
+                                  {'id': 'robot',
+                                   'emoji': '🤖',
+                                   'label': 'Robot',
+                                   'body': 'Moves in straight lines at constant speed.',
+                                   'speed': 56}],
+                       'player': {'emoji': '🧙', 'x': 120, 'y': 320}},
+                      {'id': '2f',
+                       'label': '2F',
+                       'width': 960,
+                       'height': 640,
+                       'spots': [{'id': 'deck',
+                                  'x': 240,
+                                  'y': 160,
+                                  'label': 'Deck',
+                                  'category': 'info',
+                                  'body': 'Open-air deck with a view of the hall.'},
+                                 {'id': 'lab',
+                                  'x': 720,
+                                  'y': 400,
+                                  'label': 'Lab',
+                                  'category': 'info',
+                                  'body': 'Hands-on corner for the curious.'}],
+                       'actors': [{'id': 'owl',
+                                   'emoji': '🦉',
+                                   'label': 'Owl',
+                                   'body': 'Keeps the deck company.',
+                                   'speed': 40}]}],
+           'board': {'title': 'INFO',
+                     'items': [{'text': 'Gate: wait about 10 min'},
+                               {'text': 'Show starts', 'at': '10:30'},
+                               {'text': 'Guided walk', 'at': '14:00'},
+                               {'text': 'Last entry', 'at': '17:30'}],
+                     'post': True}}}
+
+
+def example_data(name: str) -> Any:
+    """A copy of one example spec: ``flutter-pages``, ``layout-presets`` or ``world``."""
+    try:
+        return json.loads(json.dumps(EXAMPLES[name]))
+    except KeyError:
+        raise ValueError(f"unknown example: {name} (one of {', '.join(EXAMPLES)})") from None
+
+
+# Sweep result for the layout switch on the front page (python tool/layout_presets.py sweep ... --out candidates.json).
+_INDEX_LAYOUT_CANDIDATES = {"schema": "web-ui-layout-candidates/1", "presets": {
+    name: {"passed": [320, 384, 768, 1280], "failed": []} for name in ("grid8", "compact", "device", "wide")}}
+
+
+def _index_page() -> str:
+    """The front page (index.html): one self-contained page holding every example. Needs a checkout (tool/layout_presets.py)."""
+    import importlib
+    root = Path(__file__).resolve().parent
+    sys.path.insert(0, str(root / "tool"))
+    try:
+        layout_presets = importlib.import_module("layout_presets")
+    finally:
+        sys.path.pop(0)
+    world, presets = example_data("world"), example_data("layout-presets")
+    css = bundled_css() + layout_presets.css(presets) + world_css(world) + _WALL_CSS
+    theme_radios = "".join(
+        f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
+        for t in (*THEMES, *CANDIDATE_THEMES))
+    cards = "".join(
+        f'<article class="ui-card"><h2>{title}</h2><p>{text}</p><a href="#{anchor}">{link} →</a></article>'
+        for title, text, anchor, link in (
+            ("Try it", "Switch theme and layout live: no reload, no stylesheet swap.", "try", "Open the switches"),
+            ("MCP workspace", "Reusable MCP-style result/evidence/history structure, with a declarative mock.", "mcp", "Open MCP stub"),
+            ("API workspace", "Same semantic workspace with consumer-owned API behavior.", "api", "Open API stub"),
+            ("World (prototype)", "One page, a camera: scroll the shots, pan and zoom the map.", "world", "Open the world"),
+            ("Random themes", "Seeded palettes side by side; every text pair meets WCAG AA.", "wall", "Open the wall")))
+    tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
+    body = (
+        '<main class="ui-page"><header class="stub-header"><div>'
+        '<img src="./docs/brand/icon.png" width="80" height="80" alt="web-ui icon"><h1 class="ui-title">web-ui</h1>'
+        '<p class="ui-muted">Shared static-first UI contract for myon-bioinformatics projects.</p></div>'
+        '<div class="stub-meta"><span class="ui-tag">v1</span><span class="ui-tag">build-free</span></div></header>'
+        f'<section class="ui-grid">{cards}</section>'
+        '<section class="ui-panel" id="try"><h2>Try it</h2><p class="ui-muted">Both switches act at once: no reload. The theme is saved in '
+        'this browser; the layout is plain CSS.</p>'
+        f'<fieldset class="ui-layout-switch"><legend>Theme</legend>{theme_radios}</fieldset>'
+        f'{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'
+        f'<section>{stub_html(EXAMPLE_STUBS["mcp"], heading_level=2)}</section>'
+        f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
+        '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
+        'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
+        f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'
+        '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
+        f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
+        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(WORLD_JS))
+    return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
+            '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
+            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>web-ui — static UI contract</title>\n'
+            f'  <style>{css}</style>\n<link rel="apple-touch-icon" href="./docs/brand/icon.png"></head>\n'
+            f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
+
+
+def js_modules() -> dict[str, str]:
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, world.js)."""
+    return {**_JS, "world.js": WORLD_JS}
+
+
+def js_source(name: str) -> str:
+    try:
+        return js_modules()[name]
+    except KeyError:
+        raise ValueError(f"unknown module: {name}") from None
+
+
+def write_js(directory: str | Path) -> list[str]:
+    """Write the browser modules under ``directory/js/`` (for pages that link them, and for the Node tests); returns the paths."""
+    written = []
+    for name, source in js_modules().items():
+        target = Path(directory) / "js" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(source)
+        written.append(f"js/{name}")
+    return written
+
+
+def write_examples(directory: str | Path) -> list[str]:
+    """Write each example spec as ``directory/examples/NAME.json`` (for tools whose CLI takes a file path); returns the paths."""
+    written = []
+    for name in EXAMPLES:
+        target = Path(directory) / "examples" / f"{name}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(EXAMPLES[name], ensure_ascii=False, indent=2) + "\n")
+        written.append(f"examples/{name}.json")
+    return written
+
+
+def write_site(directory: str | Path) -> list[str]:
+    """Write example_pages() and the browser modules under ``directory`` (CI screenshots, local viewing, Node tests); returns the paths."""
+    written = []
+    for name, html in example_pages().items():
+        target = Path(directory) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(html)
+        written.append(name)
+    # The generated front page references these local brand images.
+    source_root = Path(__file__).resolve().parent
+    for name in ("docs/brand/icon.png", "docs/brand/favicon.png"):
+        source, target = source_root / name, Path(directory) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+        written.append(name)
+    return written + write_js(directory) + write_examples(directory)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
-    parser.add_argument("--theme", choices=THEMES, default="modern")
+    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
+    parser.add_argument("--world", type=Path, metavar="FILE",
+                        help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world)")
+    parser.add_argument("--site", type=Path, metavar="DIR",
+                        help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
+    parser.add_argument("--theme-wall", type=int, metavar="N",
+                        help="print a page showing N seeded random themes side by side and exit")
+    parser.add_argument("--css-bundle", action="store_true",
+                        help="embed every web-ui stylesheet and theme (see bundled_css) in the page")
     parser.add_argument("--asset-base", help="local or pinned HTTPS shared asset directory")
-    parser.add_argument("--stub", action="store_true", help="include stub CSS with --asset-base")
     parser.add_argument(
         "--with-scripts",
         nargs="*",
@@ -1502,14 +2942,31 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         sys.stdout.write(f"{sri(raw)}\nsha256 {hashlib.sha256(raw).hexdigest()}\n")
         return 0
-    if args.stub and not args.asset_base:
-        parser.error("--stub requires --asset-base")
+    if args.example:
+        try:
+            sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
+        except ValueError as exc:
+            parser.error(str(exc))
+        return 0
+    if args.site:
+        try:
+            for name in write_site(args.site):
+                print(name)
+        except OSError as exc:
+            parser.error(str(exc))
+        return 0
+    if args.world or args.theme_wall is not None:
+        try:
+            sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
+                             if args.world else theme_wall_document(args.theme_wall))
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        return 0
     if args.with_scripts is not None and not args.asset_base:
         parser.error("--with-scripts requires --asset-base")
     try:
         content = sys.stdin.read()
-        css = args.css.read_text(encoding="utf-8") if args.css else ""
-        styles = shared_stylesheets(args.asset_base, theme=args.theme, stub=args.stub) if args.asset_base else ()
+        css = (bundled_css() if args.css_bundle else "") + (args.css.read_text(encoding="utf-8") if args.css else "")
         if args.with_scripts is None:
             scripts: tuple[str, ...] = ()
         else:
@@ -1521,7 +2978,6 @@ def main(argv: list[str] | None = None) -> int:
             title=args.title,
             theme=args.theme,
             css=css,
-            stylesheets=styles,
             scripts=scripts,
             remote_scripts=remote,
             embedded_modules=("ui.js",) if args.embed_ui else (),

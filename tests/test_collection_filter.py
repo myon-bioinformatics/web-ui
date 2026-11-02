@@ -1,5 +1,7 @@
 import copy
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,15 +45,31 @@ def test_malformed_json_fails_without_partial_output():
         assert result.stdout == ""
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node is optional in Python-only environments")
-def test_node_parity_on_shared_fixtures():
+def _node26():
+    node = shutil.which("node")
+    if not node:
+        return False
+    out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=10).stdout
+    return bool(re.match(r"v(\d+)", out.strip())) and int(re.match(r"v(\d+)", out.strip()).group(1)) >= 26
+
+
+@pytest.mark.skipif(not _node26(), reason="Node 26+ is optional in Python-only environments")
+def test_node_reaches_the_same_tool_through_the_shared_launcher():
+    # No Node twin: Node runs collection_filter.py via vendor/py_launch.cjs, so both routes share one implementation.
+    env = {**os.environ, "PYTHON": sys.executable}
+    run = lambda request: subprocess.run(["node", "vendor/py_launch.cjs", "--", "collection_filter.py"], cwd=ROOT, env=env,
+                                         input=request, text=True, capture_output=True)
     for case in CASES["cases"]:
-        result = subprocess.run(["node", str(ROOT / "js/collection-cli.cjs")],
-                                input=json.dumps(case["request"], ensure_ascii=False), text=True, capture_output=True)
+        result = run(json.dumps(case["request"], ensure_ascii=False))
         assert result.returncode == 0, (case["name"], result.stderr)
         assert json.loads(result.stdout) == case["expected"]
     for request in CASES["invalid"]:
-        result = subprocess.run(["node", str(ROOT / "js/collection-cli.cjs")],
-                                input=json.dumps(request), text=True, capture_output=True)
+        result = run(json.dumps(request))
         assert result.returncode == 2
         assert result.stdout == ""
+
+    for malformed in ("{", '{"items": [], "query": NaN}', '{"items": []} trailing'):
+        result = run(malformed)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("error: ")

@@ -11,7 +11,7 @@ script, package, import map or vendor lock is added by this documentation change
 
 | Status | Choice | When to consult it | Official documentation |
 | --- | --- | --- | --- |
-| Existing default | Native DOM plus js/ui.js | Text updates, JSON display and clipboard; prefer existing setText, prettyJson and copyText | [MDN DOM](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model), local js/ui.js |
+| Existing default | Native DOM plus ui.js | Text updates, JSON display and clipboard; prefer existing setText, prettyJson and copyText | [MDN DOM](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model), the ui.js module |
 | First evaluation candidate | Alpine.js | Declarative state and small interactions on existing HTML | [Installation](https://www.alpinejs.dev/essentials/installation), [CSP](https://www.alpinejs.dev/advanced/csp) |
 | Conditional candidate | petite-vue | Vue-like reactive enhancement of a bounded existing region | [Official README](https://github.com/vuejs/petite-vue) |
 | Conditional alternative | Preact + HTM | Reusable interactive components when native helpers or attribute bindings no longer suffice | [No-build guide](https://preactjs.com/guide/v10/no-build-workflows/), [HTM](https://github.com/developit/htm) |

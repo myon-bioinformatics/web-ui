@@ -1,5 +1,13 @@
 const assert=require('node:assert/strict');
-const ui=require('../js/navigation.js');
+// The browser modules are Python data: unless WEB_UI_JS_DIR names a folder, ask web_ui.py to write them to a temp folder.
+const jsDir = process.env.WEB_UI_JS_DIR || (() => {
+  const {mkdtempSync} = require("fs"), {join} = require("path"), {tmpdir} = require("os");
+  const out = mkdtempSync(join(tmpdir(), "web-ui-js-"));
+  const done = require("child_process").spawnSync(process.env.PYTHON || "python3", ["-S", join(__dirname, "..", "web_ui.py"), "--site", out], {encoding: "utf8"});
+  if (done.status !== 0) throw new Error("web_ui.py --site failed: " + done.stderr);
+  return join(out, "js");
+})();
+const ui=require(require('path').join(jsDir,'navigation.js'));
 assert.equal(ui.sourceURL('https://example.test/a'),'https://example.test/a');
 for(const value of ['javascript:alert(1)','data:text/html,x','ftp://example.test/','https://u:p@example.test/','https://example.test/ bad','https://example.test\\bad','//example.test/',''])assert.throws(()=>ui.sourceURL(value));
 let opened;const win={open:(...args)=>opened=args};ui.openExternalURL('https://example.test/',win);assert.deepEqual(opened,['https://example.test/','_blank','noopener,noreferrer']);

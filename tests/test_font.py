@@ -7,11 +7,8 @@ from pathlib import Path
 import web_ui
 from web_ui import plotly_figure
 
-CSS = Path(__file__).resolve().parents[1] / "css"
-
-
 def read(*parts):
-    return CSS.joinpath(*parts).read_text(encoding="utf-8")
+    return web_ui.css_source("/".join(parts))
 
 
 def token(name):
@@ -33,11 +30,10 @@ class FontTests(unittest.TestCase):
         self.assertIn("font:16px/1.6 var(--ui-font)", base)
         # !important: it must also win over an adapted page's own `pre, code { font-family: inherit }`
         self.assertIn("pre,code,kbd,samp{font-family:var(--ui-font-mono)!important}", base)
-        for path in CSS.rglob("*.css"):
-            text = path.read_text(encoding="utf-8")
-            self.assertNotIn("system-ui", text, path.name)
-            if path.parent.name == "themes":
-                self.assertNotIn("font-family", text, f"{path.name}: themes follow the tokens")
+        for name, text in web_ui._CSS.items():
+            self.assertNotIn("system-ui", text, name)
+            if name.startswith("themes/"):
+                self.assertNotIn("font-family", text, f"{name}: themes follow the tokens")
 
     def test_plotly_figure_defaults_the_family_and_keeps_the_figures_own_font(self):
         spec = {"data": [], "layout": {"title": {"text": "t"}}}

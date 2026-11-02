@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Portable collection filter: JSON on stdin -> JSON on stdout (stdlib only).
 
-Equivalent public data contract to js/collection-cli.cjs; domain-specific
-browser filters and callbacks remain in js/collection.js.
+Node reaches this tool through vendor/py_launch.cjs (no Node twin); domain-specific
+browser filters and callbacks remain in the collection.js module (web_ui.js_source).
 """
 from __future__ import annotations
 

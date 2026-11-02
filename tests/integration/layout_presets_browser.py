@@ -17,8 +17,10 @@ sys.path.insert(0, str(ROOT / "tool"))
 import capture_matrix  # noqa: E402
 import layout_presets  # noqa: E402
 
-PAGES = json.loads((ROOT / "examples/flutter-pages.json").read_text(encoding="utf-8"))
-SPEC = json.loads((ROOT / "examples/layout-presets.json").read_text(encoding="utf-8"))
+import web_ui  # noqa: E402
+
+PAGES = web_ui.example_data("flutter-pages")
+SPEC = web_ui.example_data("layout-presets")
 # A preset meant to break on phones: tiles wider than the screen.
 BROKEN = {**SPEC, "presets": SPEC["presets"] + [{"id": "poster", "label": "Poster",
           "vars": {"--ui-matrix-col": "480px", "--ui-matrix-gap": "8px", "--ui-matrix-pad": "8px"}}]}
@@ -33,7 +35,7 @@ class LayoutPresetTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.page = Path(self.tmp.name) / "viewer.html"
-        self.page.write_text(capture_matrix.viewer(PAGES, REPORT, embed_css=True, layouts=BROKEN), encoding="utf-8")
+        self.page.write_text(capture_matrix.viewer(PAGES, REPORT, layouts=BROKEN), encoding="utf-8")
 
     def test_switching_relays_live_without_reload(self):
         with sync_playwright() as pw:
@@ -59,7 +61,7 @@ class LayoutPresetTests(unittest.TestCase):
         self.assertIn("poster", result["by_width"]["1280"])
         self.assertEqual(result["presets"]["poster"]["failed"], [320, 384])
         self.assertTrue(all(o["items"] > 0 for o in result["observations"]))
-        labelled = capture_matrix.viewer(PAGES, REPORT, embed_css=True, layouts=BROKEN, candidates=result)
+        labelled = capture_matrix.viewer(PAGES, REPORT, layouts=BROKEN, candidates=result)
         self.assertIn("ok at 1280px; check at 320px, 384px", labelled)
 
     def assert_no_candidates(self, result):
@@ -86,8 +88,10 @@ class LayoutPresetTests(unittest.TestCase):
 
     def test_cli_returns_failure_and_writes_evidence_when_items_are_missing(self):
         out = Path(self.tmp.name) / "candidates.json"
+        presets = Path(self.tmp.name) / "layout-presets.json"
+        presets.write_text(json.dumps(SPEC), encoding="utf-8")
         status = layout_presets.main(["sweep", str(self.page), "--presets",
-                                      str(ROOT / "examples/layout-presets.json"), "--widths", "320", "1280",
+                                      str(presets), "--widths", "320", "1280",
                                       "--items", ".typo-no-tiles", "--out", str(out)])
         self.assertEqual(status, 1)
         self.assert_no_candidates(json.loads(out.read_text(encoding="utf-8")))

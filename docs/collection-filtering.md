@@ -1,10 +1,10 @@
 # Collection filtering (portable JavaScript)
 
-`js/collection.js` is a dependency-free UMD module for browsers and Node.
+The `collection.js` module (Python data in `web_ui.py`; `python -S web_ui.py --site DIR` writes `DIR/js/collection.js`) is a dependency-free UMD module for browsers and Node.
 It does not fetch data, access DOM/storage, or define domain-specific fields.
 
 Browser: `<script src="collection.js"></script>` exposes `WebUICollections`.
-Node: `const { filterItems } = require('./js/collection.js');`
+Node: `const { filterItems } = require('./js/collection.js');` (from the written copy)
 
 ```js
 const visible = WebUICollections.filterItems(projects, {

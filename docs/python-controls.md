@@ -28,11 +28,11 @@ python -S -c 'from web_ui import *; print(render_document(trusted_html=select(((
 python -S -c 'from web_ui import *; print(render_document(trusted_html=section_browser((("概要","概要の本文"),("詳細","詳細の本文")),full_text="全文"),scripts=shared_scripts(".",names=("controls.js",))))' > sections.html
 ```
 
-Serve `sections.html` alongside `js/controls.js` over local HTTP (for example
+Serve `sections.html` alongside the written `js/controls.js` (`python -S web_ui.py --site DIR`) over local HTTP (for example
 `python -m http.server`). Native controls/disclosures require no script;
 section switching requires explicit local `controls.js`. With JS disabled,
 full text stays visible and the section selector stays disabled. Supply
-`stylesheets=shared_stylesheets(".")` to opt into the shared CSS.
+`css=bundled_css()` to embed the shared CSS.
 
 `controls.js` also exposes `webUiControls.bindSelect(selectNode, outputNode)`.
 Its `update(items, fullText, fullLabel)` accepts `{value, label, body}` objects;

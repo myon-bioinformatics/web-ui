@@ -14,8 +14,8 @@ Acceptable lightweight JS meets all of:
 3. Little prerequisite tooling and a small persistent cache/build environment;
    source KB/MB and network transfer size alone do not define lightweight
 
-web-ui’s first-party ES modules (`js/ui.js`, `js/stub.js`,
-`js/repository-diagnostics.js`) already sit inside this bar. Execution JS must
+web-ui’s first-party ES modules (`ui.js`, `stub.js`,
+`repository-diagnostics.js`, Python data in `web_ui.py`, written by `--site`) already sit inside this bar. Execution JS must
 be owned and version-pinned by the project. Do not execute arbitrary JavaScript
 found inside API responses.
 

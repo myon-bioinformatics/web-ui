@@ -16,7 +16,7 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import render_document, route_links
+from web_ui import render_document, route_links, write_js
 
 HOME, MAP, SHADES = '\U0001F3E0', '\U0001F5FA\ufe0f', '\U0001F576'
 TABLE = [{'route': '/', 'key': HOME, 'label': 'Home'}, {'route': '/map', 'key': MAP, 'label': 'Map'},
@@ -35,8 +35,7 @@ def page_files(directory):
     document = render_document(trusted_html=body)
     root = Path(directory)
     (root / 'index.html').write_text(document, encoding='utf-8')
-    (root / 'js').mkdir()
-    shutil.copyfile(ROOT / 'js/navigation.js', root / 'js/navigation.js')
+    write_js(root)
     return root / 'index.html'
 
 
