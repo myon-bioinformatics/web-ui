@@ -1,0 +1,102 @@
+{
+  "schema": "web-ui-world/1",
+  "id": "demo",
+  "title": "web-ui world (prototype)",
+  "zoom_max": 4,
+  "shots": [
+    {
+      "id": "gate",
+      "label": "SHOT 01",
+      "title": "Arrive",
+      "body": "One page, no page changes. Scroll to move the camera through the shots.",
+      "bg": "#0d1f3a"
+    },
+    {
+      "id": "hall",
+      "label": "SHOT 02",
+      "title": "Look around",
+      "body": "Each shot is data: a label, a title, a text and a color. Python writes the HTML and CSS.",
+      "bg": "#164a41"
+    },
+    {
+      "id": "deck",
+      "label": "SHOT 03",
+      "title": "Zoom in",
+      "body": "The only JavaScript marks what is on screen; CSS reacts to that mark.",
+      "bg": "#5a2a1a"
+    },
+    {
+      "id": "exit",
+      "label": "SHOT 04",
+      "title": "Find it",
+      "body": "Scrolling reaches the information you came for.",
+      "bg": "#2a2a5a"
+    }
+  ],
+  "floors": [
+    {
+      "id": "1f",
+      "label": "1F",
+      "width": 960,
+      "height": 640,
+      "spots": [
+        {
+          "id": "gate",
+          "x": 120,
+          "y": 320,
+          "label": "Gate",
+          "category": "info",
+          "body": "Entrance and help desk."
+        },
+        {
+          "id": "hall",
+          "x": 480,
+          "y": 320,
+          "label": "Hall",
+          "category": "info",
+          "body": "The central hall connects every area."
+        },
+        {
+          "id": "cafe",
+          "x": 800,
+          "y": 160,
+          "label": "Cafe",
+          "category": "food",
+          "body": "Drinks and light meals."
+        },
+        {
+          "id": "shop",
+          "x": 800,
+          "y": 480,
+          "label": "Shop",
+          "category": "food",
+          "body": "Snacks and souvenirs."
+        }
+      ]
+    },
+    {
+      "id": "2f",
+      "label": "2F",
+      "width": 960,
+      "height": 640,
+      "spots": [
+        {
+          "id": "deck",
+          "x": 240,
+          "y": 160,
+          "label": "Deck",
+          "category": "info",
+          "body": "Open-air deck with a view of the hall."
+        },
+        {
+          "id": "lab",
+          "x": 720,
+          "y": 400,
+          "label": "Lab",
+          "category": "info",
+          "body": "Hands-on corner for the curious."
+        }
+      ]
+    }
+  ]
+}

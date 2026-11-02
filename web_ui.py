@@ -9,6 +9,7 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import errno
 import hashlib
 import hmac
@@ -20,6 +21,7 @@ import base64
 import os
 from html import escape
 from pathlib import Path
+import random
 import re
 import shutil
 import subprocess
@@ -317,9 +319,9 @@ def shared_scripts(asset_base: str, *, names: tuple[str, ...] = ("ui.js",)) -> t
 
 def module_asset(name: str = "ui.js") -> tuple[bytes, str]:
     """Return immutable bundled module bytes and the JavaScript MIME type."""
-    if name != "ui.js":
+    if name not in ("ui.js", "world.js"):
         raise ValueError("unknown embedded module")
-    return EMBEDDED_UI_JS.encode("utf-8"), "text/javascript; charset=utf-8"
+    return (EMBEDDED_UI_JS if name == "ui.js" else WORLD_JS).encode("utf-8"), "text/javascript; charset=utf-8"
 
 
 def classic_script(source: str, *, nonce: str | None = None) -> str:
@@ -1499,11 +1501,326 @@ def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> su
     return _web_ui_node_run(*argv, timeout=timeout, **run_kwargs)
 
 
+# --- World: one page, a camera, no page changes (scrolling "shots" and a pan/zoom map) -----------------
+# Everything is built here in memory: Python validates the data, does the arithmetic, and emits the HTML,
+# the CSS and a thin JavaScript module. JS only applies state (data-lit, camera variables); CSS does the rest.
+
+WORLD_SCHEMA = "web-ui-world/1"
+_WORLD_ID = re.compile(r"[a-z][a-z0-9-]{0,31}")  # the world itself: it prefixes element ids, so it starts with a letter
+_WORLD_TOKEN = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")  # floors, shots, spots, categories (1f is fine)
+_WORLD_HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def _luminance(color: str) -> float:
+    channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """WCAG contrast ratio of two #rrggbb colors."""
+    light, dark = sorted((_luminance(foreground), _luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def ink_for(background: str) -> str:
+    """Black or white text, whichever reads better on ``background``."""
+    return "#0b0b0c" if contrast_ratio("#0b0b0c", background) >= contrast_ratio("#ffffff", background) else "#ffffff"
+
+
+def fit_zoom(width: float, height: float, view_w: float, view_h: float) -> float:
+    """Zoom at which a width x height map just fits a view_w x view_h view."""
+    return min(view_w / width, view_h / height)
+
+
+def clamp_focus(fx: float, fy: float, zoom: float, width: float, height: float,
+                view_w: float, view_h: float) -> tuple[float, float]:
+    """Keep the camera's focal point (map units) so the view never leaves the map; a map smaller than the view is centered."""
+    half_w, half_h = view_w / (2 * zoom), view_h / (2 * zoom)
+    return (min(max(fx, half_w), width - half_w) if width > 2 * half_w else width / 2,
+            min(max(fy, half_h), height - half_h) if height > 2 * half_h else height / 2)
+
+
+def _world_text(value: Any, label: str, limit: int, *, required: bool = True) -> str:
+    if not isinstance(value, str) or (required and not value.strip()) or len(value) > limit:
+        raise ValueError(f"{label} must be {1 if required else 0}..{limit} characters")
+    return value
+
+
+def _world_id(value: Any, label: str, seen: set[str]) -> str:
+    if not isinstance(value, str) or not _WORLD_TOKEN.fullmatch(value) or value in seen:
+        raise ValueError(f"{label} must be a unique lowercase token: {value!r}")
+    seen.add(value)
+    return value
+
+
+def _world_int(value: Any, label: str, low: int, high: int) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"{label} must be an integer from {low} to {high}")
+    return value
+
+
+def world_validate(spec: Any) -> dict[str, Any]:
+    """Checked copy of a ``web-ui-world/1`` spec: optional ``shots`` (scroll scenes) and ``floors`` (maps with spots)."""
+    if not isinstance(spec, dict) or spec.get("schema") != WORLD_SCHEMA:
+        raise ValueError(f"expected schema {WORLD_SCHEMA}")
+    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max"}:
+        raise ValueError("a world has schema, id, title, shots, floors and zoom_max")
+    world_id = spec.get("id", "world")
+    if not isinstance(world_id, str) or not _WORLD_ID.fullmatch(world_id):
+        raise ValueError("id must be a lowercase token")
+    shots_in, floors_in = spec.get("shots", []), spec.get("floors", [])
+    if not isinstance(shots_in, list) or not isinstance(floors_in, list) or not (shots_in or floors_in):
+        raise ValueError("a world needs shots or floors")
+    if len(shots_in) > 12 or len(floors_in) > 8:
+        raise ValueError("at most 12 shots and 8 floors")
+    zoom_max = spec.get("zoom_max", 4)
+    if type(zoom_max) not in (int, float) or not 1 <= zoom_max <= 8:
+        raise ValueError("zoom_max must be from 1 to 8")
+    ids: set[str] = set()
+    shots = []
+    for shot in shots_in:
+        if not isinstance(shot, dict) or set(shot) - {"id", "label", "title", "body", "bg"}:
+            raise ValueError("a shot has id, label, title, body and an optional bg")
+        bg = shot.get("bg")
+        if bg is not None and not (isinstance(bg, str) and _WORLD_HEX.fullmatch(bg)):
+            raise ValueError("bg must be #rrggbb")
+        shots.append({"id": _world_id(shot.get("id"), "shot id", ids), "label": _world_text(shot.get("label"), "label", 40),
+                      "title": _world_text(shot.get("title"), "title", 80),
+                      "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
+    floors, spot_ids = [], set()
+    for floor in floors_in:
+        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots"}:
+            raise ValueError("a floor has id, label, width, height and spots")
+        width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
+        spots_in = floor.get("spots")
+        if not isinstance(spots_in, list) or not 1 <= len(spots_in) <= 64:
+            raise ValueError("a floor lists 1..64 spots")
+        spots = []
+        for spot in spots_in:
+            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body"}:
+                raise ValueError("a spot has id, x, y, label, category and body")
+            category = spot.get("category", "")
+            if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
+                raise ValueError("category must be a lowercase token")
+            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _world_int(spot.get("x"), "x", 0, width),
+                          "y": _world_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
+                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
+        floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
+                       "width": width, "height": height, "spots": spots})
+    return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
+            "shots": shots, "floors": floors, "zoom_max": zoom_max}
+
+
+def _shots_html(world: dict[str, Any]) -> str:
+    wid, shots = world["id"], world["shots"]
+    articles = "".join(
+        f'<article class="ui-shot" data-i="{i}"><p class="ui-shot-hud">{escape(s["label"])} / {len(shots):02d}</p>'
+        f'<h3>{escape(s["title"])}</h3><p>{escape(s["body"])}</p></article>' for i, s in enumerate(shots))
+    marks = "".join(f'<div class="ui-shot-mark" data-i="{i}" style="--i:{i}"></div>' for i in range(len(shots)))
+    return (f'<section class="ui-world ui-world-shots" id="{wid}-shots" data-ui-world="shots" style="--shots:{len(shots)}" '
+            f'aria-label="{escape(world["title"], quote=True)}"><div class="ui-shots-scroll"><div class="ui-shots-track">'
+            f'<div class="ui-shots-stage">{articles}</div>{marks}</div></div></section>')
+
+
+def _map_html(world: dict[str, Any]) -> str:
+    wid, floors = world["id"], world["floors"]
+    radios = "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-floor" id="{wid}-floor-{f["id"]}" value="{f["id"]}"'
+        f'{" checked" if i == 0 else ""}>' for i, f in enumerate(floors))
+    categories = sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
+    cat_ids = [""] + categories
+    radios += "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{c or "all"}" value="{c}"'
+        f'{" checked" if not c else ""}>' for c in cat_ids)
+    labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
+    if categories:
+        labels += "".join(f'<label for="{wid}-cat-{c or "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+    stages, sheet = [], []
+    for f in floors:
+        spots = "".join(
+            f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
+            f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
+        stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}" '
+                      f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}</div>')
+        sheet.extend(
+            f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
+            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in f["spots"])
+    return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}" '
+            f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
+            f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
+            f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside></section>')
+
+
+def world_html(spec: Any) -> str:
+    """Semantic HTML for a world; every label and body is escaped. Works without JavaScript (scroll, :target, radios)."""
+    world = world_validate(spec)
+    return (_shots_html(world) if world["shots"] else "") + (_map_html(world) if world["floors"] else "")
+
+
+_WORLD_CSS = (
+    ".ui-world{--ui-world-h:min(70vh,560px);position:relative;margin:1rem 0;border:1px solid var(--ui-border);background:var(--ui-bg);"
+    "color:var(--ui-fg);border-radius:var(--ui-radius);overflow:hidden}"
+    ".ui-world-radio{position:absolute;opacity:0;pointer-events:none}"
+    ".ui-world-bar{display:flex;flex-wrap:wrap;gap:8px;padding:8px;border-bottom:1px solid var(--ui-border)}"
+    ".ui-world-bar label{border:1px solid var(--ui-border);padding:.35rem .75rem;cursor:pointer;background:var(--ui-panel);border-radius:var(--ui-radius)}"
+    ".ui-world-view{position:relative;overflow:auto;height:var(--ui-world-h);container-type:size}"
+    ".ui-world[data-js] .ui-world-view{overflow:hidden;touch-action:none;cursor:grab}"
+    ".ui-world[data-js][data-drag] .ui-world-view{cursor:grabbing}"
+    ".ui-world-cam{position:relative;transform-origin:0 0}"
+    ".ui-world[data-js] .ui-world-cam{transform:translate(calc(50cqw - var(--fx,0) * var(--z,1) * 1px),calc(50cqh - var(--fy,0) * var(--z,1) * 1px)) "
+    "scale(var(--z,1));transition:transform .24s ease-out}"
+    ".ui-world[data-js][data-drag] .ui-world-cam{transition:none}"
+    ".ui-floor{position:relative;display:none;background-color:var(--ui-panel);background-image:linear-gradient(var(--ui-border) 1px,transparent 1px),"
+    "linear-gradient(90deg,var(--ui-border) 1px,transparent 1px);background-size:64px 64px}"
+    ".ui-spot{position:absolute;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));white-space:nowrap;border:1px solid var(--ui-accent);"
+    "background:var(--ui-bg);color:var(--ui-fg);padding:.2rem .6rem;border-radius:999px;text-decoration:none;font-size:.85rem}"
+    ".ui-sheet{position:absolute;left:8px;right:8px;bottom:8px;max-height:45%;overflow:auto;border:1px solid var(--ui-border);"
+    "background:var(--ui-panel);border-radius:var(--ui-radius);padding:1rem}"
+    ".ui-sheet:not(:has(.ui-sheet-item:target,.ui-sheet-item[data-open])){display:none}"
+    ".ui-sheet-item{display:none}.ui-sheet-item:target,.ui-sheet-item[data-open]{display:block}.ui-sheet h3{margin:0 0 .5rem}"
+    ".ui-shot{padding:1.5rem;transition:opacity .4s,transform .4s}"
+    ".ui-shot-hud{font-family:var(--ui-font-mono);letter-spacing:.12em;margin:0 0 .5rem;font-size:.8rem}"
+    ".ui-world[data-js] .ui-shots-scroll{height:var(--ui-world-h);overflow:auto;position:relative}"
+    ".ui-world[data-js] .ui-shots-track{position:relative;height:calc(var(--shots) * var(--ui-world-h))}"
+    ".ui-world[data-js] .ui-shots-stage{position:sticky;top:0;height:var(--ui-world-h);overflow:hidden;background:var(--ui-bg);transition:background .6s}"
+    ".ui-world[data-js] .ui-shot{position:absolute;inset:0;opacity:0;transform:translateY(16px)}"
+    ".ui-shot-mark{position:absolute;left:0;top:calc(var(--i) * var(--ui-world-h));width:1px;height:var(--ui-world-h);pointer-events:none}"
+    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}}"
+)
+
+_WALL_CSS = (
+    ".ui-wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}"
+    ".ui-wall-cell{border:1px solid var(--ui-border);padding:16px;border-radius:var(--ui-radius);background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-wall-cell h3{margin:0 0 8px}"
+)
+
+
+def world_css(spec: Any) -> str:
+    """CSS for a world: fixed rules plus one rule per floor, category and shot (radios and data-lit drive them through :has)."""
+    world = world_validate(spec)
+    wid, rules = world["id"], [_WORLD_CSS]
+    for f in world["floors"]:
+        radio = f"#{wid}-floor-{f['id']}"
+        rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
+        rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
+    categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    for c in categories:
+        radio = f"#{wid}-cat-{c}"
+        rules.append(f'.ui-world:has({radio}:checked) .ui-spot:not([data-category="{c}"]){{display:none}}')
+    for c in [""] + categories if categories else []:
+        rules.append(f'.ui-world:has(#{wid}-cat-{c or "all"}:checked) label[for="{wid}-cat-{c or "all"}"]'
+                     f'{{background:var(--ui-accent);color:var(--ui-bg)}}')
+    if world["shots"]:
+        rules.append('.ui-world-shots[data-js]:not(:has(.ui-shot-mark[data-lit])) .ui-shot[data-i="0"]{opacity:1;transform:none}')
+    for i, s in enumerate(world["shots"]):
+        lit = f'.ui-world-shots:has(.ui-shot-mark[data-i="{i}"][data-lit])'
+        rules.append(f'{lit} .ui-shot[data-i="{i}"]{{opacity:1;transform:none}}')
+        if s["bg"]:
+            rules.append(f'{lit} .ui-shots-stage{{background:{s["bg"]};color:{ink_for(s["bg"])}}}')
+    return "@layer components{" + "".join(rules) + "}"
+
+
+WORLD_JS = r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
+export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
+export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
+function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
+function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
+const floor=()=>{const r=el.querySelector('input[name$="-floor"]:checked');return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
+const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
+const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z)};
+const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
+const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
+const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
+const focusSpot=a=>{const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
+view.addEventListener("pointerdown",e=>{pts.set(e.pointerId,[e.clientX,e.clientY]);moved=0;el.dataset.drag=""});
+view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
+const end=e=>{pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag};
+view.addEventListener("pointerup",end);view.addEventListener("pointercancel",end);
+view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
+el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot");if(a&&moved<=8){e.preventDefault();const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);focusSpot(a)}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();open(null);history.replaceState(null,"",location.pathname+location.search)}});
+el.addEventListener("keydown",e=>{if(e.key==="Escape")open(null)});
+el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
+if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
+const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"]`);if(a){open(hash);focusSpot(a)}else open(null)};
+addEventListener("hashchange",fromHash);home();fromHash();
+return el}
+export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
+globalThis.webUiWorld={fitZoom,clampFocus,bindWorlds};
+bindWorlds();
+"""
+
+
+def world_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page: bundled CSS, the world's CSS, the world's HTML and one inline module."""
+    world = world_validate(spec)
+    return render_document(trusted_html=world_html(world), title=world["title"], theme=theme,
+                           css=bundled_css() + world_css(world), embedded_modules=("world.js",))
+
+
+def random_theme(seed: int) -> dict[str, str]:
+    """A seeded palette plus corner radius as ``--ui-*`` tokens; every text pair meets WCAG AA by construction."""
+    rng = random.Random(seed)
+    hue, dark, sat = rng.random(), rng.random() < 0.5, 0.15 + rng.random() * 0.35
+    bg_l = 0.07 + rng.random() * 0.07 if dark else 0.92 + rng.random() * 0.06
+    bg, panel = _hsl(hue, sat, bg_l), _hsl(hue, sat, min(1.0, bg_l + (0.05 if dark else 0.04)))
+    grounds = (bg, panel)
+    return {
+        "--ui-bg": bg, "--ui-panel": panel,
+        "--ui-fg": _readable(hue + (rng.random() - 0.5) * 0.1, 0.25, grounds, 7),
+        "--ui-muted": _readable(hue, 0.12, grounds, 4.5),
+        "--ui-border": _hsl(hue, 0.2, bg_l + (0.16 if dark else -0.16)),
+        "--ui-accent": _readable(hue + 0.15 + rng.random() * 0.5, 0.55 + rng.random() * 0.3, grounds, 4.5),
+        "--ui-danger": _readable(rng.random() * 0.03, 0.7, grounds, 4.5),
+        "--ui-radius": ("0", ".25rem", ".5rem", "1rem")[int(rng.random() * 4)],
+    }
+
+
+def _hsl(hue: float, sat: float, light: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(hue % 1.0, min(max(light, 0.0), 1.0), min(max(sat, 0.0), 1.0))
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
+
+def _readable(hue: float, sat: float, grounds: tuple[str, ...], minimum: float) -> str:
+    """Start at mid lightness and move away from the grounds until the color reads on all of them."""
+    step = -0.02 if sum(_luminance(g) for g in grounds) / len(grounds) > 0.18 else 0.02
+    light = 0.5
+    for _ in range(50):
+        color = _hsl(hue, sat, light)
+        if all(contrast_ratio(color, g) >= minimum for g in grounds):
+            return color
+        light += step
+    return "#000000" if step < 0 else "#ffffff"
+
+
+def theme_wall(seeds: Any) -> str:
+    """One block of cells, each under its own random theme (inline ``--ui-*`` tokens): themes side by side for review."""
+    cells = []
+    for seed in seeds:
+        theme = random_theme(int(seed))
+        style = ";".join(f"{name}:{value}" for name, value in theme.items())
+        cells.append(
+            f'<section class="ui-wall-cell" data-seed="{int(seed)}" style="{style}"><h3>seed {int(seed)}</h3>'
+            '<p class="ui-muted">Muted text on the panel.</p><span class="ui-tag">tag</span> '
+            '<button class="ui-button" type="button">Button</button> <a href="#" style="color:var(--ui-accent)">Accent</a> '
+            '<span style="color:var(--ui-danger)">Danger</span><div class="ui-card">Card</div></section>')
+    return f'<div class="ui-wall">{"".join(cells)}</div>'
+
+
+def theme_wall_document(count: int) -> str:
+    return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
     parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
+    parser.add_argument("--world", type=Path, metavar="FILE",
+                        help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+    parser.add_argument("--theme-wall", type=int, metavar="N",
+                        help="print a page showing N seeded random themes side by side and exit")
     parser.add_argument("--css-bundle", action="store_true",
                         help="embed every web-ui stylesheet and theme (see bundled_css) in the page")
     parser.add_argument("--asset-base", help="local or pinned HTTPS shared asset directory")
@@ -1532,6 +1849,13 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             parser.error(str(exc))
         sys.stdout.write(f"{sri(raw)}\nsha256 {hashlib.sha256(raw).hexdigest()}\n")
+        return 0
+    if args.world or args.theme_wall:
+        try:
+            sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
+                             if args.world else theme_wall_document(args.theme_wall))
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
         return 0
     if args.stub and not args.asset_base:
         parser.error("--stub requires --asset-base")

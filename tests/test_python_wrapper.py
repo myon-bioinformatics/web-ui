@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import json
+
+import web_ui
 from web_ui import (_node_launch_module, bundled_css, render_document, run_node, shared_scripts,
                     shared_stylesheets)
 
@@ -265,6 +268,109 @@ class BundledCssTests(unittest.TestCase):
         self.assertEqual(via_python.returncode, 0, via_python.stderr)
         self.assertEqual((via_node.returncode, via_node.stdout), (0, via_python.stdout))
         self.assertIn('body[data-ui-theme="green"]', via_node.stdout)
+
+
+WORLD = json.loads((ROOT / "examples/world.json").read_text(encoding="utf-8"))
+
+
+class WorldTests(unittest.TestCase):
+    """One page, a camera: Python validates, does the arithmetic and writes HTML, CSS and a thin JS module."""
+
+    def test_demo_world_is_valid_and_validation_is_idempotent(self):
+        world = web_ui.world_validate(WORLD)
+        self.assertEqual(web_ui.world_validate(world), world)
+        self.assertEqual([f["id"] for f in world["floors"]], ["1f", "2f"])
+
+    def test_invalid_worlds_are_rejected(self):
+        spot = {"id": "a", "x": 8, "y": 8, "label": "A"}
+        floor = {"id": "f", "label": "F", "width": 64, "height": 64, "spots": [spot]}
+        bad = [
+            {"schema": "other"}, {**WORLD, "extra": 1}, {"schema": web_ui.WORLD_SCHEMA},
+            {**WORLD, "id": "1bad"}, {**WORLD, "zoom_max": 9},
+            {**WORLD, "shots": [{"id": "A", "label": "x", "title": "t"}]},
+            {**WORLD, "shots": [{"id": "a", "label": "x", "title": "t", "bg": "red"}]},
+            {**WORLD, "shots": [{"id": "a", "label": "x", "title": ""}]},
+            {**WORLD, "floors": [{**floor, "spots": [{**spot, "x": 65}]}]},
+            {**WORLD, "floors": [{**floor, "spots": [{**spot, "x": 1.5}]}]},
+            {**WORLD, "floors": [{**floor, "spots": [spot, spot]}]},
+            {**WORLD, "floors": [{**floor, "spots": []}]},
+            {**WORLD, "floors": [{**floor, "width": 63}]},
+            {**WORLD, "floors": [{**floor, "spots": [{**spot, "category": "Bad Cat"}]}]},
+        ]
+        for spec in bad:
+            with self.subTest(spec=str(spec)[:80]), self.assertRaises(ValueError):
+                web_ui.world_validate(spec)
+
+    def test_camera_math(self):
+        self.assertAlmostEqual(web_ui.fit_zoom(960, 640, 400, 300), 0.41666, places=4)
+        self.assertEqual(web_ui.clamp_focus(10, 10, 2, 960, 640, 400, 300), (100, 75))          # held inside the map
+        self.assertEqual(web_ui.clamp_focus(950, 630, 2, 960, 640, 400, 300), (860, 565))
+        self.assertEqual(web_ui.clamp_focus(0, 0, 0.25, 960, 640, 400, 300), (480, 320))        # smaller than the view: centered
+        self.assertEqual(web_ui.clamp_focus(480, 320, 1, 960, 640, 400, 300), (480, 320))
+
+    def test_html_is_semantic_escaped_and_works_without_js(self):
+        hostile = {**WORLD, "title": '<img src=x onerror=1>', "floors": [{**WORLD["floors"][0], "spots": [
+            {"id": "a", "x": 8, "y": 8, "label": "<b>x</b>", "category": "info", "body": "<script>1</script>"}]}]}
+        html = web_ui.world_html(hostile)
+        for raw in ("<b>x</b>", "<script>", "<img src=x"):
+            self.assertNotIn(raw, html)
+        self.assertEqual(html.count('class="ui-spot"'), 1)
+        self.assertIn('href="#demo-spot-a"', html)
+        self.assertIn('id="demo-spot-a"', html)
+        full = web_ui.world_html(WORLD)
+        self.assertEqual(full.count('type="radio" name="demo-floor"'), 2)
+        self.assertEqual(full.count('class="ui-spot"'), 6)
+        self.assertEqual(full.count('class="ui-shot-mark"'), 4)
+        self.assertEqual(full.count('class="ui-sheet-item"'), 6)
+
+    def test_css_has_one_rule_per_floor_category_and_shot(self):
+        css = web_ui.world_css(WORLD)
+        self.assertTrue(css.startswith("@layer components{") and css.endswith("}"))
+        for fragment in ('#demo-floor-2f:checked) .ui-floor[data-floor="2f"]{display:block}',
+                         '#demo-cat-food:checked) .ui-spot:not([data-category="food"]){display:none}',
+                         '.ui-shot-mark[data-i="3"][data-lit])'):
+            self.assertIn(fragment, css)
+        for shot in WORLD["shots"]:
+            self.assertGreaterEqual(web_ui.contrast_ratio(web_ui.ink_for(shot["bg"]), shot["bg"]), 4.5)
+            self.assertIn(shot["bg"], css)
+
+    def test_single_file_world_page(self):
+        html = web_ui.world_document(WORLD, theme="github-like")
+        self.assertNotIn('rel="stylesheet"', html)
+        self.assertEqual(html.count('<script type="module">'), 1)
+        self.assertIn("globalThis.webUiWorld", html)
+        self.assertEqual(web_ui.module_asset("world.js")[0].decode(), web_ui.WORLD_JS)
+
+    def test_random_themes_always_read_and_are_reproducible(self):
+        seen = set()
+        for seed in range(200):
+            theme = web_ui.random_theme(seed)
+            self.assertEqual(theme, web_ui.random_theme(seed))
+            for text, minimum in (("fg", 7), ("muted", 4.5), ("accent", 4.5), ("danger", 4.5)):
+                for ground in ("bg", "panel"):
+                    ratio = web_ui.contrast_ratio(theme[f"--ui-{text}"], theme[f"--ui-{ground}"])
+                    self.assertGreaterEqual(ratio, minimum, f"seed {seed}: {text} on {ground} {ratio:.2f}")
+            seen.add(theme["--ui-bg"])
+        self.assertGreater(len(seen), 150)
+
+    def test_front_page_regions_are_what_the_generators_write(self):
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        region = lambda start, end: page.split(start)[1].split(end)[0]
+        self.assertEqual(region("<!--world-->", "<!--/world-->"), web_ui.world_html(WORLD))
+        self.assertEqual(region("<!--wall-->", "<!--/wall-->"), web_ui.theme_wall(range(12)))
+        self.assertEqual(region("/*world-css*/", "/*/world-css*/"), web_ui.world_css(WORLD) + web_ui._WALL_CSS)
+        self.assertEqual(region("/*world-js*/", "/*/world-js*/"), web_ui.WORLD_JS)
+
+    def test_theme_wall_and_cli(self):
+        wall = web_ui.theme_wall(range(12))
+        self.assertEqual(wall.count('class="ui-wall-cell"'), 12)
+        self.assertIn("--ui-radius:", wall)
+        run = lambda *args: subprocess.run([sys.executable, "-S", "web_ui.py", *args], cwd=ROOT, capture_output=True,
+                                           text=True, encoding="utf-8", timeout=60)
+        shown = run("--world", "examples/world.json", "--theme", "green")
+        self.assertEqual((shown.returncode, shown.stdout), (0, web_ui.world_document(WORLD, theme="green")))
+        self.assertEqual(run("--theme-wall", "3").stdout, web_ui.theme_wall_document(3))
+        self.assertEqual(run("--world", "no-such.json").returncode, 2)
 
 
 if __name__ == '__main__':

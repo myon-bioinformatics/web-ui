@@ -16,7 +16,8 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import bundled_css, render_document, section_browser, shared_scripts
+from web_ui import (bundled_css, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
+                    shared_scripts, theme_wall_document, world_document)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -198,6 +199,128 @@ class UiHelpersBrowserTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+
+
+class WorldBrowserTests(unittest.TestCase):
+    """The world engine in real Chromium: scroll shots, map camera, sheet, no-JS fallback, and the random theme wall."""
+
+    @staticmethod
+    def serve(pages):
+        directory = tempfile.mkdtemp()
+        for name, html in pages.items():
+            (Path(directory) / name).write_text(html, encoding='utf-8')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(QuietHandler, directory=directory))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, f'http://127.0.0.1:{server.server_port}'
+
+    def test_shots_map_sheet_and_fallback(self):
+        import json
+        spec = json.loads((ROOT / 'examples/world.json').read_text(encoding='utf-8'))
+        server, origin = self.serve({'index.html': world_document(spec, theme='github-like')})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 900})
+                    errors, external = [], []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.on('request', lambda r: external.append(r.url) if not r.url.startswith(origin + '/') else None)
+                    page.goto(origin + '/index.html')
+                    # Shots: scrolling the box lights one mark, and CSS shows that shot on that shot's color.
+                    scroller = page.locator('.ui-shots-scroll')
+                    height = scroller.evaluate('el => el.clientHeight')
+                    expect(page.locator('.ui-shot-mark[data-i="0"]')).to_have_attribute('data-lit', '')
+                    scroller.evaluate(f'el => el.scrollTop = {height * 2}')
+                    expect(page.locator('.ui-shot-mark[data-i="2"]')).to_have_attribute('data-lit', '')
+                    expect(page.locator('.ui-shot[data-i="2"]')).to_have_css('opacity', '1')
+                    expect(page.locator('.ui-shot[data-i="0"]')).to_have_css('opacity', '0')
+                    expect(page.locator('.ui-shots-stage')).to_have_css('background-color', 'rgb(90, 42, 26)')
+                    # Map: Python's camera arithmetic and the JS agree on every case.
+                    cases = [(10, 10, 2, 960, 640, 400, 300), (950, 630, 2, 960, 640, 400, 300),
+                             (0, 0, 0.25, 960, 640, 400, 300), (480, 320, 1, 960, 640, 390, 844), (5, 900, 3, 960, 640, 390, 844)]
+                    got = page.evaluate('cases => cases.map(c => webUiWorld.clampFocus(...c))', cases)
+                    for case, result in zip(cases, got):
+                        self.assertEqual(result, list(clamp_focus(*case)), case)
+                    self.assertAlmostEqual(page.evaluate('webUiWorld.fitZoom(960, 640, 390, 844)'), fit_zoom(960, 640, 390, 844))
+                    world = page.locator('#demo-map')
+                    view = world.locator('.ui-world-view')
+                    expect(world).to_have_attribute('data-js', '')
+                    expect(world.locator('.ui-floor[data-floor="1f"]')).to_be_visible()
+                    expect(world.locator('.ui-floor[data-floor="2f"]')).to_be_hidden()
+                    cam = world.locator('.ui-world-cam')
+                    z0 = float(cam.evaluate('el => el.style.getPropertyValue("--z")'))
+                    world.locator('.ui-world-view').hover()
+                    page.mouse.wheel(0, -300)
+                    page.wait_for_function('z => parseFloat(document.querySelector("#demo-map .ui-world-cam").style.getPropertyValue("--z")) > z', arg=z0)
+                    box = view.bounding_box()
+                    fx0 = float(cam.evaluate('el => el.style.getPropertyValue("--fx")'))
+                    page.mouse.move(box['x'] + 300, box['y'] + 150)
+                    page.mouse.down()
+                    page.mouse.move(box['x'] + 200, box['y'] + 150, steps=5)
+                    page.mouse.up()
+                    self.assertGreater(float(cam.evaluate('el => el.style.getPropertyValue("--fx")')), fx0)   # dragged left, camera moved right
+                    # Categories and floors switch by CSS alone (radios).
+                    world.locator('label[data-cat="food"]').click()
+                    expect(world.locator('.ui-spot[data-category="info"]').first).to_be_hidden()
+                    expect(world.locator('.ui-spot[data-category="food"]').first).to_be_visible()
+                    world.locator('label[data-cat=""]').click()
+                    world.locator('label[for="demo-floor-2f"]').click()
+                    expect(world.locator('.ui-floor[data-floor="2f"]')).to_be_visible()
+                    expect(world.locator('.ui-floor[data-floor="1f"]')).to_be_hidden()
+                    # Spot -> sheet -> Escape; the camera moves to the spot, the URL gains a hash, the page does not change.
+                    world.locator('label[for="demo-floor-1f"]').click()
+                    world.locator('.ui-spot', has_text='Hall').click()
+                    sheet = world.locator('#demo-spot-hall')
+                    expect(sheet).to_be_visible()
+                    self.assertTrue(page.url.endswith('#demo-spot-hall'))
+                    self.assertGreaterEqual(float(cam.evaluate('el => el.style.getPropertyValue("--z")')), 2)
+                    page.keyboard.press('Escape')
+                    expect(sheet).to_be_hidden()
+                    # Deep link: a fresh load with a hash opens that spot (here a spot on the other floor).
+                    page.goto(origin + '/index.html#demo-spot-lab')
+                    expect(page.locator('#demo-spot-lab')).to_be_visible()
+                    expect(page.locator('.ui-floor[data-floor="2f"]')).to_be_visible()
+                    self.assertEqual(errors, [])
+                    self.assertEqual(external, [])
+                    # Without JavaScript the sheet still opens through :target and scrolling still works.
+                    no_js = browser.new_context(java_script_enabled=False)
+                    try:
+                        plain = no_js.new_page()
+                        plain.goto(origin + '/index.html#demo-spot-gate')
+                        expect(plain.locator('#demo-spot-gate')).to_be_visible()
+                        expect(plain.locator('.ui-shot[data-i="3"]')).to_be_visible()
+                    finally:
+                        no_js.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_random_theme_wall_reads_in_every_cell_without_overflow(self):
+        server, origin = self.serve({'wall.html': theme_wall_document(24)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 390, 'height': 844})
+                    page.goto(origin + '/wall.html')
+                    rows = page.evaluate('''() => [...document.querySelectorAll(".ui-wall-cell")].map(cell => {
+                        const css = getComputedStyle(cell), muted = getComputedStyle(cell.querySelector(".ui-muted"));
+                        const hex = c => "#" + c.match(/\\d+/g).slice(0, 3).map(n => (+n).toString(16).padStart(2, "0")).join("");
+                        return {bg: hex(css.backgroundColor), fg: hex(css.color), muted: hex(muted.color), seed: cell.dataset.seed};
+                    })''')
+                    self.assertEqual(len(rows), 24)
+                    for row in rows:
+                        self.assertGreaterEqual(contrast_ratio(row['fg'], row['bg']), 7, row)
+                        self.assertGreaterEqual(contrast_ratio(row['muted'], row['bg']), 4.5, row)
+                    self.assertEqual(len({row['bg'] for row in rows}) > 18, True)
+                    self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 390)
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

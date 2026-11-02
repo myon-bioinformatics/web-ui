@@ -47,6 +47,12 @@ stylesheet and theme, built in memory from `css/`; nothing is written to the rep
 together, `bindTheme()` from `js/ui.js` switches `data-ui-theme` live, with no stylesheet swap and no reload.
 From Node, run `node vendor/py_launch.cjs -- web_ui.py --css-bundle`.
 
+World pages (prototype): `world_document(spec)` or `python -S web_ui.py --world examples/world.json` builds one page that never
+changes page: scrolling "shots" and a pan/zoom map with floors, categories and an info sheet (data: `web-ui-world/1`).
+Python validates the data, does the camera arithmetic (`fit_zoom`, `clamp_focus`) and writes the HTML, the CSS and a
+small module; the script only applies state and CSS does the rest. Without JavaScript the shots stack and spots open
+through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random themes side by side.
+
 `js/ui.js` is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
 clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
 (click-to-enlarge in a `<dialog>`). Import only what a page needs.
