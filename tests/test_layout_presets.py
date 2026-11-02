@@ -76,4 +76,4 @@ def test_front_page_demo_matches_the_presets():
     assert re.findall(r'name="ui-layout" value="([a-z0-9-]+)"', page) == [p["id"] for p in data["presets"]]
     layout = page.split("<legend>Layout</legend>")[1].split("</fieldset>")[0]
     assert layout.count('type="radio" name="ui-layout"') == len(data["presets"]) and "disabled" not in layout
-    assert page.count('name="ui-theme"') == 3 and 'class="ui-matrix-tiles"' in page
+    assert page.count('name="ui-theme"') == 2 + len(web_ui.CANDIDATE_THEMES) and 'class="ui-matrix-tiles"' in page

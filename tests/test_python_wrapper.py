@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import json
+import math
 
 import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
@@ -242,9 +243,19 @@ class BundledCssTests(unittest.TestCase):
             self.assertNotIn('rel="stylesheet"', html)
             self.assertIn(f'body[data-ui-theme="{theme}"]', css)
 
-    def test_candidate_theme_lives_in_tokens(self):
-        self.assertIn('body[data-ui-theme="green"]', web_ui.css_source("tokens.css"))
-        self.assertNotIn("themes/green.css", web_ui._CSS)
+    def test_candidate_themes_live_in_tokens_and_any_hue_makes_a_theme(self):
+        tokens = web_ui.css_source("tokens.css")
+        for name in web_ui.CANDIDATE_THEMES:
+            self.assertIn(f'body[data-ui-theme="{name}"]', tokens)
+            self.assertNotIn(f"themes/{name}.css", web_ui._CSS)
+        self.assertEqual(web_ui.CANDIDATE_THEMES, ("green", "red", "blue"))
+        for hue in (0.0, 0.08, 0.33, 0.6, 0.83):
+            for dark in (False, True):
+                theme = web_ui.theme_palette(hue, dark=dark)
+                for text, minimum in (("fg", 7), ("muted", 4.5), ("accent", 4.5), ("danger", 4.5)):
+                    for ground in ("bg", "panel"):
+                        self.assertGreaterEqual(web_ui.contrast_ratio(theme[f"--ui-{text}"], theme[f"--ui-{ground}"]), minimum, (hue, dark, text))
+        self.assertEqual(web_ui.theme_palette(0.3), web_ui.theme_palette(0.3))
 
     @unittest.skipUnless(_node_at_least_26(), "Node 26+ not available")
     def test_node_reaches_the_bundle_through_the_shared_launcher(self):
@@ -311,7 +322,8 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(full.count('type="radio" name="demo-floor"'), 2)
         self.assertEqual(full.count('class="ui-spot"'), 6)
         self.assertEqual(full.count('class="ui-shot-mark"'), 4)
-        self.assertEqual(full.count('class="ui-sheet-item"'), 6)
+        self.assertEqual(full.count('class="ui-actor"'), 5)
+        self.assertEqual(full.count('class="ui-sheet-item"'), 11)  # a sheet for every spot and every villager
 
     def test_css_has_one_rule_per_floor_category_and_shot(self):
         css = web_ui.world_css(WORLD)
@@ -348,6 +360,75 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(page, web_ui.example_pages()["index.html"])
         for fragment in (web_ui.world_html(WORLD), web_ui.theme_wall(range(12)), web_ui.world_css(WORLD), web_ui.WORLD_JS):
             self.assertIn(fragment, page)
+
+    def test_villagers_walk_straight_at_constant_speed_pause_at_random_and_loop_seamlessly(self):
+        for seed in range(60):
+            for width, height, speed in ((960, 640, 48), (640, 640, 32), (320, 480, 64)):
+                path = web_ui.villager_path(seed, width, height, speed=speed)
+                keys = path["keys"]
+                self.assertEqual((keys[0][0], keys[-1][0]), (0.0, 100.0))
+                self.assertEqual(keys[0][1:], keys[-1][1:])                       # the loop closes
+                self.assertEqual(path, web_ui.villager_path(seed, width, height, speed=speed))
+                pauses = moves = 0
+                for (p0, x0, y0), (p1, x1, y1) in zip(keys, keys[1:]):
+                    self.assertGreaterEqual(p1, p0)
+                    self.assertTrue(32 <= x1 <= width - 32 and 32 <= y1 <= height - 32, (seed, x1, y1))
+                    seconds, dist = (p1 - p0) / 100 * path["duration"], math.hypot(x1 - x0, y1 - y0)
+                    if dist == 0:
+                        pauses += 1
+                        self.assertTrue(0.9 <= seconds <= 4.1, (seed, seconds))   # a random stop of 1..4 s
+                    else:
+                        moves += 1
+                        self.assertAlmostEqual(dist / seconds, speed, delta=speed * 0.02)   # constant speed
+                self.assertEqual((moves, pauses), (5, 4))
+        self.assertNotEqual(web_ui.villager_path(1, 960, 640), web_ui.villager_path(2, 960, 640))
+
+    def test_travel_clock_and_board_math(self):
+        self.assertEqual(web_ui.travel_seconds(0, 0, 3, 4, 5), 1.0)
+        self.assertEqual(web_ui.travel_seconds(10, 10, 10, 10, 96), 0.0)
+        self.assertEqual([web_ui.minutes_until(*case) for case in ((600, 630), (600, 600), (1430, 10), (0, 1439))], [30, 0, 20, 1439])
+        self.assertEqual([web_ui.board_seconds(n) for n in (1, 64, 160, 400)], [8.0, 8.0, 20.0, 50.0])
+
+    def test_actors_player_and_board_are_validated_and_escaped(self):
+        floor = WORLD["floors"][0]
+        actor = {"id": "x", "emoji": "🐈", "label": "L"}
+        bad = [
+            {**WORLD, "floors": [{**floor, "actors": [{**actor, "emoji": "A"}]}]},                     # plain text is not a character
+            {**WORLD, "floors": [{**floor, "actors": [{**actor, "emoji": "<b>"}]}]},
+            {**WORLD, "floors": [{**floor, "actors": [{**actor, "speed": 1}]}]},
+            {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": "gate"}]}]},                     # ids are shared with spots
+            {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": f"a{i}"} for i in range(17)]}]},
+            {**WORLD, "floors": [{**floor, "player": {"emoji": "🧙", "x": 9999, "y": 0}}]},
+            {**WORLD, "floors": [{**floor, "player": {"emoji": "x", "x": 0, "y": 0}}]},
+            {**WORLD, "board": {"title": "T", "items": []}},
+            {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "25:00"}]}},
+            {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "9:00"}]}},
+        ]
+        for spec in bad:
+            with self.subTest(spec=str(spec)[-80:]), self.assertRaises(ValueError):
+                web_ui.world_validate(spec)
+        hostile = {**WORLD, "board": {"title": "<i>", "items": [{"text": "<script>1</script>", "at": "10:30"}]},
+                   "floors": [{**floor, "actors": [{**actor, "label": "<b>x</b>", "body": "<img src=x>"}]}]}
+        html = web_ui.world_html(hostile)
+        for raw in ("<script>", "<b>x</b>", "<img src=x>", "<i>"):
+            self.assertNotIn(raw, html)
+        css = web_ui.world_css(hostile)
+        self.assertIn("@keyframes ui-walk-demo-x{0.0%{transform:translate(", css)
+        self.assertIn("#demo-actor-x{animation:ui-walk-demo-x ", css)
+        self.assertIn("prefers-reduced-motion", css)
+
+    def test_visitor_lines_are_cleaned_to_plain_text_and_the_form_is_opt_in(self):
+        cases = {"  hello   world  ": "hello world", "a\tb\nc": "a b c", "\x00\x07x": "x", "": None, "   ": None, 5: None,
+                 "x" * 100: "x" * 60, "\U0001f600 ok": "\U0001f600 ok", "\U0001f9d1\u200d\U0001f33e hi": "\U0001f9d1\u200d\U0001f33e hi",
+                 "a\u3000b\u00a0c": "a b c", "z\u200bz": "zz", "p\x85q": "pq", "<b>x</b>": "<b>x</b>"}
+        for raw, expected in cases.items():
+            self.assertEqual(web_ui.clean_message(raw), expected, repr(raw))
+        self.assertEqual(web_ui.clean_message("abcdef", limit=3), "abc")
+        self.assertIn('class="ui-board-post"', web_ui.world_html(WORLD))
+        quiet = {**WORLD, "board": {**WORLD["board"], "post": False}}
+        self.assertNotIn("ui-board-post", web_ui.world_html(quiet))
+        with self.assertRaises(ValueError):
+            web_ui.world_validate({**WORLD, "board": {**WORLD["board"], "post": "yes"}})
 
     def test_theme_wall_and_cli(self):
         wall = web_ui.theme_wall(range(12))

@@ -254,7 +254,7 @@ def _theme_blocks():
 def test_themes_override_only_tokens_that_tokens_css_defines():
     # A new semantic token goes into :root with a default, so every theme has it.
     root, blocks = _theme_blocks()
-    assert {"modern", "github-like", "green"} <= set(blocks)
+    assert {"modern", "github-like", *web_ui.CANDIDATE_THEMES} <= set(blocks)
     for theme, values in blocks.items():
         assert set(values) <= set(root), f"{theme} invents tokens: {sorted(set(values) - set(root))}"
 

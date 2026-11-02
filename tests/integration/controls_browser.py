@@ -16,7 +16,7 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
+from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clean_message, minutes_until, travel_seconds, board_seconds, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
                     shared_scripts, stub_response, theme_wall_document, world_document)
 
 
@@ -290,6 +290,69 @@ class WorldBrowserTests(unittest.TestCase):
                         expect(plain.locator('.ui-shot[data-i="3"]')).to_be_visible()
                     finally:
                         no_js.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_villagers_player_board_clock_and_visitor_lines(self):
+        import datetime
+        from web_ui import example_data
+        spec = example_data('world')
+        server, origin = self.serve({'index.html': world_document(spec)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    context = browser.new_context(viewport={'width': 800, 'height': 900}, timezone_id='UTC')
+                    page = context.new_page()
+                    page.clock.set_fixed_time(datetime.datetime(2026, 11, 3, 10, 0, tzinfo=datetime.timezone.utc))
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/index.html')
+                    # Villagers: a CSS animation per actor, and they really move (straight, constant speed is checked in Python).
+                    cat = page.locator('#demo-actor-cat')
+                    self.assertNotEqual(cat.evaluate('el => getComputedStyle(el).animationName'), 'none')
+                    first = cat.bounding_box()
+                    page.wait_for_timeout(900)
+                    second = cat.bounding_box()
+                    self.assertTrue(abs(first['x'] - second['x']) + abs(first['y'] - second['y']) > 1, (first, second))
+                    # Touching a villager shows what it says; the map keeps its camera.
+                    cat.dispatch_event('click')
+                    expect(page.locator('#demo-spot-cat')).to_be_visible()
+                    page.keyboard.press('Escape')
+                    # The player walks to a tapped spot at constant speed: Python's travel time is what the page uses.
+                    page.locator('.ui-spot', has_text='Hall').click()
+                    player = page.locator('.ui-player')
+                    expect(player).to_have_attribute('data-speed', '96')
+                    walk = float(player.evaluate('el => el.style.getPropertyValue("--walk")').rstrip('s'))
+                    self.assertAlmostEqual(walk, travel_seconds(120, 320, 480, 320, 96), places=6)
+                    self.assertEqual(player.evaluate('el => el.style.getPropertyValue("--px")'), '480')
+                    # Board: the clock and "in N min" come from the page's clock, by the same rule as Python.
+                    expect(page.locator('[data-clock]')).to_have_text('10:00')
+                    texts = page.locator('.ui-board-run [data-at]').all_text_contents()
+                    expected = [f'in {minutes_until(600, h * 60 + m)} min' for h, m in ((10, 30), (14, 0), (17, 30))] * 2
+                    self.assertEqual(texts, expected)
+                    cases = [(600, 630), (600, 600), (1430, 10), (0, 1439)]
+                    self.assertEqual(page.evaluate('cases => cases.map(c => webUiWorld.minutesUntil(...c))', cases), [minutes_until(*c) for c in cases])
+                    self.assertEqual(page.evaluate('[1, 64, 160, 400].map(n => webUiWorld.boardSeconds(n))'), [board_seconds(n) for n in (1, 64, 160, 400)])
+                    # Visitor lines: same cleaning as Python, shown as text, kept only on this page view.
+                    lines = ['  hello   world  ', '<img src=x onerror=1>', 'x' * 100, '   ', '\U0001f9d1\u200d\U0001f33e hi']
+                    self.assertEqual(page.evaluate('lines => lines.map(t => webUiWorld.cleanMessage(t))', lines), [clean_message(t) for t in lines])
+                    form = page.locator('.ui-board-post')
+                    for text in lines[:3]:
+                        form.locator('input').fill(text)
+                        form.locator('input').press('Enter')
+                    form.locator('input').fill('   ')
+                    form.locator('input').press('Enter')                                   # nothing to show: ignored
+                    notes = page.locator('.ui-board-note').all_text_contents()
+                    self.assertEqual(notes, [clean_message(t) for t in reversed(lines[:3])] * 2)
+                    self.assertEqual(page.locator('.ui-board-run img').count(), 0)
+                    self.assertEqual(page.evaluate('globalThis.pwned'), None)
+                    page.reload()
+                    self.assertEqual(page.locator('.ui-board-note').count(), 0)            # nothing is stored
+                    self.assertEqual(errors, [])
                 finally:
                     browser.close()
         finally:

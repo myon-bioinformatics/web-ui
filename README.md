@@ -30,7 +30,7 @@ Current themes:
 
 - `modern` — terminal-styled default (text is Meiryo like every theme; code stays monospace)
 - `github-like` — generic light presentation intentionally using familiar GitHub visual cues
-- `green` — candidate, token-only: a sage-and-teal light theme whose values live in the `tokens.css` source (no theme file, not in contract v1 yet)
+- `green`, `red`, `blue` — candidates, token-only: palettes (green first built by hand in Ironmate's studio; red and blue are `theme_palette(hue)`, and any hue works) whose values are generated into `tokens.css` (no theme files, not in contract v1 yet)
 
 Single-file pages: `render_document(css=bundled_css())` (or `python -S web_ui.py --css-bundle`) embeds every
 stylesheet and theme, built in memory from the sources in `web_ui.py`; nothing is written to the repository. Because all themes ship

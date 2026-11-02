@@ -29,11 +29,12 @@ import sys
 from typing import Any
 import urllib.error
 import urllib.request
+import zlib
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in css/tokens.css, so there is no themes/ file to link; not in contract v1 yet.
-CANDIDATE_THEMES = ("green",)
+CANDIDATE_THEMES = ("green", "red", "blue")
 # The browser modules, as data: Python is the only source (there are no js/ files). write_js()/--site writes them under DIR/js/.
 _JS = {
     "ui.js": r"""/** Set text-only content. User-controlled values are never interpreted as HTML. */
@@ -400,8 +401,6 @@ def _require_local_or_https(value: str, *, label: str, allow_query: bool = True)
 # The stylesheets, as data: Python is the only source (there are no css/ files). Names are kept so the bundle order is stable.
 _CSS = {
     "tokens.css": r""":root{--ui-bg:#0d1117;--ui-panel:#101820;--ui-fg:#d1f7c4;--ui-muted:#8b949e;--ui-border:#58a6ff;--ui-accent:#7ee787;--ui-danger:#cf222e;--ui-radius:0;--ui-space:1rem;--ui-max:960px;--ui-font:Meiryo,メイリオ,sans-serif;--ui-font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
-/* Green (candidate theme, token-only): the sage-and-teal light look first built by hand in Ironmate's studio. */
-body[data-ui-theme="green"]{--ui-bg:#edf0ec;--ui-panel:#ffffff;--ui-fg:#163b3b;--ui-muted:#546a61;--ui-border:#ccdcd4;--ui-accent:#126d66;--ui-danger:#a73528;--ui-radius:.5rem;color-scheme:light}
 """,
     "base.css": r"""@layer base{*{box-sizing:border-box}body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:16px/1.6 var(--ui-font)}pre,code,kbd,samp{font-family:var(--ui-font-mono)!important}.ui-page{max-width:var(--ui-max);margin:auto;padding:1.25rem}a{color:inherit}}""",
     "components.css": r"""@layer components{.ui-panel,.ui-card{background:var(--ui-panel);border:1px solid var(--ui-border);padding:1rem;margin:1rem 0;border-radius:var(--ui-radius)}.ui-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.ui-tag{display:inline-block;border:1px solid var(--ui-border);padding:.1rem .4rem}.ui-button,.ui-input{font:inherit;background:var(--ui-panel);color:var(--ui-fg);border:1px solid var(--ui-border);padding:.6rem;border-radius:var(--ui-radius)}.ui-muted{color:var(--ui-muted)}.ui-output{font:inherit;white-space:pre-wrap;overflow:auto;background:#d8dee4;color:#161b22;border:1px solid #8c959f;border-radius:4px;padding:.75rem}pre code,.ui-output code{font-family:inherit;color:inherit}pre.ui-output code{background:transparent}@media(max-width:480px){.ui-page{padding:.75rem}.ui-grid{grid-template-columns:1fr}.ui-card,.ui-panel{margin:.75rem 0;padding:.75rem}}.ui-lightbox{border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);padding:1rem;max-width:min(96vw,960px);max-height:96vh;border-radius:var(--ui-radius)}.ui-lightbox::backdrop{background:rgba(0,0,0,.72)}.ui-lightbox img{display:block;max-width:100%;max-height:calc(96vh - 8rem);margin:auto}.ui-lightbox-bar{display:flex;gap:.5rem;justify-content:space-between;margin-top:.75rem}body:has(.ui-lightbox[open]){overflow:hidden}}""",
@@ -462,11 +461,14 @@ _CSS_CORE = ("tokens.css", "base.css", "components.css")
 
 
 def css_source(name: str) -> str:
-    """One stylesheet source by name, e.g. ``tokens.css`` or ``themes/modern.css`` (raw text)."""
+    """One stylesheet source by name, e.g. ``tokens.css`` or ``themes/modern.css`` (raw text).
+
+    ``tokens.css`` is the ``:root`` defaults plus one generated block per token-only theme (CANDIDATE_THEMES)."""
     try:
-        return _CSS[name]
+        text = _CSS[name]
     except KeyError:
         raise ValueError(f"unknown stylesheet: {name}") from None
+    return text.rstrip("\n") + "\n" + _token_theme_css() if name == "tokens.css" else text
 
 
 def bundled_css() -> str:
@@ -481,7 +483,7 @@ def bundled_css() -> str:
              *(n for n in sorted(_CSS) if n.startswith("themes/"))]
     parts = ["@layer base,components,theme;\n"]
     for name in order:
-        parts.append(f"/* css/{name} */\n{_CSS[name].replace(chr(13) + chr(10), chr(10)).strip(chr(10))}\n")
+        parts.append(f"/* css/{name} */\n{css_source(name).replace(chr(13) + chr(10), chr(10)).strip(chr(10))}\n")
     return "".join(parts)
 
 
@@ -1899,6 +1901,57 @@ def clamp_focus(fx: float, fy: float, zoom: float, width: float, height: float,
             min(max(fy, half_h), height - half_h) if height > 2 * half_h else height / 2)
 
 
+def travel_seconds(x0: float, y0: float, x1: float, y1: float, speed: float) -> float:
+    """Seconds to walk in a straight line at constant ``speed`` (map units per second)."""
+    return math.hypot(x1 - x0, y1 - y0) / speed
+
+
+def minutes_until(now: int, at: int) -> int:
+    """Minutes from ``now`` to the next ``at`` (both minutes since midnight); 0 means right now, wraps past midnight."""
+    return (at - now) % 1440
+
+
+def board_seconds(chars: int, chars_per_second: float = 8.0) -> float:
+    """Seconds for one lap of the scrolling board: constant speed, never quicker than 8 s."""
+    return max(8.0, round(chars / chars_per_second, 1))
+
+
+# The spaces the board collapses (ASCII spaces, NBSP, the Unicode space separators, line/paragraph separators); the page uses the same set.
+_MESSAGE_SPACE = frozenset(" \t\n\r\f\v\u00a0\u1680\u2028\u2029\u202f\u205f\u3000") | {chr(c) for c in range(0x2000, 0x200B)}
+
+
+def clean_message(text: Any, limit: int = 60) -> str | None:
+    """What the board shows for a visitor's line: control characters dropped (a zero-width joiner stays, so emoji sequences survive),
+    whitespace collapsed, cut to ``limit`` characters;
+    ``None`` when nothing is left. The page applies the same rule and puts the result in as text, never as HTML."""
+    if not isinstance(text, str):
+        return None
+    kept = "".join(" " if c in _MESSAGE_SPACE else c for c in text if c in _MESSAGE_SPACE or c == "\u200d" or c.isprintable())
+    kept = " ".join(word for word in kept.split(" ") if word)[:limit].rstrip()
+    return kept or None
+
+
+def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, margin: int = 32, stops: int = 4) -> dict[str, Any]:
+    """A seeded loop for one villager: straight walks at constant ``speed`` to random points, a random pause at each (1..4 s),
+    then a walk back to the start so the loop is seamless. Returns ``{"duration": seconds, "keys": [(percent, x, y), ...]}``;
+    between keys the motion is linear, a pause is two keys at the same point."""
+    rng = random.Random(seed)
+    point = lambda: (round(margin + rng.random() * max(0, width - 2 * margin), 1), round(margin + rng.random() * max(0, height - 2 * margin), 1))
+    start = point()
+    here, clock, steps = start, 0.0, [(0.0, start)]
+    for _ in range(stops):
+        target = point()
+        clock += travel_seconds(*here, *target, speed)
+        steps.append((clock, target))
+        clock += 1.0 + rng.random() * 3.0
+        steps.append((clock, target))
+        here = target
+    clock += travel_seconds(*here, *start, speed)
+    steps.append((clock, start))
+    total = max(clock, 1.0)
+    return {"duration": round(total, 2), "keys": [(round(100 * t / total, 3), x, y) for t, (x, y) in steps]}
+
+
 def _world_text(value: Any, label: str, limit: int, *, required: bool = True) -> str:
     if not isinstance(value, str) or (required and not value.strip()) or len(value) > limit:
         raise ValueError(f"{label} must be {1 if required else 0}..{limit} characters")
@@ -1912,6 +1965,13 @@ def _world_id(value: Any, label: str, seen: set[str]) -> str:
     return value
 
 
+def _world_emoji(value: Any) -> str:
+    """An emoji (or any short non-ASCII symbol string); plain ASCII is refused so text cannot pose as a character."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 16 or any(c.isascii() for c in value):
+        raise ValueError("emoji must be 1..16 non-ASCII characters")
+    return value
+
+
 def _world_int(value: Any, label: str, low: int, high: int) -> int:
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f"{label} must be an integer from {low} to {high}")
@@ -1922,8 +1982,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
     """Checked copy of a ``web-ui-world/1`` spec: optional ``shots`` (scroll scenes) and ``floors`` (maps with spots)."""
     if not isinstance(spec, dict) or spec.get("schema") != WORLD_SCHEMA:
         raise ValueError(f"expected schema {WORLD_SCHEMA}")
-    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max"}:
-        raise ValueError("a world has schema, id, title, shots, floors and zoom_max")
+    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board"}:
+        raise ValueError("a world has schema, id, title, shots, floors, zoom_max and board")
     world_id = spec.get("id", "world")
     if not isinstance(world_id, str) or not _WORLD_ID.fullmatch(world_id):
         raise ValueError("id must be a lowercase token")
@@ -1948,8 +2008,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
                       "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
     floors, spot_ids = [], set()
     for floor in floors_in:
-        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots"}:
-            raise ValueError("a floor has id, label, width, height and spots")
+        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player"}:
+            raise ValueError("a floor has id, label, width, height, spots, actors and player")
         width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
         spots_in = floor.get("spots")
         if not isinstance(spots_in, list) or not 1 <= len(spots_in) <= 64:
@@ -1964,10 +2024,49 @@ def world_validate(spec: Any) -> dict[str, Any]:
             spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _world_int(spot.get("x"), "x", 0, width),
                           "y": _world_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
                           "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
+        actors = []
+        actors_in = floor.get("actors", [])
+        if not isinstance(actors_in, list) or len(actors_in) > 16:
+            raise ValueError("a floor lists at most 16 actors")
+        for actor in actors_in:
+            if not isinstance(actor, dict) or set(actor) - {"id", "emoji", "label", "body", "seed", "speed"}:
+                raise ValueError("an actor has id, emoji, label, body, seed and speed")
+            seed = actor.get("seed")
+            if seed is not None:
+                _world_int(seed, "seed", 0, 2**31 - 1)
+            speed = actor.get("speed", 48)
+            if type(speed) not in (int, float) or not 8 <= speed <= 240:
+                raise ValueError("speed must be from 8 to 240 (map units per second)")
+            actors.append({"id": _world_id(actor.get("id"), "actor id", spot_ids), "emoji": _world_emoji(actor.get("emoji")),
+                           "label": _world_text(actor.get("label"), "label", 40),
+                           "body": _world_text(actor.get("body", ""), "body", 400, required=False), "seed": seed, "speed": speed})
+        player = floor.get("player")
+        if player is not None:
+            if not isinstance(player, dict) or set(player) - {"emoji", "x", "y", "speed"}:
+                raise ValueError("a player has emoji, x, y and speed")
+            speed = player.get("speed", 96)
+            if type(speed) not in (int, float) or not 8 <= speed <= 480:
+                raise ValueError("speed must be from 8 to 480 (map units per second)")
+            player = {"emoji": _world_emoji(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
+                      "y": _world_int(player.get("y"), "y", 0, height), "speed": speed}
         floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
-                       "width": width, "height": height, "spots": spots})
+                       "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
+    board = spec.get("board")
+    if board is not None:
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post"} or not isinstance(board.get("items"), list) \
+                or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
+            raise ValueError("a board has a title, 1..12 items and an optional post flag")
+        items = []
+        for item in board["items"]:
+            if not isinstance(item, dict) or set(item) - {"text", "at"}:
+                raise ValueError("a board item has text and an optional at")
+            at = item.get("at")
+            if at is not None and not (isinstance(at, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)):
+                raise ValueError("at must be HH:MM")
+            items.append({"text": _world_text(item.get("text"), "text", 120), "at": at})
+        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
-            "shots": shots, "floors": floors, "zoom_max": zoom_max}
+            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board}
 
 
 def _shots_html(world: dict[str, Any]) -> str:
@@ -1979,6 +2078,22 @@ def _shots_html(world: dict[str, Any]) -> str:
     return (f'<section class="ui-world ui-world-shots" id="{wid}-shots" data-ui-world="shots" style="--shots:{len(shots)}" '
             f'aria-label="{escape(world["title"], quote=True)}"><div class="ui-shots-scroll"><div class="ui-shots-track">'
             f'<div class="ui-shots-stage">{articles}</div>{marks}</div></div></section>')
+
+
+def _board_html(board: dict[str, Any] | None) -> str:
+    """The info board: a clock and a constant-speed scrolling line; items with ``at`` get "in N min" from the page's clock."""
+    if not board:
+        return ""
+    def item(entry: dict[str, Any], hidden: bool) -> str:
+        countdown = f' <span class="ui-board-min" data-at="{entry["at"]}"></span>' if entry["at"] else ""
+        return f'<span class="ui-board-item"{" aria-hidden=\"true\"" if hidden else ""}>{escape(entry["text"])}{countdown}</span>'
+    chars = sum(len(e["text"]) + (10 if e["at"] else 0) for e in board["items"])
+    run = "".join(item(e, False) for e in board["items"]) + "".join(item(e, True) for e in board["items"])
+    form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
+            'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
+            if board["post"] else "")
+    return (f'<div class="ui-board" role="status" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
+            f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
 
 
 def _map_html(world: dict[str, Any]) -> str:
@@ -1999,14 +2114,20 @@ def _map_html(world: dict[str, Any]) -> str:
         spots = "".join(
             f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
             f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
+        actors = "".join(
+            f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
+            f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
+        pl = f["player"]
+        player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
+                  f'style="--px:{pl["x"]};--py:{pl["y"]}" aria-hidden="true"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
         stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}" '
-                      f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}</div>')
+                      f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}{actors}{player}</div>')
         sheet.extend(
             f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
-            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in f["spots"])
+            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
     return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}" '
             f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
-            f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
+            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
             f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside></section>')
 
 
@@ -2044,7 +2165,19 @@ _WORLD_CSS = (
     ".ui-world[data-js] .ui-shots-stage{position:sticky;top:0;height:var(--ui-world-h);overflow:hidden;background:var(--ui-bg);transition:background .6s}"
     ".ui-world[data-js] .ui-shot{position:absolute;inset:0;opacity:0;transform:translateY(16px)}"
     ".ui-shot-mark{position:absolute;left:0;top:calc(var(--i) * var(--ui-world-h));width:1px;height:var(--ui-world-h);pointer-events:none}"
-    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}}"
+    ".ui-actor{position:absolute;left:0;top:0;text-decoration:none;color:inherit}"
+    ".ui-actor span,.ui-player span{display:block;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));font-size:1.5rem;line-height:1}"
+    ".ui-player{position:absolute;left:0;top:0;pointer-events:none;transform:translate(calc(var(--px,0) * 1px),calc(var(--py,0) * 1px));"
+    "transition:transform var(--walk,0s) linear}"
+    ".ui-board{display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--ui-border);background:var(--ui-panel);"
+    "font-family:var(--ui-font-mono);font-size:.85rem;overflow:hidden}"
+    ".ui-board-clock{flex:none;border:1px solid var(--ui-accent);padding:0 .5rem;border-radius:var(--ui-radius)}"
+    ".ui-board-track{flex:1;min-width:0;overflow:hidden;white-space:nowrap}"
+    ".ui-board-run{display:inline-flex;animation:ui-board-scroll 24s linear infinite}"
+    ".ui-board-item{padding-right:3rem}"
+    ".ui-board-post{display:flex;gap:4px;flex:none}.ui-board-post .ui-input{width:10rem;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
+    "@keyframes ui-board-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
+    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation:none!important}}"
 )
 
 _WALL_CSS = (
@@ -2063,6 +2196,13 @@ def world_css(spec: Any) -> str:
         rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
     categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    for f in world["floors"]:
+        for a in f["actors"]:
+            path = villager_path(a["seed"] if a["seed"] is not None else zlib.crc32(f"{wid}:{a['id']}".encode()),
+                                 f["width"], f["height"], speed=a["speed"])
+            name = f"ui-walk-{wid}-{a['id']}"
+            frames = "".join(f"{pct}%{{transform:translate({x}px,{y}px)}}" for pct, x, y in path["keys"])
+            rules.append(f"@keyframes {name}{{{frames}}}#{wid}-actor-{a['id']}{{animation:{name} {path['duration']}s linear infinite}}")
     for c in categories:
         radio = f"#{wid}-cat-{c}"
         rules.append(f'.ui-world:has({radio}:checked) .ui-spot:not([data-category="{c}"]){{display:none}}')
@@ -2082,6 +2222,10 @@ def world_css(spec: Any) -> str:
 WORLD_JS = r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
+export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
+export function minutesUntil(now,at){return((at-now)%1440+1440)%1440}
+export function boardSeconds(chars,cps=8){return Math.max(8,Math.round(chars/cps*10)/10)}
+export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
 function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
 function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
@@ -2091,21 +2235,25 @@ const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
+const player=el.querySelector(".ui-player");let at=player?[Number(player.dataset.x),Number(player.dataset.y)]:null;
+const walk=(x,y)=>{if(!player)return;player.style.setProperty("--walk",travelSeconds(at[0],at[1],x,y,Number(player.dataset.speed||96))+"s");player.style.setProperty("--px",x);player.style.setProperty("--py",y);at=[x,y]};
+const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),now=d.getHours()*60+d.getMinutes(),c=board.querySelector("[data-clock]");c.textContent=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"now":"in "+left+" min"}};
+if(board){tick();setInterval(tick,15000);const form=board.querySelector(".ui-board-post");if(form)form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],half=items.length/2,add=(ref,hidden)=>{const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");span.textContent=text;run.insertBefore(span,ref)};add(items[0],false);add(items[half]||null,true);const notes=run.querySelectorAll(".ui-board-note");if(notes.length>10){notes[notes.length-1].remove();notes[notes.length-2].remove()}board.dataset.chars=Number(board.dataset.chars)+text.length;run.style.animationDuration=boardSeconds(Number(board.dataset.chars))+"s"})}
 const focusSpot=a=>{const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{pts.set(e.pointerId,[e.clientX,e.clientY]);moved=0;el.dataset.drag=""});
 view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
 const end=e=>{pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag};
 view.addEventListener("pointerup",end);view.addEventListener("pointercancel",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot");if(a&&moved<=8){e.preventDefault();const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);focusSpot(a)}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();open(null);history.replaceState(null,"",location.pathname+location.search)}});
+el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot,.ui-actor");if(a&&moved<=8){e.preventDefault();const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();open(null);history.replaceState(null,"",location.pathname+location.search)}});
 el.addEventListener("keydown",e=>{if(e.key==="Escape")open(null)});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
-const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"]`);if(a){open(hash);focusSpot(a)}else open(null)};
+const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"],.ui-actor[href="#${CSS.escape(hash)}"]`);if(a){open(hash);if(a.dataset.x!==undefined)focusSpot(a)}else open(null)};
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardSeconds,cleanMessage,bindWorlds};
 bindWorlds();
 """
 
@@ -2133,6 +2281,39 @@ def random_theme(seed: int) -> dict[str, str]:
         "--ui-danger": _readable(rng.random() * 0.03, 0.7, grounds, 4.5),
         "--ui-radius": ("0", ".25rem", ".5rem", "1rem")[int(rng.random() * 4)],
     }
+
+
+def theme_palette(hue: float, *, dark: bool = False, sat: float = 0.3, radius: str = ".5rem") -> dict[str, str]:
+    """A palette for one hue (0..1): not random, and every text pair meets WCAG AA by construction.
+
+    The same recipe as random_theme(), with the choices fixed: any hue gives a theme, so red, blue or any other color
+    needs no hand-tuning. ``dark`` flips the grounds."""
+    bg_l = 0.1 if dark else 0.95
+    bg, panel = _hsl(hue, sat, bg_l), _hsl(hue, sat, min(1.0, bg_l + (0.05 if dark else 0.04)))
+    grounds = (bg, panel)
+    return {"--ui-bg": bg, "--ui-panel": panel, "--ui-fg": _readable(hue, 0.25, grounds, 7),
+            "--ui-muted": _readable(hue, 0.12, grounds, 4.5), "--ui-border": _hsl(hue, 0.2, bg_l + (0.16 if dark else -0.16)),
+            "--ui-accent": _readable(hue, 0.6, grounds, 4.5), "--ui-danger": _readable(0.0, 0.7, grounds, 4.5),
+            "--ui-radius": radius}
+
+
+def theme_palettes() -> dict[str, dict[str, str]]:
+    """The token-only themes by name. ``green`` is the one first built by hand in Ironmate's studio (measured against its
+    palette); the others are theme_palette(hue). Add a theme by adding its name to CANDIDATE_THEMES and a line here."""
+    return {
+        "green": {"--ui-bg": "#edf0ec", "--ui-panel": "#ffffff", "--ui-fg": "#163b3b", "--ui-muted": "#546a61",
+                  "--ui-border": "#ccdcd4", "--ui-accent": "#126d66", "--ui-danger": "#a73528", "--ui-radius": ".5rem"},
+        "red": theme_palette(0.0), "blue": theme_palette(0.6),
+    }
+
+
+def _token_theme_css() -> str:
+    blocks = ["/* Candidate themes, token-only: palettes, no theme files (see theme_palettes()). */"]
+    for name in CANDIDATE_THEMES:
+        tokens = theme_palettes()[name]
+        scheme = "dark" if _luminance(tokens["--ui-bg"]) < 0.18 else "light"
+        blocks.append(f'body[data-ui-theme="{name}"]{{' + ";".join(f"{k}:{v}" for k, v in tokens.items()) + f";color-scheme:{scheme}}}")
+    return "\n".join(blocks) + "\n"
 
 
 def _hsl(hue: float, sat: float, light: float) -> str:
@@ -2442,7 +2623,27 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                   'y': 480,
                                   'label': 'Shop',
                                   'category': 'food',
-                                  'body': 'Snacks and souvenirs.'}]},
+                                  'body': 'Snacks and souvenirs.'}],
+                       'actors': [{'id': 'farmer',
+                                   'emoji': '🧑\u200d🌾',
+                                   'label': 'Farmer',
+                                   'body': 'Walks at a steady pace and stops to look around. Tap to ask.'},
+                                  {'id': 'cat',
+                                   'emoji': '🐈',
+                                   'label': 'Cat',
+                                   'body': 'Wanders; no destination.',
+                                   'speed': 64},
+                                  {'id': 'duck',
+                                   'emoji': '🦆',
+                                   'label': 'Duck',
+                                   'body': 'Slow and sure.',
+                                   'speed': 32},
+                                  {'id': 'robot',
+                                   'emoji': '🤖',
+                                   'label': 'Robot',
+                                   'body': 'Moves in straight lines at constant speed.',
+                                   'speed': 56}],
+                       'player': {'emoji': '🧙', 'x': 120, 'y': 320}},
                       {'id': '2f',
                        'label': '2F',
                        'width': 960,
@@ -2458,7 +2659,18 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                   'y': 400,
                                   'label': 'Lab',
                                   'category': 'info',
-                                  'body': 'Hands-on corner for the curious.'}]}]}}
+                                  'body': 'Hands-on corner for the curious.'}],
+                       'actors': [{'id': 'owl',
+                                   'emoji': '🦉',
+                                   'label': 'Owl',
+                                   'body': 'Keeps the deck company.',
+                                   'speed': 40}]}],
+           'board': {'title': 'INFO',
+                     'items': [{'text': 'Gate: wait about 10 min'},
+                               {'text': 'Show starts', 'at': '10:30'},
+                               {'text': 'Guided walk', 'at': '14:00'},
+                               {'text': 'Last entry', 'at': '17:30'}],
+                     'post': True}}}
 
 
 def example_data(name: str) -> Any:
