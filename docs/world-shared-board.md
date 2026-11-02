@@ -64,10 +64,11 @@ no automatic fetch, anonymous GET, HTML injection, posting link, local notes,
 rate limit failures, retained shared display and reload cleanup. The dedicated
 Shared world board workflow provisions Node 26 and runs both commands.
 
-Local verification: 35 Python tests passed, three Node-26 tests skipped because
-local Node is 24.22.1; both shared and existing motion JS harnesses passed on
-Node 24 as supplementary checks. Chromium download was unavailable locally;
-real-browser and Node 26 results must be checked in CI. No real comment was posted.
+Local verification: 72 tests passed (plus one subtest) on Node 26.13.0,
+including the existing copied single-file Node launcher tests, motion numerical
+parity and both DOM harnesses. The official Node archive SHA-256 was checked.
+Chromium download returned invalid/truncated archives locally; real-browser QA
+must be checked in CI. No real comment was posted.
 
 Activation requires explicit approval: create one public issue in
 `myon-bioinformatics/web-ui`, title **World 共有電光掲示板（公開）**, with a body
