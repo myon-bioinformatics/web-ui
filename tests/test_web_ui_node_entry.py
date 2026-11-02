@@ -33,16 +33,16 @@ def _node() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     match = re.match(r"v(\d+)", out.strip())
-    return node if match and int(match.group(1)) >= 24 else None
+    return node if match and int(match.group(1)) >= 26 else None
 
 
 NODE = _node()
-needs_node = pytest.mark.skipif(NODE is None, reason="Node 24+ not available (set NODE)")
+needs_node = pytest.mark.skipif(NODE is None, reason="Node 26+ not available (set NODE)")
 
 
 def test_ci_provisions_node_instead_of_skipping_entry_parity():
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        assert NODE is not None, "CI must configure Node >=24 before pytest"
+        assert NODE is not None, "CI must configure Node >=26 before pytest"
 
     workflow = (ROOT / ".github" / "workflows" / "tooling-smoke.yml").read_text(
         encoding="utf-8"
