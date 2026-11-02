@@ -67,3 +67,7 @@ def test_shot_color_rules_are_scoped_to_each_world():
     assert '#one-shots:has' in css_one
     assert '#two-shots:has' in css_two
     assert '.ui-world-shots:has' not in css_one + css_two
+
+
+def test_board_duration_rounding_matches_browser_half_up():
+    assert web_ui.board_seconds(66) == 8.3
