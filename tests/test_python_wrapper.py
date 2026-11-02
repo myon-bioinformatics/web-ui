@@ -59,7 +59,7 @@ class PythonWrapperTests(unittest.TestCase):
         scripts = shared_scripts('.', names=('ui.js', 'stub.js'))
         self.assertEqual(scripts, ('./js/ui.js', './js/stub.js'))
         for src in scripts:
-            self.assertTrue((ROOT / src).is_file())
+            self.assertIn(src.rsplit("/", 1)[1], web_ui.js_modules())  # modules are written by write_js()/--site
         html = render_document(scripts=scripts)
         self.assertIn('<script type="module" src="./js/ui.js"></script>', html)
         self.assertIn('<script type="module" src="./js/stub.js"></script>', html)
@@ -185,7 +185,9 @@ class PythonWrapperTests(unittest.TestCase):
     def test_run_node_wraps_diagnostics_script(self):
         if not _node_at_least_26():
             self.skipTest('node 26+ not available')
-        result = run_node(ROOT / 'tests' / 'repository_diagnostics.node.js')
+        with tempfile.TemporaryDirectory() as out:
+            web_ui.write_js(out)
+            result = run_node(ROOT / 'tests' / 'repository_diagnostics.node.js', env={'WEB_UI_JS_DIR': str(Path(out) / 'js')})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '')
 
@@ -358,15 +360,16 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(run("--theme-wall", "3").stdout, web_ui.theme_wall_document(3))
         self.assertEqual(run("--world", "no-such.json").returncode, 2)
 
-    def test_site_writes_every_page_and_nothing_else(self):
+    def test_site_writes_every_page_and_every_browser_module_and_nothing_else(self):
         with tempfile.TemporaryDirectory() as out:
             done = subprocess.run([sys.executable, "-S", "web_ui.py", "--site", out], cwd=ROOT, capture_output=True,
                                   text=True, encoding="utf-8", timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
             pages = web_ui.example_pages()
-            self.assertEqual(sorted(done.stdout.split()), sorted(pages))
-            for name, html in pages.items():
-                self.assertEqual((Path(out) / name).read_text(encoding="utf-8"), html)
+            modules = {f"js/{name}": source for name, source in web_ui.js_modules().items()}
+            self.assertEqual(sorted(done.stdout.split()), sorted({**pages, **modules}))
+            for name, text in {**pages, **modules}.items():
+                self.assertEqual((Path(out) / name).read_text(encoding="utf-8"), text)
 
 
 class StubTests(unittest.TestCase):

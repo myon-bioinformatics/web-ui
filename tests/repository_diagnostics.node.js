@@ -3,7 +3,15 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
-const renderer = require("../js/repository-diagnostics.js");
+// The browser modules are Python data: unless WEB_UI_JS_DIR names a folder, ask web_ui.py to write them to a temp folder.
+const jsDir = process.env.WEB_UI_JS_DIR || (() => {
+  const {mkdtempSync} = require("fs"), {join} = require("path"), {tmpdir} = require("os");
+  const out = mkdtempSync(join(tmpdir(), "web-ui-js-"));
+  const done = require("child_process").spawnSync(process.env.PYTHON || "python3", ["-S", join(__dirname, "..", "web_ui.py"), "--site", out], {encoding: "utf8"});
+  if (done.status !== 0) throw new Error("web_ui.py --site failed: " + done.stderr);
+  return join(out, "js");
+})();
+const renderer = require(path.join(jsDir, "repository-diagnostics.js"));
 
 const fixturePath = path.join(__dirname, "fixtures", "repository_metadata_v1.json");
 const record = JSON.parse(fs.readFileSync(fixturePath, "utf8"));

@@ -16,7 +16,7 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (EXAMPLE_STUBS, bundled_css, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
+from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
                     shared_scripts, stub_response, theme_wall_document, world_document)
 
 
@@ -37,8 +37,7 @@ class ControlsBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'index.html').write_text(document, encoding='utf-8')
-            (root / 'js').mkdir()
-            shutil.copyfile(ROOT / 'js/controls.js', root / 'js/controls.js')
+            write_js(root)
             server = http.server.ThreadingHTTPServer(('127.0.0.1', 0),
                 functools.partial(QuietHandler, directory=directory))
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -129,8 +128,7 @@ class UiHelpersBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'index.html').write_text(render_document(trusted_html=self.PAGE, css=bundled_css()), encoding='utf-8')
-            (root / 'js').mkdir()
-            shutil.copyfile(ROOT / 'js/ui.js', root / 'js/ui.js')
+            write_js(root)
             shutil.copyfile(ROOT / 'docs/brand/icon.png', root / 'a.png')
             shutil.copyfile(ROOT / 'docs/brand/favicon.png', root / 'b.png')
             server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(QuietHandler, directory=directory))

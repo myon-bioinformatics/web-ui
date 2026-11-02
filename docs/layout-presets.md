@@ -8,15 +8,14 @@ lets people switch, and tests try them all.
 ## Switch live, without reloading
 
 ```sh
-python -S tool/layout_presets.py css examples/layout-presets.json   # or: node js/layout-presets.cjs css ...
+python -S tool/layout_presets.py css examples/layout-presets.json   # Node: node vendor/py_launch.cjs -- tool/layout_presets.py css ...
 python -S tool/layout_presets.py html examples/layout-presets.json  # radio buttons, default checked
 ```
 
 `css` writes the default preset on `:root` and one
 `body:has(input[name="ui-layout"][value="ID"]:checked){...}` rule per preset; `html` writes
 the radio buttons. Choosing a radio changes the variables at once: no reload and no
-JavaScript, also from `file://`. Python and Node produce byte-identical output from the
-same JSON (checked by `tests/layout-presets.node.cjs`). Values are limited to `--ui-*`
+JavaScript, also from `file://`. Python is the only implementation (Node reaches it through `vendor/py_launch.cjs`). Values are limited to `--ui-*`
 lengths (`px`, `rem`, `em`, `%`, `vw`, `fr`), and every preset sets the same variables.
 
 The 8 px grid is the default (`grid8`: 160px tiles, 8px spacing). Other presets are equal
@@ -61,5 +60,5 @@ python tool/layout_presets.py sweep index.html --presets examples/layout-presets
 python -S web_ui.py --site build/site && cp build/site/index.html index.html
 ```
 
-The theme radios beside it use `bindTheme()` from `js/ui.js`. Every theme ships in the same CSS, so the
+The theme radios beside it use `bindTheme()` from the `ui.js` module. Every theme ships in the same CSS, so the
 switch is an attribute change; the choice is remembered in `localStorage` (best effort).

@@ -52,9 +52,11 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
     assert record["head"]["short_sha"] == sha[:8]
     assert record["head"]["branch"] == "topic/canonical"
     assert all(value is None for value in record["measurements"].values())
+    import web_ui
+    web_ui.write_js(output)  # the Node test loads the browser module from here
     subprocess.run(
         ["node", str(ROOT / "tests/repository_diagnostics.node.js"), str(record_path)],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, env={**os.environ, "WEB_UI_JS_DIR": str(output / "js")},
     )
 
     # Advisory collection reports tooling versions only; never head/branch identity.

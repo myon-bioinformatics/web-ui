@@ -215,8 +215,8 @@ def test_every_css_class_is_referenced_by_markup_scripts_or_generators():
     for path in _css_sources():
         defined |= set(re.findall(r"\.([A-Za-z_][A-Za-z0-9_-]*)", re.sub(r"\{[^{}]*\}", "{}", _css_text(path))))
     # Classes the Python generators emit (tool/capture_matrix.py, tool/layout_presets.py) count as used.
-    used_in = [*ROOT.glob("*.html"), *(ROOT / "js").glob("*.js"), ROOT / "web_ui.py", *(ROOT / "tool").glob("*.py")]
-    corpus = "\n".join(path.read_text(encoding="utf-8") for path in used_in) + "\n".join(PAGES.values())
+    used_in = [*ROOT.glob("*.html"), ROOT / "web_ui.py", *(ROOT / "tool").glob("*.py")]
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in used_in) + "\n".join(PAGES.values()) + "\n".join(web_ui.js_modules().values())
     unused = sorted(name for name in defined
                     if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", corpus))
     assert not unused, f"CSS classes nothing refers to: {unused}"

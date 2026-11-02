@@ -9,8 +9,10 @@ from web_ui import EMBEDDED_UI_JS, module_asset, module_script, module_csp_hash,
 
 
 class EmbeddedModulesTests(unittest.TestCase):
-    def test_snapshot_matches_original(self):
-        self.assertEqual(EMBEDDED_UI_JS, (Path(__file__).resolve().parents[1] / "js/ui.js").read_text(encoding="utf-8"))
+    def test_the_embedded_module_is_the_one_source_of_ui_js(self):
+        import web_ui
+        self.assertEqual(EMBEDDED_UI_JS, web_ui.js_source("ui.js"))
+        self.assertFalse((Path(__file__).resolve().parents[1] / "js").exists(), "browser modules are Python data; --site writes them")
 
     def test_opt_in_and_one_file(self):
         self.assertNotIn('<script', render_document("hello"))

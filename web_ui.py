@@ -34,8 +34,315 @@ from urllib.parse import urlsplit
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in css/tokens.css, so there is no themes/ file to link; not in contract v1 yet.
 CANDIDATE_THEMES = ("green",)
-# Snapshot of js/ui.js; update together with the upstream source and regression test.
-EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */\nexport async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement(\"textarea\");box.value=text;box.setAttribute(\"readonly\",\"\");box.style.cssText=\"position:fixed;opacity:0\";document.body.append(box);box.select();const ok=document.execCommand(\"copy\");box.remove();if(!ok)throw error}}\n/** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */\nexport function bindTheme(root=document,{key=\"web-ui-theme\"}={}){const body=document.body,controls=[...root.querySelectorAll(\"[data-ui-theme-switch],input[name=ui-theme]\")];const known=name=>controls.some(c=>c.tagName===\"SELECT\"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName===\"SELECT\")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener(\"change\",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}\n/** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */\nexport function observeLit(targets,{threshold=0.4,root=null}={}){const nodes=typeof targets===\"string\"?[...document.querySelectorAll(targets)]:[...targets];if(typeof IntersectionObserver===\"undefined\"){for(const n of nodes)n.dataset.lit=\"\";return()=>{}}const io=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)e.target.dataset.lit=\"\";else delete e.target.dataset.lit}},{threshold,root});for(const n of nodes)io.observe(n);return()=>io.disconnect()}\n/** Click-to-enlarge for <a href=\"full.png\"><img alt=\"...\"></a> items inside [data-ui-lightbox]: one <dialog>; Esc, the backdrop and the close button shut it, arrows, buttons and a 48px swipe step through. Returns {open, close, dialog}, or null without items or <dialog>. */\nexport function bindLightbox(root=document){const items=[...root.querySelectorAll(\"[data-ui-lightbox] a[href]\")];if(!items.length||typeof HTMLDialogElement===\"undefined\")return null;const dialog=document.createElement(\"dialog\");dialog.className=\"ui-lightbox\";dialog.setAttribute(\"aria-label\",\"Image viewer\");dialog.innerHTML='<img alt=\"\"><p class=\"ui-muted\"></p><div class=\"ui-lightbox-bar\"><button class=\"ui-button\" type=\"button\" data-step=\"-1\" aria-label=\"Previous\">\\u2190</button><button class=\"ui-button\" type=\"button\" data-step=\"1\" aria-label=\"Next\">\\u2192</button><button class=\"ui-button\" type=\"button\" data-step=\"0\" aria-label=\"Close\">\\u00d7</button></div>';const img=dialog.querySelector(\"img\"),note=dialog.querySelector(\"p\");let at=0,x=null;const show=i=>{at=(i+items.length)%items.length;const a=items[at],t=a.querySelector(\"img\");img.src=a.href;img.alt=note.textContent=t?t.alt:\"\"};const open=i=>{show(i);if(!dialog.open)dialog.showModal()};items.forEach((a,i)=>a.addEventListener(\"click\",e=>{e.preventDefault();open(i)}));dialog.addEventListener(\"click\",e=>{const b=e.target.closest(\"[data-step]\");if(b){const s=Number(b.dataset.step);if(s)show(at+s);else dialog.close()}else if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close()}});dialog.addEventListener(\"keydown\",e=>{if(e.key===\"ArrowLeft\")show(at-1);if(e.key===\"ArrowRight\")show(at+1)});dialog.addEventListener(\"pointerdown\",e=>{x=e.clientX});dialog.addEventListener(\"pointerup\",e=>{if(x!==null&&Math.abs(e.clientX-x)>=48)show(at+(e.clientX<x?1:-1));x=null});document.body.append(dialog);return{open,close:()=>dialog.close(),dialog}}\n"
+# The browser modules, as data: Python is the only source (there are no js/ files). write_js()/--site writes them under DIR/js/.
+_JS = {
+    "ui.js": r"""/** Set text-only content. User-controlled values are never interpreted as HTML. */
+export function setText(target,value){const node=typeof target==="string"?document.querySelector(target):target;if(node)node.textContent=String(value)}
+/** Serialize a value for human-readable text output. */
+export function prettyJson(value){return JSON.stringify(value,null,2)}
+/** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */
+export async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement("textarea");box.value=text;box.setAttribute("readonly","");box.style.cssText="position:fixed;opacity:0";document.body.append(box);box.select();const ok=document.execCommand("copy");box.remove();if(!ok)throw error}}
+/** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */
+export function bindTheme(root=document,{key="web-ui-theme"}={}){const body=document.body,controls=[...root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]")];const known=name=>controls.some(c=>c.tagName==="SELECT"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName==="SELECT")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener("change",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}
+/** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */
+export function observeLit(targets,{threshold=0.4,root=null}={}){const nodes=typeof targets==="string"?[...document.querySelectorAll(targets)]:[...targets];if(typeof IntersectionObserver==="undefined"){for(const n of nodes)n.dataset.lit="";return()=>{}}const io=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{threshold,root});for(const n of nodes)io.observe(n);return()=>io.disconnect()}
+/** Click-to-enlarge for <a href="full.png"><img alt="..."></a> items inside [data-ui-lightbox]: one <dialog>; Esc, the backdrop and the close button shut it, arrows, buttons and a 48px swipe step through. Returns {open, close, dialog}, or null without items or <dialog>. */
+export function bindLightbox(root=document){const items=[...root.querySelectorAll("[data-ui-lightbox] a[href]")];if(!items.length||typeof HTMLDialogElement==="undefined")return null;const dialog=document.createElement("dialog");dialog.className="ui-lightbox";dialog.setAttribute("aria-label","Image viewer");dialog.innerHTML='<img alt=""><p class="ui-muted"></p><div class="ui-lightbox-bar"><button class="ui-button" type="button" data-step="-1" aria-label="Previous">\u2190</button><button class="ui-button" type="button" data-step="1" aria-label="Next">\u2192</button><button class="ui-button" type="button" data-step="0" aria-label="Close">\u00d7</button></div>';const img=dialog.querySelector("img"),note=dialog.querySelector("p");let at=0,x=null;const show=i=>{at=(i+items.length)%items.length;const a=items[at],t=a.querySelector("img");img.src=a.href;img.alt=note.textContent=t?t.alt:""};const open=i=>{show(i);if(!dialog.open)dialog.showModal()};items.forEach((a,i)=>a.addEventListener("click",e=>{e.preventDefault();open(i)}));dialog.addEventListener("click",e=>{const b=e.target.closest("[data-step]");if(b){const s=Number(b.dataset.step);if(s)show(at+s);else dialog.close()}else if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close()}});dialog.addEventListener("keydown",e=>{if(e.key==="ArrowLeft")show(at-1);if(e.key==="ArrowRight")show(at+1)});dialog.addEventListener("pointerdown",e=>{x=e.clientX});dialog.addEventListener("pointerup",e=>{if(x!==null&&Math.abs(e.clientX-x)>=48)show(at+(e.clientX<x?1:-1));x=null});document.body.append(dialog);return{open,close:()=>dialog.close(),dialog}}
+""",
+    "stub.js": r"""import{setText,prettyJson}from"./ui.js";
+/**
+ * Bind one text input to an async or sync consumer handler.
+ *
+ * handler receives the input string and may return either text or any
+ * JSON-serializable value. Protocol-specific validation and semantics belong
+ * to the consuming repository, not web-ui.
+ */
+export function bindStub({input="#query",run="#run",output="#output",form="#stub-form",handler}){const q=document.querySelector(input),b=document.querySelector(run),f=document.querySelector(form);if(!q||!b)return;const execute=async event=>{event?.preventDefault();b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result==="string"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}};(f??b).addEventListener(f?"submit":"click",execute)}
+""",
+    "controls.js": r"""/* Provider-independent, text-only dropdown binding. No fetches or HTML input. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === "object" && module.exports) module.exports = api;
+  else {
+    root.webUiControls = api;
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => api.mount(document));
+      else api.mount(document);
+    }
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+  function bindSelect(select, output) {
+    let entries = new Map(), fullText = "";
+    function change() {
+      output.textContent = entries.has(select.value) ? entries.get(select.value) : fullText;
+    }
+    select.addEventListener("change", change);
+    return {
+      update(items, text, fullLabel = "(full extract)") {
+        const next = new Map();
+        const options = [{value: "", label: fullLabel}];
+        for (const item of items) {
+          const value = String(item.value);
+          if (!value || next.has(value)) throw new Error("section values must be nonempty and unique");
+          next.set(value, String(item.body));
+          options.push({value, label: String(item.label)});
+        }
+        const nodes = options.map(item => {
+          const option = select.ownerDocument.createElement("option");
+          option.value = item.value;
+          option.textContent = item.label;
+          return option;
+        });
+        entries = next;
+        fullText = String(text);
+        select.replaceChildren(...nodes);
+        select.value = "";
+        select.disabled = items.length === 0;
+        change();
+      },
+      clear() { this.update([], ""); },
+      destroy() { select.removeEventListener("change", change); }
+    };
+  }
+  const mounted = new WeakSet();
+  function mount(root) {
+    root.querySelectorAll("[data-ui-section-browser]").forEach(panel => {
+      if (mounted.has(panel)) return;
+      const data = JSON.parse(panel.querySelector("[data-ui-section-data]").textContent);
+      const control = bindSelect(panel.querySelector("select"), panel.querySelector("[data-ui-section-output]"));
+      control.update(data.items, data.fullText, data.fullLabel);
+      mounted.add(panel);
+    });
+  }
+  return {bindSelect, mount};
+});
+""",
+    "collection.js": r"""/* Portable, DOM-free collection filtering. Domain semantics stay with consumers. */
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.WebUICollections = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  function normalizeText(value) {
+    return String(value == null ? '' : value).trim().toLowerCase();
+  }
+
+  function matchesFacet(actual, expected) {
+    if (Array.isArray(actual)) return actual.includes(expected);
+    return actual === expected;
+  }
+
+  /**
+   * Filter without modifying items or relying on DOM/network globals.
+   *
+   * text(item) may return a scalar or an array of searchable fields.
+   * facets is an object of exact selected values. If an item's facet value
+   * is an array, membership is tested. Omit inactive facets (no 'all' magic).
+   * facetValues optionally maps facet names to item accessors.
+   * predicates is an optional array of additional AND conditions.
+   */
+  function filterItems(items, options = {}) {
+    if (!Array.isArray(items)) throw new TypeError('items must be an array');
+    if (!options || typeof options !== 'object') throw new TypeError('options must be an object');
+    const { query = '', text = item => item, facets = {}, facetValues = {}, predicates = [] } = options;
+    if (typeof text !== 'function') throw new TypeError('text must be a function');
+    if (!facets || typeof facets !== 'object' || Array.isArray(facets)) throw new TypeError('facets must be an object');
+    if (!facetValues || typeof facetValues !== 'object' || Array.isArray(facetValues)) throw new TypeError('facetValues must be an object');
+    if (!Array.isArray(predicates) || predicates.some(fn => typeof fn !== 'function')) throw new TypeError('predicates must be functions');
+    const needle = normalizeText(query);
+    const selected = Object.entries(facets).filter(([, value]) => value !== undefined);
+    for (const [key] of selected) {
+      if (Object.prototype.hasOwnProperty.call(facetValues, key) && typeof facetValues[key] !== 'function') {
+        throw new TypeError('facetValues entries must be functions');
+      }
+    }
+    return items.filter(item => {
+      if (needle) {
+        const raw = text(item);
+        const fields = Array.isArray(raw) ? raw : [raw];
+        if (!fields.some(field => normalizeText(field).includes(needle))) return false;
+      }
+      for (const [key, expected] of selected) {
+        const actual = Object.prototype.hasOwnProperty.call(facetValues, key) ? facetValues[key](item) : item?.[key];
+        if (!matchesFacet(actual, expected)) return false;
+      }
+      return predicates.every(predicate => predicate(item));
+    });
+  }
+
+  return { filterItems, normalizeText };
+});
+""",
+    "navigation.js": r"""/** Shared declarative source links and view switching; no fetch or storage.
+ * UMD for legacy consumers, also usable as a side-effect ES module.
+ */
+(function(root,factory){
+  const api=factory();
+  if(typeof module==='object' && module.exports) module.exports=api;
+  else {root.webUiNavigation=api; if(root.document){const start=()=>api.bindNavigation(root);if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});else start();}}
+})(typeof globalThis==='undefined'?this:globalThis,function(){
+  'use strict';
+  function sourceURL(value){
+    if(typeof value!=='string' || !/^https?:\/\//.test(value) || /[\s\\]/.test(value))throw Error('取得元は絶対HTTP(S) URLを指定してください。');
+    const u=new URL(value);if(!u.hostname || u.username || u.password)throw Error('取得元URLに認証情報は指定できません。');
+    return value;
+  }
+  function openExternalURL(value,win){
+    const url=sourceURL(value);return win.open(url,'_blank','noopener,noreferrer');
+  }
+  const sourceBindings=new WeakMap(),viewBindings=new WeakMap();
+  function bindSourceLink(input,link){
+    if(!input || !link || link.tagName.toLowerCase()!=='a')throw Error('source link requires an input and anchor');
+    if(sourceBindings.has(link))return sourceBindings.get(link);
+    const update=()=>{
+      link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
+      try{link.href=sourceURL(input.value.trim());link.hidden=false;link.removeAttribute('aria-disabled');}
+      catch{link.removeAttribute('href');link.hidden=true;link.setAttribute('aria-disabled','true');}
+    };
+    const check=event=>{update();if(link.hidden)event.preventDefault();};
+    input.addEventListener('input',update);input.addEventListener('change',update);link.addEventListener('click',check);
+    const handle={update,destroy(){input.removeEventListener('input',update);input.removeEventListener('change',update);link.removeEventListener('click',check);sourceBindings.delete(link);}};
+    sourceBindings.set(link,handle);update();return handle;
+  }
+  function viewFromLocation(hash,search,views,defaultView,queryAliases={}){
+    const fragment=String(hash||'').replace(/^#/,'').split('?')[0];
+    const query=new URLSearchParams(String(search||'')).get('view');
+    // A declared legacy query alias may retain precedence over an old hash.
+    if(query && Object.prototype.hasOwnProperty.call(queryAliases,query) && views.includes(queryAliases[query]))return queryAliases[query];
+    return views.includes(fragment)?fragment:defaultView;
+  }
+  function bindViews(win,{viewAttribute='data-ui-view',navAttribute='data-ui-nav',defaultView='home',queryAliases={}}={}){
+    const doc=win.document;
+    if(!/^data-[a-z][a-z0-9-]*$/.test(viewAttribute) || !/^data-[a-z][a-z0-9-]*$/.test(navAttribute))throw Error('view attributes must be data-* names');
+    if(viewBindings.has(doc))return viewBindings.get(doc);
+    const panels=[...doc.querySelectorAll('['+viewAttribute+']')],navs=[...doc.querySelectorAll('['+navAttribute+']')];
+    const views=panels.map(p=>p.getAttribute(viewAttribute));
+    if(new Set(views).size!==views.length || !views.includes(defaultView))throw Error('views require unique names and an existing default');
+    const sync=()=>{
+      const view=viewFromLocation(win.location.hash,win.location.search,views,defaultView,queryAliases);
+      panels.forEach(p=>p.hidden=p.getAttribute(viewAttribute)!==view);
+      navs.forEach(n=>{if(n.getAttribute(navAttribute)===view)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');});
+      const params=new URLSearchParams(win.location.search),alias=params.get('view');
+      if(alias && Object.prototype.hasOwnProperty.call(queryAliases,alias) && queryAliases[alias]===view && win.history?.replaceState){
+        const url=new URL(win.location.href);url.hash=view;url.searchParams.delete('view');win.history.replaceState(null,'',url.pathname+url.search+url.hash);
+      }
+      return view;
+    };
+    win.addEventListener('hashchange',sync);win.addEventListener('popstate',sync);
+    const handle={sync,destroy(){win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);viewBindings.delete(doc);}};
+    viewBindings.set(doc,handle);sync();return handle;
+  }
+  // Route table: a visible identity (emoji or short name) -> app route, as in
+  // browser-test-kit route_trail.py registries ({"/route": "\u{1F3E0}"}). Identity
+  // drops U+FE0F, so both spellings of a heading emoji resolve to one route.
+  const emojiIdentity=value=>String(value).replace(/️/g,'');
+  function routeTable(registry){
+    const rows=Array.isArray(registry)?registry:Object.entries(registry||{}).map(([route,key])=>({route,key}));
+    const byKey=new Map(),routes=new Set(),entries=[];
+    for(const row of rows){
+      const route=row.route,key=row.key??row.emoji;
+      if(typeof route!=='string' || !/^\/[^\s#?\\]*$/.test(route) || route.includes('//'))throw Error('route must be an absolute app path such as /map: '+route);
+      if(typeof key!=='string' || !key.trim() || /\s/.test(key))throw Error('route key must be a nonempty token: '+route);
+      const id=emojiIdentity(key);
+      if(routes.has(route))throw Error('duplicate route: '+route);
+      if(byKey.has(id))throw Error('route key names two routes: '+key);
+      routes.add(route);byKey.set(id,route);entries.push({route,key,identity:id,label:typeof row.label==='string'?row.label:null});
+    }
+    if(!entries.length)throw Error('route table is empty');
+    const lookup=value=>{const id=emojiIdentity(String(value??'').trim());return byKey.get(id)??(routes.has(id)?id:null);};
+    return {entries,lookup};
+  }
+  function routeHref(route,{base='',routing='hash'}={}){
+    if(routing!=='hash' && routing!=='path')throw Error('routing must be hash or path');
+    return routing==='hash'?base+'#'+route:String(base).replace(/\/$/,'')+route;
+  }
+  const routeBindings=new WeakMap();
+  function bindRouteTable(win,registry,{routing='hash',attribute='data-ui-go'}={}){
+    const doc=win.document;
+    if(routeBindings.has(doc))return routeBindings.get(doc);
+    const table=routeTable(registry);
+    const current=()=>routing==='hash'?(String(win.location.hash).replace(/^#/,'').split('?')[0]||'/'):win.location.pathname;
+    const go=key=>{const route=table.lookup(key);if(route===null)throw Error('unknown route key: '+key);
+      if(routing==='hash')win.location.hash=route;else win.location.assign(routeHref(route,{routing}));return route;};
+    const controls=[...doc.querySelectorAll('['+attribute+']')];
+    const sync=()=>{const here=current();for(const el of controls){const route=table.lookup(el.getAttribute(attribute));
+      if(route===null){el.setAttribute('aria-disabled','true');continue;}
+      if(el.tagName.toLowerCase()==='a')el.setAttribute('href',routeHref(route,{routing}));
+      if(route===here)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');}
+      return here;};
+    const click=event=>{const el=event.target.closest?.('['+attribute+']');if(!el || el.tagName.toLowerCase()==='a')return;
+      if(table.lookup(el.getAttribute(attribute))!==null){event.preventDefault();go(el.getAttribute(attribute));}};
+    doc.addEventListener('click',click);win.addEventListener('hashchange',sync);win.addEventListener('popstate',sync);
+    const handle={table,go,sync,current,destroy(){doc.removeEventListener('click',click);win.removeEventListener('hashchange',sync);win.removeEventListener('popstate',sync);routeBindings.delete(doc);}};
+    routeBindings.set(doc,handle);sync();return handle;
+  }
+  function bindNavigation(win){
+    const doc=win.document;
+    const links=[...doc.querySelectorAll('[data-ui-source-for]')].map(link=>bindSourceLink(doc.getElementById(link.getAttribute('data-ui-source-for')),link));
+    const views=doc.querySelectorAll('[data-ui-view]').length?bindViews(win,{defaultView:doc.querySelector('[data-ui-default-view]')?.getAttribute('data-ui-default-view')||'home'}):null;
+    const tableScript=doc.getElementById('ui-route-table');
+    const routes=tableScript?bindRouteTable(win,JSON.parse(tableScript.textContent),{routing:tableScript.getAttribute('data-ui-routing')||'hash'}):null;
+    return {links,views,routes};
+  }
+  return {sourceURL,openExternalURL,bindSourceLink,viewFromLocation,bindViews,emojiIdentity,routeTable,routeHref,bindRouteTable,bindNavigation};
+});
+""",
+    "repository-diagnostics.js": r"""(function (global) {
+  "use strict";
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+
+  function bytes(value) {
+    if (value === null || value === undefined) return "not measured";
+    if (!Number.isInteger(value) || value < 0) throw new Error("invalid byte measurement");
+    var units = ["B", "KiB", "MiB", "GiB"], n = value, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return (i === 0 ? String(n) : n.toFixed(2)) + " " + units[i];
+  }
+
+  function validate(record) {
+    if (!record || record.schema_version !== "1.0") throw new Error("unsupported metadata schema");
+    if (!record.head || !record.repository || !record.measurements) throw new Error("incomplete metadata");
+    if (typeof record.repository.full_name !== "string" || !record.repository.full_name) throw new Error("invalid repository");
+    if (record.head.short_sha !== record.head.sha.slice(0, 8)) throw new Error("invalid short sha");
+    return record;
+  }
+
+  function commitLine(record) {
+    validate(record);
+    var h = record.head;
+    return "Commit " + h.short_sha + " · " + h.branch + " · " + h.timestamp + " · " + h.subject;
+  }
+
+  function render(record) {
+    validate(record);
+    var m = record.measurements;
+    return '<section class="repo-diagnostics" data-schema-version="' + esc(record.schema_version) + '">' +
+      '<h2>Repository diagnostics</h2>' +
+      '<p class="repo-diagnostics__repository">' + esc(record.repository.full_name) + '</p>' +
+      '<p class="repo-diagnostics__commit">' + esc(commitLine(record)) + '</p>' +
+      '<dl class="repo-diagnostics__measurements">' +
+      '<dt>GitHub reported</dt><dd>' + esc(bytes(m.github_reported_size_bytes)) + '</dd>' +
+      '<dt>Working tree</dt><dd>' + esc(bytes(m.working_tree_bytes)) + '</dd>' +
+      '<dt>Release artifact</dt><dd>' + esc(bytes(m.release_artifact_bytes)) + '</dd>' +
+      '</dl></section>';
+  }
+
+  var api = {validate: validate, formatBytes: bytes, commitLine: commitLine, render: render};
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  global.RepositoryDiagnostics = api;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+""",
+}
+EMBEDDED_UI_JS = _JS["ui.js"]
 
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
 # Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
@@ -1868,8 +2175,8 @@ def theme_wall_document(count: int) -> str:
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
 STUB_SCHEMA = "web-ui-stub/1"
-# js/stub.js without its import line: it needs setText/prettyJson from ui.js, so the module is ui.js + this.
-EMBEDDED_STUB_JS = "export function bindStub({input=\"#query\",run=\"#run\",output=\"#output\",form=\"#stub-form\",handler}){const q=document.querySelector(input),b=document.querySelector(run),f=document.querySelector(form);if(!q||!b)return;const execute=async event=>{event?.preventDefault();b.disabled=true;try{const result=await handler(q.value);setText(output,typeof result===\"string\"?result:prettyJson(result))}catch(error){setText(output,`Error: ${error?.message??error}`)}finally{b.disabled=false}};(f??b).addEventListener(f?\"submit\":\"click\",execute)}\n"
+# stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
+EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
 _STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
                  't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
 
@@ -2061,8 +2368,32 @@ def _index_page() -> str:
             f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
 
 
+def js_modules() -> dict[str, str]:
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, world.js)."""
+    return {**_JS, "world.js": WORLD_JS}
+
+
+def js_source(name: str) -> str:
+    try:
+        return js_modules()[name]
+    except KeyError:
+        raise ValueError(f"unknown module: {name}") from None
+
+
+def write_js(directory: str | Path) -> list[str]:
+    """Write the browser modules under ``directory/js/`` (for pages that link them, and for the Node tests); returns the paths."""
+    written = []
+    for name, source in js_modules().items():
+        target = Path(directory) / "js" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(source)
+        written.append(f"js/{name}")
+    return written
+
+
 def write_site(directory: str | Path) -> list[str]:
-    """Write example_pages() under ``directory`` (for CI screenshots and local viewing); returns the paths written."""
+    """Write example_pages() and the browser modules under ``directory`` (CI screenshots, local viewing, Node tests); returns the paths."""
     written = []
     for name, html in example_pages().items():
         target = Path(directory) / name
@@ -2070,7 +2401,7 @@ def write_site(directory: str | Path) -> list[str]:
         with open(target, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(html)
         written.append(name)
-    return written
+    return written + write_js(directory)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,5 +1,13 @@
 const assert = require('node:assert/strict');
-const { filterItems, normalizeText } = require('../js/collection.js');
+// The browser modules are Python data: unless WEB_UI_JS_DIR names a folder, ask web_ui.py to write them to a temp folder.
+const jsDir = process.env.WEB_UI_JS_DIR || (() => {
+  const {mkdtempSync} = require("fs"), {join} = require("path"), {tmpdir} = require("os");
+  const out = mkdtempSync(join(tmpdir(), "web-ui-js-"));
+  const done = require("child_process").spawnSync(process.env.PYTHON || "python3", ["-S", join(__dirname, "..", "web_ui.py"), "--site", out], {encoding: "utf8"});
+  if (done.status !== 0) throw new Error("web_ui.py --site failed: " + done.stderr);
+  return join(out, "js");
+})();
+const { filterItems, normalizeText } = require(require('path').join(jsDir, 'collection.js'));
 const items = [
   { name: 'Aoi', desc: 'Baseball analysis', topics: ['python', 'sports'], archived: false },
   { name: 'Ironmate', desc: 'Slides', topics: ['javascript', 'slides'], archived: false },

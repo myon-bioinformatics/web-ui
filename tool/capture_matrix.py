@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import web_ui  # noqa: E402  (route table rules shared with navigation.js)
 sys.path.insert(0, str(ROOT / "tool"))
-import layout_presets  # noqa: E402  (switchable layouts, same rules as js/layout-presets.cjs)
+import layout_presets  # noqa: E402  (switchable layouts)
 
 DEFAULT_LAYOUTS = ROOT / "examples" / "layout-presets.json"
 
