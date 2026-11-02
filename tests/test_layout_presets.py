@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tool"))
 import layout_presets as lp  # noqa: E402
 
-SPEC = json.loads((ROOT / "examples/layout-presets.json").read_text(encoding="utf-8"))
+import web_ui  # noqa: E402
+
+SPEC = web_ui.example_data("layout-presets")
 
 
 def test_presets_are_valid_and_css_switches_on_the_checked_radio():
@@ -56,10 +58,12 @@ def test_candidates_allow_several_passing_presets_and_label_without_disabling():
         lp.controls_html(SPEC, {"schema": "x"})
 
 
-def test_cli_css_and_html(capsys):
-    assert lp.main(["css", str(ROOT / "examples/layout-presets.json")]) == 0
+def test_cli_css_and_html(capsys, tmp_path):
+    spec_file = tmp_path / "layout-presets.json"
+    spec_file.write_text(json.dumps(SPEC), encoding="utf-8")
+    assert lp.main(["css", str(spec_file)]) == 0
     assert capsys.readouterr().out == lp.css(SPEC)
-    assert lp.main(["html", str(ROOT / "examples/layout-presets.json")]) == 0
+    assert lp.main(["html", str(spec_file)]) == 0
     assert capsys.readouterr().out == lp.controls_html(SPEC) + "\n"
     with pytest.raises(ValueError, match="widths"):
         lp.sweep("file:///x", SPEC, [100], items="li")

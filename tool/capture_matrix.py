@@ -2,7 +2,7 @@
 
 Inputs are JSON produced elsewhere; this tool only presents them with web-ui styles:
 
-- ``--pages``: ``web-ui-flutter-pages/1`` (``examples/flutter-pages.json``): route, emoji key,
+- ``--pages``: ``web-ui-flutter-pages/1`` (``python -S web_ui.py --example flutter-pages``): route, emoji key,
   label, published URL and the browser-test-kit adapter id of each representative page;
 - ``--report``: Ironmate ``ironmate-browser-matrix/1`` (tiles and differences per page x environment);
 - ``--dataset`` (optional): browser-test-kit ``btk-platform-matrix/1``, for pass/fail and the
@@ -11,7 +11,7 @@ Inputs are JSON produced elsewhere; this tool only presents them with web-ui sty
 The page links are a web-ui route table (``#/hub`` style), so the viewer works from
 ``file://`` and needs no JavaScript: CSS ``:target`` shows the chosen page.
 
-    python -S tool/capture_matrix.py --pages examples/flutter-pages.json --report matrix/report.json \
+    python -S tool/capture_matrix.py --pages flutter-pages.json --report matrix/report.json \
         [--dataset app-matrix/dataset.json] --embed-css > matrix/viewer.html
 """
 from __future__ import annotations
@@ -29,7 +29,6 @@ import web_ui  # noqa: E402  (route table rules shared with navigation.js)
 sys.path.insert(0, str(ROOT / "tool"))
 import layout_presets  # noqa: E402  (switchable layouts)
 
-DEFAULT_LAYOUTS = ROOT / "examples" / "layout-presets.json"
 
 MAX_INPUT = 8 * 1024 * 1024
 THEMES = ("modern", "github-like")
@@ -139,7 +138,7 @@ def viewer(pages, report, dataset=None, *, tiles_base=".", theme="github-like",
     css = "<style>" + styles + "</style>"
     # Layout presets switch the tile grid live (radio + CSS :has); the presets' own CSS is
     # generated from validated lengths, so it is inlined next to the shared CSS.
-    layouts = layouts if layouts is not None else json.loads(DEFAULT_LAYOUTS.read_text(encoding="utf-8"))
+    layouts = layouts if layouts is not None else web_ui.example_data("layout-presets")
     css += "<style>" + layout_presets.css(layouts) + "</style>"
     switch = layout_presets.controls_html(layouts, candidates, legend="Tile layout")
     note = (f'<p class="ui-muted">Reference: {escape(report["reference"])}. '
@@ -162,7 +161,7 @@ def main(argv=None):
     parser.add_argument("--dataset")
     parser.add_argument("--tiles-base", default=".", help="directory holding Ironmate's tiles/, relative to the output")
     parser.add_argument("--theme", choices=THEMES, default="github-like")
-    parser.add_argument("--layouts", help="web-ui-layout-presets/1 (default examples/layout-presets.json)")
+    parser.add_argument("--layouts", help="web-ui-layout-presets/1 (default: the layout-presets example)")
     parser.add_argument("--candidates", help="web-ui-layout-candidates/1 from layout_presets.py sweep, to label presets")
     args = parser.parse_args(argv)
     try:

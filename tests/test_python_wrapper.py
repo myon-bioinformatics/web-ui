@@ -260,7 +260,7 @@ class BundledCssTests(unittest.TestCase):
         self.assertIn('body[data-ui-theme="green"]', via_node.stdout)
 
 
-WORLD = json.loads((ROOT / "examples/world.json").read_text(encoding="utf-8"))
+WORLD = web_ui.example_data("world")
 
 
 class WorldTests(unittest.TestCase):
@@ -355,20 +355,27 @@ class WorldTests(unittest.TestCase):
         self.assertIn("--ui-radius:", wall)
         run = lambda *args: subprocess.run([sys.executable, "-S", "web_ui.py", *args], cwd=ROOT, capture_output=True,
                                            text=True, encoding="utf-8", timeout=60)
-        shown = run("--world", "examples/world.json", "--theme", "green")
+        with tempfile.TemporaryDirectory() as out:
+            spec = Path(out) / "world.json"
+            spec.write_text(run("--example", "world").stdout, encoding="utf-8")
+            self.assertEqual(json.loads(spec.read_text(encoding="utf-8")), WORLD)
+            shown = run("--world", str(spec), "--theme", "green")
         self.assertEqual((shown.returncode, shown.stdout), (0, web_ui.world_document(WORLD, theme="green")))
+        self.assertEqual(run("--example", "nope").returncode, 2)
         self.assertEqual(run("--theme-wall", "3").stdout, web_ui.theme_wall_document(3))
         self.assertEqual(run("--world", "no-such.json").returncode, 2)
 
-    def test_site_writes_every_page_and_every_browser_module_and_nothing_else(self):
+    def test_site_writes_pages_browser_modules_and_example_data_and_nothing_else(self):
         with tempfile.TemporaryDirectory() as out:
             done = subprocess.run([sys.executable, "-S", "web_ui.py", "--site", out], cwd=ROOT, capture_output=True,
                                   text=True, encoding="utf-8", timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr)
             pages = web_ui.example_pages()
             modules = {f"js/{name}": source for name, source in web_ui.js_modules().items()}
-            self.assertEqual(sorted(done.stdout.split()), sorted([*pages, *modules, "docs/brand/icon.png", "docs/brand/favicon.png"]))
-            for name, text in {**pages, **modules}.items():
+            data = {f"examples/{name}.json": json.dumps(spec, ensure_ascii=False, indent=2) + "\n"
+                    for name, spec in web_ui.EXAMPLES.items()}
+            self.assertEqual(sorted(done.stdout.split()), sorted([*pages, *modules, *data, "docs/brand/icon.png", "docs/brand/favicon.png"]))
+            for name, text in {**pages, **modules, **data}.items():
                 self.assertEqual((Path(out) / name).read_text(encoding="utf-8"), text)
 
 

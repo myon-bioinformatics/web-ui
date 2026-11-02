@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "tool"))
 import capture_matrix as cm  # noqa: E402
 import web_ui  # noqa: E402
 
-PAGES = json.loads((ROOT / "examples/flutter-pages.json").read_text(encoding="utf-8"))
+PAGES = web_ui.example_data("flutter-pages")
 # browser-test-kit adapters/flutter-*.json (contract shared by fixture, not by import).
 BTK_ADAPTERS = {"flutter-home": "/", "flutter-hub": "/hub", "flutter-clipboard-shelf": "/core/clipboard-shelf",
                 "flutter-now-timeline": "/tools/time/now-timeline", "flutter-photo-studio": "/tools/media/photo-studio",
@@ -94,7 +94,7 @@ def test_viewer_rejects_ambiguous_mode_aliases():
 
 
 def test_matrix_css_defaults_are_on_the_8px_grid():
-    # Defaults only: layout presets (examples/layout-presets.json) may switch to other values.
+    # Defaults only: layout presets (web_ui.EXAMPLES["layout-presets"]) may switch to other values.
     import re
     css = web_ui.css_source("matrix.css")
     sizes = [int(v) for v in re.findall(r"(?<![\d.])(\d+)px", css) if v not in ("1", "2")]  # borders/outlines
@@ -119,8 +119,9 @@ def test_viewer_rejects_bad_inputs(change):
 
 def test_cli_writes_a_page_or_exits_2(tmp_path):
     (tmp_path / "report.json").write_text(json.dumps(report()), encoding="utf-8")
+    (tmp_path / "pages.json").write_text(json.dumps(PAGES), encoding="utf-8")
     run = subprocess.run([sys.executable, "-S", str(ROOT / "tool/capture_matrix.py"), "--pages",
-                          str(ROOT / "examples/flutter-pages.json"), "--report", str(tmp_path / "report.json")],
+                          str(tmp_path / "pages.json"), "--report", str(tmp_path / "report.json")],
                          capture_output=True, text=True, encoding="utf-8", cwd=tmp_path)
     assert run.returncode == 0 and run.stdout.startswith("<!doctype html>") and "<style>" in run.stdout
     (tmp_path / "bad.json").write_text('{"schema": "x"}', encoding="utf-8")

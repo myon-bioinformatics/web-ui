@@ -224,7 +224,8 @@ class WorldBrowserTests(unittest.TestCase):
 
     def test_shots_map_sheet_and_fallback(self):
         import json
-        spec = json.loads((ROOT / 'examples/world.json').read_text(encoding='utf-8'))
+        from web_ui import example_data
+        spec = example_data('world')
         server, origin = self.serve({'index.html': world_document(spec, theme='github-like')})
         try:
             with sync_playwright() as playwright:
@@ -308,7 +309,8 @@ class WorldBrowserTests(unittest.TestCase):
 
     def test_world_interrupted_repeated_and_history_flows(self):
         import json
-        spec = json.loads((ROOT / 'examples/world.json').read_text())
+        from web_ui import example_data
+        spec = example_data('world')
         spec['floors'][0]['spots'][0]['category'] = 'all'
         server, origin = self.serve({'index.html': world_document(spec)})
         try:
