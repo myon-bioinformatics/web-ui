@@ -2314,13 +2314,168 @@ def example_pages() -> dict[str, str]:
     }
 
 
+# --- Example data as Python (no examples/ files): specs the tools and pages use; `--example NAME` prints one as JSON ----------
+
+EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1',
+                   'base_url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/',
+                   'source': 'flutter_navigation_basic lib/shared/navigation/page_identities.g.dart',
+                   'pages': [{'route': '/',
+                              'key': '🏠',
+                              'label': 'Home',
+                              'adapter': 'flutter-home',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/'},
+                             {'route': '/hub',
+                              'key': '🗺️',
+                              'label': 'Navigation Hub',
+                              'adapter': 'flutter-hub',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/hub'},
+                             {'route': '/core/clipboard-shelf',
+                              'key': '📋',
+                              'label': 'Clipboard Shelf',
+                              'adapter': 'flutter-clipboard-shelf',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/core/clipboard-shelf'},
+                             {'route': '/tools/time/now-timeline',
+                              'key': '🕒',
+                              'label': 'Now Timeline',
+                              'adapter': 'flutter-now-timeline',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/time/now-timeline'},
+                             {'route': '/tools/media/photo-studio',
+                              'key': '🖼️',
+                              'label': 'Photo Studio',
+                              'adapter': 'flutter-photo-studio',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/media/photo-studio'},
+                             {'route': '/tools/http/request-draft',
+                              'key': '🌐',
+                              'label': 'HTTP Request Draft',
+                              'adapter': 'flutter-http-request-draft',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/tools/http/request-draft'},
+                             {'route': '/examples/ui-showcase',
+                              'key': '🎨',
+                              'label': 'UI Showcase',
+                              'adapter': 'flutter-ui-showcase',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/ui-showcase'},
+                             {'route': '/examples/counter-playground',
+                              'key': '👾',
+                              'label': 'Counter Playground',
+                              'adapter': 'flutter-counter',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/examples/counter-playground'},
+                             {'route': '/screen1',
+                              'key': '🌍',
+                              'label': 'Screen 1',
+                              'adapter': 'flutter-screen1',
+                              'url': 'https://myon-bioinformatics.github.io/flutter_navigation_basic/#/screen1'}]},
+ 'layout-presets': {'schema': 'web-ui-layout-presets/1',
+                    'default': 'grid8',
+                    'presets': [{'id': 'grid8',
+                                 'label': '8px grid',
+                                 'note': 'default: 160px tiles, 8px spacing',
+                                 'vars': {'--ui-matrix-col': '160px',
+                                          '--ui-matrix-gap': '8px',
+                                          '--ui-matrix-pad': '8px'}},
+                                {'id': 'compact',
+                                 'label': 'Compact',
+                                 'note': 'more tiles per row on small screens',
+                                 'vars': {'--ui-matrix-col': '120px',
+                                          '--ui-matrix-gap': '4px',
+                                          '--ui-matrix-pad': '4px'}},
+                                {'id': 'device',
+                                 'label': 'Device width',
+                                 'note': '195px = half an iPhone (390px)',
+                                 'vars': {'--ui-matrix-col': '195px',
+                                          '--ui-matrix-gap': '6px',
+                                          '--ui-matrix-pad': '6px'}},
+                                {'id': 'wide',
+                                 'label': 'Wide',
+                                 'note': 'larger tiles for detail',
+                                 'vars': {'--ui-matrix-col': '240px',
+                                          '--ui-matrix-gap': '16px',
+                                          '--ui-matrix-pad': '8px'}}]},
+ 'world': {'schema': 'web-ui-world/1',
+           'id': 'demo',
+           'title': 'web-ui world (prototype)',
+           'zoom_max': 4,
+           'shots': [{'id': 'gate',
+                      'label': 'SHOT 01',
+                      'title': 'Arrive',
+                      'body': 'One page, no page changes. Scroll to move the camera through the shots.',
+                      'bg': '#0d1f3a'},
+                     {'id': 'hall',
+                      'label': 'SHOT 02',
+                      'title': 'Look around',
+                      'body': 'Each shot is data: a label, a title, a text and a color. Python writes the HTML and '
+                              'CSS.',
+                      'bg': '#164a41'},
+                     {'id': 'deck',
+                      'label': 'SHOT 03',
+                      'title': 'Zoom in',
+                      'body': 'The only JavaScript marks what is on screen; CSS reacts to that mark.',
+                      'bg': '#5a2a1a'},
+                     {'id': 'exit',
+                      'label': 'SHOT 04',
+                      'title': 'Find it',
+                      'body': 'Scrolling reaches the information you came for.',
+                      'bg': '#2a2a5a'}],
+           'floors': [{'id': '1f',
+                       'label': '1F',
+                       'width': 960,
+                       'height': 640,
+                       'spots': [{'id': 'gate',
+                                  'x': 120,
+                                  'y': 320,
+                                  'label': 'Gate',
+                                  'category': 'info',
+                                  'body': 'Entrance and help desk.'},
+                                 {'id': 'hall',
+                                  'x': 480,
+                                  'y': 320,
+                                  'label': 'Hall',
+                                  'category': 'info',
+                                  'body': 'The central hall connects every area.'},
+                                 {'id': 'cafe',
+                                  'x': 800,
+                                  'y': 160,
+                                  'label': 'Cafe',
+                                  'category': 'food',
+                                  'body': 'Drinks and light meals.'},
+                                 {'id': 'shop',
+                                  'x': 800,
+                                  'y': 480,
+                                  'label': 'Shop',
+                                  'category': 'food',
+                                  'body': 'Snacks and souvenirs.'}]},
+                      {'id': '2f',
+                       'label': '2F',
+                       'width': 960,
+                       'height': 640,
+                       'spots': [{'id': 'deck',
+                                  'x': 240,
+                                  'y': 160,
+                                  'label': 'Deck',
+                                  'category': 'info',
+                                  'body': 'Open-air deck with a view of the hall.'},
+                                 {'id': 'lab',
+                                  'x': 720,
+                                  'y': 400,
+                                  'label': 'Lab',
+                                  'category': 'info',
+                                  'body': 'Hands-on corner for the curious.'}]}]}}
+
+
+def example_data(name: str) -> Any:
+    """A copy of one example spec: ``flutter-pages``, ``layout-presets`` or ``world``."""
+    try:
+        return json.loads(json.dumps(EXAMPLES[name]))
+    except KeyError:
+        raise ValueError(f"unknown example: {name} (one of {', '.join(EXAMPLES)})") from None
+
+
 # Sweep result for the layout switch on the front page (python tool/layout_presets.py sweep ... --out candidates.json).
 _INDEX_LAYOUT_CANDIDATES = {"schema": "web-ui-layout-candidates/1", "presets": {
     name: {"passed": [320, 384, 768, 1280], "failed": []} for name in ("grid8", "compact", "device", "wide")}}
 
 
 def _index_page() -> str:
-    """The front page (index.html): one self-contained page holding every example. Needs a checkout (examples/, tool/)."""
+    """The front page (index.html): one self-contained page holding every example. Needs a checkout (tool/layout_presets.py)."""
     import importlib
     root = Path(__file__).resolve().parent
     sys.path.insert(0, str(root / "tool"))
@@ -2328,8 +2483,7 @@ def _index_page() -> str:
         layout_presets = importlib.import_module("layout_presets")
     finally:
         sys.path.pop(0)
-    world = json.loads((root / "examples/world.json").read_text(encoding="utf-8"))
-    presets = json.loads((root / "examples/layout-presets.json").read_text(encoding="utf-8"))
+    world, presets = example_data("world"), example_data("layout-presets")
     css = bundled_css() + layout_presets.css(presets) + world_css(world) + _WALL_CSS
     theme_radios = "".join(
         f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
@@ -2357,7 +2511,7 @@ def _index_page() -> str:
         f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
         '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
         'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
-        f'<code>examples/world.json</code>.</p>{world_html(world)}</section>'
+        f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'
         '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
         f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
         + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(WORLD_JS))
@@ -2392,6 +2546,18 @@ def write_js(directory: str | Path) -> list[str]:
     return written
 
 
+def write_examples(directory: str | Path) -> list[str]:
+    """Write each example spec as ``directory/examples/NAME.json`` (for tools whose CLI takes a file path); returns the paths."""
+    written = []
+    for name in EXAMPLES:
+        target = Path(directory) / "examples" / f"{name}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(EXAMPLES[name], ensure_ascii=False, indent=2) + "\n")
+        written.append(f"examples/{name}.json")
+    return written
+
+
 def write_site(directory: str | Path) -> list[str]:
     """Write example_pages() and the browser modules under ``directory`` (CI screenshots, local viewing, Node tests); returns the paths."""
     written = []
@@ -2401,7 +2567,7 @@ def write_site(directory: str | Path) -> list[str]:
         with open(target, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(html)
         written.append(name)
-    return written + write_js(directory)
+    return written + write_js(directory) + write_examples(directory)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2411,8 +2577,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--world", type=Path, metavar="FILE",
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world)")
     parser.add_argument("--site", type=Path, metavar="DIR",
-                        help="write the example pages and the front page (index.html) under DIR and exit")
+                        help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
     parser.add_argument("--theme-wall", type=int, metavar="N",
                         help="print a page showing N seeded random themes side by side and exit")
     parser.add_argument("--css-bundle", action="store_true",
@@ -2442,6 +2609,12 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             parser.error(str(exc))
         sys.stdout.write(f"{sri(raw)}\nsha256 {hashlib.sha256(raw).hexdigest()}\n")
+        return 0
+    if args.example:
+        try:
+            sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
+        except ValueError as exc:
+            parser.error(str(exc))
         return 0
     if args.site:
         try:
