@@ -389,6 +389,73 @@ class WorldTests(unittest.TestCase):
         self.assertEqual([web_ui.minutes_until(*case) for case in ((600, 630), (600, 600), (1430, 10), (0, 1439))], [30, 0, 20, 1439])
         self.assertEqual([web_ui.board_seconds(n) for n in (1, 64, 160, 400)], [8.0, 8.0, 20.0, 50.0])
 
+    def test_gauge_clock_and_zone_rules(self):
+        # 09:00..18:00 in ten cells at 10:00: one hour of nine has passed.
+        self.assertEqual(web_ui.gauge_state(600, 540, 1080, 10), (1, 11, "active"))
+        self.assertEqual(web_ui.gauge_state(540, 540, 1080, 10), (0, 0, "active"))              # the first minute is empty, not "before"
+        self.assertEqual(web_ui.gauge_state(1080, 540, 1080, 10), (10, 100, "after"))           # the end is full
+        self.assertEqual(web_ui.gauge_state(180, 540, 1080, 10), (0, 0, "before"))              # 03:00: the start is nearer than the end
+        self.assertEqual(web_ui.gauge_state(1260, 540, 1080, 10), (10, 100, "after"))           # 21:00: the end is nearer
+        self.assertEqual(web_ui.gauge_state(180, 540, 1260, 10)[2], "before")                   # equidistant: a tie counts as before
+        self.assertEqual(web_ui.gauge_state(60, 1320, 120, 8), (6, 75, "active"))               # 22:00..02:00 runs past midnight: 01:00 is 3 h of 4
+        for start, end, cells in ((540, 1080, 10), (1320, 120, 8), (0, 1439, 20), (1439, 0, 3)):
+            seen = [web_ui.gauge_state(now, start, end, cells) for now in range(1440)]
+            for filled, percent, phase in seen:
+                self.assertTrue(0 <= filled <= cells and 0 <= percent <= 100 and phase in ("before", "active", "after"))
+            active = [s for s in seen if s[2] == "active"]
+            self.assertEqual(len(active), (end - start) % 1440)                                  # exactly the window is active
+        self.assertEqual(web_ui.gauge_cells(3, 5, ("A", "b")), "AAAbb")
+        self.assertEqual(web_ui.gauge_cells(0, 3, web_ui.GAUGE_GLYPHS["hourglass"]), "⏳⏳⏳")
+        self.assertEqual([web_ui.clock_label(m) for m in (0, 9, 600, 1439)], ["00:00", "00:09", "10:00", "23:59"])
+        self.assertEqual([web_ui.utc_offset_label(m) for m in (0, 540, 330, -300, -210, 765, -720)],
+                         ["UTC", "UTC+9", "UTC+5:30", "UTC-5", "UTC-3:30", "UTC+12:45", "UTC-12"])
+
+    def test_gauge_is_validated_normalized_and_escaped(self):
+        def board(*items, **flags):
+            return {**WORLD, "board": {"title": "T", "items": list(items), **flags}}
+        window = {"from": "09:00", "to": "18:00"}
+        for bad in (
+            {"text": "x", "gauge": {**window, "from": "9:00"}}, {"text": "x", "gauge": {**window, "to": "24:00"}},
+            {"text": "x", "gauge": {"from": "09:00", "to": "09:00"}},                              # no window
+            {"text": "x", "gauge": {**window, "cells": 2}}, {"text": "x", "gauge": {**window, "cells": 21}},
+            {"text": "x", "gauge": {**window, "cells": True}}, {"text": "x", "gauge": {**window, "cells": "10"}},
+            {"text": "x", "gauge": {**window, "glyphs": "sand"}},                                  # unknown preset
+            {"text": "x", "gauge": {**window, "glyphs": ["A"]}}, {"text": "x", "gauge": {**window, "glyphs": ["A", "B", "C"]}},
+            {"text": "x", "gauge": {**window, "glyphs": ["A", " "]}}, {"text": "x", "gauge": {**window, "glyphs": ["A", ""]}},
+            {"text": "x", "gauge": {**window, "glyphs": ["A", "\x07"]}}, {"text": "x", "gauge": {**window, "glyphs": ["A", "B" * 9]}},
+            {"text": "x", "gauge": {**window, "glyphs": ["A", 5]}}, {"text": "x", "gauge": {**window, "extra": 1}},
+            {"text": "x", "gauge": "09:00-18:00"}, {"text": "x", "at": "10:00", "gauge": window},  # at and gauge are exclusive
+        ):
+            with self.subTest(bad=str(bad)[-70:]), self.assertRaises(ValueError):
+                web_ui.world_validate(board(bad))
+        with self.assertRaises(ValueError):
+            web_ui.world_validate(board({"text": "x"}, zone="yes"))
+        # Every preset works, defaults are filled in, and a custom pair keeps its own glyphs.
+        for name, pair in web_ui.GAUGE_GLYPHS.items():
+            got = web_ui.world_validate(board({"text": "x", "gauge": {**window, "glyphs": name}}))["board"]["items"][0]["gauge"]
+            self.assertEqual(got["glyphs"], list(pair), name)
+        plain = web_ui.world_validate(board({"text": "x", "gauge": window}))
+        self.assertEqual(plain["board"]["items"][0]["gauge"], {**window, "cells": 10, "glyphs": ["⌛", "⏳"]})
+        self.assertEqual(plain["board"]["zone"], False)
+        self.assertEqual(web_ui.world_validate(plain), plain)                                      # normalizing twice changes nothing
+        custom = web_ui.world_validate(board({"text": "x", "gauge": {**window, "glyphs": ["🔥", "🪵"], "cells": 5}}))
+        self.assertEqual(custom["board"]["items"][0]["gauge"]["glyphs"], ["🔥", "🪵"])
+        # Markup: the window and glyphs are data attributes (escaped), the cells start empty so the page works before its script runs.
+        html = web_ui.world_html(board({"text": "<b>Open</b>", "gauge": {**window, "glyphs": ['"<', "&>"], "cells": 3}}, zone=True))
+        for raw in ("<b>Open</b>", 'data-done=""<"', 'data-todo="&>"'):
+            self.assertNotIn(raw, html)
+        self.assertIn('data-done="&quot;&lt;" data-todo="&amp;&gt;"', html)
+        self.assertIn('data-from="09:00" data-to="18:00" data-cells="3"', html)
+        self.assertIn('<span class="ui-board-cells" aria-hidden="true">&amp;&gt;&amp;&gt;&amp;&gt;</span> <span class="ui-board-pct">0%</span>', html)
+        self.assertIn(" data-zone>", html)
+        self.assertNotIn("data-zone", web_ui.world_html(board({"text": "x"})))
+
+    def test_world_script_stores_and_sends_nothing(self):
+        # The board keeps what a visitor writes in the page only: no storage, no cookies, no network, no place names.
+        for word in ("localStorage", "sessionStorage", "indexedDB", "cookie", "fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket",
+                     "caches", "Intl", "timeZone", "navigator", "geolocation", "pushState", "postMessage", "Worker"):
+            self.assertTrue(word not in web_ui.WORLD_JS, word)                                # (replaceState only edits the #spot fragment)
+
     def test_actors_player_and_board_are_validated_and_escaped(self):
         floor = WORLD["floors"][0]
         actor = {"id": "x", "emoji": "🐈", "label": "L"}

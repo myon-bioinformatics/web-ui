@@ -17,7 +17,7 @@ form.elements={x:{value:'100'},y:{value:'32'}};form.reportValidity=()=>true;
 const controls=node();controls.querySelector=s=>s==='form'?form:s==='output'?board:button;
 avatar.dataset={x:'64',y:'32',speed:'10'};
 const clock=node(), countdown=node();countdown.dataset.at='10:30';board.dataset.offset='0';
-board.querySelector=s=>s==='[data-clock]'?clock:null;board.querySelectorAll=()=>[countdown];
+board.querySelector=s=>s==='[data-clock]'?clock:null;board.querySelectorAll=s=>s==='[data-at]'?[countdown]:[];   // the board also has gauges now: answer by selector
 const f=node();f.dataset={w:'128',h:'64',floor:'one'};f.querySelector=()=>avatar;f.getBoundingClientRect=()=>({left:0,top:0,width:128,height:64});
 const other=node();other.dataset={w:'128',h:'64',floor:'two'};other.querySelector=()=>null;other.getBoundingClientRect=f.getBoundingClientRect;
 const radio={value:'one'}, view=node(),cam=node();view.clientWidth=128;view.clientHeight=64;view.contains=t=>t===view;view.closest=()=>null;view.hasPointerCapture=()=>false;view.setPointerCapture=()=>{};

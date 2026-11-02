@@ -1975,6 +1975,42 @@ def board_seconds(chars: int, chars_per_second: float = 8.0) -> float:
     return max(8.0, math.floor(chars / chars_per_second * 10 + 0.5) / 10)
 
 
+# Gauge glyph pairs, ``(elapsed, remaining)``. An hourglass is only one of them; any two short symbols work (``glyphs: ["🔥", "🪵"]``).
+GAUGE_GLYPHS: dict[str, tuple[str, str]] = {
+    "hourglass": ("⌛", "⏳"), "moon": ("🌕", "🌑"), "heart": ("❤️", "🤍"), "square": ("🟩", "⬜"),
+    "dot": ("●", "○"), "block": ("█", "░"), "star": ("⭐", "☆"),
+}
+
+
+def gauge_state(now: int, start: int, end: int, cells: int) -> tuple[int, int, str]:
+    """``(filled cells, percent, phase)`` of a window ``start``..``end`` (minutes since midnight; ``end`` before ``start`` runs past midnight)
+    at minute ``now``. Integer arithmetic only, so the page agrees exactly. Outside the window the nearer edge decides: ``before`` (empty)
+    or ``after`` (full); a tie counts as ``before``."""
+    span = (end - start) % 1440 or 1440
+    elapsed = (now - start) % 1440
+    if elapsed < span:
+        return elapsed * cells // span, elapsed * 100 // span, "active"
+    return (0, 0, "before") if (start - now) % 1440 <= (now - end) % 1440 else (cells, 100, "after")
+
+
+def gauge_cells(filled: int, cells: int, glyphs: tuple[str, str] | list[str]) -> str:
+    """The gauge as text: ``filled`` elapsed glyphs, then the remaining ones, ``cells`` in all."""
+    return glyphs[0] * filled + glyphs[1] * (cells - filled)
+
+
+def clock_label(minutes: int) -> str:
+    """``HH:MM`` for minutes since midnight: the clock and the stamp on a visitor's line."""
+    return f"{minutes // 60 % 24:02d}:{minutes % 60:02d}"
+
+
+def utc_offset_label(offset_minutes: int) -> str:
+    """The time zone the board may show beside its clock: ``UTC``, ``UTC+9``, ``UTC+5:30``, ``UTC-5``. The offset only, never a place name."""
+    if offset_minutes == 0:
+        return "UTC"
+    hours, minutes = divmod(abs(offset_minutes), 60)
+    return f"UTC{'+' if offset_minutes > 0 else '-'}{hours}" + (f":{minutes:02d}" if minutes else "")
+
+
 # The spaces the board collapses (ASCII spaces, NBSP, the Unicode space separators, line/paragraph separators); the page uses the same set.
 _MESSAGE_SPACE = frozenset(" \t\n\r\f\v\u00a0\u1680\u2028\u2029\u202f\u205f\u3000") | {chr(c) for c in range(0x2000, 0x200B)}
 
@@ -2035,6 +2071,38 @@ def _world_emoji(value: Any) -> str:
     if not isinstance(value, str) or not 1 <= len(value) <= 16 or any(c.isascii() for c in value):
         raise ValueError("emoji must be 1..16 non-ASCII characters")
     return value
+
+
+def _world_hhmm(value: Any, label: str) -> int:
+    """Minutes since midnight for an ``HH:MM`` string."""
+    if not (isinstance(value, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value)):
+        raise ValueError(f"{label} must be HH:MM")
+    return int(value[:2]) * 60 + int(value[3:])
+
+
+def _gauge_glyph(value: Any) -> str:
+    """One gauge cell: 1..8 visible characters (emoji sequences welcome); no spaces or control characters."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 8 or any(c.isspace() or not (c.isprintable() or c == "‍") for c in value):
+        raise ValueError("a gauge glyph is 1..8 visible characters")
+    return value
+
+
+def _world_gauge(gauge: Any) -> dict[str, Any]:
+    """Checked, normalized gauge: ``{"from", "to", "cells", "glyphs": [elapsed, remaining]}``; ``glyphs`` may name a ``GAUGE_GLYPHS`` preset."""
+    if not isinstance(gauge, dict) or set(gauge) - {"from", "to", "cells", "glyphs"}:
+        raise ValueError("a gauge has from, to, cells and glyphs")
+    start, end = _world_hhmm(gauge.get("from"), "from"), _world_hhmm(gauge.get("to"), "to")
+    if start == end:
+        raise ValueError("a gauge needs a window: from and to differ")
+    glyphs = gauge.get("glyphs", "hourglass")
+    if isinstance(glyphs, str):
+        if glyphs not in GAUGE_GLYPHS:
+            raise ValueError(f"unknown glyph set {glyphs!r} (one of {', '.join(GAUGE_GLYPHS)})")
+        glyphs = GAUGE_GLYPHS[glyphs]
+    elif not isinstance(glyphs, (list, tuple)) or len(glyphs) != 2:
+        raise ValueError("glyphs is a preset name or [elapsed, remaining]")
+    return {"from": gauge["from"], "to": gauge["to"], "cells": _world_int(gauge.get("cells", 10), "cells", 3, 20),
+            "glyphs": [_gauge_glyph(g) for g in glyphs]}
 
 
 def _world_int(value: Any, label: str, low: int, high: int) -> int:
@@ -2118,18 +2186,23 @@ def world_validate(spec: Any) -> dict[str, Any]:
                        "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
     board = spec.get("board")
     if board is not None:
-        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes"} or not isinstance(board.get("items"), list) \
-                or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
-            raise ValueError("a board has a title, 1..12 items and an optional post flag")
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "zone", "offset_minutes"} or not isinstance(board.get("items"), list) \
+                or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool) \
+                or not isinstance(board.get("zone", False), bool):
+            raise ValueError("a board has a title, 1..12 items, and optional post, zone and offset_minutes")
         items = []
         for item in board["items"]:
-            if not isinstance(item, dict) or set(item) - {"text", "at"}:
-                raise ValueError("a board item has text and an optional at")
-            at = item.get("at")
-            if at is not None and not (isinstance(at, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)):
-                raise ValueError("at must be HH:MM")
-            items.append({"text": _world_text(item.get("text"), "text", 120), "at": at})
+            if not isinstance(item, dict) or set(item) - {"text", "at", "gauge"}:
+                raise ValueError("a board item has text and an optional at or gauge")
+            at, gauge = item.get("at"), item.get("gauge")
+            if at is not None and gauge is not None:
+                raise ValueError("a board item has either at or gauge, not both")
+            if at is not None:
+                _world_hhmm(at, "at")
+            items.append({"text": _world_text(item.get("text"), "text", 120), "at": at,
+                          "gauge": None if gauge is None else _world_gauge(gauge)})
         board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
+                 "zone": board.get("zone", False),
                  "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
@@ -2152,15 +2225,25 @@ def _board_html(board: dict[str, Any] | None) -> str:
     if not board:
         return ""
     def item(entry: dict[str, Any], hidden: bool) -> str:
-        countdown = f' <span class="ui-board-min" data-at="{entry["at"]}"></span>' if entry["at"] else ""
+        extra = ""
+        if entry["at"]:
+            extra = f' <span class="ui-board-min" data-at="{entry["at"]}"></span>'
+        elif entry["gauge"]:
+            g = entry["gauge"]
+            done, todo = (escape(glyph, quote=True) for glyph in g["glyphs"])
+            extra = (f' <span class="ui-board-gauge" data-from="{g["from"]}" data-to="{g["to"]}" data-cells="{g["cells"]}" '
+                     f'data-done="{done}" data-todo="{todo}"><span class="ui-board-cells" aria-hidden="true">'
+                     f'{escape(gauge_cells(0, g["cells"], g["glyphs"]))}</span> <span class="ui-board-pct">0%</span></span>')
         aria_hidden = ' aria-hidden="true"' if hidden else ""
-        return f'<span class="ui-board-item"{aria_hidden}>{escape(entry["text"])}{countdown}</span>'
-    chars = sum(len(e["text"]) + (10 if e["at"] else 0) for e in board["items"])
+        return f'<span class="ui-board-item"{aria_hidden}>{escape(entry["text"])}{extra}</span>'
+    chars = sum(len(e["text"]) + (10 if e["at"] else 0) + (2 * e["gauge"]["cells"] + 5 if e["gauge"] else 0) for e in board["items"])
     run = "".join(item(e, False) for e in board["items"]) + "".join(item(e, True) for e in board["items"])
     form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
             'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
             if board["post"] else "")
-    return (f'<div class="ui-board" aria-live="off" data-offset="{board["offset_minutes"] if board["offset_minutes"] is not None else ""}" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
+    zone = " data-zone" if board["zone"] else ""
+    offset = board["offset_minutes"] if board["offset_minutes"] is not None else ""
+    return (f'<div class="ui-board" aria-live="off" data-offset="{offset}" data-chars="{chars}"{zone}><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
 
 
@@ -2243,13 +2326,15 @@ _WORLD_CSS = (
     ".ui-actor span,.ui-player span{display:block;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));font-size:1.5rem;line-height:1}"
     ".ui-player{position:absolute;left:0;top:0;pointer-events:none;transform:translate(calc(var(--px,0) * 1px),calc(var(--py,0) * 1px));"
     "transition:transform var(--walk,0s) linear}"
-    ".ui-board{display:flex;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--ui-border);background:var(--ui-panel);"
+    ".ui-board{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:4px 8px;border-bottom:1px solid var(--ui-border);background:var(--ui-panel);"
     "font-family:var(--ui-font-mono);font-size:.85rem;overflow:hidden}"
-    ".ui-board-clock{flex:none;border:1px solid var(--ui-accent);padding:0 .5rem;border-radius:var(--ui-radius)}"
-    ".ui-board-track{flex:1;min-width:0;overflow:hidden;white-space:nowrap}"
+    ".ui-board-clock{flex:none;white-space:nowrap;border:1px solid var(--ui-accent);padding:0 .5rem;border-radius:var(--ui-radius)}"
+    ".ui-board-track{flex:4 1 14rem;min-width:0;overflow:hidden;white-space:nowrap}"
     ".ui-board-run{display:inline-flex;animation:ui-board-scroll 24s linear infinite}"
     ".ui-board-item{padding-right:3rem}"
-    ".ui-board-post{display:flex;gap:4px;flex:none}.ui-board-post .ui-input{width:10rem;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
+    ".ui-board-stamp{margin-right:.25rem;color:var(--ui-muted);font-variant-numeric:tabular-nums}"
+    ".ui-board-gauge{white-space:nowrap}.ui-board-cells{letter-spacing:.05em}.ui-board-pct{font-variant-numeric:tabular-nums}"
+    ".ui-board-post{display:flex;gap:4px;flex:1 1 13rem}.ui-board-post .ui-input{flex:1;min-width:0;width:auto;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
     "@keyframes ui-board-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
     "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
 )
@@ -2325,6 +2410,10 @@ export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/
 export function minutesUntil(now,at){return Math.ceil(((at-now)%1440+1440)%1440)}
 export function boardClock(now,offset){const seconds=((now+offset*60)%86400+86400)%86400,whole=Math.floor(seconds);return{clock:[Math.floor(whole/3600),Math.floor(whole/60)%60].map(v=>String(v).padStart(2,"0")).join(":"),minutes:seconds/60}}
 export function boardSeconds(chars,cps=8){return Math.max(8,Math.round(chars/cps*10)/10)}
+export function gaugeState(now,start,end,cells){const m=n=>((n%1440)+1440)%1440,span=m(end-start)||1440,el=m(now-start);if(el<span)return[Math.floor(el*cells/span),Math.floor(el*100/span),"active"];return m(start-now)<=m(now-end)?[0,0,"before"]:[cells,100,"after"]}
+export function gaugeCells(filled,cells,done,todo){return done.repeat(filled)+todo.repeat(cells-filled)}
+export function clockLabel(minutes){const h=Math.floor(minutes/60)%24,m=minutes%60;return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")}
+export function utcOffsetLabel(offset){if(offset===0)return"UTC";const a=Math.abs(offset),h=Math.floor(a/60),m=a%60;return"UTC"+(offset>0?"+":"-")+h+(m?":"+String(m).padStart(2,"0"):"")}
 export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
 function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
@@ -2336,12 +2425,12 @@ const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
 const walk=bindPlayer(el,floor);
-const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),clock=boardClock(d.getTime()/1000,board.dataset.offset===""?-d.getTimezoneOffset():Number(board.dataset.offset)),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock;for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"いま":"あと"+left+"分"}};
+const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},tick=()=>{const clock=clockNow(),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.zone!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(now,hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(now),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
-form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift(text);notes.splice(5);run.replaceChildren();
-for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");span.textContent=note;run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
-const chars=baseChars+notes.reduce((n,text)=>n+[...text].length,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
+form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift({text,at:clockNow().clock});notes.splice(5);run.replaceChildren();
+for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
+const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
@@ -2358,7 +2447,7 @@ const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,cleanMessage,motionWalk,motionSample,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,cleanMessage,motionWalk,motionSample,bindWorlds};
 bindWorlds();
 """
 
@@ -2781,8 +2870,11 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                      'items': [{'text': 'Gate: wait about 10 min'},
                                {'text': 'Show starts', 'at': '10:30'},
                                {'text': 'Guided walk', 'at': '14:00'},
-                               {'text': 'Last entry', 'at': '17:30'}],
-                     'post': True}}}
+                               {'text': 'Last entry', 'at': '17:30'},
+                               {'text': 'Open hours', 'gauge': {'from': '09:00', 'to': '18:00', 'cells': 10, 'glyphs': 'hourglass'}},
+                               {'text': 'Daylight', 'gauge': {'from': '06:00', 'to': '22:00', 'cells': 8, 'glyphs': 'moon'}}],
+                     'post': True,
+                     'zone': True}}}
 
 
 def example_data(name: str) -> Any:

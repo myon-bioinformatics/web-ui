@@ -52,6 +52,16 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 [Motion and clock ownership](docs/world-motion.md) explains Python-generated plans, the browser
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 
+Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a
+`player` that walks to the spot you tap, and an info `board`. The board has a clock (`"zone": true` adds the UTC offset such as `UTC+9`,
+never a place name), items with `"at": "HH:MM"` ("in N min"), and **gauges**: `{"text": "Open", "gauge": {"from": "09:00", "to": "18:00",
+"cells": 10, "glyphs": "hourglass"}}` fills `cells` glyphs as the window passes (`from` after `to` runs past midnight). `glyphs` is a preset
+(`GAUGE_GLYPHS`: hourglass, moon, heart, square, dot, block, star) or any two short symbols `["🔥", "🪵"]` (elapsed, remaining); the
+hourglass is just one choice. `"post": true` adds a one-line form: what a visitor writes is cleaned (`clean_message`), stamped `HH:MM`
+and shown **on that page view only**: no storage, cookie, cache or request, and a reload clears it (Python and Chromium tests check
+this). It is not shared with other visitors. All rules (`gauge_state`, `clock_label`, `utc_offset_label`, `travel_seconds`, ...) live in Python and
+the page's script is tested to give identical results.
+
 `ui.js` (`js_source("ui.js")`) is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
 clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
 (click-to-enlarge in a `<dialog>`). Import only what a page needs.

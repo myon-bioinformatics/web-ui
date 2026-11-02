@@ -16,8 +16,8 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clean_message, minutes_until, travel_seconds, board_seconds, clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser,
-                    shared_scripts, stub_response, theme_wall_document, world_document)
+from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds, clamp_focus,
+                    contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label, world_document)
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -378,6 +378,102 @@ class WorldBrowserTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close()
 
+    def test_board_follows_the_viewers_time_zone_and_shows_only_the_offset(self):
+        import datetime
+        from web_ui import example_data
+        spec = example_data('world')
+        server, origin = self.serve({'index.html': world_document(spec)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    # 2026-11-03 10:00 UTC seen from five places: the clock, the gauges and the stamp all use the viewer's local minutes.
+                    for zone, offset in (('UTC', 0), ('Asia/Tokyo', 540), ('Asia/Kolkata', 330), ('America/New_York', -300), ('Pacific/Chatham', 825)):
+                        with self.subTest(zone=zone):
+                            context = browser.new_context(viewport={'width': 800, 'height': 900}, timezone_id=zone)
+                            page = context.new_page()
+                            page.clock.set_fixed_time(datetime.datetime(2026, 11, 3, 10, 0, tzinfo=datetime.timezone.utc))
+                            page.goto(origin + '/index.html')
+                            local = (600 + offset) % 1440
+                            expect(page.locator('[data-clock]')).to_have_text(f'{clock_label(local)} {utc_offset_label(offset)}')
+                            filled, percent, _ = gauge_state(local, 540, 1080, 10)
+                            first = page.locator('.ui-board-run .ui-board-gauge').first
+                            self.assertEqual(first.locator('.ui-board-cells').text_content(), gauge_cells(filled, 10, ('⌛', '⏳')))
+                            self.assertEqual(first.locator('.ui-board-pct').text_content(), f'{percent}%')
+                            page.locator('.ui-board-post input').fill('hi')
+                            page.locator('.ui-board-post input').press('Enter')
+                            self.assertEqual(page.locator('.ui-board-note .ui-board-stamp').first.text_content(), clock_label(local))
+                            board_text = page.locator('.ui-board').inner_text()                  # an offset, never a place name
+                            for place in zone.split('/')[1:]:
+                                self.assertNotIn(place.replace('_', ' '), board_text)
+                            self.assertNotIn('/', board_text)
+                            context.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_board_line_stays_readable_on_a_phone(self):
+        from web_ui import example_data
+        spec = example_data('world')
+        server, origin = self.serve({'index.html': world_document(spec)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    for width in (320, 390, 800):
+                        with self.subTest(width=width):
+                            page = browser.new_page(viewport={'width': width, 'height': 700})
+                            page.goto(origin + '/index.html')
+                            track, board = page.locator('.ui-board-track').bounding_box(), page.locator('.ui-board').bounding_box()
+                            self.assertGreater(track['width'], 200)                                 # the scrolling line is not squeezed away
+                            self.assertLessEqual(track['x'] + track['width'], board['x'] + board['width'] + 1)
+                            form = page.locator('.ui-board-post').bounding_box()
+                            self.assertLessEqual(form['x'] + form['width'], board['x'] + board['width'] + 1)
+                            page.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_board_keeps_nothing_and_sends_nothing(self):
+        from web_ui import example_data
+        spec = example_data('world')
+        server, origin = self.serve({'index.html': world_document(spec)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 900})
+                    requests = []
+                    page.goto(origin + '/index.html')
+                    page.on('request', lambda request: requests.append(request.url))
+                    before = page.evaluate('performance.getEntriesByType("resource").length')
+                    form = page.locator('.ui-board-post input')
+                    for text in ('meet at the gate 14:00', 'second line', '\U0001f9d1\u200d\U0001f33e hi'):
+                        form.fill(text)
+                        form.press('Enter')
+                    self.assertEqual(page.locator('.ui-board-note').count(), 6)
+                    page.wait_for_timeout(400)
+                    # No storage of any kind, no cookie, no cache, no database, and not one request after the page loaded.
+                    state = page.evaluate("""async () => ({
+                        local: localStorage.length, session: sessionStorage.length, cookie: document.cookie,
+                        databases: (await indexedDB.databases()).length, caches: (await caches.keys()).length,
+                        resources: performance.getEntriesByType('resource').length})""")
+                    self.assertEqual(state, {'local': 0, 'session': 0, 'cookie': '', 'databases': 0, 'caches': 0, 'resources': before})
+                    self.assertEqual(requests, [])
+                    # Reload: everything a visitor wrote is gone, the board is back to what the page was built with.
+                    page.reload()
+                    self.assertEqual(page.locator('.ui-board-note').count(), 0)
+                    self.assertEqual(page.evaluate('localStorage.length + sessionStorage.length'), 0)
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_villagers_player_board_clock_and_visitor_lines(self):
         import datetime
         from web_ui import example_data
@@ -412,13 +508,29 @@ class WorldBrowserTests(unittest.TestCase):
                     self.assertAlmostEqual(walk, travel_seconds(120, 320, 480, 320, 96), places=6)
                     self.assertEqual(player.get_attribute('data-target-x'), '480')
                     # Board: the clock and "in N min" come from the page's clock, by the same rule as Python.
-                    expect(page.locator('[data-clock]')).to_have_text('10:00')
+                    expect(page.locator('[data-clock]')).to_have_text('10:00 UTC')
                     texts = page.locator('.ui-board-run [data-at]').all_text_contents()
                     expected = [f'あと{minutes_until(600, h * 60 + m)}分' for h, m in ((10, 30), (14, 0), (17, 30))] * 2
                     self.assertEqual(texts, expected)
                     cases = [(600, 630), (600, 600), (1430, 10), (0, 1439)]
                     self.assertEqual(page.evaluate('cases => cases.map(c => webUiWorld.minutesUntil(...c))', cases), [minutes_until(*c) for c in cases])
                     self.assertEqual(page.evaluate('[1, 64, 160, 400].map(n => webUiWorld.boardSeconds(n))'), [board_seconds(n) for n in (1, 64, 160, 400)])
+                    # Gauges: the same integer rule as Python, for the demo's two glyph sets (visible line and its aria-hidden twin).
+                    gauges = page.locator('.ui-board-run .ui-board-gauge')
+                    self.assertEqual(gauges.count(), 4)
+                    for index, ((start, end, cells, glyphs)) in enumerate([(540, 1080, 10, ('⌛', '⏳')), (360, 1320, 8, ('🌕', '🌑'))] * 2):
+                        filled, percent, phase = gauge_state(600, start, end, cells)
+                        self.assertEqual(phase, 'active')
+                        self.assertEqual(gauges.nth(index).locator('.ui-board-cells').text_content(), gauge_cells(filled, cells, glyphs))
+                        self.assertEqual(gauges.nth(index).locator('.ui-board-pct').text_content(), f'{percent}%')
+                    windows = [(540, 1080, 10), (1320, 120, 8), (0, 1439, 20), (1439, 0, 3), (360, 1320, 8)]
+                    cases = [[now, start, end, cells] for start, end, cells in windows for now in range(1440)]
+                    self.assertEqual(page.evaluate('cases => cases.map(c => webUiWorld.gaugeState(...c))', cases),
+                                     [list(gauge_state(*c)) for c in cases])
+                    self.assertEqual(page.evaluate('() => [0, 1, 9, 600, 1439].map(m => webUiWorld.clockLabel(m))'), [clock_label(m) for m in (0, 1, 9, 600, 1439)])
+                    offsets = [0, 540, 330, -300, -210, 765, -720, 60, -60]
+                    self.assertEqual(page.evaluate('offsets => offsets.map(o => webUiWorld.utcOffsetLabel(o))', offsets), [utc_offset_label(o) for o in offsets])
+                    self.assertEqual(page.evaluate('() => webUiWorld.gaugeCells(3, 5, "🔥", "🪵")'), gauge_cells(3, 5, ('🔥', '🪵')))
                     # Visitor lines: same cleaning as Python, shown as text, kept only on this page view.
                     lines = ['  hello   world  ', '<img src=x onerror=1>', 'x' * 100, '   ', '\U0001f9d1\u200d\U0001f33e hi']
                     self.assertEqual(page.evaluate('lines => lines.map(t => webUiWorld.cleanMessage(t))', lines), [clean_message(t) for t in lines])
@@ -429,7 +541,8 @@ class WorldBrowserTests(unittest.TestCase):
                     form.locator('input').fill('   ')
                     form.locator('input').press('Enter')                                   # nothing to show: ignored
                     notes = page.locator('.ui-board-note').all_text_contents()
-                    self.assertEqual(notes, [clean_message(t) for t in reversed(lines[:3])] * 2)
+                    self.assertEqual(notes, [f'10:00 {clean_message(t)}' for t in reversed(lines[:3])] * 2)          # the stamp is the page's clock at posting
+                    self.assertEqual(page.locator('.ui-board-note .ui-board-stamp').all_text_contents(), ['10:00'] * 6)
                     self.assertEqual(page.locator('.ui-board-run img').count(), 0)
                     self.assertEqual(page.evaluate('globalThis.pwned'), None)
                     page.reload()
@@ -455,11 +568,12 @@ class WorldBrowserTests(unittest.TestCase):
                     for i in range(8):
                         board.locator('input[name="message"]').fill(f'{i}😀')
                         board.locator('button[type="submit"]').click()
-                    halves = board.evaluate("""b => {const rows=[...b.querySelectorAll('.ui-board-item')].map(n=>n.textContent);return [rows.slice(0,rows.length/2),rows.slice(rows.length/2)]}""")
+                    halves = board.evaluate("""b => {const rows=[...b.querySelectorAll('.ui-board-item')].map(n=>{const c=n.cloneNode(true);c.querySelectorAll('.ui-board-stamp').forEach(s=>s.remove());return c.textContent.trim()});return [rows.slice(0,rows.length/2),rows.slice(rows.length/2)]}""")
                     self.assertEqual(halves[0], halves[1])
                     self.assertEqual(halves[0][:5], ['7😀', '6😀', '5😀', '4😀', '3😀'])
                     self.assertEqual(board.locator('.ui-board-note').count(), 10)
                     self.assertEqual(int(board.get_attribute('data-chars')), base + 10)
+                    self.assertEqual(len(set(board.locator('.ui-board-note .ui-board-stamp').all_text_contents())), 1)   # each line carries its HH:MM stamp
                     expect(board.locator('.ui-board-run')).to_have_css('animation-duration', f'{board_seconds(base + 10):g}s')
                     page.reload()
                     self.assertEqual(page.locator('.ui-board-note').count(), 0)
