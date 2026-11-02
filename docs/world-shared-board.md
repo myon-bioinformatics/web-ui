@@ -4,7 +4,7 @@ Opt in with `board.shared_issue = "OWNER/REPOSITORY/NUMBER"` in an existing
 `web-ui-world/1` spec. Omit it to keep the old board. Runtime stays in
 `web_ui.py`, using Python stdlib and generated browser JavaScript. No server,
 secret token, OAuth handler, network POST, or new runtime dependency is added.
-The default example has **no shared destination** and sends no API requests.
+The default world example connects to [public board #110](https://github.com/myon-bioinformatics/web-ui/issues/110). It still sends no API request until the visitor clicks refresh.
 
 The board includes an expandable shared section and a separate-tab GitHub link.
 The current world, villagers, player, clock, countdown and local Post stay open.
@@ -70,10 +70,15 @@ parity and both DOM harnesses. The official Node archive SHA-256 was checked.
 Chromium download returned invalid/truncated archives locally; real-browser QA
 must be checked in CI. No real comment was posted.
 
-Activation requires explicit approval: create one public issue in
-`myon-bioinformatics/web-ui`, title **World 共有電光掲示板（公開）**, with a body
-stating public visibility, login requirement, no personal/secret information,
-GitHub moderation/deletion and non-realtime updates; then set its returned number
-in the desired world's `board.shared_issue`. Neither creation nor activation nor
-repository visibility changes are performed by this PR. The example `/123` is
-only an intercepted test fixture, never a destination configured in shipped pages.
+Activation was approved by the owner on 2026-11-03 (Japan time). Public issue
+[World 共有電光掲示板（公開） #110](https://github.com/myon-bioinformatics/web-ui/issues/110)
+was created with public visibility, login, privacy, deletion/moderation and
+non-realtime notices. The default world example now sets
+`board.shared_issue = "myon-bioinformatics/web-ui/110"`; generated front-page HTML
+uses the same destination. Other worlds opt in individually; remove this field
+to disable the shared section. Repository visibility is unchanged. Test `/123`
+remains intercepted fixture data only.
+
+The pre-activation head `5823530f` passed all five CI workflows, including desktop
+and mobile Chromium shared-board tests. Activation changes only the example
+configuration, generated page and documentation; the workflow rechecks them.

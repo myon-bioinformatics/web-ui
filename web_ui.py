@@ -2836,6 +2836,7 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                {'text': 'Show starts', 'at': '10:30'},
                                {'text': 'Guided walk', 'at': '14:00'},
                                {'text': 'Last entry', 'at': '17:30'}],
+                     'shared_issue': 'myon-bioinformatics/web-ui/110',
                      'post': True}}}
 
 

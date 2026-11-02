@@ -40,3 +40,11 @@ def test_shared_node(tmp_path):
     module = tmp_path / 'shared.mjs'
     module.write_text(ui.WORLD_JS.removesuffix('bindWorlds();\n') + (Path(__file__).parent / 'fixtures/world_shared_harness.js').read_text())
     subprocess.run([node, str(module)], check=True)
+
+
+def test_approved_example_destination():
+    value = ui.example_data('world')
+    assert value['board']['shared_issue'] == 'myon-bioinformatics/web-ui/110'
+    html = ui.world_document(value)
+    assert 'https://github.com/myon-bioinformatics/web-ui/issues/110#new_comment_field' in html
+    assert 'issues/123#new_comment_field' not in html
