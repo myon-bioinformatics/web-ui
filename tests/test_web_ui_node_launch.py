@@ -320,7 +320,7 @@ def _assert_same_outcome(old_call, new_call):
 def test_normal_run_matches_legacy(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         on_eval="import sys; sys.stdout.write('ok\\n')",
     )
     script_path = tmp_path / "demo.js"
@@ -362,7 +362,7 @@ def test_node_not_on_path_raises_runtime_error(monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="node executable not found on PATH"):
         _legacy_run_node(script, timeout=30)
-    with pytest.raises(RuntimeError, match=r"Node 24 or newer.*not found on PATH"):
+    with pytest.raises(RuntimeError, match=r"Node 26 or newer.*not found on PATH"):
         ui.run_node(script, timeout=30)
 
 
@@ -374,7 +374,7 @@ def test_node_v20_on_path_names_found_version(tmp_path, monkeypatch):
         lambda name, **kw: str(script) if name == "node" else None,
     )
     ui._node_launch_module().clear_probe_cache()
-    with pytest.raises(RuntimeError, match=r"Node 24 or newer.*found Node 20"):
+    with pytest.raises(RuntimeError, match=r"Node 26 or newer.*found Node 20"):
         ui.run_node(ROOT / "tests" / "navigation.node.js")
 
 
@@ -388,14 +388,25 @@ def test_node_v20_rejected_while_legacy_would_run(tmp_path):
     entry.write_text("", encoding="utf-8")
     legacy = _legacy_run_node(entry, node=script, timeout=30)
     assert legacy.stdout == "legacy\n"
-    with pytest.raises(RuntimeError, match=r"Node 24 or newer.*found Node 20"):
+    with pytest.raises(RuntimeError, match=r"Node 26 or newer.*found Node 20"):
         ui.run_node(entry, node=script, timeout=30)
+
+
+@pytest.mark.parametrize("major", [24, 25])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_below_node_26_names_found_version(tmp_path, monkeypatch, major, explicit):
+    script = _write_fake_node(tmp_path, version=f"v{major}.0.0", on_eval="pass")
+    monkeypatch.setattr(shutil, "which", lambda name, **kw: str(script) if name == "node" else None)
+    ui._node_launch_module().clear_probe_cache()
+    kwargs = {"node": script} if explicit else {}
+    with pytest.raises(RuntimeError, match=rf"Node 26 or newer.*found Node {major}"):
+        ui.run_node(ROOT / "tests" / "navigation.node.js", **kwargs)
 
 
 def test_nonzero_exit_preserves_stderr(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         on_eval="import sys; sys.stderr.write('diag\\n'); sys.exit(3)",
     )
     entry = tmp_path / "demo.js"
@@ -411,7 +422,7 @@ def test_nonzero_exit_preserves_stderr(tmp_path):
 
 
 def test_timeout_cmd_includes_resolved_node(tmp_path, monkeypatch):
-    script = _write_fake_node(tmp_path, version="v24.0.0", on_eval="import time; time.sleep(60)")
+    script = _write_fake_node(tmp_path, version="v26.0.0", on_eval="import time; time.sleep(60)")
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
     node_launch = ui._node_launch_module()
@@ -432,7 +443,7 @@ def test_timeout_cmd_includes_resolved_node(tmp_path, monkeypatch):
 
 
 def test_timeout_matches_legacy(monkeypatch, tmp_path):
-    script = _write_fake_node(tmp_path, version="v24.0.0", on_eval="pass")
+    script = _write_fake_node(tmp_path, version="v26.0.0", on_eval="pass")
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
     cmd = [str(script), str(entry)]
@@ -459,7 +470,7 @@ def test_timeout_matches_legacy(monkeypatch, tmp_path):
 
 
 def test_stdin_closed_nonzero_returns_legacy_stderr(tmp_path):
-    script = _write_fake_node(tmp_path, version="v24.0.0", close_stdin_unread=True)
+    script = _write_fake_node(tmp_path, version="v26.0.0", close_stdin_unread=True)
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
 
@@ -480,7 +491,7 @@ def test_stdin_closed_nonzero_returns_legacy_stderr(tmp_path):
 def test_stdin_closed_zero_exit_returns_stdout(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         close_stdin_unread=True,
         stdin_close_exit_code=0,
         stdin_close_stdout=b"done\n",
@@ -502,7 +513,7 @@ def test_stdin_closed_zero_exit_returns_stdout(tmp_path):
 def test_bytes_stdout_preserved(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         on_eval="pass",
         stdout_bytes=_BINARY_STDOUT,
     )
@@ -523,7 +534,7 @@ def test_decode_node_process_bytes_normalizes_line_endings():
 def test_run_node_normalizes_stdout_line_endings(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         on_eval='import sys; sys.stdout.write("a\\r\\nb\\rc")',
     )
     result = ui.run_node(
@@ -536,7 +547,7 @@ def test_run_node_normalizes_stdout_line_endings(tmp_path):
 
 
 def test_timeout_expired_keeps_raw_output_and_stderr_bytes(tmp_path, monkeypatch):
-    script = _write_fake_node(tmp_path, version="v24.0.0", on_eval="pass")
+    script = _write_fake_node(tmp_path, version="v26.0.0", on_eval="pass")
     entry = tmp_path / "demo.js"
     entry.write_text("", encoding="utf-8")
     node_launch = ui._node_launch_module()
@@ -619,7 +630,7 @@ def test_mutation_subprocess_broken_run_fails_normal_parity_test():
 def test_run_node_without_argv_matches_legacy_bare_node(tmp_path):
     script = _write_fake_node(
         tmp_path,
-        version="v24.0.0",
+        version="v26.0.0",
         on_eval="import sys; sys.stdout.write('bare\\n')",
     )
 
