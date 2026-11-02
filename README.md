@@ -24,6 +24,13 @@ There are no css/ files and no example HTML files: the stylesheets are Python da
 
 Generic JavaScript handles browser behavior and rendering helpers. MCP/API protocol semantics remain in consuming repositories.
 
+## Python-first flow replacement
+
+Card-style flow diagrams and atomic flow edits now belong to [ascii_artist's accepted Python implementation](https://github.com/myon-bioinformatics/ascii_artist/blob/a9af65cc443e6129176f83268142bff2c2397b66/docs/card-flows.md).
+Pin `a9af65cc443e6129176f83268142bff2c2397b66` (or a later tested revision) when migrating: use `validate_flow`, `flow_html`, `flow_mermaid`, `flow_document`, `flow_css`, and `patch_flow` from `ascii_artist.py`.
+The CLI routes are `python -S ascii_artist.py flow-cards` and `python -S ascii_artist.py flow-patch`; the existing small CJS entry forwards to the same Python implementation.
+`flow_document()` embeds its CSS by default, so it does not depend on the removed web-ui `css/` paths. The replacement retains card rendering, text escaping, bounded/atomic patch validation and behavioral regression tests; web-ui no longer maintains a second flow engine.
+
 ## Themes
 
 Current themes:
