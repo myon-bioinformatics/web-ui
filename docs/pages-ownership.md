@@ -21,6 +21,14 @@ To prevent duplicate discovery interfaces and maintain clear boundaries, respons
 
 *Note on consolidation:* Ironmate metadata-only discovery transfers to the portfolio ([portfolio PR #31](https://github.com/myon-bioinformatics/myon-bioinformatics.github.io/pull/31)), and Ironmate retires its legacy stub and Pages deployment source ([Ironmate PR #81](https://github.com/myon-bioinformatics/Ironmate/pull/81)). Flutter navigation and MCP toolcall lab search interfaces retain their specific responsibilities.
 
+## Per-repository site settings: `site.config.json`
+
+One fixed name at the repository root, so every Pages repository is configured the same way. It is JSON because
+web-ui and its callers are stdlib-only and Python has no YAML parser. The portfolio already ships it with
+`defaultViewMode`; that key stays valid. Draft keys, all optional: `schema` (`web-ui-site/1`, the version lives in
+the file and never in its name), `theme` (a theme name above) and `layout` (a preset id from
+[layout-presets.md](./layout-presets.md)). Facts about the site stay in their own sources (see the portfolio's `SSOT.md`).
+
 ## Evidence and diagnostics publishing policy
 
 Execution evidence (JUnit XML reports, raw diagnostic JSONL, visual regression screenshots, and trace logs) must remain cleanly separated from public Pages deployments:

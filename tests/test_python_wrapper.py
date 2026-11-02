@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -7,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from web_ui import _node_launch_module, render_document, run_node, shared_scripts, shared_stylesheets
+from web_ui import (_node_launch_module, bundled_css, render_document, run_node, shared_scripts,
+                    shared_stylesheets)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -216,6 +218,53 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('data-ui-theme="modern"', run.stdout)
         self.assertIn('one-liner', run.stdout)
         self.assertNotIn('<script', run.stdout)
+
+
+class BundledCssTests(unittest.TestCase):
+    def test_bundle_is_built_in_memory_from_every_source_in_a_fixed_order(self):
+        css = bundled_css()
+        marks = re.findall(r"^/\* css/(\S+) \*/$", css, re.MULTILINE)
+        self.assertEqual(marks[:3], ["tokens.css", "base.css", "components.css"])
+        self.assertEqual(sorted(marks), sorted(str(p.relative_to(ROOT / "css")) for p in (ROOT / "css").rglob("*.css")))
+        themes = [m for m in marks if m.startswith("themes/")]
+        self.assertEqual(marks[-len(themes):], themes)
+        self.assertEqual(themes, sorted(themes))
+        self.assertTrue(css.startswith("@layer base,components,theme;\n"))
+        self.assertLess(css.index("@layer base,components,theme;"), css.index("@layer base{"))
+        for path in (ROOT / "css").rglob("*.css"):
+            self.assertIn(path.read_text(encoding="utf-8").strip("\n"), css)
+        self.assertEqual(css, bundled_css(ROOT))
+        self.assertFalse((ROOT / "css" / "web-ui.css").exists(), "the bundle is never written to the repository")
+
+    def test_single_file_page_works_for_every_theme_without_links(self):
+        css = bundled_css()
+        for theme in ("modern", "github-like", "green"):
+            html = render_document("hello", theme=theme, css=css)
+            self.assertIn(f'data-ui-theme="{theme}"', html)
+            self.assertNotIn('rel="stylesheet"', html)
+            self.assertIn(f'body[data-ui-theme="{theme}"]', css)
+
+    def test_candidate_theme_has_no_theme_file_to_link(self):
+        links = shared_stylesheets("../vendor/web-ui", theme="green")
+        self.assertEqual(links[-1], "../vendor/web-ui/css/components.css")
+        self.assertFalse((ROOT / "css/themes/green.css").exists())
+
+    def test_missing_checkout_is_a_plain_error(self):
+        with tempfile.TemporaryDirectory() as empty, self.assertRaises(OSError):
+            bundled_css(empty)
+
+    @unittest.skipUnless(_node_at_least_26(), "Node 26+ not available")
+    def test_node_reaches_the_bundle_through_the_shared_launcher(self):
+        # No Node twin and no web_ui.cjs: Node runs web_ui.py via vendor/py_launch.cjs, so the bytes cannot differ.
+        args = ["--css-bundle", "--theme", "green"]
+        env = {**os.environ, "PYTHON": sys.executable}
+        run = lambda argv: subprocess.run(argv, cwd=ROOT, env=env, input="hello\n", capture_output=True,
+                                          text=True, encoding="utf-8", timeout=60)
+        via_node = run(["node", "vendor/py_launch.cjs", "--", "web_ui.py", *args])
+        via_python = run([sys.executable, "-S", "web_ui.py", *args])
+        self.assertEqual(via_python.returncode, 0, via_python.stderr)
+        self.assertEqual((via_node.returncode, via_node.stdout), (0, via_python.stdout))
+        self.assertIn('body[data-ui-theme="green"]', via_node.stdout)
 
 
 if __name__ == '__main__':

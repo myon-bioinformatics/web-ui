@@ -198,3 +198,76 @@ def test_output_surface_uses_neutral_high_contrast_palette():
     assert "background:#d8dee4" in css
     assert "color:#161b22" in css
     assert "pre.ui-output code{background:transparent}" in css
+
+
+# --- Definition audit: CSS classes and custom properties may not pile up unnoticed. ---
+
+def _css_sources():
+    return sorted(path for path in (ROOT / "css").rglob("*.css") if path.name != "web-ui.css")
+
+
+def _css_text(path):
+    return re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
+
+
+def test_every_css_class_is_referenced_by_markup_scripts_or_generators():
+    # Declaration blocks are dropped first so values such as 1.5rem are not read as classes.
+    defined = set()
+    for path in _css_sources():
+        defined |= set(re.findall(r"\.([A-Za-z_][A-Za-z0-9_-]*)", re.sub(r"\{[^{}]*\}", "{}", _css_text(path))))
+    # Classes the Python generators emit (tool/capture_matrix.py, tool/layout_presets.py) count as used.
+    used_in = [*ROOT.glob("*.html"), *(ROOT / "examples").glob("*.html"), *(ROOT / "contract").rglob("*.html"),
+               *(ROOT / "js").glob("*.js"), ROOT / "web_ui.py", *(ROOT / "tool").glob("*.py")]
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in used_in)
+    unused = sorted(name for name in defined
+                    if not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", corpus))
+    assert not unused, f"CSS classes nothing refers to: {unused}"
+
+
+def test_css_variables_are_defined_generated_or_a_listed_gap():
+    css = {path: _css_text(path) for path in _css_sources()}
+    defined = {name for text in css.values() for name in re.findall(r"(--ui-[a-z0-9-]+)\s*:", text)}
+    used = {name for text in css.values() for name in re.findall(r"var\((--ui-[a-z0-9-]+)", text)}
+    # layout presets (tool/layout_presets.py) set these; matrix.css carries the defaults as fallbacks.
+    generated = {"--ui-matrix-col", "--ui-matrix-gap", "--ui-matrix-pad"}
+    # repository-diagnostics.css falls back to fixed colors; there is no token for them yet.
+    known_gaps = {"--ui-surface", "--ui-text"}
+    assert used - defined - generated <= known_gaps, sorted(used - defined - generated - known_gaps)
+    # Defined but unused here or in any consumer checked on 2026-11-03; drop it after a deprecation window.
+    dead_tokens = {"--ui-space"}
+    tokens = set(re.findall(r"(--ui-[a-z0-9-]+)\s*:", css[ROOT / "css/tokens.css"]))
+    assert tokens - used - dead_tokens == set(), sorted(tokens - used - dead_tokens)
+
+
+def _theme_blocks():
+    """Token values per theme: ``:root`` defaults, then each token-only block in tokens.css and each themes/ file."""
+    tokens = _css_text(ROOT / "css/tokens.css")
+    declared = lambda text: dict(re.findall(r"(--ui-[a-z0-9-]+)\s*:\s*([^;}]+)", text))
+    root = declared(re.search(r":root\{([^}]*)\}", tokens).group(1))
+    blocks = {"modern": {}}
+    for theme, body in re.findall(r'body\[data-ui-theme="([a-z-]+)"\]\{([^}]*)\}', tokens):
+        blocks[theme] = declared(body)
+    for path in sorted((ROOT / "css/themes").glob("*.css")):
+        blocks.setdefault(path.stem, {}).update(declared(_css_text(path)))
+    return root, blocks
+
+
+def test_themes_override_only_tokens_that_tokens_css_defines():
+    # A new semantic token goes into :root with a default, so every theme has it.
+    root, blocks = _theme_blocks()
+    assert {"modern", "github-like", "green"} <= set(blocks)
+    for theme, values in blocks.items():
+        assert set(values) <= set(root), f"{theme} invents tokens: {sorted(set(values) - set(root))}"
+
+
+def test_text_tokens_meet_wcag_aa_in_every_theme():
+    root, blocks = _theme_blocks()
+    for theme, values in blocks.items():
+        t = {**root, **values}
+        for text, ground in [("fg", "bg"), ("fg", "panel"), ("muted", "bg"), ("muted", "panel"),
+                             ("accent", "bg"), ("accent", "panel")]:
+            ratio = _contrast_ratio(t[f"--ui-{text}"], t[f"--ui-{ground}"])
+            assert ratio >= 4.5, f"{theme}: --ui-{text} on --ui-{ground} is {ratio:.2f}:1"
+        # Non-text marks such as the fail outline need 3:1.
+        for ground in ("bg", "panel"):
+            assert _contrast_ratio(t["--ui-danger"], t[f"--ui-{ground}"]) >= 3, f"{theme}: --ui-danger on --ui-{ground}"

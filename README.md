@@ -40,6 +40,16 @@ Current themes:
 
 - `modern` — terminal-styled default (text is Meiryo like every theme; code stays monospace)
 - `github-like` — generic light presentation intentionally using familiar GitHub visual cues
+- `green` — candidate, token-only: a sage-and-teal light theme whose values live in `css/tokens.css` (no theme file, not in contract v1 yet)
+
+Single-file pages: `render_document(css=bundled_css())` (or `python -S web_ui.py --css-bundle`) embeds every
+stylesheet and theme, built in memory from `css/`; nothing is written to the repository. Because all themes ship
+together, `bindTheme()` from `js/ui.js` switches `data-ui-theme` live, with no stylesheet swap and no reload.
+From Node, run `node vendor/py_launch.cjs -- web_ui.py --css-bundle`.
+
+`js/ui.js` is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
+clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
+(click-to-enlarge in a `<dialog>`). Import only what a page needs.
 
 Theme files are presentation-only. Consumers keep the same semantic HTML and
 switch `data-ui-theme` plus the loaded theme stylesheet.

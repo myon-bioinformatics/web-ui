@@ -1,6 +1,7 @@
 """layout_presets: switchable presets as data, CSS and radio controls; sweep results become candidates."""
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -62,3 +63,13 @@ def test_cli_css_and_html(capsys):
     assert capsys.readouterr().out == lp.controls_html(SPEC) + "\n"
     with pytest.raises(ValueError, match="widths"):
         lp.sweep("file:///x", SPEC, [100], items="li")
+
+
+def test_front_page_demo_matches_the_presets():
+    page = (ROOT / "index.html").read_text(encoding="utf-8")
+    assert lp.css(SPEC) in page
+    region = page.split("<!--layout-controls-->")[1].split("<!--/layout-controls-->")[0]
+    data = lp.validate(SPEC)
+    assert re.findall(r'name="ui-layout" value="([a-z0-9-]+)"', region) == [p["id"] for p in data["presets"]]
+    assert region.count(" checked") == 1 and "disabled" not in region
+    assert page.count('name="ui-theme"') == 3 and 'class="ui-matrix-tiles"' in page

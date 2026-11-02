@@ -30,8 +30,10 @@ import urllib.request
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
+# Token-only candidates: their values live in css/tokens.css, so there is no themes/ file to link; not in contract v1 yet.
+CANDIDATE_THEMES = ("green",)
 # Snapshot of js/ui.js; update together with the upstream source and regression test.
-EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value to the browser clipboard as text. */\nexport async function copyText(value){await navigator.clipboard.writeText(String(value))}\n"
+EMBEDDED_UI_JS = "/** Set text-only content. User-controlled values are never interpreted as HTML. */\nexport function setText(target,value){const node=typeof target===\"string\"?document.querySelector(target):target;if(node)node.textContent=String(value)}\n/** Serialize a value for human-readable text output. */\nexport function prettyJson(value){return JSON.stringify(value,null,2)}\n/** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */\nexport async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement(\"textarea\");box.value=text;box.setAttribute(\"readonly\",\"\");box.style.cssText=\"position:fixed;opacity:0\";document.body.append(box);box.select();const ok=document.execCommand(\"copy\");box.remove();if(!ok)throw error}}\n/** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */\nexport function bindTheme(root=document,{key=\"web-ui-theme\"}={}){const body=document.body,controls=[...root.querySelectorAll(\"[data-ui-theme-switch],input[name=ui-theme]\")];const known=name=>controls.some(c=>c.tagName===\"SELECT\"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName===\"SELECT\")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener(\"change\",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}\n/** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */\nexport function observeLit(targets,{threshold=0.4,root=null}={}){const nodes=typeof targets===\"string\"?[...document.querySelectorAll(targets)]:[...targets];if(typeof IntersectionObserver===\"undefined\"){for(const n of nodes)n.dataset.lit=\"\";return()=>{}}const io=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)e.target.dataset.lit=\"\";else delete e.target.dataset.lit}},{threshold,root});for(const n of nodes)io.observe(n);return()=>io.disconnect()}\n/** Click-to-enlarge for <a href=\"full.png\"><img alt=\"...\"></a> items inside [data-ui-lightbox]: one <dialog>; Esc, the backdrop and the close button shut it, arrows, buttons and a 48px swipe step through. Returns {open, close, dialog}, or null without items or <dialog>. */\nexport function bindLightbox(root=document){const items=[...root.querySelectorAll(\"[data-ui-lightbox] a[href]\")];if(!items.length||typeof HTMLDialogElement===\"undefined\")return null;const dialog=document.createElement(\"dialog\");dialog.className=\"ui-lightbox\";dialog.setAttribute(\"aria-label\",\"Image viewer\");dialog.innerHTML='<img alt=\"\"><p class=\"ui-muted\"></p><div class=\"ui-lightbox-bar\"><button class=\"ui-button\" type=\"button\" data-step=\"-1\" aria-label=\"Previous\">\\u2190</button><button class=\"ui-button\" type=\"button\" data-step=\"1\" aria-label=\"Next\">\\u2192</button><button class=\"ui-button\" type=\"button\" data-step=\"0\" aria-label=\"Close\">\\u00d7</button></div>';const img=dialog.querySelector(\"img\"),note=dialog.querySelector(\"p\");let at=0,x=null;const show=i=>{at=(i+items.length)%items.length;const a=items[at],t=a.querySelector(\"img\");img.src=a.href;img.alt=note.textContent=t?t.alt:\"\"};const open=i=>{show(i);if(!dialog.open)dialog.showModal()};items.forEach((a,i)=>a.addEventListener(\"click\",e=>{e.preventDefault();open(i)}));dialog.addEventListener(\"click\",e=>{const b=e.target.closest(\"[data-step]\");if(b){const s=Number(b.dataset.step);if(s)show(at+s);else dialog.close()}else if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close()}});dialog.addEventListener(\"keydown\",e=>{if(e.key===\"ArrowLeft\")show(at-1);if(e.key===\"ArrowRight\")show(at+1)});dialog.addEventListener(\"pointerdown\",e=>{x=e.clientX});dialog.addEventListener(\"pointerup\",e=>{if(x!==null&&Math.abs(e.clientX-x)>=48)show(at+(e.clientX<x?1:-1));x=null});document.body.append(dialog);return{open,close:()=>dialog.close(),dialog}}\n"
 
 SHARED_SCRIPT_NAMES = ("ui.js", "stub.js", "repository-diagnostics.js", "navigation.js", "controls.js")
 # Pinned browser bundle for PptxGenJS 4.0.1, including its JSZip dependency.
@@ -88,14 +90,41 @@ def _require_local_or_https(value: str, *, label: str, allow_query: bool = True)
 
 def shared_stylesheets(asset_base: str, *, theme: str = "modern", stub: bool = False) -> tuple[str, ...]:
     """Return local/HTTPS asset links; consumers own copying or exact-SHA pinning."""
-    if theme not in THEMES:
+    if theme not in THEMES + CANDIDATE_THEMES:
         raise ValueError("unknown theme")
     _require_local_or_https(asset_base, label="asset_base", allow_query=False)
     files = ["tokens.css", "base.css", "components.css"]
     if stub:
         files.append("stub.css")
-    files.append(f"themes/{theme}.css")
+    if theme in THEMES:
+        files.append(f"themes/{theme}.css")
     return tuple(f'{asset_base.rstrip("/")}/css/{name}' for name in files)
+
+
+_CSS_CORE = ("tokens.css", "base.css", "components.css")
+
+
+def bundled_css(root: str | Path | None = None) -> str:
+    """Every css/ source as one stylesheet, built in memory (nothing is written).
+
+    ``render_document(css=bundled_css())`` gives a single-file page that works under every
+    ``data-ui-theme``, so switching themes needs no stylesheet swap and no reload. Order is part
+    of the contract: tokens, base and components, then the other top-level files by name, then
+    the themes by name; the ``@layer`` line fixes layer order whichever source comes first.
+    A checkout reads css/ beside this file; a standalone copy needs ``root`` to name a checkout.
+    """
+    css_dir = (Path(root) if root is not None else Path(__file__).resolve().parent) / "css"
+
+    def names(directory: Path) -> list[str]:
+        return sorted(item.name for item in directory.glob("*.css") if item.is_file())
+
+    order = [*_CSS_CORE, *(n for n in names(css_dir) if n not in _CSS_CORE),
+             *(f"themes/{n}" for n in names(css_dir / "themes"))]
+    parts = ["@layer base,components,theme;\n"]
+    for name in order:
+        text = (css_dir / name).read_text(encoding="utf-8").replace("\r\n", "\n").strip("\n")
+        parts.append(f"/* css/{name} */\n{text}\n")
+    return "".join(parts)
 
 
 def _require_local_script_path(value: str, *, label: str) -> None:
@@ -362,7 +391,7 @@ def render_document(
     base element); it must only contain caller-audited HTML. This is an HTML
     emitter, not a general HTML/CSS/JS sanitizer or provenance verifier.
     """
-    if theme not in THEMES:
+    if theme not in THEMES + CANDIDATE_THEMES:
         raise ValueError("unknown theme")
     if re.search(r"</style(?=[\s/>])", css, re.IGNORECASE):
         raise ValueError("CSS must not contain a style end tag")
@@ -1473,8 +1502,10 @@ def run_node(*argv: str | Path, timeout: float | None = 30, **kwargs: Any) -> su
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
-    parser.add_argument("--theme", choices=THEMES, default="modern")
+    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
+    parser.add_argument("--css-bundle", action="store_true",
+                        help="embed every web-ui stylesheet and theme (see bundled_css) in the page")
     parser.add_argument("--asset-base", help="local or pinned HTTPS shared asset directory")
     parser.add_argument("--stub", action="store_true", help="include stub CSS with --asset-base")
     parser.add_argument(
@@ -1508,7 +1539,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--with-scripts requires --asset-base")
     try:
         content = sys.stdin.read()
-        css = args.css.read_text(encoding="utf-8") if args.css else ""
+        css = (bundled_css() if args.css_bundle else "") + (args.css.read_text(encoding="utf-8") if args.css else "")
         styles = shared_stylesheets(args.asset_base, theme=args.theme, stub=args.stub) if args.asset_base else ()
         if args.with_scripts is None:
             scripts: tuple[str, ...] = ()

@@ -47,3 +47,19 @@ and judge for themselves. A machine (Playwright) can do the same by clicking the
 `tool/capture_matrix.py` uses `examples/layout-presets.json` for its tile grid by default
 (`--layouts` for another file, `--candidates` for sweep labels). `css/matrix.css` reads
 `--ui-matrix-col`, `--ui-matrix-gap` and `--ui-matrix-pad`, falling back to the 8 px defaults.
+
+## On the Pages front page
+
+`index.html` carries a live demo: the generated `<style>` (the `css` output) and the radios between
+`<!--layout-controls-->` markers (the `html` output, labeled from a sweep). A unit test keeps the CSS equal
+to `css examples/layout-presets.json` and the radios equal to the presets. After changing the presets or
+the page, regenerate both:
+
+```sh
+python tool/layout_presets.py sweep index.html --presets examples/layout-presets.json \
+  --items ".ui-matrix-tiles li" --widths 320 384 768 1280 --out /tmp/candidates.json
+python -S tool/layout_presets.py html examples/layout-presets.json /tmp/candidates.json  # paste between the markers
+```
+
+The theme radios beside it use `bindTheme()` from `js/ui.js`. Every theme ships in the same CSS, so the
+switch is an attribute change; the choice is remembered in `localStorage` (best effort).
