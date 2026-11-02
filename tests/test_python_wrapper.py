@@ -20,7 +20,7 @@ def _node_at_least_26() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
-    return bool(match and int(match.group(1)) >= 24)
+    return bool(match and int(match.group(1)) >= 26)
 
 
 class PythonWrapperTests(unittest.TestCase):
