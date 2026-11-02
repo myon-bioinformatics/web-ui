@@ -410,11 +410,11 @@ class WorldBrowserTests(unittest.TestCase):
                     expect(player).to_have_attribute('data-speed', '96')
                     walk = float(player.evaluate('el => el.style.getPropertyValue("--walk")').rstrip('s'))
                     self.assertAlmostEqual(walk, travel_seconds(120, 320, 480, 320, 96), places=6)
-                    self.assertEqual(player.evaluate('el => el.style.getPropertyValue("--px")'), '480')
+                    self.assertEqual(player.get_attribute('data-target-x'), '480')
                     # Board: the clock and "in N min" come from the page's clock, by the same rule as Python.
                     expect(page.locator('[data-clock]')).to_have_text('10:00')
                     texts = page.locator('.ui-board-run [data-at]').all_text_contents()
-                    expected = [f'in {minutes_until(600, h * 60 + m)} min' for h, m in ((10, 30), (14, 0), (17, 30))] * 2
+                    expected = [f'あと{minutes_until(600, h * 60 + m)}分' for h, m in ((10, 30), (14, 0), (17, 30))] * 2
                     self.assertEqual(texts, expected)
                     cases = [(600, 630), (600, 600), (1430, 10), (0, 1439)]
                     self.assertEqual(page.evaluate('cases => cases.map(c => webUiWorld.minutesUntil(...c))', cases), [minutes_until(*c) for c in cases])

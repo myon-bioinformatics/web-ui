@@ -1901,14 +1901,73 @@ def clamp_focus(fx: float, fy: float, zoom: float, width: float, height: float,
             min(max(fy, half_h), height - half_h) if height > 2 * half_h else height / 2)
 
 
+# Motion uses elapsed monotonic seconds; boards use Unix UTC seconds. All inputs
+# are bounded so static documents cannot request unbounded plans or DOM nodes.
+def _motion_number(value: Any, label: str, low: float, high: float) -> float:
+    if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
+        raise ValueError(f"{label} must be finite and from {low} to {high}")
+    return float(value)
+
+
+def world_walk(start: list[float], target: list[float], *, at: float = 0,
+               speed: float = 40, width: float = 1024, height: float = 768) -> dict[str, Any]:
+    """One constant-velocity segment. Targets clamp at map edges; no overshoot.
+
+    For retarget/pause/resume first sample the old segment at the event's time,
+    then start a new segment from that point. Never integrate per frame.
+    """
+    width = _motion_number(width, "width", 64, 4096)
+    height = _motion_number(height, "height", 64, 4096)
+    at = _motion_number(at, "at", 0, 1e9)
+    speed = _motion_number(speed, "speed", 1, 480)
+    points = []
+    for point in (start, target):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("point must have two coordinates")
+        points.append([min(bound, max(0., _motion_number(v, "coordinate", -1e6, 1e6)))
+                       for v, bound in zip(point, (width, height))])
+    a, b = points
+    return {"at": at, "duration": math.hypot(b[0] - a[0], b[1] - a[1]) / speed, "from": a, "to": b}
+
+
+def world_motion_sample(segment: dict[str, Any], elapsed: float) -> list[float]:
+    """Project a validated/generated segment at absolute elapsed seconds; endpoints hold."""
+    elapsed = _motion_number(elapsed, "elapsed", 0, 1e9)
+    at = _motion_number(segment["at"], "at", 0, 1e9)
+    duration = _motion_number(segment["duration"], "duration", 0, 1e6)
+    points = [segment[key] for key in ("from", "to")]
+    if any(not isinstance(p, (list, tuple)) or len(p) != 2 for p in points):
+        raise ValueError("point must have two coordinates")
+    a, b = [[_motion_number(v, "coordinate", 0, 4096) for v in p] for p in points]
+    fraction = (1. if elapsed >= at else 0.) if duration == 0 else min(1., max(0., (elapsed - at) / duration))
+    return [a[i] + (b[i] - a[i]) * fraction for i in (0, 1)]
+
+
 def travel_seconds(x0: float, y0: float, x1: float, y1: float, speed: float) -> float:
     """Seconds to walk in a straight line at constant ``speed`` (map units per second)."""
+    x0, y0, x1, y1 = [_motion_number(v, "coordinate", -1e6, 1e6) for v in (x0, y0, x1, y1)]
+    speed = _motion_number(speed, "speed", 1, 480)
     return math.hypot(x1 - x0, y1 - y0) / speed
 
 
-def minutes_until(now: int, at: int) -> int:
-    """Minutes from ``now`` to the next ``at`` (both minutes since midnight); 0 means right now, wraps past midnight."""
-    return (at - now) % 1440
+def minutes_until(now: float, at: int) -> int:
+    """Ceil minutes to the daily next occurrence; zero only at the exact target.
+
+    ``now`` is fractional minutes since midnight, ``at`` is an HH:MM minute.
+    Immediately after the target, the next occurrence is tomorrow (up to 1440).
+    """
+    now = _motion_number(now, "now (minutes since midnight)", 0, 1440)
+    at = _world_int(at, "at (minutes since midnight)", 0, 1439)
+    return math.ceil((at - now) % 1440)
+
+
+def board_clock(now: float, offset_minutes: int) -> dict[str, Any]:
+    """Injected Unix seconds + fixed UTC-offset minutes, independent of host TZ."""
+    now = _motion_number(now, "now (Unix seconds)", 0, 253402214400)
+    offset_minutes = _world_int(offset_minutes, "offset_minutes", -840, 840)
+    seconds = (now + offset_minutes * 60) % 86400
+    whole = math.floor(seconds)
+    return {"clock": f"{whole // 3600:02d}:{whole // 60 % 60:02d}", "minutes": seconds / 60}
 
 
 def board_seconds(chars: int, chars_per_second: float = 8.0) -> float:
@@ -1935,6 +1994,12 @@ def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, ma
     """A seeded loop for one villager: straight walks at constant ``speed`` to random points, a random pause at each (1..4 s),
     then a walk back to the start so the loop is seamless. Returns ``{"duration": seconds, "keys": [(percent, x, y), ...]}``;
     between keys the motion is linear, a pause is two keys at the same point."""
+    seed = _world_int(seed, "seed", 0, 2**32 - 1)
+    width = _world_int(width, "width", 64, 4096)
+    height = _world_int(height, "height", 64, 4096)
+    margin = _world_int(margin, "margin", 0, min(width, height) // 2)
+    stops = _world_int(stops, "stops", 1, 64)
+    speed = _motion_number(speed, "speed", 1, 480)
     rng = random.Random(seed)
     point = lambda: (round(margin + rng.random() * max(0, width - 2 * margin), 1), round(margin + rng.random() * max(0, height - 2 * margin), 1))
     start = point()
@@ -1949,7 +2014,7 @@ def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, ma
     clock += travel_seconds(*here, *start, speed)
     steps.append((clock, start))
     total = max(clock, 1.0)
-    return {"duration": round(total, 2), "keys": [(round(100 * t / total, 3), x, y) for t, (x, y) in steps]}
+    return {"duration": total, "keys": [((t / total) * 100, x, y) for t, (x, y) in steps]}
 
 
 def _world_text(value: Any, label: str, limit: int, *, required: bool = True) -> str:
@@ -2053,7 +2118,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                        "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
     board = spec.get("board")
     if board is not None:
-        if not isinstance(board, dict) or set(board) - {"title", "items", "post"} or not isinstance(board.get("items"), list) \
+        if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_minutes"} or not isinstance(board.get("items"), list) \
                 or not 1 <= len(board["items"]) <= 12 or not isinstance(board.get("post", False), bool):
             raise ValueError("a board has a title, 1..12 items and an optional post flag")
         items = []
@@ -2064,7 +2129,9 @@ def world_validate(spec: Any) -> dict[str, Any]:
             if at is not None and not (isinstance(at, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)):
                 raise ValueError("at must be HH:MM")
             items.append({"text": _world_text(item.get("text"), "text", 120), "at": at})
-        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False)}
+        board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
+                 "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
+                                    if board.get("offset_minutes") is not None else None)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
             "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board}
 
@@ -2093,7 +2160,7 @@ def _board_html(board: dict[str, Any] | None) -> str:
     form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
             'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
             if board["post"] else "")
-    return (f'<div class="ui-board" role="status" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
+    return (f'<div class="ui-board" aria-live="off" data-offset="{board["offset_minutes"] if board["offset_minutes"] is not None else ""}" data-chars="{chars}"><strong>{escape(board["title"])}</strong><span class="ui-board-clock" data-clock>--:--</span>'
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}</div>')
 
 
@@ -2120,7 +2187,7 @@ def _map_html(world: dict[str, Any]) -> str:
             f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
         pl = f["player"]
         player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
-                  f'style="--px:{pl["x"]};--py:{pl["y"]}" aria-hidden="true"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
+                  f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
         stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}" '
                       f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}{actors}{player}</div>')
         sheet.extend(
@@ -2128,7 +2195,11 @@ def _map_html(world: dict[str, Any]) -> str:
             f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
     return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}" '
             f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
-            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
+            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>' +
+            ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+             '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+             '<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form></div>'
+             if world["board"] or any(f["player"] or f["actors"] for f in floors) else "") +
             f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside></section>')
 
 
@@ -2141,6 +2212,7 @@ def world_html(spec: Any) -> str:
 _WORLD_CSS = (
     ".ui-world{--ui-world-h:min(70vh,560px);position:relative;margin:1rem 0;border:1px solid var(--ui-border);background:var(--ui-bg);"
     "color:var(--ui-fg);border-radius:var(--ui-radius);overflow:hidden}"
+    ".ui-world-motion-controls{padding:8px}.ui-world-walk{display:flex;gap:8px;flex-wrap:wrap}.ui-world-walk input{width:6em}.ui-world-walk[hidden]{display:none}.ui-world[data-js] .ui-player{transition:none}.ui-world[data-motion-paused] .ui-actor,.ui-world[data-motion-paused] .ui-board-run{animation-play-state:paused!important}"
     ".ui-world-radio{position:absolute;opacity:0;pointer-events:none}"
     ".ui-world-bar{display:flex;flex-wrap:wrap;gap:8px;padding:8px;border-bottom:1px solid var(--ui-border)}"
     ".ui-world-bar label{border:1px solid var(--ui-border);padding:.35rem .75rem;cursor:pointer;background:var(--ui-panel);border-radius:var(--ui-radius)}"
@@ -2179,7 +2251,7 @@ _WORLD_CSS = (
     ".ui-board-item{padding-right:3rem}"
     ".ui-board-post{display:flex;gap:4px;flex:none}.ui-board-post .ui-input{width:10rem;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
     "@keyframes ui-board-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
-    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation:none!important}}"
+    "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
 )
 
 _WALL_CSS = (
@@ -2221,11 +2293,37 @@ def world_css(spec: Any) -> str:
     return "@layer components{" + "".join(rules) + "}"
 
 
-WORLD_JS = r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+# Browser arithmetic is a projection of the Python oracle, not Python execution.
+WORLD_MOTION_JS = r"""
+export function motionSample(s,t){const f=s.duration===0?(t>=s.at?1:0):Math.min(1,Math.max(0,(t-s.at)/s.duration));return s.from.map((v,i)=>v+(s.to[i]-v)*f)}
+export function motionWalk(a,b,t,speed,w,h){const point=p=>p.map((v,i)=>Math.min(i?h:w,Math.max(0,v)));a=point(a);b=point(b);return{at:t,duration:Math.hypot(b[0]-a[0],b[1]-a[1])/speed,from:a,to:b}}
+function bindPlayer(el,floor){
+ const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
+ const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form');
+ let paused=false,base=performance.now(),elapsed=0;
+ const time=()=>Math.min(1e9,elapsed+(paused||reduced.matches?0:(performance.now()-base)/1000));
+ const freeze=()=>{elapsed=time();base=performance.now()};
+ for(const f of el.querySelectorAll('.ui-floor')){const player=f.querySelector('.ui-player');if(!player)continue;const w=+f.dataset.w,h=+f.dataset.h,speed=+player.dataset.speed,point=[+player.dataset.x,+player.dataset.y];states.set(f,{w,h,speed,player,own:motionWalk(point,point,0,speed,w,h)});}
+ const place=(s,t)=>{const p=motionSample(s.own,t);s.player.style.setProperty('--px',p[0]);s.player.style.setProperty('--py',p[1]);};
+ const walk=(x,y)=>{const s=states.get(floor());if(!s||![x,y].every(Number.isFinite))return;const t=time(),a=motionSample(s.own,t);s.own=motionWalk(a,[x,y],t,s.speed,s.w,s.h);if(reduced.matches)s.own=motionWalk(s.own.to,s.own.to,t,s.speed,s.w,s.h);s.player.style.setProperty('--walk',s.own.duration+'s');s.player.dataset.targetX=s.own.to[0];s.player.dataset.targetY=s.own.to[1];place(s,t);};
+ button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?'動きを再開':'動きを停止';});
+ let wasReduced=reduced.matches;
+ reduced.addEventListener('change',()=>{if(!wasReduced&&!paused)elapsed=Math.min(1e9,elapsed+(performance.now()-base)/1000);base=performance.now();wasReduced=reduced.matches;for(const s of states.values())place(s,time());});
+ form.addEventListener('submit',e=>{e.preventDefault();if(form.reportValidity())walk(+form.elements.x.value,+form.elements.y.value)});
+ const tick=()=>{if(!el.isConnected)return;controls.hidden=false;const active=states.get(floor()),t=time();form.hidden=!active;
+  if(active){form.elements.x.max=active.w;form.elements.y.max=active.h;place(active,t);}
+  requestAnimationFrame(tick);
+ };requestAnimationFrame(tick);return walk;
+}
+"""
+
+
+WORLD_JS = WORLD_MOTION_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
 export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
-export function minutesUntil(now,at){return((at-now)%1440+1440)%1440}
+export function minutesUntil(now,at){return Math.ceil(((at-now)%1440+1440)%1440)}
+export function boardClock(now,offset){const seconds=((now+offset*60)%86400+86400)%86400,whole=Math.floor(seconds);return{clock:[Math.floor(whole/3600),Math.floor(whole/60)%60].map(v=>String(v).padStart(2,"0")).join(":"),minutes:seconds/60}}
 export function boardSeconds(chars,cps=8){return Math.max(8,Math.round(chars/cps*10)/10)}
 export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
@@ -2237,10 +2335,9 @@ const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
-const player=el.querySelector(".ui-player");let at=player?[Number(player.dataset.x),Number(player.dataset.y)]:null;
-const walk=(x,y)=>{if(!player)return;player.style.setProperty("--walk",travelSeconds(at[0],at[1],x,y,Number(player.dataset.speed||96))+"s");player.style.setProperty("--px",x);player.style.setProperty("--py",y);at=[x,y]};
-const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),now=d.getHours()*60+d.getMinutes(),c=board.querySelector("[data-clock]");c.textContent=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"now":"in "+left+" min"}};
-if(board){tick();setInterval(tick,15000);const form=board.querySelector(".ui-board-post");if(form){
+const walk=bindPlayer(el,floor);
+const board=el.querySelector(".ui-board"),tick=()=>{const d=new Date(),clock=boardClock(d.getTime()/1000,board.dataset.offset===""?-d.getTimezoneOffset():Number(board.dataset.offset)),now=clock.minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock;for(const m of board.querySelectorAll("[data-at]")){const[h,mm]=m.dataset.at.split(":").map(Number),left=minutesUntil(now,h*60+mm);m.textContent=left===0?"いま":"あと"+left+"分"}};
+if(board){tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
 form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift(text);notes.splice(5);run.replaceChildren();
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");span.textContent=note;run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
@@ -2248,9 +2345,9 @@ const chars=baseChars+notes.reduce((n,text)=>n+[...text].length,0);board.dataset
 
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
-view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;el.dataset.drag=""});
+view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
 view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
-const end=e=>{pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag};
+const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
 addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
 el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot,.ui-actor");if(a){e.preventDefault();if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
@@ -2261,7 +2358,7 @@ const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardSeconds,cleanMessage,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,cleanMessage,motionWalk,motionSample,bindWorlds};
 bindWorlds();
 """
 
