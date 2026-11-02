@@ -16,7 +16,7 @@ def _node_at_least_26() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
-    return bool(match and int(match.group(1)) >= 24)
+    return bool(match and int(match.group(1)) >= 26)
 spec=importlib.util.spec_from_file_location('web_ui_navigation',ROOT/'web_ui.py');ui=importlib.util.module_from_spec(spec);spec.loader.exec_module(ui)
 @pytest.mark.skipif(not _node_at_least_26(), reason="run_node requires Node 26+")
 def test_node_navigation_contract():
