@@ -188,6 +188,17 @@ class UiHelpersBrowserTests(unittest.TestCase):
                             await ui.copyText("x<y&z");
                             return [globalThis.sent, document.querySelectorAll("textarea").length];
                         }''')
+                        failures = page.evaluate("""async () => {
+                            const results = [];
+                            for (const exec of [undefined, () => false, () => {throw Error('disabled')}]) {
+                                document.execCommand = exec;
+                                let rejected = false;
+                                try { await ui.copyText('failure') } catch { rejected = true }
+                                results.push([rejected, document.querySelectorAll('textarea').length]);
+                            }
+                            return results;
+                        }""")
+                        self.assertEqual(failures, [[True, 0]] * 3)
                         self.assertEqual(copied, ['x<y&z', 0])
                         self.assertEqual(errors, [])
                         self.assertEqual(external, [])
@@ -295,6 +306,76 @@ class WorldBrowserTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_world_interrupted_repeated_and_history_flows(self):
+        import json
+        spec = json.loads((ROOT / 'examples/world.json').read_text())
+        spec['floors'][0]['spots'][0]['category'] = 'all'
+        server, origin = self.serve({'index.html': world_document(spec)})
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 900})
+                    page.goto(origin + '/index.html#demo-spot-lab')
+                    world = page.locator('#demo-map')
+                    sheet = page.locator('#demo-spot-lab')
+                    expect(sheet).to_be_visible()
+                    world.locator('.ui-world-view').focus()
+                    page.keyboard.press('Escape')
+                    expect(sheet).to_be_hidden()
+                    self.assertEqual(page.evaluate('location.hash'), '')
+                    page.goto(origin + '/index.html#demo-spot-lab')
+                    sheet.locator('.ui-sheet-close').click()
+                    expect(sheet).to_be_hidden()
+                    self.assertEqual(page.evaluate('location.hash'), '')
+                    # A category named all is distinct from the unfiltered choice.
+                    world.locator('label[for="demo-floor-1f"]').click()
+                    world.locator('label[data-cat="all"]').click()
+                    expect(world.locator('.ui-spot', has_text='Gate')).to_be_visible()
+                    expect(world.locator('.ui-spot', has_text='Hall')).to_be_hidden()
+                    world.locator('label[data-cat=""]').click()
+                    expect(world.locator('.ui-spot', has_text='Hall')).to_be_visible()
+                    # Rebinding must not double the wheel handler.
+                    page.evaluate('webUiWorld.bindWorlds(); webUiWorld.bindWorlds()')
+                    view = world.locator('.ui-world-view')
+                    z = view.evaluate('e => parseFloat(e.firstElementChild.style.getPropertyValue("--z"))')
+                    view.dispatch_event('wheel', {'deltaY': -100})
+                    z1 = view.evaluate('e => parseFloat(e.firstElementChild.style.getPropertyValue("--z"))')
+                    self.assertAlmostEqual(z1, z * 1.1)
+                    # Interrupted pointers clear drag state; keyboard activation still works.
+                    for event in ('pointercancel', 'lostpointercapture'):
+                        view.dispatch_event('pointerdown', {'pointerId': 11, 'button': 0, 'clientX': 100, 'clientY': 100})
+                        view.dispatch_event(event, {'pointerId': 11})
+                        expect(world).not_to_have_attribute('data-drag', '')
+                    # A real completed drag must not poison subsequent keyboard activation.
+                    box = view.bounding_box()
+                    page.mouse.move(box['x'] + 200, box['y'] + 150)
+                    page.mouse.down()
+                    page.mouse.move(box['x'] + 150, box['y'] + 150, steps=4)
+                    page.mouse.up()
+                    expect(world).not_to_have_attribute('data-drag', '')
+                    hall = world.locator('.ui-spot', has_text='Hall')
+                    hall.dispatch_event('click', {'detail': 1})
+                    expect(page.locator('#demo-spot-hall')).to_be_hidden()
+                    self.assertEqual(page.evaluate('location.hash'), '')
+                    hall.focus(); page.keyboard.press('Enter')
+                    expect(page.locator('#demo-spot-hall')).to_be_visible()
+                    # Hash navigation resets a conflicting filter and restores both directions.
+                    world.locator('label[data-cat="food"]').click()
+                    page.evaluate('location.hash = "demo-spot-lab"')
+                    expect(sheet).to_be_visible()
+                    expect(world.locator('.ui-spot', has_text='Lab')).to_be_visible()
+                    page.go_back()
+                    expect(page.locator('#demo-spot-hall')).to_be_visible()
+                    expect(sheet).to_be_hidden()
+                    page.go_forward()
+                    expect(sheet).to_be_visible()
+                    expect(page.locator('#demo-spot-hall')).to_be_hidden()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown(); server.server_close()
+
     def test_random_theme_wall_reads_in_every_cell_without_overflow(self):
         server, origin = self.serve({'wall.html': theme_wall_document(24)})
         try:
@@ -353,6 +434,29 @@ class StubBrowserTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class GeneratedSiteBrowserTests(unittest.TestCase):
+    def test_generated_front_page_works_offline_without_external_modules(self):
+        from web_ui import write_site
+        with tempfile.TemporaryDirectory() as directory:
+            write_site(directory)
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto((Path(directory) / 'index.html').as_uri())
+                    page.check('input[name="ui-theme"][value="green"]')
+                    expect(page.locator('body')).to_have_attribute('data-ui-theme', 'green')
+                    page.fill('#api-query', '/local/offline')
+                    page.click('#api-run')
+                    expect(page.locator('#api-output')).to_contain_text('/local/offline')
+                    self.assertTrue(page.locator('img').first.evaluate('e => e.complete && e.naturalWidth > 0'))
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
 
 
 if __name__ == '__main__':

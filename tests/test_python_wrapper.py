@@ -317,7 +317,7 @@ class WorldTests(unittest.TestCase):
         css = web_ui.world_css(WORLD)
         self.assertTrue(css.startswith("@layer components{") and css.endswith("}"))
         for fragment in ('#demo-floor-2f:checked) .ui-floor[data-floor="2f"]{display:block}',
-                         '#demo-cat-food:checked) .ui-spot:not([data-category="food"]){display:none}',
+                         '#demo-cat-value-food:checked) .ui-spot:not([data-category="food"]){display:none}',
                          '.ui-shot-mark[data-i="3"][data-lit])'):
             self.assertIn(fragment, css)
         for shot in WORLD["shots"]:
@@ -367,7 +367,7 @@ class WorldTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr)
             pages = web_ui.example_pages()
             modules = {f"js/{name}": source for name, source in web_ui.js_modules().items()}
-            self.assertEqual(sorted(done.stdout.split()), sorted({**pages, **modules}))
+            self.assertEqual(sorted(done.stdout.split()), sorted([*pages, *modules, "docs/brand/icon.png", "docs/brand/favicon.png"]))
             for name, text in {**pages, **modules}.items():
                 self.assertEqual((Path(out) / name).read_text(encoding="utf-8"), text)
 
@@ -406,6 +406,43 @@ class StubTests(unittest.TestCase):
         self.assertNotIn('rel="stylesheet"', page)
         self.assertEqual(page.count('<script type="module">'), 1)
         self.assertIn('bindStub({input:"#mcp-query"', page)
+
+
+class RepairRegressionTests(unittest.TestCase):
+    def test_all_category_has_unique_ids(self):
+        import copy
+        from html.parser import HTMLParser
+        spec = copy.deepcopy(WORLD)
+        spec['floors'][0]['spots'][0]['category'] = 'all'
+        class Ids(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.ids = []
+            def handle_starttag(self, tag, attrs):
+                self.ids.extend(v for k, v in attrs if k == 'id')
+        parser = Ids(); parser.feed(web_ui.world_html(spec))
+        self.assertEqual(len(parser.ids), len(set(parser.ids)))
+        self.assertIn('demo-cat-value-all', parser.ids)
+        self.assertIn('#demo-cat-value-all:checked', web_ui.world_css(spec))
+
+    def test_bundle_asset_base_keeps_scripts_not_styles(self):
+        result = subprocess.run([sys.executable, '-S', 'web_ui.py', '--css-bundle', '--asset-base', '.', '--with-scripts'],
+                                cwd=ROOT, input='', text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('rel="stylesheet"', result.stdout)
+        self.assertIn('src="./js/ui.js"', result.stdout)
+
+    def test_theme_wall_zero_does_not_read_stdin(self):
+        from unittest.mock import patch
+        import io
+        with patch('sys.stdin.read', side_effect=AssertionError('unexpected stdin read')), patch('sys.stdout', new=io.StringIO()) as out:
+            self.assertEqual(web_ui.main(['--theme-wall', '0']), 0)
+            self.assertIn('ui-wall', out.getvalue())
+        with self.assertRaises(ValueError):
+            web_ui.theme_wall_document(-1)
+        with patch("sys.stdin.read", side_effect=AssertionError("unexpected stdin read")), patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                web_ui.main(["--theme-wall", "-1"])
+            self.assertEqual(error.exception.code, 2)
 
 
 if __name__ == '__main__':

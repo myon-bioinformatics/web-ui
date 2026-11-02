@@ -32,7 +32,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 THEMES = ("modern", "github-like")
-# Token-only candidates: their values live in css/tokens.css, so there is no themes/ file to link; not in contract v1 yet.
+# Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.
 CANDIDATE_THEMES = ("green",)
 # The browser modules, as data: Python is the only source (there are no js/ files). write_js()/--site writes them under DIR/js/.
 _JS = {
@@ -41,7 +41,7 @@ export function setText(target,value){const node=typeof target==="string"?docume
 /** Serialize a value for human-readable text output. */
 export function prettyJson(value){return JSON.stringify(value,null,2)}
 /** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */
-export async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement("textarea");box.value=text;box.setAttribute("readonly","");box.style.cssText="position:fixed;opacity:0";document.body.append(box);box.select();const ok=document.execCommand("copy");box.remove();if(!ok)throw error}}
+export async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement("textarea");box.value=text;box.setAttribute("readonly","");box.style.cssText="position:fixed;opacity:0";try{document.body.append(box);box.select();if(typeof document.execCommand!=="function"||!document.execCommand("copy"))throw error}finally{box.remove()}}}
 /** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */
 export function bindTheme(root=document,{key="web-ui-theme"}={}){const body=document.body,controls=[...root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]")];const known=name=>controls.some(c=>c.tagName==="SELECT"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName==="SELECT")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener("change",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}
 /** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */
@@ -1989,11 +1989,11 @@ def _map_html(world: dict[str, Any]) -> str:
     categories = sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
     cat_ids = [""] + categories
     radios += "".join(
-        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{c or "all"}" value="{c}"'
+        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
         f'{" checked" if not c else ""}>' for c in cat_ids)
     labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
     if categories:
-        labels += "".join(f'<label for="{wid}-cat-{c or "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+        labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
     stages, sheet = [], []
     for f in floors:
         spots = "".join(
@@ -2035,8 +2035,9 @@ _WORLD_CSS = (
     "background:var(--ui-bg);color:var(--ui-fg);padding:.2rem .6rem;border-radius:999px;text-decoration:none;font-size:.85rem}"
     ".ui-sheet{position:absolute;left:8px;right:8px;bottom:8px;max-height:45%;overflow:auto;border:1px solid var(--ui-border);"
     "background:var(--ui-panel);border-radius:var(--ui-radius);padding:1rem}"
-    ".ui-sheet:not(:has(.ui-sheet-item:target,.ui-sheet-item[data-open])){display:none}"
-    ".ui-sheet-item{display:none}.ui-sheet-item:target,.ui-sheet-item[data-open]{display:block}.ui-sheet h3{margin:0 0 .5rem}"
+    ".ui-world:not([data-js]) .ui-sheet:not(:has(.ui-sheet-item:target)){display:none}"
+    ".ui-world[data-js] .ui-sheet:not(:has(.ui-sheet-item[data-open])){display:none}"
+    ".ui-sheet-item{display:none}.ui-world:not([data-js]) .ui-sheet-item:target,.ui-world[data-js] .ui-sheet-item[data-open]{display:block}.ui-sheet h3{margin:0 0 .5rem}"
     ".ui-shot{padding:1.5rem;transition:opacity .4s,transform .4s}"
     ".ui-shot-hud{font-family:var(--ui-font-mono);letter-spacing:.12em;margin:0 0 .5rem;font-size:.8rem}"
     ".ui-world[data-js] .ui-shots-scroll{height:var(--ui-world-h);overflow:auto;position:relative}"
@@ -2064,15 +2065,15 @@ def world_css(spec: Any) -> str:
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
     categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
     for c in categories:
-        radio = f"#{wid}-cat-{c}"
+        radio = f"#{wid}-cat-value-{c}"
         rules.append(f'.ui-world:has({radio}:checked) .ui-spot:not([data-category="{c}"]){{display:none}}')
     for c in [""] + categories if categories else []:
-        rules.append(f'.ui-world:has(#{wid}-cat-{c or "all"}:checked) label[for="{wid}-cat-{c or "all"}"]'
+        rules.append(f'.ui-world:has(#{wid}-cat-{"value-" + c if c else "all"}:checked) label[for="{wid}-cat-{"value-" + c if c else "all"}"]'
                      f'{{background:var(--ui-accent);color:var(--ui-bg)}}')
     if world["shots"]:
         rules.append('.ui-world-shots[data-js]:not(:has(.ui-shot-mark[data-lit])) .ui-shot[data-i="0"]{opacity:1;transform:none}')
     for i, s in enumerate(world["shots"]):
-        lit = f'.ui-world-shots:has(.ui-shot-mark[data-i="{i}"][data-lit])'
+        lit = f'#{wid}-shots:has(.ui-shot-mark[data-i="{i}"][data-lit])'
         rules.append(f'{lit} .ui-shot[data-i="{i}"]{{opacity:1;transform:none}}')
         if s["bg"]:
             rules.append(f'{lit} .ui-shots-stage{{background:{s["bg"]};color:{ink_for(s["bg"])}}}')
@@ -2091,20 +2092,21 @@ const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
-const focusSpot=a=>{const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
-view.addEventListener("pointerdown",e=>{pts.set(e.pointerId,[e.clientX,e.clientY]);moved=0;el.dataset.drag=""});
+const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
+const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
+view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;el.dataset.drag=""});
 view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
 const end=e=>{pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag};
-view.addEventListener("pointerup",end);view.addEventListener("pointercancel",end);
+addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot");if(a&&moved<=8){e.preventDefault();const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);focusSpot(a)}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();open(null);history.replaceState(null,"",location.pathname+location.search)}});
-el.addEventListener("keydown",e=>{if(e.key==="Escape")open(null)});
+el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot");if(a){e.preventDefault();if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);focusSpot(a)}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+el.addEventListener("keydown",e=>{if(e.key==="Escape")close()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
 const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"]`);if(a){open(hash);focusSpot(a)}else open(null)};
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
-export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
+export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
 globalThis.webUiWorld={fitZoom,clampFocus,bindWorlds};
 bindWorlds();
 """
@@ -2167,6 +2169,8 @@ def theme_wall(seeds: Any) -> str:
 
 
 def theme_wall_document(count: int) -> str:
+    if type(count) is not int or count < 0:
+        raise ValueError("theme wall count must be a nonnegative integer")
     return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
 
 
@@ -2207,7 +2211,12 @@ def stub_validate(spec: Any) -> dict[str, Any]:
     if not isinstance(field, dict) or set(field) - {"label", "placeholder", "value"} or "label" not in field:
         raise ValueError("field has a label and optionally a placeholder or a value")
     mock = spec.get("mock", {"status": "stub", "query": "$input"})
-    if len(json.dumps(mock)) > 4000:
+    try:
+        encoded_mock = json.dumps(mock, allow_nan=False)
+        mock = json.loads(encoded_mock)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("mock must be finite JSON data") from exc
+    if len(encoded_mock) > 4000:
         raise ValueError("mock must be at most 4000 characters of JSON")
     return {"schema": STUB_SCHEMA, "id": stub_id, "title": _world_text(spec.get("title", "Stub"), "title", 80),
             "heading": _world_text(spec.get("heading", "Stub Explorer"), "heading", 80),
@@ -2401,6 +2410,14 @@ def write_site(directory: str | Path) -> list[str]:
         with open(target, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(html)
         written.append(name)
+    # The generated front page references these local brand images.
+    source_root = Path(__file__).resolve().parent
+    for name in ("docs/brand/icon.png", "docs/brand/favicon.png"):
+        source, target = source_root / name, Path(directory) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+        written.append(name)
     return written + write_js(directory)
 
 
@@ -2450,7 +2467,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             parser.error(str(exc))
         return 0
-    if args.world or args.theme_wall:
+    if args.world or args.theme_wall is not None:
         try:
             sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
                              if args.world else theme_wall_document(args.theme_wall))

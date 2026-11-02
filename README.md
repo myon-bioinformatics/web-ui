@@ -134,6 +134,9 @@ python -m http.server 8000 --directory build/site
 ```
 
 Open `http://localhost:8000/index.html`, or `/examples/index.html` for the example list.
+`--site` writes the HTML, generated browser modules, and the icon/favicon assets referenced by the front page.
+The generated front page embeds its modules and can also be opened with `file://`; separately linked modules require HTTP(S).
+Use `write_js(output_dir)` when only browser modules are needed; source checkout paths under `css/` and `js/` are no longer public asset URLs.
 
 ## UI verification
 

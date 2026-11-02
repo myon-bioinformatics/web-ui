@@ -67,3 +67,9 @@ def test_node_reaches_the_same_tool_through_the_shared_launcher():
         result = run(json.dumps(request))
         assert result.returncode == 2
         assert result.stdout == ""
+
+    for malformed in ("{", '{"items": [], "query": NaN}', '{"items": []} trailing'):
+        result = run(malformed)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("error: ")
