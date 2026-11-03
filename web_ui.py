@@ -2902,7 +2902,8 @@ def _shelf_strip(text: str) -> str:
 
 
 def _shelf_lines(text: str) -> list[str]:
-    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    text = text.replace("\r\n", "\n")
+    return text.replace("\r", "\n").split("\n")
 
 
 def shelf_classify(text: str) -> str:
