@@ -77,6 +77,13 @@ class SuccessorBrowser(unittest.TestCase):
                     self.assertEqual(page.locator('[data-irony]').inner_text(),prompt)
                     self.assertTrue(page.locator('[data-choices] button').first.is_disabled())
                     page.locator('[data-next]').click()
+                if width==1280:
+                    page.locator('[data-replay]').fill(json.dumps({'schema':u.PLAY_SCHEMA,'seed':42,'actions':[1]*20,'answers':[0]*4095}))
+                    page.locator('[data-import]').click()
+                    expect(page.locator('[data-next]')).to_be_disabled()
+                    expect(page.locator('[data-choices] button').first).to_be_disabled()
+                    page.locator('[data-export]').click()
+                    self.assertEqual(len(json.loads(page.locator('[data-replay]').input_value())['answers']),4095)
                 self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),width)
                 self.assertEqual(page.evaluate('localStorage.length+sessionStorage.length'),0)
                 self.assertEqual(external,[]);self.assertEqual(errors,[])
