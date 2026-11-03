@@ -411,7 +411,7 @@ _CSS = {
         ".ui-shell-icons{position:absolute;width:0;height:0;overflow:hidden}"
         ".ui-shell svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}"
         ".ui-shell-header{display:flex;align-items:center;gap:8px;min-height:56px;padding:0 8px;background:var(--ui-panel);border-bottom:1px solid var(--ui-border)}"
-        ".ui-shell-title{flex:1;min-width:0;margin:0 8px;font-size:1.25rem;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".ui-shell-title{flex:1;min-width:0;margin:0 8px;font-size:1.25rem;font-weight:400;line-height:1.25;overflow-wrap:anywhere}"
         ".ui-shell-actions{display:flex;align-items:center;gap:8px;flex:none}.ui-shell-actions .ui-input{padding:8px;max-width:128px}"
         ".ui-icon-button{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;border-radius:50%;flex:none;cursor:pointer}"
         ".ui-icon-button[aria-pressed=true] svg{fill:currentColor}"
@@ -3290,6 +3290,25 @@ def _photo_exif_orientation(data: bytes, start: int, end: int) -> tuple[int, int
     return None
 
 
+def photo_png_complete(data: bytes) -> bool:
+    """Whether a PNG's chunks run unbroken from IHDR to IEND (lengths only; checksums are not verified). Engines differ on a cut-off PNG, strict ones refusing it and lenient ones
+    drawing what they have, so the page decides this itself."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    i, n, first = 8, len(data), True
+    while i + 12 <= n:
+        length, kind = int.from_bytes(data[i:i + 4], "big"), data[i + 4:i + 8]
+        if first and kind != b"IHDR":
+            return False
+        first = False
+        if kind == b"IEND":
+            return True
+        if length > n:
+            return False
+        i += 12 + length
+    return False
+
+
 def photo_neutralize_orientation(data: bytes) -> bytes:
     """A copy of a JPEG with its EXIF Orientation set to 1, so no engine rotates it and the page applies the turn itself (anything else: ``data`` as is)."""
     info = photo_sniff(data)
@@ -3400,7 +3419,7 @@ def photo_failure(rejection: str) -> dict[str, str]:
 
 def photo_decide(data: bytes, decode: Any = None, declared_mime: str | None = None) -> dict[str, Any]:
     """Whether ``data`` may become the studio photo, with Flutter's order of checks: a declared type that is not ``image/*``, then empty or over 32 MiB,
-    then the pixel budget from the header, then ``decode(data)`` (a ``(width, height)`` or ``None`` from the engine), then the budget on that size.
+    then the pixel budget from the header, a PNG that stops short of IEND, then ``decode(data)`` (a ``(width, height)`` or ``None`` from the engine), then the budget on that size.
     ``{"ok": True, "format", "width", "height", "document", "message"}`` or ``{"ok": False, ...photo_failure(...)}``."""
     if declared_mime and not declared_mime.startswith("image/"):
         return {"ok": False, **photo_failure("undecodable")}
@@ -3411,6 +3430,8 @@ def photo_decide(data: bytes, decode: Any = None, declared_mime: str | None = No
     header = photo_header_size(data)
     if header and header[0] > 0 and header[1] > 0 and (rejection := photo_reject_size(*header)):
         return {"ok": False, **photo_failure(rejection)}
+    if info["kind"] == "png" and not photo_png_complete(data):
+        return {"ok": False, **photo_failure("undecodable")}
     size = decode(data) if decode else None
     if size is None:
         return {"ok": False, **photo_failure("heicConversionFailed" if info["kind"] == "heic" else "undecodable")}
@@ -4063,7 +4084,7 @@ _CSS["photo.css"] = ("@layer components{.ui-photo h3{margin:24px 0 8px}.ui-photo
                      "-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:crosshair}.ui-photo-stage:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}"
                      ".ui-photo-stamps{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.ui-photo-stamps .ui-input{flex:1 1 128px;min-width:0}"
                      ".ui-photo [aria-pressed=\"true\"]{background:var(--ui-accent);color:var(--ui-bg)}.ui-photo pre{white-space:pre-wrap;overflow-wrap:anywhere}"
-                     ".ui-photo-live{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)}.ui-photo details{margin-top:24px}}") 
+                     ".ui-photo-live{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)}.ui-photo details{margin:16px 0}.ui-photo summary{cursor:pointer;padding:8px 0}}") 
 
 
 def photo_html() -> str:
@@ -4081,10 +4102,10 @@ def photo_html() -> str:
             '<div class="ui-photo-bar"><input class="ui-photo-file" type="file" id="photo-file" accept="image/*" data-file><label class="ui-button" for="photo-file">Import image</label>'
             '<button class="ui-button" type="button" data-paste>Paste photo</button><button class="ui-button" type="button" data-retry hidden>Retry</button>'
             '<button class="ui-button" type="button" data-clear disabled>Clear photo</button></div>'
-            '<p class="ui-muted">You can also paste (Ctrl/Cmd+V) or drop an image anywhere on this panel.</p>'
+            '<details class="ui-photo-help"><summary>How to edit</summary><p class="ui-muted">You can paste (Ctrl/Cmd+V) or drop an image anywhere on this panel. Choose a frame tool, then drag '
+            'to make a frame. Drag inside a frame to move it; drag its corners or edges to resize. With the canvas focused: arrow keys move the selected frame (Shift for bigger steps), '
+            'Delete removes it, Ctrl/Cmd+Z undoes.</p></details>'
             '<div class="ui-photo-stagewrap"><canvas class="ui-photo-stage" data-stage width="760" height="280" tabindex="0" role="img" aria-label="Photo canvas"></canvas></div>'
-            '<p class="ui-muted">Choose a frame tool, then drag to make a frame. Drag inside a frame to move it; drag its corners or edges to resize. With the canvas focused: arrow keys move the '
-            'selected frame (Shift for bigger steps), Delete removes it, Ctrl/Cmd+Z undoes.</p>'
             f'<fieldset class="ui-photo-bar"><legend>Frame tool</legend>{shapes}</fieldset><fieldset class="ui-photo-bar"><legend>Frame colour</legend>{colors}</fieldset>'
             f'<h3>Stamps</h3><div class="ui-photo-stamps">{stamps}</div>'
             '<div class="ui-photo-stamps"><label for="photo-custom">Custom stamp</label><input class="ui-input" id="photo-custom" data-custom maxlength="12" placeholder="Emoji or short text" autocomplete="off">'
@@ -4097,7 +4118,7 @@ def photo_html() -> str:
             '<div class="ui-photo-bar"><button class="ui-button" type="button" data-copy-rect>Copy rectangle</button><button class="ui-button" type="button" data-copy-csv>Copy as CSV</button></div>'
             '<div class="ui-photo-bar"><button class="ui-button" type="button" data-export>Save PNG</button><button class="ui-button" type="button" data-share hidden>Share PNG</button></div>'
             '<p class="ui-photo-live" role="status" aria-live="polite" data-live></p>'
-            '<details><summary>This browser</summary><p class="ui-muted">Tries to decode a few tiny pictures and reports what this browser can do, as JSON in the same shape as the Flutter app\'s import evidence. '
+            '<details class="ui-photo-check"><summary>This browser</summary><p class="ui-muted">Tries to decode a few tiny pictures and reports what this browser can do, as JSON in the same shape as the Flutter app\'s import evidence. '
             'It measures this browser only; it is not a test of any other device.</p><button class="ui-button" type="button" data-check>Check this browser</button>'
             '<pre class="ui-output" data-check-out></pre></details></section>')
 
@@ -4105,6 +4126,39 @@ def photo_html() -> str:
 def photo_document(*, theme: str = "modern") -> str:
     """A single-file page for the photo studio."""
     return render_document(trusted_html='<main class="ui-page">' + photo_html() + "</main>" + module_script(_JS["photo.js"]), title="Photo studio", theme=theme, css=bundled_css())
+
+
+# --- Platform adapters: where each page is checked on a real browser (browser-test-kit's btk-platform-adapter/1) --------------------------------
+# browser-test-kit's platform_probe.py opens a page in an OS x browser x device environment, checks that its key elements fit the screen without overflow, overlap
+# or clipping at several widths, and that a real click (a tap on touch profiles) changes one thing the page promises. The adapter says only what is app-owned:
+# the selectors and that one postcondition. Written here from Python (nothing is committed as JSON); ``--btk-adapter ID --url URL`` prints one. Pages that only
+# link elsewhere (the front page, the examples index) have no state to observe and no adapter.
+
+BTK_ADAPTER_BASE = "http://127.0.0.1:8000/examples/"
+BTK_ADAPTERS: dict[str, dict[str, Any]] = {
+    "web-ui-showcase": {"page": "showcase.html", "elements": ["#showcase .ui-shell-title", "#showcase [data-ui-theme-switch]", "#showcase [data-ui-toggle]"],
+                        "click": {"target": "#showcase [data-ui-toggle]", "observe": "#showcase [data-ui-toggle]", "attribute": "aria-label", "before": "Favorite this page", "after": "Remove from favorites"}},
+    "web-ui-clipboard-shelf": {"page": "clipboard-shelf.html", "elements": ["#shelf h2", "#shelf-input", "#shelf [data-shelf-add]", "#shelf [data-shelf-status]"],
+                               "click": {"target": "#shelf [data-shelf-add]", "observe": "#shelf [data-shelf-status]", "attribute": "textContent", "before": "Nothing on the shelf yet.", "after": "Nothing to add."}},
+    "web-ui-door": {"page": "door.html", "elements": ["#door h2", "#door-select", "#door [data-door-draw]"],
+                    "click": {"target": "#door [data-door-draw]", "observe": "#door", "attribute": "data-door-draws", "before": "0", "after": "1"}},
+    "web-ui-composition-studio": {"page": "composition-studio.html", "elements": ["#studio h2", "#studio-bpm", "#studio [data-run]", "#studio [data-tap]"],
+                                  "click": {"target": "#studio [data-run]", "observe": "#studio [data-run]", "attribute": "aria-pressed", "before": "false", "after": "true"}},
+    "web-ui-coordinates": {"page": "coordinates.html", "elements": ["#coord h2", "#coord-lat", "#coord-lon", "#coord-url", "#coord [data-use-url]"],
+                           "click": {"target": "#coord [data-use-url]", "observe": "#coord [data-status]", "attribute": "textContent", "before": "Valid.",
+                                     "after": "Could not find latitude/longitude in that Maps URL."}},
+    "web-ui-photo-studio": {"page": "photo-studio.html", "elements": ["#photo h2", "#photo [data-status]", "#photo label[for=\"photo-file\"]", "#photo [data-paste]", "#photo .ui-photo-help summary"],
+                            "click": {"target": "#photo .ui-photo-help summary", "observe": "#photo .ui-photo-help", "attribute": "open", "before": None, "after": ""}},
+}
+
+
+def btk_adapter(adapter_id: str, url: str | None = None) -> dict[str, Any]:
+    """The ``btk-platform-adapter/1`` for one of ``BTK_ADAPTERS``; ``url`` replaces the default local address (``BTK_ADAPTER_BASE`` + the page)."""
+    try:
+        spec = BTK_ADAPTERS[adapter_id]
+    except KeyError:
+        raise ValueError(f"unknown adapter: {adapter_id!r}; one of {', '.join(sorted(BTK_ADAPTERS))}") from None
+    return {"schema": "btk-platform-adapter/1", "id": adapter_id, "url": url or BTK_ADAPTER_BASE + spec["page"], "elements": list(spec["elements"]), "click": dict(spec["click"])}
 
 
 # --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
@@ -4507,7 +4561,7 @@ def door_html(spec: Any) -> str:
     options = "".join(f'<option value="{escape(o["href"], quote=True)}"{" selected disabled" if o["current"] else ""}>{escape(o["emoji"])} {escape(o["label"])}'
                       f'{" (current)" if o["current"] else ""}</option>' for o in door_options(door))
     data = escape(json.dumps({"pages": door["pages"], "k": door["k"], "seed": door["seed"], "current": door["current"]}, ensure_ascii=False, separators=(",", ":")), quote=True)
-    return ('<section class="ui-panel ui-door" id="door" data-ui-door data-door="' + data + '"><h2>Door-to-Door</h2>'
+    return ('<section class="ui-panel ui-door" id="door" data-ui-door data-door-draws="0" data-door="' + data + '"><h2>Door-to-Door</h2>'
             '<p class="ui-muted">Jump to another tool without going Home first. Some entries are drawn at random; the same seed draws the same ones in Python and here.</p>'
             f'<label for="door-select">Door-to-Door tools</label><div class="ui-door-row"><select class="ui-input" id="door-select" data-door-select>{options}</select> '
             '<button class="ui-button" type="button" data-door-draw>Draw again</button></div>'
@@ -5109,7 +5163,7 @@ export function bindDoor(root=document){return[...root.querySelectorAll("[data-u
   if(stay){fill();status.textContent="Staying here.";return}
   if(!safe(href)){status.textContent="That destination is not allowed.";fill();return}
   status.textContent="Opening "+page.label+"…";box.dispatchEvent(new CustomEvent("ui-door-go",{bubbles:true,detail:{href}}));if(!box.hasAttribute("data-door-dry"))location.assign(href)});
- $("[data-door-draw]").addEventListener("click",()=>{seed=Math.floor(Math.random()*4294967296);fill();status.textContent="Drew new entries (seed "+seed+")."});
+ $("[data-door-draw]").addEventListener("click",()=>{seed=Math.floor(Math.random()*4294967296);fill();box.setAttribute("data-door-draws",String(Number(box.getAttribute("data-door-draws")||0)+1));status.textContent="Drew new entries (seed "+seed+")."});
  const input=$("[data-door-notation]"),path=$("[data-door-path]"),note=$("[data-door-note]");
  const show=()=>{try{const hrefs=emojiPath(input.value,door.pages);path.replaceChildren(...hrefs.map(h=>{const li=document.createElement("li"),a=document.createElement("a");a.textContent=h;if(safe(h))a.href=h;li.append(a);return li}));note.textContent=hrefs.length+" page(s)."}catch(e){path.replaceChildren();note.textContent=e.message}};
  input.addEventListener("input",show);fill();show();box.dataset.door_ready="";return box})}
@@ -5406,6 +5460,7 @@ export const MESSAGES={idle:"Select an image or paste here",loading:"Loading ima
 const FAILURES={empty:"decodeFailed",tooLargeBytes:"tooLargeBytes",tooManyPixels:"tooManyPixels",undecodable:"unsupportedFormat",heicConversionFailed:"heicUnsupported"};
 const halfUp=v=>{const f=Math.floor(v);return v-f>=0.5?f+1:f},clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),hi),dist=(dx,dy)=>Math.sqrt(dx*dx+dy*dy);
 export const fixed=(v,n)=>v.toFixed(n);
+const be32=(b,i)=>b[i]*16777216+(b[i+1]<<16|b[i+2]<<8|b[i+3]),le16=(b,i)=>b[i]|b[i+1]<<8;
 const at=(b,i,s)=>{for(let k=0;k<s.length;k++)if(b[i+k]!==s.charCodeAt(k))return false;return true};
 const brandAt=b=>b.length<12||!at(b,4,"ftyp")?null:String.fromCharCode(b[8],b[9],b[10],b[11]);
 function jpegProgressive(b){let i=2;const n=b.length;while(i+3<n){if(b[i]!==0xFF)return false;const m=b[i+1];if(m===0xFF){i+=1;continue}
@@ -5426,9 +5481,10 @@ export function sniff(b){const n=b.length,info={kind:"unknown",brand:null,progre
  else if(n>=12&&at(b,0,"RIFF")&&at(b,8,"WEBP"))info.kind="webp";else if(n>=6&&at(b,0,"GIF8")&&(b[4]===0x39||b[4]===0x37)&&b[5]===0x61)info.kind="gif";
  else{const brand=brandAt(b);if(HEIC.includes(brand)){info.kind="heic";info.brand=brand}else if(brand==="avif"||brand==="avis"){info.kind="avif";info.brand=brand}}
  info.label=LABELS[info.kind];return info}
+export function pngComplete(b){if(!(b.length>=8&&b[0]===0x89&&at(b,1,"PNG")&&b[4]===13&&b[5]===10&&b[6]===26&&b[7]===10))return false;let i=8,first=true;const n=b.length;
+ while(i+12<=n){const len=be32(b,i);if(first&&!at(b,i+4,"IHDR"))return false;first=false;if(at(b,i+4,"IEND"))return true;if(len>n)return false;i+=12+len}return false}
 export function neutralizeOrientation(b){const info=sniff(b),out=new Uint8Array(b);if(info.orientation===null||info.orientation===1)return out;
  const o=info.orientation_offset;if(info.orientation_big_endian){out[o]=0;out[o+1]=1}else{out[o]=1;out[o+1]=0}return out}
-const be32=(b,i)=>b[i]*16777216+(b[i+1]<<16|b[i+2]<<8|b[i+3]),le16=(b,i)=>b[i]|b[i+1]<<8;
 export function headerSize(b){const n=b.length;
  if(n>=8&&b[0]===0x89&&at(b,1,"PNG")&&b[4]===13&&b[5]===10&&b[6]===26&&b[7]===10)return n>=24&&at(b,12,"IHDR")?[be32(b,16),be32(b,20)]:null;
  if(n>=10&&at(b,0,"GIF8")&&(b[4]===0x39||b[4]===0x37)&&b[5]===0x61)return[le16(b,6),le16(b,8)];
@@ -5452,6 +5508,7 @@ export const failure=r=>{const reason=FAILURES[r];return{rejection:r,reason,outc
 export async function decide(data,decode,declared){const fail=r=>({ok:false,...failure(r)});
  if(declared&&!declared.startsWith("image/"))return fail("undecodable");let r=rejectBytes(data.length);if(r)return fail(r);
  const info=sniff(data),h=headerSize(data);if(h&&h[0]>0&&h[1]>0&&(r=rejectSize(h[0],h[1])))return fail(r);
+ if(info.kind==="png"&&!pngComplete(data))return fail("undecodable");
  const size=decode?await decode(data):null;if(!size)return fail(info.kind==="heic"?"heicConversionFailed":"undecodable");
  const[width,height]=size;if(r=rejectSize(width,height))return fail(r);
  const label=info.kind!=="unknown"?info.label:(declared?declared.split("/").pop().toUpperCase():"IMAGE");
@@ -5687,7 +5744,7 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
  $("[data-check]").addEventListener("click",check);
  if(typeof ResizeObserver==="function")new ResizeObserver(()=>{fit();render()}).observe(stage.parentElement);else window.addEventListener("resize",()=>{fit();render()});
  box.photo={studio,docs,importBytes,check,fit,render,sync};fit();setStatus("idle",MESSAGES.idle);after();return box})}
-globalThis.webUiPhoto={fixed,sniff,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
+globalThis.webUiPhoto={fixed,sniff,pngComplete,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
  rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS};
 if(typeof document!=="undefined")bindPhoto();
 """
@@ -5988,7 +6045,7 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
 
 
 def example_data(name: str) -> Any:
-    """A copy of one example spec: ``flutter-pages``, ``layout-presets`` or ``world``."""
+    """A copy of one example spec: ``flutter-pages``, ``layout-presets``, ``world``, ``showcase`` or ``door``."""
     try:
         return json.loads(json.dumps(EXAMPLES[name]))
     except KeyError:
@@ -6117,7 +6174,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--world", type=Path, metavar="FILE",
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
-    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world)")
+    parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world, showcase, door)")
+    parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
+    parser.add_argument("--url", metavar="URL", help="with --btk-adapter: the address of the page to check (default: the local example server)")
     parser.add_argument("--site", type=Path, metavar="DIR",
                         help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
     parser.add_argument("--theme-wall", type=int, metavar="N",
@@ -6153,6 +6212,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.example:
         try:
             sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
+        except ValueError as exc:
+            parser.error(str(exc))
+        return 0
+    if args.btk_adapter:
+        try:
+            sys.stdout.write("\n".join(sorted(BTK_ADAPTERS)) + "\n" if args.btk_adapter == "list"
+                             else json.dumps(btk_adapter(args.btk_adapter, args.url), ensure_ascii=False, indent=2) + "\n")
         except ValueError as exc:
             parser.error(str(exc))
         return 0

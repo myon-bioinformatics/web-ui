@@ -6,6 +6,7 @@ The ordinary dependency-light unit suite does not discover this module.
 import base64
 import functools
 import http.server
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -20,6 +21,21 @@ sys.path.insert(0, str(ROOT))
 from web_ui import (EXAMPLE_STUBS, showcase_document, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
                     clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label,
                     world_document, zone_offset, zone_rows)
+
+
+def photo_engine(playwright):
+    """The browser the photo studio tests run in: ``WEBUI_BROWSER`` = chromium (default), firefox or webkit. CI runs each engine; a laptop usually has only Chromium."""
+    return getattr(playwright, os.environ.get('WEBUI_BROWSER', 'chromium'))
+
+
+def photo_device(playwright):
+    """Context options of a Playwright device named by ``WEBUI_DEVICE`` (for example Pixel 7 or iPhone 13), else a desktop window. Emulation, not a device."""
+    name = os.environ.get('WEBUI_DEVICE')
+    if not name:
+        return {'viewport': {'width': 800, 'height': 900}}
+    options = dict(playwright.devices[name])
+    options.pop('default_browser_type', None)
+    return options
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -1636,7 +1652,7 @@ class PhotoBrowserTests(unittest.TestCase):
         server, origin = self.serve_page()
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
+                browser = photo_engine(playwright).launch()
                 try:
                     page = browser.new_page()
                     errors = []
@@ -1645,9 +1661,10 @@ class PhotoBrowserTests(unittest.TestCase):
                     blobs = self.corpus()
                     lists = [list(b) for b in blobs]
                     self.assertGreater(len(lists), 1500)
-                    got = page.evaluate('lists => lists.map(a => { const b = Uint8Array.from(a); return [webUiPhoto.sniff(b), webUiPhoto.headerSize(b), Array.from(webUiPhoto.neutralizeOrientation(b))] })', lists)
-                    for blob, (sniffed, header, neutral) in zip(blobs, got):
+                    got = page.evaluate('lists => lists.map(a => { const b = Uint8Array.from(a); return [webUiPhoto.sniff(b), webUiPhoto.headerSize(b), Array.from(webUiPhoto.neutralizeOrientation(b)), webUiPhoto.pngComplete(b)] })', lists)
+                    for blob, (sniffed, header, neutral, complete) in zip(blobs, got):
                         self.assertEqual(sniffed, w.photo_sniff(blob))
+                        self.assertEqual(complete, w.photo_png_complete(blob))
                         self.assertEqual(header, (list(w.photo_header_size(blob)) if w.photo_header_size(blob) else None))
                         self.assertEqual(bytes(neutral), w.photo_neutralize_orientation(blob))
                     # The decision: the same bytes, the same engine answer (none, a size, an oversize), the same declared type.
@@ -1725,7 +1742,7 @@ class PhotoBrowserTests(unittest.TestCase):
         server, origin = self.serve_page()
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
+                browser = photo_engine(playwright).launch()
                 try:
                     page = browser.new_page()
                     errors = []
@@ -1799,7 +1816,7 @@ class PhotoBrowserTests(unittest.TestCase):
         server, origin = self.serve_page()
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
+                browser = photo_engine(playwright).launch()
                 try:
                     page = browser.new_page()
                     page.goto(origin + '/photo.html')
@@ -1826,8 +1843,9 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.server, self.origin = WorldBrowserTests.serve({'photo.html': photo_document()})
         self.playwright_manager = sync_playwright()
         self.playwright = self.playwright_manager.__enter__()
-        self.browser = self.playwright.chromium.launch()
-        self.context = self.browser.new_context(viewport={'width': 800, 'height': 900}, accept_downloads=True)
+        self.browser = photo_engine(self.playwright).launch()
+        self.engine = self.browser.browser_type.name
+        self.context = self.browser.new_context(accept_downloads=True, **photo_device(self.playwright))
         self.page = self.context.new_page()
         self.errors, self.external = [], []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
@@ -1874,10 +1892,11 @@ class PhotoPageBrowserTests(unittest.TestCase):
             expected = case['flutter_test_ci']
             if not case['data'] or expected in (None, 'not_verified'):
                 continue
-            if case_id == 'heic_synthetic_markers_64x32':                                   # a real HEIC: Chromium has no decoder for it, so it says so
-                expected = 'rejected:heicConversionFailed'
             with self.subTest(case_id):
                 phase, outcome = self.pick(case_id)
+                if case_id == 'heic_synthetic_markers_64x32':                               # a real HEIC: Chromium and Firefox have no decoder for it, Safari's engine may
+                    self.assertIn(outcome, ('rejected:heicConversionFailed',) if self.engine != 'webkit' else ('rejected:heicConversionFailed', 'supported'))
+                    continue
                 self.assertEqual(outcome, expected)
                 self.assertEqual(phase, 'success' if expected == 'supported' else 'failure')
                 self.assertEqual(self.page.inner_text('[data-status]'), w.PHOTO_MESSAGES['success'] if expected == 'supported' else w.photo_failure(expected.split(':')[1])['message'])
@@ -1913,19 +1932,27 @@ class PhotoPageBrowserTests(unittest.TestCase):
                     self.assertEqual(pixel[3], 255)
 
     def test_what_this_engine_does_to_orientation_is_measured_not_assumed(self):
-        self.page.click('summary')
+        import json
+        self.page.click('.ui-photo-check summary')
         self.page.click('[data-check]')
         self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.check")
-        import json
         report = json.loads(self.data('check'))
-        self.assertIn(report['exifOrientationAppliedByEngine'], (True, False))
-        self.assertEqual(report['exifOrientationAppliedByEngine'], True)                    # Chromium turns EXIF pictures itself; the page neutralises that, so its result does not depend on it
+        self.assertIn(report['exifOrientationAppliedByEngine'], (True, False))                # measured, whatever it is: the page neutralises it, so its pixels do not depend on it
         measured = {key: value['loader_browser_canvas_adapter'] for key, value in report['outcomes'].items()}
-        for probe in ('png', 'jpeg', 'jpeg_exif_orientation_6', 'webp_lossy', 'webp_lossless', 'webp_alpha', 'gif', 'avif'):
-            self.assertEqual(measured[probe], 'supported', probe)
-        self.assertEqual(measured['heic'], 'unsupported_by_runtime')
+        for probe in ('png', 'jpeg', 'jpeg_exif_orientation_6', 'webp_lossy', 'webp_lossless', 'webp_alpha', 'gif'):                  # the formats every engine reads
+            self.assertEqual(measured[probe], 'supported', (self.engine, probe))
+        for probe in ('avif', 'heic'):
+            self.assertIn(measured[probe], ('supported', 'unsupported_by_runtime'))
+        if self.engine == 'chromium':                                                       # Chromium here: exact
+            self.assertEqual(report['exifOrientationAppliedByEngine'], True)
+            self.assertEqual((measured['avif'], measured['heic']), ('supported', 'unsupported_by_runtime'))
         for feature in ('pointerEvents', 'touchActionNone', 'createImageBitmap', 'canvasToBlob', 'anchorDownload', 'canvas4096'):
-            self.assertTrue(report['features'][feature], feature)
+            self.assertTrue(report['features'][feature], (self.engine, feature))
+        if os.environ.get('WEBUI_EVIDENCE_DIR'):                                            # CI keeps what each engine said, as a file
+            os.makedirs(os.environ['WEBUI_EVIDENCE_DIR'], exist_ok=True)
+            name = self.engine + ('-' + os.environ['WEBUI_DEVICE'].replace(' ', '') if os.environ.get('WEBUI_DEVICE') else '-desktop')
+            with open(os.path.join(os.environ['WEBUI_EVIDENCE_DIR'], name + '.json'), 'w', encoding='utf-8') as out:
+                json.dump({**report, 'environmentId': name, 'emulation': bool(os.environ.get('WEBUI_DEVICE'))}, out, indent=2, ensure_ascii=False)
         shown = json.loads(self.page.inner_text('[data-check-out]'))
         self.assertEqual((shown['schemaVersion'], shown['environmentId'], shown['entryPoint']), (2, 'web_ui_photo_studio', 'loader_browser_canvas_adapter'))
         self.assertEqual(shown, report)
@@ -2033,7 +2060,12 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate("() => document.querySelector('[data-ui-photo]').photo.studio.state.image !== null"), True)
 
     def test_touch_drags_draw_a_frame_and_do_not_scroll_the_page(self):
-        """On a phone the finger must edit the canvas, not scroll the page: pointer events plus ``touch-action: none`` (Chromium's Pixel emulation; a device is a separate claim)."""
+        """On a phone the finger must edit the canvas, not scroll the page: pointer events plus ``touch-action: none`` (Chromium's Pixel emulation drags with CDP; WebKit's iPhone
+        emulation taps; a device is a separate claim)."""
+        if self.engine == 'firefox':
+            self.skipTest('Playwright has no touch emulation for Firefox')
+        if self.engine == 'webkit':
+            return self.touch_taps_in_iphone_emulation()
         context = self.browser.new_context(**self.playwright.devices['Pixel 7'])
         try:
             page = context.new_page()
@@ -2063,9 +2095,35 @@ class PhotoPageBrowserTests(unittest.TestCase):
         finally:
             context.close()
 
+    def touch_taps_in_iphone_emulation(self):
+        context = self.browser.new_context(**{k: v for k, v in self.playwright.devices['iPhone 13'].items() if k != 'default_browser_type'})
+        try:
+            page = context.new_page()
+            page.on('pageerror', lambda error: self.errors.append(str(error)))
+            page.goto(self.origin + '/photo.html')
+            page.tap('[data-stamp="⭐"]')
+            self.assertEqual(page.eval_on_selector('[data-ui-photo]', 'b => b.dataset.armed'), '⭐')
+            page.locator('[data-stage]').scroll_into_view_if_needed()
+            box = page.locator('[data-stage]').bounding_box()
+            self.assertLessEqual(box['width'], 390)
+            scroll = page.evaluate('() => window.scrollY')
+            for fx, fy in ((0.3, 0.4), (0.7, 0.6)):
+                page.touchscreen.tap(box['x'] + fx * box['width'], box['y'] + fy * box['height'])
+            self.assertEqual(page.eval_on_selector('[data-ui-photo]', 'b => b.dataset.stamps'), '2')
+            self.assertEqual(page.evaluate('() => window.scrollY'), scroll)
+        finally:
+            context.close()
+
+    def synthetic_events_work(self):
+        """Whether this engine lets a page build paste and drop events that carry files (some ignore ``clipboardData`` / ``dataTransfer`` in the constructor)."""
+        return self.page.evaluate("""() => { try { const dt = new DataTransfer(); dt.items.add(new File(['x'], 'x.png', {type: 'image/png'}));
+            return new ClipboardEvent('paste', {clipboardData: dt}).clipboardData === dt && new DragEvent('drop', {dataTransfer: dt}).dataTransfer === dt } catch (e) { return false } }""")
+
     def test_paste_and_drop_take_images_and_the_page_keeps_nothing(self):
         import base64 as b64
         import web_ui as w
+        if not self.synthetic_events_work():
+            self.skipTest('this engine ignores clipboardData / dataTransfer on events a page builds; real paste and drop are Layer 3 (a device)')
         png = b64.b64encode(self.file('png_markers_64x32')).decode()
         script = """([png, how]) => { const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0)), dt = new DataTransfer(); dt.items.add(new File([bytes], 'x.png', {type: 'image/png'}));
             const target = document.querySelector('[data-ui-photo]');
@@ -2087,6 +2145,59 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate("() => [localStorage.length, sessionStorage.length, document.cookie]"), [0, 0, ''])
         self.assertEqual(self.page.evaluate("() => [...document.querySelectorAll('a[href]')].length"), 0)
 
+
+
+class BtkAdapterBrowserTests(unittest.TestCase):
+    """Each adapter against its page, with browser-test-kit's own checks: one element per selector, all visible inside the screen without clipping or overlap, and the click
+    changes exactly what the adapter says. (The probe itself runs in the platform-matrix workflow, on every engine and profile.)"""
+
+    LAYOUT = """cfg => { const failed = [], boxes = [], de = document.documentElement;
+        if (de.scrollWidth > de.clientWidth + .5) failed.push('horizontal_overflow');
+        for (const selector of cfg.elements) { const found = document.querySelectorAll(selector);
+          if (found.length !== 1) { failed.push('missing_or_ambiguous:' + selector + ':' + found.length); continue }
+          const e = found[0], r = e.getBoundingClientRect(), s = getComputedStyle(e);
+          if (r.width <= 0 || r.height <= 0 || s.visibility === 'hidden' || s.display === 'none') failed.push('invisible:' + selector);
+          if (r.left < -.5 || r.right > innerWidth + .5 || r.top < -.5 || r.bottom > innerHeight + .5) failed.push('outside:' + selector);
+          if (e.scrollWidth > e.clientWidth + .5) failed.push('clipped:' + selector); boxes.push({selector, x: r.x, y: r.y, width: r.width, height: r.height}) }
+        for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) { const a = boxes[i], b = boxes[j];
+          if (Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > .5 && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > .5) failed.push('overlap:' + a.selector + ':' + b.selector) }
+        const t = document.querySelector(cfg.click.target), r = t.getBoundingClientRect(), top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        if (!top || !(t === top || t.contains(top))) failed.push('occluded:' + cfg.click.target);
+        return failed }"""
+
+    def test_every_adapter_fits_its_page_and_its_click_does_what_it_says(self):
+        import web_ui
+        pages = web_ui.example_pages()
+        server, origin = WorldBrowserTests.serve({web_ui.BTK_ADAPTERS[i]['page']: pages['examples/' + web_ui.BTK_ADAPTERS[i]['page']] for i in web_ui.BTK_ADAPTERS})
+        try:
+            with sync_playwright() as playwright:
+                browser = photo_engine(playwright).launch()
+                try:
+                    for adapter_id in sorted(web_ui.BTK_ADAPTERS):
+                        for width, height in ((1280, 800), (412, 839), (390, 664), (320, 664)):
+                            with self.subTest(adapter=adapter_id, viewport=(width, height)):
+                                config = web_ui.btk_adapter(adapter_id, f"{origin}/{web_ui.BTK_ADAPTERS[adapter_id]['page']}")
+                                page = browser.new_page(viewport={'width': width, 'height': height})
+                                errors = []
+                                page.on('pageerror', lambda error: errors.append(str(error)))
+                                try:
+                                    page.goto(config['url'])
+                                    page.wait_for_timeout(100)
+                                    self.assertEqual(page.evaluate(self.LAYOUT, config), [])
+                                    click = config['click']
+                                    read = lambda: page.locator(click['observe']).inner_text() if click['attribute'] == 'textContent' else page.locator(click['observe']).get_attribute(click['attribute'])
+                                    self.assertEqual(read(), click['before'])
+                                    box = page.locator(click['target']).bounding_box()
+                                    page.mouse.click(int(box['x'] + box['width'] / 2), int(box['y'] + box['height'] / 2))
+                                    page.wait_for_timeout(150)
+                                    self.assertEqual(read(), click['after'])
+                                    self.assertEqual(errors, [])
+                                finally:
+                                    page.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
 
 
 if __name__ == '__main__':

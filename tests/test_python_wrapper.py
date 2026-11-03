@@ -1471,6 +1471,26 @@ class PhotoImportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             web_ui.photo_png(2, 2, b"short")
 
+    def test_a_png_must_reach_iend(self):
+        import io
+        from PIL import Image
+        for case in PHOTO_FIXTURE["cases"]:
+            if case["format"] == "png" and case["data"]:
+                with self.subTest(case["id"]):
+                    self.assertEqual(web_ui.photo_png_complete(photo_file(case["id"])), case["id"] != "png_truncated")
+        whole = io.BytesIO()
+        Image.new("RGB", (9, 7), (1, 2, 3)).save(whole, "PNG")
+        data = whole.getvalue()
+        self.assertTrue(web_ui.photo_png_complete(data))
+        self.assertTrue(web_ui.photo_png_complete(data + b"trailing bytes"))                  # what follows IEND is not the picture's business
+        for n in range(len(data)):
+            self.assertFalse(web_ui.photo_png_complete(data[:n]), n)                          # every cut-off copy is refused
+        self.assertFalse(web_ui.photo_png_complete(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND" + b"\x00" * 4))   # IEND before IHDR
+        self.assertFalse(web_ui.photo_png_complete(data[:8] + b"\xff\xff\xff\xff" + data[12:]))          # a length larger than the file
+        cut = web_ui.photo_decide(data[:-5], lambda d: (9, 7))                                  # whatever the engine would say
+        self.assertEqual((cut["outcome"], cut["message"]), ("rejected:undecodable", "That image format could not be decoded."))
+        self.assertTrue(web_ui.photo_decide(data, lambda d: (9, 7))["ok"])
+
     def test_the_png_probe_is_a_2x2_picture_and_probes_are_what_they_claim(self):
         import io
         from PIL import Image
@@ -1983,6 +2003,77 @@ class PhotoStudioTests(unittest.TestCase):
                 for stamp in state["stamps"]:
                     self.assertTrue(0 <= stamp["x"] <= 1 and 0 <= stamp["y"] <= 1 and 0.4 <= stamp["scale"] <= 3 or stamp["scale"] == 1)
                 self.assertLessEqual(s.history.depth, 20)
+
+
+class BtkAdapterTests(unittest.TestCase):
+    """browser-test-kit's platform adapters, written from Python: valid by its contract, one per page that has state to observe."""
+
+    @staticmethod
+    def contract_errors(config):
+        """browser-test-kit's tools/platform_adapter.load_adapter rules, restated (the contract is shared by fixture, not by import)."""
+        from urllib.parse import urlsplit
+        errors = []
+        if config.get("schema") != "btk-platform-adapter/1":
+            errors.append("schema")
+        if not isinstance(config.get("id"), str) or not config["id"].replace("-", "").isalnum():
+            errors.append("id")
+        if not config.get("elements") or not all(isinstance(s, str) and s for s in config["elements"]):
+            errors.append("elements")
+        click = config.get("click", {})
+        if not isinstance(click, dict) or not all(isinstance(click.get(k), str) and click[k] for k in ("target", "observe", "attribute")):
+            errors.append("click")
+            return errors
+        if any(k not in click or (click[k] is not None and not isinstance(click[k], str)) for k in ("before", "after")):
+            errors.append("before/after")
+        if click["before"] == click["after"]:
+            errors.append("distinct states")
+        if click["target"] not in config["elements"]:
+            errors.append("click target is an element")
+        parts = urlsplit(config.get("url", ""))
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
+            errors.append("url")
+        if len(set(config["elements"])) != len(config["elements"]):
+            errors.append("duplicate elements")
+        return errors
+
+    def test_adapters_meet_the_contract_and_name_real_pages(self):
+        w = web_ui
+        pages = w.example_pages()
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-photo-studio", "web-ui-showcase"])
+        for adapter_id in w.BTK_ADAPTERS:
+            config = w.btk_adapter(adapter_id)
+            with self.subTest(adapter_id):
+                self.assertEqual(self.contract_errors(config), [])
+                self.assertEqual(config["id"], adapter_id)
+                self.assertIn("examples/" + w.BTK_ADAPTERS[adapter_id]["page"], pages)
+                self.assertEqual(config["url"], "http://127.0.0.1:8000/examples/" + w.BTK_ADAPTERS[adapter_id]["page"])
+        self.assertEqual(w.btk_adapter("web-ui-door", "http://localhost:9/x.html")["url"], "http://localhost:9/x.html")
+        self.assertIsNot(w.btk_adapter("web-ui-door")["elements"], w.BTK_ADAPTERS["web-ui-door"]["elements"])      # a copy: callers cannot change the table
+        with self.assertRaises(ValueError):
+            w.btk_adapter("flutter-home")
+        self.assertEqual(self.contract_errors({**w.btk_adapter("web-ui-door"), "url": "file:///x.html"}), ["url"])
+        self.assertEqual(self.contract_errors({**w.btk_adapter("web-ui-door"), "click": {**w.BTK_ADAPTERS["web-ui-door"]["click"], "after": "0"}}), ["distinct states"])
+        if shutil.which("python3") and (ROOT.parent / "browser-test-kit" / "tools" / "platform_adapter.py").exists():           # the real validator, when a clone is next to this one
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("btk_platform_adapter", ROOT.parent / "browser-test-kit" / "tools" / "platform_adapter.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with tempfile.TemporaryDirectory() as directory:
+                for adapter_id in w.BTK_ADAPTERS:
+                    target = Path(directory) / (adapter_id + ".json")
+                    target.write_text(json.dumps(w.btk_adapter(adapter_id)), encoding="utf-8")
+                    self.assertEqual(module.load_adapter(target)["id"], adapter_id)
+
+    def test_the_command_line_prints_them(self):
+        def run(*args):
+            return subprocess.run([sys.executable, "-S", "web_ui.py", *args], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        listed = run("--btk-adapter", "list")
+        self.assertEqual((listed.returncode, listed.stdout.split()), (0, sorted(web_ui.BTK_ADAPTERS)))
+        one = run("--btk-adapter", "web-ui-photo-studio", "--url", "http://127.0.0.1:9/p.html")
+        self.assertEqual((one.returncode, json.loads(one.stdout)), (0, web_ui.btk_adapter("web-ui-photo-studio", "http://127.0.0.1:9/p.html")))
+        bad = run("--btk-adapter", "nope")
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("unknown adapter", bad.stderr)
 
 
 if __name__ == '__main__':

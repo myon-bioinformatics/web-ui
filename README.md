@@ -299,6 +299,24 @@ they add no screen-content or pixel-regression assertions.
 
 Public source placement and automatic Python CI updates: [vendor automation](docs/vendor-automation.md).
 
+## Platform differences: what is claimed, and where it is checked
+
+Python and JavaScript run everywhere; what differs is the engine, the device and the input. The doctrine is browser-test-kit's (`docs/platform-doctrine.md`), applied here:
+
+- **Layer 1, the rules**: Python is the reference and the page's module gives identical answers (Chromium compares them on seeded fuzz; a one-character change in a rule fails a test).
+  Engine and OS do not enter, so this layer is the same everywhere by construction.
+- **Layer 2, the page in an engine**: the photo studio's page tests (upright pixels equal Pillow, drawing, history, export, import outcomes) and browser-test-kit's probe
+  (`python web_ui.py --btk-adapter list`, one `btk-platform-adapter/1` per page that has state, built from Python; key elements fit without overflow, overlap or clipping at
+  320-1280 px and a real click or tap changes what the page promises). `.github/workflows/platform-matrix.yml` runs both on Chromium, Firefox, WebKit, a Pixel 7 profile and an
+  iPhone 13 profile on Linux runners and keeps each engine's own decode report (`Check this browser`) as an artifact. Chromium and its Pixel profile also run locally.
+- **Layer 3, a real device**: not run. Pixel and iPhone profiles are emulation; Playwright's WebKit is not Safari. iOS Safari (HEIC, camera, Share, `download`, the paste bubble)
+  is **not verified** until the page's JSON is kept from a device. Nothing here says otherwise.
+
+Running the probe against the local pages: `python -S web_ui.py --site build/site`, serve it on port 8000, then
+`python -S web_ui.py --btk-adapter web-ui-photo-studio > adapter.json` and `python browser-test-kit/tools/platform_probe.py collect --browser chromium --profile pixel --adapter adapter.json
+--widths 320 384 --out out`. It found a real defect while this was written: the showcase title was clipped at 320 px (it now wraps). The examples are generated, not published, so the probe
+uses `http://127.0.0.1:8000/examples/...` (`--url` overrides it); the page viewer for multi-browser captures needs https pages and stays Flutter-only for now.
+
 ## Multi-browser captures of Flutter pages
 
 `web_ui.EXAMPLES["flutter-pages"]` (`--example flutter-pages`) lists the representative flutter_navigation_basic pages by emoji
