@@ -101,6 +101,7 @@ def test_timeline_is_utc_ordered_even_across_local_dates():
     assert [r['id'] for r in expected]==['jp','ny']
     assert [r['id'] for r in js_call('timeline.js','m.timelineEvents(data)',rows)]==['jp','ny']
     assert u.timeline_wall_to_utc('2026-11-03T12:00','Asia/Tokyo')==1793674800000
+    assert u.timeline_wall_to_utc('2039-12-31T23:59','UTC')==2208988740000
     assert u.timeline_wall_to_utc('2026-11-01T01:30','America/New_York',fold=1)-u.timeline_wall_to_utc('2026-11-01T01:30','America/New_York',fold=0)==3600000
     for wall,zone in [('2026-03-08T02:30','America/New_York'),('2026-11-01T01:30','America/New_York'),('2026-02-30T12:00','Asia/Tokyo')]:
         with pytest.raises(ValueError):u.timeline_wall_to_utc(wall,zone)
