@@ -2879,6 +2879,137 @@ def theme_wall_document(count: int) -> str:
 # MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
+# --- Door-to-Door and emoji transitions: one emoji per page, a go/return notation, a seeded draw, a pull-down ----------------------------
+# Absorbs flutter_navigation_basic's page identities (python/generate_page_identities.py, docs/testing/page-identities.md), its "A -> B / A <-> B"
+# transition notation, Home discovery (python/home_discovery.py) and the Door-to-Door selector (tool_door_selector.dart, HomeDoorCatalog).
+# Python is the reference; the page's ``door.js`` must agree, including the seeded draw.
+
+DOOR_SCHEMA = "web-ui-door/1"
+_DOOR_DROP = "︎️ \t\n\v\f\r\x1c\x1d\x1e\x1f\x85\xa0                　"
+_DOOR_DROP_RE = re.compile("[" + _DOOR_DROP + "]")
+
+
+def emoji_key(emoji: str) -> str:
+    """An emoji as the notation compares it: spaces and variation selectors (text or emoji presentation) removed, so ``🗺️`` and ``🗺`` are one page."""
+    return _DOOR_DROP_RE.sub("", emoji)
+
+
+def _door_href(value: Any) -> str:
+    """A target the Door may open: a relative path or an http(s) address; never ``//host``, ``javascript:`` and the like."""
+    if not isinstance(value, str) or not value or len(value) > 512 or any(ord(c) <= 32 or ord(c) == 127 or c == "\\" for c in value):
+        raise ValueError("href must be a path or an http(s) address without spaces or controls")
+    parts = urlsplit(value)
+    if parts.scheme not in ("", "http", "https") or (not parts.scheme and (parts.netloc or value.startswith("//"))) or (parts.scheme and not parts.netloc):
+        raise ValueError(f"href must be a relative path or an http(s) address: {value!r}")
+    return value
+
+
+def door_validate(spec: Any) -> dict[str, Any]:
+    """Checked copy of a ``web-ui-door/1`` spec: ``pages`` (``emoji``, ``label``, ``href``, ``group`` of ``stable`` or ``discover``), optional ``current`` href,
+    ``k`` pages drawn from the discoverable ones and the draw ``seed``. Two pages may not share an emoji (variation selectors and spaces do not count),
+    nor an href."""
+    if not isinstance(spec, dict) or spec.get("schema") != DOOR_SCHEMA:
+        raise ValueError(f"expected schema {DOOR_SCHEMA}")
+    if set(spec) - {"schema", "pages", "current", "k", "seed"}:
+        raise ValueError("a door has schema, pages, current, k and seed")
+    pages_in = spec.get("pages")
+    if not isinstance(pages_in, list) or not 1 <= len(pages_in) <= 512:
+        raise ValueError("a door lists 1..512 pages")
+    seen_emoji: set[str] = set()
+    seen_href: set[str] = set()
+    pages = []
+    for page in pages_in:
+        if not isinstance(page, dict) or set(page) - {"emoji", "label", "href", "group"}:
+            raise ValueError("a page has emoji, label, href and group")
+        emoji = _world_emoji(page.get("emoji"))
+        key = emoji_key(emoji)
+        group = page.get("group", "stable")
+        if not key or group not in ("stable", "discover"):
+            raise ValueError("a page needs an emoji and a group of stable or discover")
+        href = _door_href(page.get("href"))
+        if key in seen_emoji or href in seen_href:
+            raise ValueError(f"two pages share {'an emoji' if key in seen_emoji else 'an href'}: {emoji!r} {href!r}")
+        seen_emoji.add(key)
+        seen_href.add(href)
+        pages.append({"emoji": emoji, "label": _world_text(page.get("label"), "label", 40), "href": href, "group": group})
+    if not any(p["group"] == "stable" for p in pages):
+        raise ValueError("a door needs at least one stable page (the first is Home)")
+    current = spec.get("current")
+    if current is not None and current not in seen_href:
+        raise ValueError("current must be the href of one of the pages")
+    discoverable = sum(p["group"] == "discover" for p in pages)
+    k = _world_int(spec.get("k", 3), "k", 0, 8)
+    if k > discoverable:
+        raise ValueError(f"k is {k} but only {discoverable} pages can be drawn")
+    return {"schema": DOOR_SCHEMA, "pages": pages, "current": current, "k": k, "seed": _world_int(spec.get("seed", 0), "seed", 0, 2**32 - 1)}
+
+
+def emoji_path(notation: str, pages: list[dict[str, Any]]) -> list[str]:
+    """Hrefs visited by ``A → B`` (go) and ``A ↔ B`` (go and come back), left to right, from the pages' emoji. Spaces and variation selectors are
+    ignored; an unknown emoji raises ``ValueError`` and nothing is returned. ``🏠 → 🗺️ → 🌍 ↔ 🕶️`` visits all four pages and returns to 🌍."""
+    by_key = {emoji_key(p["emoji"]): p["href"] for p in pages}
+    parts = re.split("([→↔])", emoji_key(notation))
+    path = [parts[0]]
+    for arrow, there in zip(parts[1::2], parts[2::2]):
+        path.extend([there] if arrow == "→" else [there, path[-1]])
+    try:
+        return [by_key[key] for key in path]
+    except KeyError as error:
+        raise ValueError(f"unknown page emoji: {error.args[0]!r}") from None
+
+
+def mulberry32(seed: int):
+    """The seeded generator both languages share (32-bit integer arithmetic, floats in [0, 1)): a draw is the same in Python and in the page."""
+    a, mask = seed & 0xFFFFFFFF, 0xFFFFFFFF
+    while True:
+        a = (a + 0x6D2B79F5) & mask
+        t = ((a ^ (a >> 15)) * (a | 1)) & mask
+        t = ((t + (((t ^ (t >> 7)) * (t | 61)) & mask)) & mask) ^ t
+        yield ((t ^ (t >> 14)) & mask) / 4294967296
+
+
+def door_draw(seed: int, count: int, k: int) -> list[int]:
+    """``k`` distinct indices out of ``count``, chosen by a partial shuffle driven by ``mulberry32(seed)``; the same seed always gives the same draw."""
+    if not 0 <= k <= count:
+        raise ValueError("k must be from 0 to count")
+    rng, order = mulberry32(seed), list(range(count))
+    for i in range(k):
+        j = i + math.floor(next(rng) * (count - i))
+        order[i], order[j] = order[j], order[i]
+    return order[:k]
+
+
+def door_options(spec: Any, seed: int | None = None) -> list[dict[str, Any]]:
+    """The pull-down in order: the first stable page (Home), the drawn discoveries, then the other stable pages, each marked ``current`` or not."""
+    door = door_validate(spec)
+    stable = [p for p in door["pages"] if p["group"] == "stable"]
+    found = [p for p in door["pages"] if p["group"] == "discover"]
+    drawn = [found[i] for i in door_draw(door["seed"] if seed is None else seed, len(found), door["k"])]
+    return [{**p, "current": p["href"] == door["current"], "drawn": p in drawn} for p in [stable[0], *drawn, *stable[1:]]]
+
+
+def door_html(spec: Any) -> str:
+    """The Door-to-Door pull-down, a way to try the transition notation, and the data the page script needs (escaped)."""
+    door = door_validate(spec)
+    options = "".join(f'<option value="{escape(o["href"], quote=True)}"{" selected disabled" if o["current"] else ""}>{escape(o["emoji"])} {escape(o["label"])}'
+                      f'{" (current)" if o["current"] else ""}</option>' for o in door_options(door))
+    data = escape(json.dumps({"pages": door["pages"], "k": door["k"], "seed": door["seed"], "current": door["current"]}, ensure_ascii=False, separators=(",", ":")), quote=True)
+    return ('<section class="ui-panel ui-door" id="door" data-ui-door data-door="' + data + '"><h2>Door-to-Door</h2>'
+            '<p class="ui-muted">Jump to another tool without going Home first. Some entries are drawn at random; the same seed draws the same ones in Python and here.</p>'
+            f'<label for="door-select">Door-to-Door tools</label><div class="ui-door-row"><select class="ui-input" id="door-select" data-door-select>{options}</select> '
+            '<button class="ui-button" type="button" data-door-draw>Draw again</button></div>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-door-status>Pick a destination.</p>'
+            '<h3>Transitions by emoji</h3><p class="ui-muted"><code>A → B</code> goes, <code>A ↔ B</code> goes and comes back. Spaces and variation selectors are ignored.</p>'
+            '<label for="door-notation">Notation</label><input class="ui-input" id="door-notation" data-door-notation value="🏠 ↔ 🧭" autocomplete="off">'
+            '<ol class="ui-door-path" data-door-path></ol><p class="ui-muted" role="status" data-door-note></p></section>')
+
+
+def door_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page for a door."""
+    return render_document(trusted_html='<main class="ui-page">' + door_html(spec) + "</main>" + module_script(_JS["door.js"]), title="Door-to-Door",
+                           theme=theme, css=bundled_css())
+
+
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
 # Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
 # lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
@@ -3037,6 +3168,9 @@ def _shelf_css() -> str:
 
 
 _CSS["shelf.css"] = _shelf_css()
+_CSS["door.css"] = ("@layer components{.ui-door label{display:block;margin:8px 0 4px}.ui-door-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}"
+                    ".ui-door-row .ui-input{flex:1 1 256px;min-width:0}.ui-door>.ui-input{width:100%;box-sizing:border-box}"
+                    ".ui-door-path{margin:8px 0;padding-left:24px}.ui-door-path a{overflow-wrap:anywhere}}")
 
 
 def shelf_html() -> str:
@@ -3296,6 +3430,35 @@ def mask_curl(result: dict[str, Any]) -> dict[str, Any]:
 STUB_SCHEMA = "web-ui-stub/1"
 # stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
 EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
+
+_JS["door.js"] = r"""/* web-ui door: a Door-to-Door pull-down, emoji transitions ("A → B", "A ↔ B") and a seeded draw. Python (web_ui.door_options, emoji_path, door_draw) is the reference. */
+const DROP="\\ufe0e\\ufe0f \\t\\n\\v\\f\\r\\x1c-\\x1f\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+export const emojiKey=e=>e.replace(new RegExp("["+DROP+"]","g"),"");
+export function emojiPath(notation,pages){
+ const by=new Map(pages.map(p=>[emojiKey(p.emoji),p.href])),parts=emojiKey(notation).split(/([→↔])/),path=[parts[0]];
+ for(let i=1;i+1<parts.length;i+=2){const there=parts[i+1];if(parts[i]==="→")path.push(there);else path.push(there,path[path.length-1])}
+ return path.map(k=>{if(!by.has(k))throw new Error("unknown page emoji: "+JSON.stringify(k));return by.get(k)})}
+export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
+export function doorDraw(seed,count,k){if(!(k>=0&&k<=count))throw new Error("k must be from 0 to count");const rng=mulberry32(seed),order=Array.from({length:count},(_,i)=>i);
+ for(let i=0;i<k;i++){const j=i+Math.floor(rng()*(count-i));[order[i],order[j]]=[order[j],order[i]]}return order.slice(0,k)}
+export function doorOptions(door,seed=door.seed){const stable=door.pages.filter(p=>p.group==="stable"),found=door.pages.filter(p=>p.group==="discover"),drawn=doorDraw(seed,found.length,door.k).map(i=>found[i]);
+ return[stable[0],...drawn,...stable.slice(1)].map(p=>({...p,current:p.href===door.current,drawn:drawn.includes(p)}))}
+const safe=href=>{try{const u=new URL(href,location.href);return u.protocol==="http:"||u.protocol==="https:"}catch(e){return false}};
+export function bindDoor(root=document){return[...root.querySelectorAll("[data-ui-door]")].map(box=>{
+ const door=JSON.parse(box.dataset.door),$=s=>box.querySelector(s),select=$("[data-door-select]"),status=$("[data-door-status]");let seed=door.seed;
+ const fill=()=>{select.replaceChildren(...doorOptions(door,seed).map(o=>{const op=document.createElement("option");op.value=o.href;op.textContent=o.emoji+" "+o.label+(o.current?" (current)":"");if(o.current){op.selected=true;op.disabled=true}return op}))};
+ select.addEventListener("change",()=>{const href=select.value,page=door.pages.find(p=>p.href===href);if(!page||href===door.current)return;
+  const stay=!box.dispatchEvent(new CustomEvent("ui-door-leave",{cancelable:true,bubbles:true,detail:{href,emoji:page.emoji,label:page.label}}));
+  if(stay){fill();status.textContent="Staying here.";return}
+  if(!safe(href)){status.textContent="That destination is not allowed.";fill();return}
+  status.textContent="Opening "+page.label+"…";box.dispatchEvent(new CustomEvent("ui-door-go",{bubbles:true,detail:{href}}));if(!box.hasAttribute("data-door-dry"))location.assign(href)});
+ $("[data-door-draw]").addEventListener("click",()=>{seed=Math.floor(Math.random()*4294967296);fill();status.textContent="Drew new entries (seed "+seed+")."});
+ const input=$("[data-door-notation]"),path=$("[data-door-path]"),note=$("[data-door-note]");
+ const show=()=>{try{const hrefs=emojiPath(input.value,door.pages);path.replaceChildren(...hrefs.map(h=>{const li=document.createElement("li"),a=document.createElement("a");a.textContent=h;if(safe(h))a.href=h;li.append(a);return li}));note.textContent=hrefs.length+" page(s)."}catch(e){path.replaceChildren();note.textContent=e.message}};
+ input.addEventListener("input",show);fill();show();box.dataset.door_ready="";return box})}
+globalThis.webUiDoor={emojiKey,emojiPath,mulberry32,doorDraw,doorOptions,bindDoor};
+if(typeof document!=="undefined")bindDoor();
+"""
 
 _JS["shelf.js"] = r"""/* web-ui shelf: a clipboard shelf in the page (memory only). The rules are Python's (web_ui.shelf_classify, decode_image_text, ...); this must agree. */
 const MAX_IMAGE=32*1024*1024;
@@ -3573,7 +3736,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Stub examples</h2><p><a href="./mcp-stub.html">MCP Stub</a> · <a href="./api-stub.html">API Stub</a></p></article>'
             '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article>'
             '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article>'
-            '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article></section>')
+            '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article>'
+            '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -3603,6 +3767,7 @@ def example_pages() -> dict[str, str]:
         "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
         "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
         "examples/clipboard-shelf.html": shelf_document(),
+        "examples/door.html": door_document(EXAMPLES["door"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -3684,7 +3849,25 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                  'vars': {'--ui-matrix-col': '240px',
                                           '--ui-matrix-gap': '16px',
                                           '--ui-matrix-pad': '8px'}}]},
- 'showcase': {'schema': 'web-ui-showcase/1',
+
+ 'door': {'schema': 'web-ui-door/1',
+          'current': './door.html',
+          'k': 3,
+          'seed': 20261103,
+          'pages': [{'emoji': '🏠', 'label': 'Home', 'href': '../index.html'},
+                    {'emoji': '🧭', 'label': 'Examples', 'href': './index.html'},
+                    {'emoji': '📋', 'label': 'Clipboard shelf', 'href': './clipboard-shelf.html'},
+                    {'emoji': '🎨', 'label': 'App shell showcase', 'href': './showcase.html'},
+                    {'emoji': '🕸️', 'label': 'MCP stub', 'href': './mcp-stub.html'},
+                    {'emoji': '🌐', 'label': 'API stub', 'href': './api-stub.html'},
+                    {'emoji': '🐙', 'label': 'GitHub-like theme', 'href': './github-like.html'},
+                    {'emoji': '🚪', 'label': 'Door-to-Door', 'href': './door.html'},
+                    {'emoji': '🗺️', 'label': 'World', 'href': '../index.html#world', 'group': 'discover'},
+                    {'emoji': '🔗', 'label': 'Request draft', 'href': '../index.html#curl', 'group': 'discover'},
+                    {'emoji': '🌈', 'label': 'Random themes', 'href': '../index.html#wall', 'group': 'discover'},
+                    {'emoji': '🎛️', 'label': 'Try it', 'href': '../index.html#try', 'group': 'discover'},
+                    {'emoji': '🧪', 'label': 'MCP on the front page', 'href': '../index.html#mcp', 'group': 'discover'},
+                    {'emoji': '📡', 'label': 'API on the front page', 'href': '../index.html#api', 'group': 'discover'}]}, 'showcase': {'schema': 'web-ui-showcase/1',
               'id': 'showcase',
               'title': 'UI Showcase',
               'emoji': '🎨',
@@ -3903,7 +4086,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

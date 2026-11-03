@@ -1135,5 +1135,119 @@ class ShelfBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class DoorBrowserTests(unittest.TestCase):
+    """Door-to-Door in Chromium: the page's seeded draw, notation and pull-down equal Python's, and the pull-down really goes there."""
+
+    def test_the_seeded_draw_the_options_and_the_notation_equal_pythons(self):
+        import random
+        import web_ui
+        from web_ui import door_document, door_draw, door_options, door_validate, emoji_path, example_data, mulberry32
+        door = door_validate(example_data('door'))
+        server, origin = WorldBrowserTests.serve({'door.html': door_document(door)})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/door.html')
+                    seeds = [0, 1, 2, 7, 2 ** 31, 2 ** 32 - 1, 20261103, 4294967295 - 12345] + [random.Random(11).randrange(2 ** 32) for _ in range(200)]
+                    got = page.evaluate('seeds => seeds.map(s => { const g = webUiDoor.mulberry32(s); return Array.from({length: 12}, () => g()) })', seeds)
+                    for seed, row in zip(seeds, got):
+                        gen = mulberry32(seed)
+                        self.assertEqual(row, [next(gen) for _ in range(12)], seed)                    # the same floats, bit for bit
+                    shapes = [(1, 1), (5, 0), (5, 5), (6, 3), (14, 3), (64, 8), (193, 3)]
+                    cases = [[seed, count, k] for seed in seeds for count, k in shapes]
+                    got = page.evaluate('cases => cases.map(c => webUiDoor.doorDraw(...c))', cases)
+                    self.assertEqual(got, [door_draw(*c) for c in cases])
+                    got = page.evaluate('([door, seeds]) => seeds.map(s => webUiDoor.doorOptions(door, s).map(o => [o.href, o.current, o.drawn]))', [door, seeds[:60]])
+                    self.assertEqual(got, [[[o['href'], o['current'], o['drawn']] for o in door_options(door, s)] for s in seeds[:60]])
+                    # Notation: random mixes of known and unknown emoji, arrows, spaces and variation selectors.
+                    rng = random.Random(5)
+                    known = [p['emoji'] for p in door['pages']] + ['🗺', '🏠\ufe0e', '🕸', '🎛']
+                    bits = known + ['🦄', '→', '↔', '→', '↔', ' ', '\u3000', '\n', '\ufe0f', '', '-', 'a']
+                    notations = [''.join(rng.choice(bits) + rng.choice(['', ' ']) for _ in range(rng.randint(0, 7))) for _ in range(600)]
+                    notations += ['🏠 ↔︎ 🧭', '🏠 → 🧭 → 🎨 ↔ 📋', '→', '🏠 →', '🌐 ↔ 🌐']
+                    got = page.evaluate("""([notes, pages]) => notes.map(n => { try { return {ok: webUiDoor.emojiPath(n, pages)} } catch (e) { return {error: true} } })""", [notations, door['pages']])
+                    for note, result in zip(notations, got):
+                        try:
+                            expected = {'ok': emoji_path(note, door['pages'])}
+                        except ValueError:
+                            expected = {'error': True}
+                        self.assertEqual(result, expected, repr(note))
+                    self.assertGreater(sum('ok' in r for r in got), 50)
+                    self.assertGreater(sum('error' in r for r in got), 50)
+                    self.assertEqual(page.evaluate('webUiDoor.emojiKey("🗺\ufe0f\u3000 \ufe0e")'), web_ui.emoji_key('🗺\ufe0f\u3000 \ufe0e'))
+                    # The page's first render equals the Python-rendered options.
+                    html = door_document(door)
+                    import re
+                    server_side = re.findall(r'<option value="([^"]*)"', html)
+                    page_side = page.evaluate("[...document.querySelectorAll('[data-door-select] option')].map(o => o.getAttribute('value'))")
+                    self.assertEqual([v.replace('&amp;', '&') for v in server_side], page_side)
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_pulldown_goes_there_can_be_stopped_and_draws_again(self):
+        import json
+        from web_ui import door_document, door_options, door_validate
+        spec = {'schema': 'web-ui-door/1', 'current': './door.html', 'k': 2, 'seed': 3, 'pages': [
+            {'emoji': '🏠', 'label': 'Home', 'href': './home.html'}, {'emoji': '🚪', 'label': 'Door', 'href': './door.html'},
+            {'emoji': '🅰️', 'label': 'A', 'href': './a.html', 'group': 'discover'}, {'emoji': '🅱️', 'label': 'B', 'href': './b.html', 'group': 'discover'},
+            {'emoji': '🆎', 'label': 'C', 'href': './c.html', 'group': 'discover'}, {'emoji': '🆑', 'label': 'D', 'href': './d.html#frag', 'group': 'discover'}]}
+        door = door_validate(spec)
+        pages = {'door.html': door_document(spec), 'home.html': '<title>home</title><p id=here>HOME</p>', 'a.html': '<p id=here>A</p>',
+                 'b.html': '<p id=here>B</p>', 'c.html': '<p id=here>C</p>', 'd.html': '<p id=here>D</p>'}
+        server, origin = WorldBrowserTests.serve(pages)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    page.add_init_script('window.__rnd = [0.25, 0.5]; Math.random = () => window.__rnd.shift() ?? 0.75')
+                    page.goto(origin + '/door.html')
+                    select = page.locator('[data-door-select]')
+                    labels = lambda: [o.text_content() for o in page.locator('[data-door-select] option').all()]
+                    self.assertEqual(labels()[0], '🏠 Home')
+                    self.assertIn('🚪 Door (current)', labels())
+                    self.assertTrue(page.locator('[data-door-select] option:disabled').text_content().endswith('(current)'))
+                    # Draw again: the page picks a seed with Math.random and shows exactly what Python draws for that seed.
+                    page.locator('[data-door-draw]').click()
+                    seed = int(0.25 * 4294967296)
+                    expected = [f"{o['emoji']} {o['label']}" + (' (current)' if o['current'] else '') for o in door_options(door, seed)]
+                    self.assertEqual(labels(), expected)
+                    self.assertIn(f'seed {seed}', page.locator('[data-door-status]').text_content())
+                    # A guard can stop the trip: nothing opens and the pull-down goes back.
+                    page.evaluate("document.querySelector('[data-ui-door]').addEventListener('ui-door-leave', e => e.preventDefault(), {once: true})")
+                    select.select_option(label='🏠 Home')
+                    self.assertEqual(page.url, origin + '/door.html')
+                    self.assertIn('Staying here', page.locator('[data-door-status]').text_content())
+                    # Otherwise it goes there, a fragment included.
+                    select.select_option(label='🏠 Home')
+                    page.wait_for_url('**/home.html')
+                    self.assertEqual(page.locator('#here').text_content(), 'HOME')
+                    page.goto(origin + '/door.html')
+                    target = next(o for o in door_options(door) if o['drawn'])
+                    select.select_option(index=[i for i, o in enumerate(door_options(door)) if o['href'] == target['href']][0])
+                    page.wait_for_url('**' + target['href'].lstrip('.'))
+                    # The notation panel shows the pages in order, with the way back; an unknown emoji shows the problem and no list.
+                    page.goto(origin + '/door.html')
+                    page.locator('[data-door-notation]').fill('🏠 ↔ 🅰️')
+                    self.assertEqual(page.locator('[data-door-path] a').all_text_contents(), ['./home.html', './a.html', './home.html'])
+                    self.assertEqual(page.locator('[data-door-path] a').first.get_attribute('href'), './home.html')
+                    page.locator('[data-door-notation]').fill('🏠 → 🦄')
+                    self.assertEqual(page.locator('[data-door-path] li').count(), 0)
+                    self.assertIn('unknown page emoji', page.locator('[data-door-note]').text_content())
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

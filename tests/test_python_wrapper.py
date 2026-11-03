@@ -700,6 +700,88 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(len(long["floors"][0]["spots"][0]["label"]), 40)
 
 
+DOOR = web_ui.example_data("door")
+# The identities the Flutter doc's examples use (docs/testing/page-identities.md), as a door registry.
+FLUTTER_PAGES = [{"emoji": e, "label": l, "href": h} for e, l, h in (("🏠", "Home", "#/"), ("🗺️", "Hub", "#/hub"), ("🥐", "Irony", "#/examples/irony-generator"),
+                                                                 ("🌍", "Screen1", "#/screen1"), ("🕶️", "Screen2", "#/screen2"))]
+
+
+class DoorTests(unittest.TestCase):
+    """Page emoji, the go/return notation, the seeded draw and the pull-down."""
+
+    def test_the_example_is_valid_and_validation_is_idempotent(self):
+        door = web_ui.door_validate(DOOR)
+        self.assertEqual(web_ui.door_validate(door), door)
+        self.assertEqual(len({web_ui.emoji_key(p["emoji"]) for p in door["pages"]}), len(door["pages"]))
+
+    def test_bad_registries_are_refused(self):
+        page = lambda e, h, **kw: {"emoji": e, "label": "L", "href": h, **kw}
+        for bad in ({**DOOR, "schema": "x"}, {**DOOR, "extra": 1}, {**DOOR, "pages": []}, {**DOOR, "pages": "x"},
+                    {**DOOR, "pages": [page("🏠", "/a"), page("🏠", "/b")], "k": 0},                    # the same emoji twice
+                    {**DOOR, "pages": [page("🗺️", "/a"), page("🗺", "/b")], "k": 0},                    # ... even if only a variation selector differs
+                    {**DOOR, "pages": [page("🏠", "/a"), page("🏠\ufe0e", "/b")], "k": 0},
+                    {**DOOR, "pages": [page("🏠", "/a"), page("🧭", "/a")], "k": 0},                    # the same href twice
+                    {**DOOR, "pages": [page("🏠", "/a"), page("A", "/b")], "k": 0},                     # plain text is not an emoji
+                    {**DOOR, "pages": [page("🏠", "/a", group="other")], "k": 0},
+                    {**DOOR, "pages": [page("🏠", "/a", group="discover")], "k": 0},                    # nothing stable: no Home
+                    {**DOOR, "pages": [page("🏠", "/a"), page("🧭", "/b", group="discover")], "k": 2},   # more drawn than can be
+                    {**DOOR, "k": 9}, {**DOOR, "seed": -1}, {**DOOR, "seed": 2**32}, {**DOOR, "current": "./nowhere.html"}):
+            with self.subTest(bad=str(bad)[:70]), self.assertRaises(ValueError):
+                web_ui.door_validate(bad)
+        for href in ("javascript:alert(1)", "//evil.example/x", "ftp://x/y", "http:///x", "a b", "a\\b", "data:text/html,x", "", "x" * 513, "mailto:a@b", "\x00"):
+            with self.subTest(href=href), self.assertRaises(ValueError):
+                web_ui.door_validate({"schema": web_ui.DOOR_SCHEMA, "pages": [page("🏠", href)], "k": 0})
+        for href in ("./a.html", "../a.html#x", "/abs/path", "#/hub", "a/b?c=d", "https://example.com/a", "http://x"):
+            web_ui.door_validate({"schema": web_ui.DOOR_SCHEMA, "pages": [page("🏠", href)], "k": 0})
+
+    def test_emoji_transitions_as_the_flutter_doc_writes_them(self):
+        path = lambda text: web_ui.emoji_path(text, FLUTTER_PAGES)
+        self.assertEqual(path("🏠 ↔︎ 🗺️"), ["#/", "#/hub", "#/"])                              # go and come back (with a variation selector, ignored)
+        self.assertEqual(path("🏠 → 🥐"), ["#/", "#/examples/irony-generator"])
+        self.assertEqual(path("🏠 → 🗺️ → 🌍 ↔ 🕶️"), ["#/", "#/hub", "#/screen1", "#/screen2", "#/screen1"])   # chains expand left to right
+        self.assertEqual(path("🗺 → 🏠"), ["#/hub", "#/"])                                      # 🗺 and 🗺️ are the same page
+        self.assertEqual(path(" 🏠\u3000→\n🥐 "), ["#/", "#/examples/irony-generator"])
+        self.assertEqual(path("🏠"), ["#/"])
+        for bad in ("🏠 → 🦄", "", "→", "🏠 →", "→ 🏠", "🏠 → → 🥐", "🏠 ↔ 🥐 🌍", "🏠 - 🥐"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                path(bad)                                                                           # an unknown emoji returns nothing at all
+
+    def test_the_seeded_draw(self):
+        self.assertEqual(web_ui.door_draw(1, 10, 3), [6, 1, 0])                                     # frozen: the page must give the same
+        self.assertEqual(web_ui.door_draw(20261103, 6, 3), [1, 3, 5])
+        for seed in (0, 1, 2**32 - 1, 12345):
+            for count, k in ((1, 1), (5, 0), (5, 5), (64, 3), (193, 3)):
+                draw = web_ui.door_draw(seed, count, k)
+                self.assertEqual((len(draw), len(set(draw)), all(0 <= i < count for i in draw)), (k, k, True))
+                self.assertEqual(draw, web_ui.door_draw(seed, count, k))
+        self.assertEqual(sorted(web_ui.door_draw(7, 9, 9)), list(range(9)))                         # k = count is a shuffle
+        for bad in ((1, 3, 4), (1, 3, -1)):
+            with self.assertRaises(ValueError):
+                web_ui.door_draw(*bad)
+        counts = [0] * 12
+        for seed in range(3000):
+            for i in web_ui.door_draw(seed, 12, 3):
+                counts[i] += 1
+        self.assertTrue(all(abs(c - 750) < 120 for c in counts), counts)                            # no index is favored (3000 draws x 3 of 12)
+        first = [next(g) for g in [web_ui.mulberry32(s) for s in range(1000)]]
+        self.assertTrue(all(0 <= x < 1 for x in first) and len(set(first)) == 1000)
+
+    def test_the_pulldown_order_marking_and_markup(self):
+        options = web_ui.door_options(DOOR)
+        self.assertEqual(options[0]["href"], "../index.html")                                       # Home first
+        self.assertEqual([o["drawn"] for o in options[1:4]], [True] * 3)
+        self.assertEqual(sum(o["drawn"] for o in options), 3)
+        self.assertEqual([o["href"] for o in options[4:]], [p["href"] for p in web_ui.door_validate(DOOR)["pages"] if p["group"] == "stable"][1:])
+        self.assertEqual([o["current"] for o in options].count(True), 1)
+        self.assertNotEqual([o["href"] for o in web_ui.door_options(DOOR, 1)[1:4]], [o["href"] for o in options[1:4]])
+        html = web_ui.door_html({**DOOR, "pages": [{**p, "label": "<b>" + p["label"]} for p in DOOR["pages"]]})
+        self.assertNotIn("<b>", html)
+        self.assertEqual(html.count("selected disabled"), 1)
+        self.assertIn("(current)", html)
+        self.assertEqual(web_ui.door_document(DOOR).count("<script"), 1)
+        self.assertNotIn("<link", web_ui.door_document(DOOR))
+
+
 BASE64_CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "base64_bridge_cases.json").read_text(encoding="utf-8"))
 PNG_B64 = BASE64_CASES["cases"][0]["text"]                                                       # a real 2x1 PNG, raw Base64
 
