@@ -909,5 +909,50 @@ class ShowcaseBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class CatalogueBrowserTests(unittest.TestCase):
+    """A 198-screen catalogue as a map, in Chromium: floors and categories filter it, a tap opens the sheet, and it fits a phone."""
+
+    def test_floors_categories_and_sheets_work_on_a_large_catalogue(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import screens_like
+        from web_ui import catalogue_world
+        server, origin = WorldBrowserTests.serve({'index.html': world_document(catalogue_world(screens_like(), title='Screens'))})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    for width in (390, 1280):
+                        with self.subTest(width=width):
+                            page = browser.new_page(viewport={'width': width, 'height': 800})
+                            errors = []
+                            page.on('pageerror', lambda error: errors.append(str(error)))
+                            page.goto(origin + '/index.html')
+                            world = page.locator('#catalogue-map')
+                            self.assertEqual(world.locator('.ui-world-bar label[for^="catalogue-floor-"]').count(), 5)
+                            shown = lambda: world.locator('.ui-floor:visible .ui-spot:visible').count()
+                            world.locator('label[for="catalogue-floor-f3"]').click()
+                            self.assertEqual(world.locator('.ui-floor:visible').get_attribute('data-floor'), 'f3')
+                            expect(world.locator('.ui-floor:visible .ui-spot').first).to_be_visible()
+                            everything = world.locator('.ui-floor:visible .ui-spot').count()
+                            self.assertEqual(everything, 40)
+                            world.locator('label[data-cat="display"]').click()                 # a category chip narrows the floor
+                            narrowed = world.locator('.ui-floor:visible .ui-spot:visible').count()
+                            self.assertTrue(0 < narrowed < everything, narrowed)
+                            world.locator('label[data-cat=""]').click()
+                            self.assertEqual(world.locator('.ui-floor:visible .ui-spot:visible').count(), everything)
+                            spot = world.locator('.ui-floor:visible .ui-spot').first
+                            spot.dispatch_event('click', {'detail': 0})
+                            self.assertTrue(page.locator('.ui-sheet-item[data-open]').is_visible())
+                            self.assertIn('about', page.locator('.ui-sheet-item[data-open]').inner_text())
+                            self.assertEqual(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), True)
+                            self.assertEqual(errors, [])
+                            page.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

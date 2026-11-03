@@ -644,6 +644,61 @@ class StubTests(unittest.TestCase):
         self.assertIn('bindStub({input:"#mcp-query"', page)
 
 
+def screens_like(count: int = 198) -> list[dict]:
+    """A catalogue shaped like flutter_navigation_basic's screens.json (5 categories of 40, 40, 40, 39, 39), after mapping its fields."""
+    groups = ["navigation", "api", "ui", "data", "advanced"]
+    per = [40, 40, 40, 39, 39]
+    out, n = [], 0
+    for group, size in zip(groups, per):
+        for _ in range(size):
+            n += 1
+            out.append({"id": f"Screen{n}", "label": f"Pattern{n} <b>x</b>", "emoji": "🌍" if n % 2 else "🧭", "group": group,
+                        "category": ["integration", "display", "state"][n % 3], "body": f"Screen {n}: <i>about</i> {group}"})
+    return out[:count]
+
+
+class CatalogueTests(unittest.TestCase):
+    """A flat catalogue becomes a map: a floor per group, spots on a grid of multiples of 8, all validated and escaped."""
+
+    def test_a_198_screen_catalogue_fits_five_floors(self):
+        world = web_ui.catalogue_world(screens_like(), title="Screens")
+        self.assertEqual(web_ui.world_validate(world), world)
+        self.assertEqual([len(f["spots"]) for f in world["floors"]], [40, 40, 40, 39, 39])
+        self.assertEqual([f["label"] for f in world["floors"]], ["navigation", "api", "ui", "data", "advanced"])
+        ids = [spot["id"] for f in world["floors"] for spot in f["spots"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids[0], "screen1")
+        for floor in world["floors"]:
+            points = [(s["x"], s["y"]) for s in floor["spots"]]
+            self.assertEqual(len(points), len(set(points)))                                     # no two spots on the same cell
+            self.assertTrue(all(0 <= x <= floor["width"] and 0 <= y <= floor["height"] for x, y in points))
+            self.assertEqual((floor["width"] % 8, floor["height"] % 8), (0, 0))                 # the 8 px grid, by default
+            # Neighbours in a row are a cell apart, wide enough for a pill, and rows are a cell apart.
+            xs = sorted({x for x, _ in points})
+            self.assertTrue(all(b - a >= 160 for a, b in zip(xs, xs[1:])))
+        self.assertEqual(world["floors"][0]["spots"][0]["label"], "🌍 Pattern1 <b>x</b>")        # stored as text; escaped when written
+        html = web_ui.world_html(world)
+        self.assertNotIn("<b>x</b>", html)
+        self.assertNotIn("<i>about</i>", html)
+        self.assertEqual(html.count('class="ui-spot"'), 198)
+
+    def test_groups_of_more_than_64_continue_and_limits_are_kept(self):
+        many = [{"id": f"a{i}", "label": f"A{i}", "group": "all"} for i in range(130)]
+        world = web_ui.catalogue_world(many)
+        self.assertEqual([(f["label"], len(f["spots"])) for f in world["floors"]], [("all", 64), ("all 2", 64), ("all 3", 2)])
+        for bad in ([], "x", [{"id": "a", "label": "A"}], [{"id": "a", "label": "", "group": "g"}], [{"id": "a", "label": "A", "group": "g", "x": 1}],
+                    [{"id": f"a{i}", "label": "A", "group": f"g{i}"} for i in range(9)], [5], [{"id": "a", "label": "A", "group": ""}]):
+            with self.subTest(bad=str(bad)[:50]), self.assertRaises(ValueError):
+                web_ui.catalogue_world(bad)
+        with self.assertRaises(ValueError):
+            web_ui.catalogue_world(many, columns=0)
+        same = web_ui.catalogue_world([{"id": "Screen 1", "label": "A", "group": "g"}, {"id": "screen-1", "label": "B", "group": "g"},
+                                       {"id": "!!", "label": "C", "group": "g"}])
+        self.assertEqual([s["id"] for s in same["floors"][0]["spots"]], ["screen-1", "screen-1-2", "x"])   # ids stay unique
+        long = web_ui.catalogue_world([{"id": "a", "label": "L" * 80, "emoji": "🌍", "group": "g"}])
+        self.assertEqual(len(long["floors"][0]["spots"][0]["label"]), 40)
+
+
 SHOWCASE = web_ui.example_data("showcase")
 
 

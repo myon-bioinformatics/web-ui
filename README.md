@@ -64,6 +64,11 @@ and shown **on that page view only**: no storage, cookie, cache or request, and 
 this). It is not shared with other visitors. All rules (`gauge_state`, `clock_label`, `utc_offset_label`, `travel_seconds`, ...) live in Python and
 the page's script is tested to give identical results.
 
+Catalogue as a map: `catalogue_world(items)` turns a flat list `{id, label, group, emoji?, category?, body?}` into a world: one floor per group
+(more than 64 in a group continue on another floor, at most 8 floors), a spot per item on a grid of multiples of 8, filter chips from
+`category`, and an info sheet from `body`; 198 screens fit five floors. Map your own fields first (see its docstring for flutter_navigation_basic's
+`screens.json`); the data stays with its owner.
+
 App shell: `showcase_document(spec)` (`web-ui-showcase/1`, example in `EXAMPLES["showcase"]`, generated as `examples/showcase.html`) builds a header, a
 rail (256 px at 1200+, 80 px from 900) or bottom bar (narrower) and sections that switch through radio buttons: no reload, and no script for
 switching. Classes `ui-shell*`, `ui-rail*`, `ui-bottom-*`, `ui-icon-button`; the optional favorite button uses `bindToggles` from ui.js (memory only)
