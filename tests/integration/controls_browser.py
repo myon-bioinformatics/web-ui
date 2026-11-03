@@ -1951,6 +1951,8 @@ class PhotoPageBrowserTests(unittest.TestCase):
         if os.environ.get('WEBUI_EVIDENCE_DIR'):                                            # CI keeps what each engine said, as a file
             os.makedirs(os.environ['WEBUI_EVIDENCE_DIR'], exist_ok=True)
             name = self.engine + ('-' + os.environ['WEBUI_DEVICE'].replace(' ', '') if os.environ.get('WEBUI_DEVICE') else '-desktop')
+            print('photo-evidence', name, json.dumps({'decoded': measured, 'exifAppliedByEngine': report['exifOrientationAppliedByEngine'],
+                                                       'features': {k: v for k, v in report['features'].items() if k != 'devicePixelRatio'}}, ensure_ascii=False, sort_keys=True))   # also in the log
             with open(os.path.join(os.environ['WEBUI_EVIDENCE_DIR'], name + '.json'), 'w', encoding='utf-8') as out:
                 json.dump({**report, 'environmentId': name, 'emulation': bool(os.environ.get('WEBUI_DEVICE'))}, out, indent=2, ensure_ascii=False)
         shown = json.loads(self.page.inner_text('[data-check-out]'))
