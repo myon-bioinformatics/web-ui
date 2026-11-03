@@ -2053,15 +2053,18 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-photo-studio", "web-ui-showcase"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
                 self.assertEqual(self.contract_errors(config), [])
                 self.assertEqual(config["id"], adapter_id)
                 self.assertIn("examples/" + w.BTK_ADAPTERS[adapter_id]["page"], pages)
-                self.assertEqual(config["url"], "http://127.0.0.1:8000/examples/" + w.BTK_ADAPTERS[adapter_id]["page"])
+                self.assertEqual(config["url"], w.btk_adapter_url(w.BTK_ADAPTERS[adapter_id]))
+                self.assertTrue(config["url"].startswith("http://127.0.0.1:8000/examples/" + w.BTK_ADAPTERS[adapter_id]["page"]))
         self.assertEqual(w.btk_adapter("web-ui-door", "http://localhost:9/x.html")["url"], "http://localhost:9/x.html")
+        self.assertEqual(w.btk_adapter("web-ui-irony")["url"], "http://127.0.0.1:8000/examples/playground.html#irony-title")
+        self.assertEqual(w.btk_adapter("web-ui-door")["url"], "http://127.0.0.1:8000/examples/door.html")
         self.assertIsNot(w.btk_adapter("web-ui-door")["elements"], w.BTK_ADAPTERS["web-ui-door"]["elements"])      # a copy: callers cannot change the table
         with self.assertRaises(ValueError):
             w.btk_adapter("flutter-home")
@@ -2338,6 +2341,253 @@ class ClipboardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES))
         self.assertTrue(w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES - 8)))
+
+
+class PlaygroundTests(unittest.TestCase):
+    """The Counter Playground, the hold-to-repeat button and the Irony generator. The Dart tests of flutter_navigation_basic (counter_playground_controller_test,
+    counter_battle_effect_test, counter_battle_effect_ui_test, hold_repeating_button_test, irony_generator_interaction_test) are the golden values."""
+
+    def run_actions(self, *steps):
+        state = web_ui.counter_state()
+        for step in steps:
+            state = web_ui.counter_apply(state, *step)
+        return state
+
+    def test_the_controller_dart_tests(self):
+        state = web_ui.counter_state()
+        self.assertEqual((state["counter"], state["step"], state["history"]), (0, 1, [0]))
+        self.assertTrue(web_ui.counter_effect(0)["idle"])
+        up = self.run_actions(("increment",))
+        self.assertEqual((up["counter"], up["burst"]), (1, 1))
+        self.assertEqual((web_ui.counter_effect(1)["heal"], web_ui.counter_effect(1)["amount"]), (False, 1))
+        down = self.run_actions(("decrement",))
+        self.assertEqual((down["counter"], web_ui.counter_effect(-1)["heal"], web_ui.counter_effect(-1)["amount"]), (-1, True, 1))
+        ten = self.run_actions(*[("increment",)] * 10)
+        self.assertEqual((ten["counter"], web_ui.counter_effect(10)["amount"]), (10, 10))
+        cleared = self.run_actions(("change", 5), ("reset",))
+        self.assertEqual(cleared["counter"], 0)
+        self.assertTrue(web_ui.counter_effect(cleared["counter"])["idle"])
+
+    def test_the_ends_clamp_and_do_not_bump_the_burst(self):
+        top = self.run_actions(("change", web_ui.COUNTER_MAX))
+        self.assertEqual(top["counter"], 100)
+        self.assertEqual(web_ui.counter_apply(top, "increment"), top)
+        self.assertEqual(web_ui.counter_apply(top, "change", 7), top)
+        bottom = self.run_actions(("change", web_ui.COUNTER_MIN))
+        self.assertEqual(bottom["counter"], -100)
+        self.assertEqual(web_ui.counter_apply(bottom, "decrement"), bottom)
+        step10 = self.run_actions(("step", 10), *[("increment",)] * 9)
+        self.assertEqual((step10["counter"], step10["burst"]), (90, 9))
+        over = web_ui.counter_apply(step10, "change", 50)
+        self.assertEqual((over["counter"], over["burst"], over["history"][:2]), (100, 10, [100, 90]))
+
+    def test_step_history_undo_and_restore_follow_the_controller(self):
+        state = self.run_actions(("step", 5), ("increment",))
+        self.assertEqual((state["counter"], state["history"]), (5, [5, 0]))
+        state = web_ui.counter_apply(state, "decrement")
+        self.assertEqual((state["counter"], state["history"]), (0, [0, 5, 0]))
+        state = web_ui.counter_apply(state, "undo")
+        self.assertEqual((state["counter"], state["history"]), (5, [5, 0]))
+        state = web_ui.counter_apply(state, "restore", 2)
+        self.assertEqual((state["counter"], state["history"]), (2, [2, 5, 0]))
+        state = web_ui.counter_apply(state, "reset")
+        self.assertEqual((state["counter"], state["history"]), (0, [0, 2, 5, 0]))
+
+    def test_undo_records_nothing_and_bumps_the_burst_but_only_when_there_is_something_to_undo(self):
+        first = web_ui.counter_state()
+        self.assertEqual(web_ui.counter_apply(first, "undo"), first)
+        moved = web_ui.counter_apply(first, "change", 3)
+        back = web_ui.counter_apply(moved, "undo")
+        self.assertEqual(back, {"counter": 0, "step": 1, "burst": 2, "history": [0]})
+        self.assertEqual(web_ui.counter_apply(first, "reset"), first)
+        self.assertEqual(web_ui.counter_apply(moved, "restore", 3), moved)
+        self.assertEqual(web_ui.counter_apply(moved, "restore", 300)["counter"], 100)
+
+    def test_the_history_keeps_the_eight_newest_values(self):
+        state = web_ui.counter_state()
+        for n in range(1, 13):
+            state = web_ui.counter_apply(state, "change", 1)
+            self.assertEqual(len(state["history"]), min(n + 1, web_ui.COUNTER_HISTORY))
+        self.assertEqual(state["history"], [12, 11, 10, 9, 8, 7, 6, 5])
+        for _ in range(7):
+            state = web_ui.counter_apply(state, "undo")
+        self.assertEqual((state["counter"], state["history"]), (5, [5]))
+        self.assertEqual(web_ui.counter_apply(state, "undo"), state)
+
+    def test_only_steps_one_five_and_ten_are_accepted(self):
+        state = web_ui.counter_state()
+        for value in (2, 0, -5, 11, True, 5.0, "5", None):
+            self.assertEqual(web_ui.counter_apply(state, "step", value), state, value)
+        self.assertEqual(web_ui.counter_apply(state, "step", 1), state)
+        self.assertEqual([web_ui.counter_apply(state, "step", s)["step"] for s in web_ui.COUNTER_STEPS], [1, 5, 10])
+        self.assertEqual(web_ui.counter_apply(web_ui.counter_apply(state, "step", 10), "step", 10)["burst"], 0)
+
+    def test_bad_input_is_an_error_not_a_guess(self):
+        state = web_ui.counter_state()
+        for bad in (("nope",), ("change", "3"), ("change", 1.5), ("change", True), ("restore",), ("restore", None)):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.counter_apply(state, *bad)
+        for broken in ({**state, "history": []}, {**state, "history": [1]}, {**state, "history": [0, "x"]}, {**state, "counter": True}, {**state, "step": 1.0}):
+            with self.assertRaises(ValueError, msg=broken):
+                web_ui.counter_apply(broken, "increment")
+        self.assertEqual(state, web_ui.counter_state(), "the input is never changed")
+
+    def test_the_battle_effect_dart_tests(self):
+        self.assertEqual(web_ui.counter_effect(0), {"counter": 0, "amount": 0, "heal": False, "idle": True, "orbs": []})
+        damage = web_ui.counter_effect(3)
+        self.assertEqual((damage["heal"], damage["amount"], damage["orbs"]), (False, 3, ["🔥", "💧", "🌳"]))
+        heal = web_ui.counter_effect(-2)
+        self.assertEqual((heal["heal"], heal["amount"], heal["orbs"]), (True, 2, ["❤️", "💚"]))
+        big = web_ui.counter_effect(20)
+        self.assertEqual((big["amount"], len(big["orbs"])), (20, web_ui.COUNTER_MAX_ORBS))
+        self.assertEqual(web_ui.counter_effect(7)["orbs"], ["🔥", "💧", "🌳", "💡", "🔮", "🔥"])
+        self.assertEqual(web_ui.counter_effect(-7)["orbs"], ["❤️", "💚", "✨", "❤️", "💚", "✨"])
+        self.assertEqual([web_ui.counter_label(n) for n in (1, -1, 0, 20, -100)], ["💥 Damage 1", "💚 Heal 1", "Orbs ready…", "💥 Damage 20", "💚 Heal 100"])
+
+    def test_the_status_ladder_is_first_match_wins(self):
+        ladder = {100: "max", 99: "high", 50: "high", 49: "too_much", 10: "too_much", 9: "neutral", 1: "neutral", 0: "neutral", -1: "neutral", -9: "neutral",
+                  -10: "reverse", -49: "reverse", -50: "low", -99: "low", -100: "min"}
+        self.assertEqual({n: web_ui.counter_status_key(n) for n in ladder}, ladder)
+        self.assertEqual(set(ladder.values()), set(web_ui.COUNTER_STATUS))
+        self.assertEqual(web_ui.COUNTER_STATUS["too_much"], "Too much 😈")
+
+    def test_holding_fires_after_350_ms_and_then_every_70_ms(self):
+        self.assertEqual([web_ui.hold_repeat_count(ms) for ms in (0, 100, 349, 349.9, 350, 419, 419.9, 420, 489, 490, 700, 1050)], [0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 6, 11])
+        self.assertGreaterEqual(web_ui.hold_repeat_count(350), 1)
+        self.assertGreaterEqual(web_ui.hold_repeat_count(350 + 70 + 70), 3)
+        self.assertEqual([web_ui.hold_repeat_count(5000, buttons=b) for b in (1, 2, 4, 0)], [web_ui.hold_repeat_count(5000), 0, 0, 0])
+        self.assertEqual([web_ui.hold_swallows_click(ms) for ms in (0, 349, 350, 5000)], [False, False, True, True])
+        self.assertFalse(web_ui.hold_swallows_click(5000, buttons=2))
+
+    def test_the_ironies_are_the_darts_twenty(self):
+        self.assertEqual(len(web_ui.IRONIES), 20)
+        self.assertEqual(len({text for text, _ in web_ui.IRONIES}), 20)
+        self.assertEqual(list(dict.fromkeys(tone for _, tone in web_ui.IRONIES)), ["Tech", "Work", "Daily", "Human"])
+        self.assertEqual([sum(tone == name for _, tone in web_ui.IRONIES) for name in ("Tech", "Work", "Daily", "Human")], [5, 5, 5, 5])
+        self.assertEqual(web_ui.IRONIES[4][0], "The cloud is just someone else’s computer with better branding.")
+        source = Path("/home/claude/myon-bioinformatics/flutter_navigation_basic/lib/data/ironies.dart")
+        if source.is_file():
+            dart = re.findall(r"IronyEntry\(text: '((?:[^'\\]|\\.)*)', tone: '(\w+)'\)", source.read_text(encoding="utf-8"))
+            self.assertEqual(tuple(dart), web_ui.IRONIES)
+
+    def test_the_next_irony_is_never_the_one_on_screen_and_every_other_one_can_come(self):
+        for count in (2, 3, 20):
+            for current in range(count):
+                seen = {web_ui.irony_next(count, current, (k + 0.5) / (count - 1)) for k in range(count - 1)}
+                self.assertEqual(seen, set(range(count)) - {current}, (count, current))
+        self.assertIsNone(web_ui.irony_next(1, 0, 0.5))
+        self.assertIsNone(web_ui.irony_next(0, None, 0.5))
+        self.assertIn(web_ui.irony_next(5, None, 0.999999), range(5))
+        self.assertEqual([web_ui.irony_first(20, u) for u in (0, 0.049999, 0.05, 0.999999)], [0, 0, 1, 19])
+        for bad in (-0.1, 1.0, 2):
+            with self.assertRaises(ValueError):
+                web_ui.irony_next(5, 0, bad)
+            with self.assertRaises(ValueError):
+                web_ui.irony_first(5, bad)
+        with self.assertRaises(ValueError):
+            web_ui.irony_first(0, 0.5)
+        for seed in (7, 11, 13, 17, 0, 4294967295):
+            run = web_ui.irony_sequence(seed, 2000)
+            self.assertTrue(all(a != b for a, b in zip(run, run[1:])), seed)
+            self.assertEqual(run, web_ui.irony_sequence(seed, 2000))
+            self.assertGreaterEqual(len(set(run)), 19, "a long run reaches (almost) all of them")
+
+    # The Dart widget tests pump an 800x600 surface; the body under the app bar is 800x544, the card (max width 520) is centred and the handle sits at the top of it.
+    ARENA = (800, 544)
+    CARD = (140.0, 172.0, 660.0, 372.0)
+    HANDLE = (376.0, 180.0, 424.0, 212.0)
+
+    @staticmethod
+    def shifted(rect, dx, dy):
+        return (rect[0] + dx, rect[1] + dy, rect[2] + dx, rect[3] + dy)
+
+    def drop(self, dx, dy):
+        return web_ui.irony_drop(self.ARENA, self.shifted(self.CARD, dx, dy), self.shifted(self.HANDLE, dx, dy))
+
+    def test_a_small_drag_keeps_the_message(self):
+        self.assertEqual(self.drop(48, 32), {"action": "none", "dx": 0.0, "dy": 0.0})
+
+    def test_moving_the_card_fully_outside_spawns_the_next_message(self):
+        self.assertEqual(self.drop(1600, 0)["action"], "spawn")
+        self.assertEqual(self.drop(0, 600)["action"], "spawn")
+        self.assertEqual(self.drop(-900, 0)["action"], "spawn")
+        # touching along an edge is not overlapping; one pixel of overlap is
+        self.assertEqual(self.drop(800 - 140.0, 0)["action"], "spawn")
+        self.assertEqual(self.drop(800 - 140.0 - 1, 0)["action"], "snap")
+
+    def test_partial_exit_snaps_the_handle_back_inside_eight_pixels(self):
+        for dy in (0 - self.HANDLE[3] - 12, 0 - self.HANDLE[3] + 4, -300.0, -175.0):
+            handle = self.shifted(self.HANDLE, 0, dy)
+            card = self.shifted(self.CARD, 0, dy)
+            self.assertGreater(card[3], 0, "precondition: the card body stays partly visible")
+            result = web_ui.irony_drop(self.ARENA, card, handle)
+            self.assertEqual(result["action"], "snap", dy)
+            moved = self.shifted(handle, result["dx"], result["dy"])
+            self.assertTrue(web_ui.rect_inside(moved, web_ui.rect_deflate((0, 0, *self.ARENA), 8)), (dy, moved))
+            self.assertAlmostEqual(moved[1], 8.0)
+
+    def test_a_handle_exactly_on_the_safe_inset_stays_where_it_is(self):
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (8, 8, 56, 40))["action"], "none")
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (7.5, 8, 55.5, 40))["action"], "snap")
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (8, 8, 56, 40))["action"], "none")
+
+    def test_missing_measurements_end_the_drag_quietly(self):
+        none = {"action": "none", "dx": 0.0, "dy": 0.0}
+        self.assertEqual(web_ui.irony_drop(self.ARENA, None, self.HANDLE), none)
+        self.assertEqual(web_ui.irony_drop(self.ARENA, None, None), none)
+        self.assertEqual(web_ui.irony_drop(self.ARENA, self.CARD, None), none)
+
+    def test_a_handle_as_large_as_the_arena_is_centred(self):
+        result = web_ui.irony_drop((100, 100), (0, 0, 120, 120), (-10, -10, 110, 110))
+        self.assertEqual(result["action"], "snap")
+        self.assertEqual((result["dx"], result["dy"]), (0.0, 0.0))
+        shifted = web_ui.irony_drop((100, 100), (-20, -20, 100, 100), (-30, -30, 90, 90))
+        self.assertEqual((shifted["dx"], shifted["dy"]), (20.0, 20.0))
+
+    def test_rect_rules(self):
+        self.assertTrue(web_ui.rect_overlaps((0, 0, 10, 10), (9, 9, 20, 20)))
+        self.assertFalse(web_ui.rect_overlaps((0, 0, 10, 10), (10, 0, 20, 10)))
+        self.assertFalse(web_ui.rect_overlaps((0, 0, 10, 10), (0, 10, 10, 20)))
+        self.assertTrue(web_ui.rect_inside((1, 1, 9, 9), (0, 0, 10, 10)))
+        self.assertTrue(web_ui.rect_inside((0, 0, 10, 10), (0, 0, 10, 10)))
+        self.assertFalse(web_ui.rect_inside((0, 0, 10.5, 10), (0, 0, 10, 10)))
+        self.assertEqual(web_ui.rect_deflate((0, 0, 100, 50), 8), (8.0, 8.0, 92.0, 42.0))
+        self.assertEqual(web_ui.rect_clamp_inside((-20, 5, 30, 25), (0, 0, 100, 100), 8), (8.0, 8.0, 58.0, 28.0))
+        for bad in ((1, 2, 3), (1, 2, 3, float("nan")), (1, 2, 3, True), "abcd", None):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.rect_overlaps(bad, (0, 0, 1, 1))
+        with self.assertRaises(ValueError):
+            web_ui.irony_drop((float("inf"), 10), self.CARD, self.HANDLE)
+
+    def test_a_seeded_fuzz_always_ends_with_the_handle_reachable_or_the_card_gone(self):
+        rng = random.Random(20261103)
+        for _ in range(5000):
+            width, height = rng.randint(120, 1000), rng.randint(120, 1000)
+            card = (rng.uniform(-600, 1200), rng.uniform(-600, 1200))
+            cw, ch, hw, hh = rng.uniform(40, 520), rng.uniform(40, 300), rng.uniform(16, 64), rng.uniform(16, 48)
+            card_rect = (card[0], card[1], card[0] + cw, card[1] + ch)
+            handle = (card[0] + rng.uniform(0, max(cw - hw, 0)), card[1] + rng.uniform(0, max(ch - hh, 0)))
+            handle_rect = (handle[0], handle[1], handle[0] + hw, handle[1] + hh)
+            result = web_ui.irony_drop((width, height), card_rect, handle_rect)
+            if not web_ui.rect_overlaps(card_rect, (0, 0, width, height)):
+                self.assertEqual(result["action"], "spawn")
+                continue
+            moved = self.shifted(handle_rect, result["dx"], result["dy"])
+            self.assertIn(result["action"], ("none", "snap"))
+            # the card moves by (clamped centre - centre), as in the Dart page, so it can land a rounding error (1e-13) off the exact inset: allow that
+            if hw <= width - 16 and hh <= height - 16:
+                self.assertTrue(web_ui.rect_inside(moved, web_ui.rect_deflate((0, 0, width, height), 8 - 1e-9)), (result, moved, width, height))
+
+    def test_the_page_is_semantic_and_self_contained(self):
+        html = web_ui.playground_document()
+        for needle in ('data-ui-play', 'data-counter-increment', 'data-counter-decrement', 'data-counter-reset', 'data-counter-undo', 'data-counter-history', 'data-irony-arena',
+                       'data-irony-handle', 'aria-label="Drag to move message"', 'data-irony-next', 'aria-live="polite"', 'name="counter-step"'):
+            self.assertIn(needle, html)
+        self.assertEqual(html.count('<script'), 1)
+        self.assertNotIn('http://', html.split('<style', 1)[0])
+        self.assertIn("examples/playground.html", web_ui.example_pages())
+        self.assertIn("./playground.html", web_ui.example_pages()["examples/index.html"])
+        self.assertEqual(json.loads(re.search(r'data-play="([^"]*)"', html).group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["status"], web_ui.COUNTER_STATUS)
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 import sys
 import tempfile
@@ -2193,7 +2194,7 @@ class BtkAdapterBrowserTests(unittest.TestCase):
                     for adapter_id in sorted(web_ui.BTK_ADAPTERS):
                         for width, height in ((1280, 800), (412, 839), (390, 664), (320, 664)):
                             with self.subTest(adapter=adapter_id, viewport=(width, height)):
-                                config = web_ui.btk_adapter(adapter_id, f"{origin}/{web_ui.BTK_ADAPTERS[adapter_id]['page']}")
+                                config = web_ui.btk_adapter(adapter_id, web_ui.btk_adapter_url(web_ui.BTK_ADAPTERS[adapter_id], origin + '/'))
                                 page = browser.new_page(viewport={'width': width, 'height': height})
                                 errors = []
                                 page.on('pageerror', lambda error: errors.append(str(error)))
@@ -2547,6 +2548,245 @@ def web_ui_module():
     import web_ui
     return web_ui
 
+
+
+class PlaygroundBrowserTests(unittest.TestCase):
+    """The playground in a real browser: the counter, the hold-to-repeat button and the irony card equal Python's rules, and the page behaves like the Dart widgets did."""
+
+    SEED = 7
+
+    def setUp(self):
+        from web_ui import playground_document
+        html = playground_document().replace('data-ui-play ', f'data-ui-play data-play-seed="{self.SEED}" ', 1)
+        self.server, self.origin = WorldBrowserTests.serve({'play.html': html})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 800, 'height': 1700})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self, clock=False):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        if clock:
+            page.clock.install()
+        page.goto(self.origin + '/play.html')
+        return page
+
+    def test_the_pages_rules_equal_pythons(self):
+        w = web_ui_module()
+        rng = random.Random(20261103)
+        page = self.page()
+        actions = []
+        for _ in range(60):
+            run = []
+            for _ in range(rng.randint(1, 80)):
+                kind = rng.choice(['increment', 'decrement', 'change', 'restore', 'undo', 'reset', 'step', 'step'])
+                run.append([kind, rng.choice([1, 5, 10, 2, 0, -3]) if kind == 'step' else rng.randint(-150, 150) if kind in ('change', 'restore') else None])
+            actions.append(run)
+        got = page.evaluate("""runs => runs.map(run => { let s = webUiPlayground.counterState(); const seen = [s];
+            for (const [kind, value] of run) { s = webUiPlayground.counterApply(s, kind, value === null ? undefined : value); seen.push(s) } return seen })""", actions)
+        for run, seen in zip(actions, got):
+            state, expected = w.counter_state(), [w.counter_state()]
+            for kind, value in run:
+                state = w.counter_apply(state, kind, value)
+                expected.append(state)
+            self.assertEqual(seen, expected)
+        counters = list(range(-105, 106))
+        self.assertEqual(page.evaluate("c => c.map(n => [webUiPlayground.counterEffect(n), webUiPlayground.counterLabel(n), webUiPlayground.counterStatusKey(n)])", counters),
+                         [[w.counter_effect(n), w.counter_label(n), w.counter_status_key(n)] for n in counters])
+        held = [0, 1, 349, 349.5, 350, 419, 419.5, 420, 489, 490, 1000, 1049.5, 5000, 123456]
+        self.assertEqual(page.evaluate("h => h.flatMap(ms => [1, 2, 4, 0].map(b => [webUiPlayground.holdRepeatCount(ms, b), webUiPlayground.holdSwallowsClick(ms, b)]))", held),
+                         [[w.hold_repeat_count(ms, buttons=b), w.hold_swallows_click(ms, buttons=b)] for ms in held for b in (1, 2, 4, 0)])
+        seeds = [0, 1, 7, 11, 13, 17, 4294967295, 123456789] + [rng.randrange(2 ** 32) for _ in range(30)]
+        self.assertEqual(page.evaluate("(seeds) => seeds.map(s => webUiPlayground.ironySequence(s, 300, 20))", seeds), [w.irony_sequence(s, 300) for s in seeds])
+        self.assertEqual(page.evaluate("() => [[2, 0.7, 1], [20, 0.123, 19], [20, 0.9999, 0]].map(([n, u, c]) => [webUiPlayground.ironyNext(n, c, u), webUiPlayground.ironyNext(1, 0, u), webUiPlayground.ironyNext(n, null, u)])"),
+                         [[w.irony_next(n, c, u), w.irony_next(1, 0, u), w.irony_next(n, None, u)] for n, u, c in ((2, 0.7, 1), (20, 0.123, 19), (20, 0.9999, 0))])
+        drops = []
+        for _ in range(3000):
+            width, height = rng.uniform(100, 1200), rng.uniform(100, 1200)
+            left, top = rng.uniform(-700, 1400), rng.uniform(-700, 1400)
+            cw, ch, hw, hh = rng.uniform(30, 600), rng.uniform(30, 400), rng.uniform(10, 80), rng.uniform(10, 60)
+            hx, hy = left + rng.uniform(0, max(cw - hw, 0)), top + rng.uniform(0, max(ch - hh, 0))
+            drops.append([[width, height], [left, top, left + cw, top + ch], [hx, hy, hx + hw, hy + hh] if rng.random() > 0.05 else None])
+        drops += [[[800, 544], [140, 172, 660, 372], [376, 180, 424, 212]], [[800, 544], None, None], [[100, 100], [-20, -20, 100, 100], [-30, -30, 90, 90]], [[100, 100], [100, 0, 200, 50], [100, 0, 148, 32]]]
+        got = page.evaluate("d => d.map(([a, c, h]) => webUiPlayground.ironyDrop(a, c, h))", drops)
+        self.assertEqual(got, [w.irony_drop(a, c, h) for a, c, h in drops])
+        self.assertGreater(sum(g['action'] == 'snap' for g in got), 200)
+        self.assertGreater(sum(g['action'] == 'spawn' for g in got), 200)
+
+    def test_the_counter_page_follows_the_controller(self):
+        w = web_ui_module()
+        page = self.page()
+        value, label, status = page.locator('[data-counter-value]'), page.locator('[data-counter-label]'), page.locator('[data-counter-status]')
+        increase, decrease, reset, undo = (page.locator(f'[data-counter-{n}]') for n in ('increment', 'decrement', 'reset', 'undo'))
+        self.assertEqual((value.inner_text(), label.inner_text(), status.inner_text()), ('0', 'Orbs ready…', 'Keep experimenting 👾'))
+        self.assertTrue(undo.is_disabled() and reset.is_disabled())
+        increase.click()
+        self.assertEqual((value.inner_text(), label.inner_text(), page.locator('[data-counter-orbs]').inner_text()), ('1', '💥 Damage 1', '🔥'))
+        decrease.click(); decrease.click()
+        self.assertEqual((value.inner_text(), label.inner_text(), page.locator('[data-counter-orbs]').inner_text()), ('-1', '💚 Heal 1', '❤️'))
+        self.assertEqual(page.locator('[data-counter-orbs]').get_attribute('data-kind'), 'heal')
+        page.locator('input[name="counter-step"][value="10"]').check()
+        for _ in range(10):
+            decrease.click()
+        self.assertEqual((value.inner_text(), status.inner_text(), decrease.is_disabled(), increase.is_disabled()), ('-100', 'Minimum reached 🧊', True, False))
+        chips = page.locator('[data-counter-history] button')
+        self.assertEqual(chips.count(), 8)
+        self.assertEqual(chips.nth(0).get_attribute('aria-label'), 'Current value -100')
+        self.assertTrue(chips.nth(0).is_disabled())
+        self.assertEqual(chips.nth(1).get_attribute('aria-label'), 'Restore -91')
+        chips.nth(1).click()
+        self.assertEqual(value.inner_text(), '-91')
+        self.assertEqual(status.inner_text(), w.COUNTER_STATUS['low'])
+        undo.click()
+        self.assertEqual(value.inner_text(), '-100')
+        reset.click()
+        self.assertEqual((value.inner_text(), reset.is_disabled(), page.locator('section[data-ui-play]').get_attribute('data-value')), ('0', True, '0'))
+        for _ in range(10):
+            increase.click()
+        self.assertEqual((value.inner_text(), status.inner_text(), increase.is_disabled()), ('100', 'Maximum reached 🚀', True))
+        # the same actions replayed in Python give the same value, burst token and history chips
+        state = w.counter_state()
+        for action in [('increment',), ('decrement',), ('decrement',), ('step', 10)] + [('decrement',)] * 10 + [('restore', -91), ('undo',), ('reset',)] + [('increment',)] * 10:
+            state = w.counter_apply(state, *action)
+        box = page.locator('section[data-ui-play]')
+        self.assertEqual((box.get_attribute('data-value'), box.get_attribute('data-burst')), (str(state['counter']), str(state['burst'])))
+        self.assertEqual([int(v) for v in page.locator('[data-counter-history] button').all_inner_texts()], state['history'])
+
+    def test_holding_repeats_and_the_release_does_not_double_fire(self):
+        page = self.page(clock=True)
+        increase, value = page.locator('[data-counter-increment]'), page.locator('[data-counter-value]')
+        read = lambda: int(value.inner_text())
+        increase.click()
+        page.clock.run_for(2000)
+        self.assertEqual(read(), 1, 'a tap fires once and starts no repeat')
+        increase.hover()
+        page.mouse.down()
+        page.clock.run_for(349)
+        self.assertEqual(read(), 1)
+        page.clock.run_for(1)
+        self.assertEqual(read(), 2, 'the first repeat comes at 350 ms')
+        page.clock.run_for(140)
+        self.assertEqual(read(), 4, 'then one every 70 ms')
+        page.mouse.up()
+        page.clock.run_for(1)
+        self.assertEqual(read(), 4, 'the click after a hold is swallowed')
+        page.clock.run_for(500)
+        self.assertEqual(read(), 4, 'the repeat stopped on release')
+        increase.focus()
+        page.keyboard.press('Enter')
+        self.assertEqual(read(), 5, 'the next keyboard activation is not suppressed')
+        page.mouse.move(0, 0)
+        increase.hover()
+        page.mouse.down()
+        page.clock.run_for(350 + 70)
+        self.assertEqual(read(), 7)
+        page.mouse.move(5, 5)
+        page.mouse.up()
+        page.clock.run_for(5)
+        self.assertEqual(read(), 7, 'dragging off and releasing stops the repeat')
+        increase.focus()
+        page.keyboard.press('Space')
+        self.assertEqual(read(), 8, 'drag-off after a hold does not suppress the next activation')
+        increase.hover()
+        page.mouse.down(button='right')
+        page.clock.run_for(2000)
+        page.mouse.up(button='right')
+        page.clock.run_for(5)
+        self.assertEqual(read(), 8, 'a secondary button does not start a repeat')
+
+    def test_holding_stops_at_the_end_and_keeps_the_disabled_state(self):
+        page = self.page(clock=True)
+        increase, value = page.locator('[data-counter-increment]'), page.locator('[data-counter-value]')
+        page.locator('input[name="counter-step"][value="10"]').check()
+        increase.hover()
+        page.mouse.down()
+        page.clock.run_for(350 + 70 * 20)
+        self.assertEqual(value.inner_text(), '100')
+        self.assertTrue(increase.is_disabled())
+        page.mouse.up()
+        page.clock.run_for(10)
+        self.assertEqual(value.inner_text(), '100')
+
+    def card_state(self, page):
+        return page.evaluate("""() => { const q = s => document.querySelector(s), r = e => { const b = e.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom] };
+            const a = r(q('[data-irony-arena]')), c = r(q('[data-irony-card]')), h = r(q('[data-irony-handle]'));
+            return {text: q('[data-irony-text]').textContent, index: Number(q('[data-irony-arena]').dataset.ironyIndex), arena: a, card: c, handle: h,
+                    cardCenter: [(c[0] + c[2]) / 2, (c[1] + c[3]) / 2], arenaCenter: [(a[0] + a[2]) / 2, (a[1] + a[3]) / 2]} }""")
+
+    def drag_handle(self, page, dx, dy):
+        state = self.card_state(page)
+        x, y = (state['handle'][0] + state['handle'][2]) / 2, (state['handle'][1] + state['handle'][3]) / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x + dx / 2, y + dy / 2, steps=3)
+        page.mouse.move(x + dx, y + dy, steps=3)
+        page.mouse.up()
+
+    def settled(self, page, check):
+        """Wait out the 140 ms ease: run ``check(state)`` until it holds."""
+        for _ in range(60):
+            state = self.card_state(page)
+            if check(state):
+                return state
+            page.wait_for_timeout(50)
+        self.fail(f'never settled: {self.card_state(page)}')
+
+    def test_the_irony_card_keeps_its_message_and_its_dragged_position(self):
+        w = web_ui_module()
+        sequence = w.irony_sequence(self.SEED, 3)
+        page = self.page()
+        first = self.card_state(page)
+        self.assertEqual((first['text'], first['index']), (w.IRONIES[sequence[0]][0], sequence[0]))
+        self.assertEqual(page.locator('[data-irony-tone]').inner_text(), w.IRONIES[sequence[0]][1])
+        self.assertIn(page.evaluate("() => getComputedStyle(document.querySelector('[data-irony-text]')).userSelect || getComputedStyle(document.querySelector('[data-irony-text]')).webkitUserSelect"), ('text', 'auto'))
+        self.drag_handle(page, 48, 32)
+        moved = self.settled(page, lambda s: abs(s['cardCenter'][0] - first['cardCenter'][0] - 48) < 1 and abs(s['cardCenter'][1] - first['cardCenter'][1] - 32) < 1)
+        self.assertEqual((moved['text'], moved['index']), (first['text'], first['index']))
+
+    def test_moving_the_card_fully_outside_spawns_a_different_message(self):
+        w = web_ui_module()
+        sequence = w.irony_sequence(self.SEED, 3)
+        page = self.page()
+        first = self.card_state(page)
+        events = page.evaluate("() => { window.__drops = []; document.addEventListener('ui-irony-drop', e => window.__drops.push(e.detail)); return true }")
+        self.drag_handle(page, 0, first['arena'][3] - first['handle'][1] + 40)
+        after = self.settled(page, lambda s: abs(s['cardCenter'][0] - s['arenaCenter'][0]) < 2 and abs(s['cardCenter'][1] - s['arenaCenter'][1]) < 2)
+        self.assertEqual((after['index'], after['text']), (sequence[1], w.IRONIES[sequence[1]][0]))
+        self.assertNotEqual(after['text'], first['text'])
+        self.assertEqual([d['action'] for d in page.evaluate('() => window.__drops')], ['spawn'])
+
+    def test_a_partial_exit_snaps_the_handle_back_inside_the_padded_arena(self):
+        for extra in (-12, 4):
+            page = self.page()
+            first = self.card_state(page)
+            dy = first['arena'][1] - first['handle'][3] - extra
+            self.assertGreater(first['card'][3] + dy, first['arena'][1], 'precondition: the card body stays partly visible')
+            self.drag_handle(page, 0, dy)
+            inside = lambda s: s['handle'][1] >= s['arena'][1] + 8 - 0.5 and s['handle'][3] <= s['arena'][3] - 8 + 0.5 and s['handle'][0] >= s['arena'][0] + 8 - 0.5 and s['handle'][2] <= s['arena'][2] - 8 + 0.5
+            after = self.settled(page, inside)
+            self.assertEqual((after['text'], after['index']), (first['text'], first['index']), 'the message does not change on a snap')
+            page.close()
+
+    def test_the_new_irony_button_walks_the_same_sequence(self):
+        w = web_ui_module()
+        sequence = w.irony_sequence(self.SEED, 6)
+        page = self.page()
+        seen = [self.card_state(page)['index']]
+        for _ in range(6):
+            page.locator('[data-irony-next]').click()
+            seen.append(self.card_state(page)['index'])
+        self.assertEqual(seen, sequence)
+        self.assertTrue(all(a != b for a, b in zip(seen, seen[1:])))
 
 
 if __name__ == '__main__':

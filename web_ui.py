@@ -4163,9 +4163,20 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-coordinates": {"page": "coordinates.html", "elements": ["#coord h2", "#coord-lat", "#coord-lon", "#coord-url", "#coord [data-use-url]"],
                            "click": {"target": "#coord [data-use-url]", "observe": "#coord [data-status]", "attribute": "textContent", "before": "Valid.",
                                      "after": "Could not find latitude/longitude in that Maps URL."}},
+    "web-ui-playground": {"page": "playground.html", "elements": ["#playground > h2:first-child", "#playground [data-counter-value]", "#playground [data-counter-decrement]", "#playground [data-counter-increment]",
+                                                                   "#playground [data-counter-reset]"],
+                          "click": {"target": "#playground [data-counter-increment]", "observe": "#playground", "attribute": "data-value", "before": "0", "after": "1"}},
+    # The irony part is lower on the page: the probe wants every element inside the first screen, so this one opens at its heading (#irony-title).
+    "web-ui-irony": {"page": "playground.html", "fragment": "irony-title", "elements": ["#irony-title", "#playground [data-irony-handle]", "#playground [data-irony-next]"],
+                     "click": {"target": "#playground [data-irony-next]", "observe": "#playground [data-irony-arena]", "attribute": "data-spawn", "before": None, "after": ""}},
     "web-ui-photo-studio": {"page": "photo-studio.html", "elements": ["#photo h2", "#photo [data-status]", "#photo label[for=\"photo-file\"]", "#photo [data-paste]", "#photo .ui-photo-help summary"],
                             "click": {"target": "#photo .ui-photo-help summary", "observe": "#photo .ui-photo-help", "attribute": "open", "before": None, "after": ""}},
 }
+
+
+def btk_adapter_url(spec: dict[str, Any], base: str = BTK_ADAPTER_BASE) -> str:
+    """The page address for an adapter spec: ``base`` + the page, then ``#fragment`` when the spec opens at an anchor (so everything it checks is on the first screen)."""
+    return base + spec["page"] + ("#" + spec["fragment"] if spec.get("fragment") else "")
 
 
 def btk_adapter(adapter_id: str, url: str | None = None) -> dict[str, Any]:
@@ -4174,7 +4185,7 @@ def btk_adapter(adapter_id: str, url: str | None = None) -> dict[str, Any]:
         spec = BTK_ADAPTERS[adapter_id]
     except KeyError:
         raise ValueError(f"unknown adapter: {adapter_id!r}; one of {', '.join(sorted(BTK_ADAPTERS))}") from None
-    return {"schema": "btk-platform-adapter/1", "id": adapter_id, "url": url or BTK_ADAPTER_BASE + spec["page"], "elements": list(spec["elements"]), "click": dict(spec["click"])}
+    return {"schema": "btk-platform-adapter/1", "id": adapter_id, "url": url or btk_adapter_url(spec), "elements": list(spec["elements"]), "click": dict(spec["click"])}
 
 
 # --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
@@ -4590,6 +4601,281 @@ def door_html(spec: Any) -> str:
 def door_document(spec: Any, *, theme: str = "modern") -> str:
     """A single-file page for a door."""
     return render_document(trusted_html='<main class="ui-page">' + door_html(spec) + "</main>" + module_script(_JS["door.js"]), title="Door-to-Door",
+                           theme=theme, css=bundled_css())
+
+
+# --- Playground: the Counter Playground, the hold-to-repeat button and the Irony generator --------------------------------------------
+# Absorbs flutter_navigation_basic's lib/features/counter_playground (domain/counter_playground_controller.dart, domain/counter_battle_effect.dart, the status
+# ladder in presentation/counter_playground_page.dart), lib/shared/widgets/hold_repeating_button.dart and lib/features/irony_generator (data/ironies.dart,
+# domain/irony_generator_controller.dart, the drag rules in presentation/irony_generator_page.dart). Their Dart tests (test/features/counter_*,
+# test/shared/hold_repeating_button_test.dart, test/features/irony_generator_interaction_test.dart) are the golden values. Python is the reference;
+# ``playground.js`` must agree. Deliberate difference: the random pick is driven by the Door's seeded ``mulberry32`` (Dart's ``Random(7)`` cannot be reproduced
+# here), and the page adds a button for "next irony" so the drag is not the only way to get one.
+COUNTER_MIN, COUNTER_MAX = -100, 100
+COUNTER_STEPS = (1, 5, 10)
+COUNTER_HISTORY = 8
+COUNTER_ATTACK_ORBS = ("🔥", "💧", "🌳", "💡", "🔮")
+COUNTER_HEAL_ORBS = ("❤️", "💚", "✨")
+COUNTER_MAX_ORBS = 6
+COUNTER_ACTIONS = ("step", "increment", "decrement", "change", "restore", "undo", "reset")
+COUNTER_STATUS = {"max": "Maximum reached 🚀", "min": "Minimum reached 🧊", "high": "High score territory 🔥", "low": "Going underground 🕳️",
+                  "too_much": "Too much 😈", "reverse": "Reverse mode 👻", "neutral": "Keep experimenting 👾"}
+HOLD_DELAY_MS, HOLD_INTERVAL_MS = 350, 70
+IRONY_PADDING = 8
+IRONIES = (
+    ("Humans automate everything, then schedule meetings to discuss the automation.", "Tech"),
+    ("The strongest password is usually defeated by the person holding it.", "Tech"),
+    ("We built instant messaging so everyone could wait longer for a reply.", "Tech"),
+    ("Software saves time until the update starts.", "Tech"),
+    ("The cloud is just someone else’s computer with better branding.", "Tech"),
+    ("Everyone values honesty right up until the status report arrives.", "Work"),
+    ("The shortest meeting is the one that was replaced by an email.", "Work"),
+    ("A deadline becomes realistic immediately after it is missed.", "Work"),
+    ("We optimize productivity by adding another productivity tool.", "Work"),
+    ("The busiest calendar often has the least room for actual work.", "Work"),
+    ("People buy smart devices so they can spend more time configuring them.", "Daily"),
+    ("Convenience is carrying five chargers for three devices.", "Daily"),
+    ("The quickest queue is always the one you did not choose.", "Daily"),
+    ("A silent notification is still checked immediately.", "Daily"),
+    ("We save things for later until later needs its own storage plan.", "Daily"),
+    ("Humans invented maps and still ask which way the station is.", "Human"),
+    ("Everyone wants a simple answer to a complicated question.", "Human"),
+    ("Experience is knowing exactly which mistake you are repeating.", "Human"),
+    ("The more choices we have, the longer we spend choosing nothing.", "Human"),
+    ("We dislike uncertainty, so we make confident predictions about it.", "Human"),
+)
+
+
+def _counter_int(value: Any, name: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    return value
+
+
+def counter_effect(counter: int) -> dict[str, Any]:
+    """The Puzzle & Dragons-style readout: positive counts deal damage, negative ones heal by their absolute value; at most six orbs are shown."""
+    counter = _counter_int(counter, "counter")
+    if counter == 0:
+        return {"counter": 0, "amount": 0, "heal": False, "idle": True, "orbs": []}
+    heal, amount = counter < 0, abs(counter)
+    palette = COUNTER_HEAL_ORBS if heal else COUNTER_ATTACK_ORBS
+    return {"counter": counter, "amount": amount, "heal": heal, "idle": False,
+            "orbs": [palette[i % len(palette)] for i in range(min(max(amount, 1), COUNTER_MAX_ORBS))]}
+
+
+def counter_label(counter: int) -> str:
+    """The line under the orbs: ``💥 Damage 3``, ``💚 Heal 2`` or ``Orbs ready…`` at zero."""
+    effect = counter_effect(counter)
+    return "Orbs ready…" if effect["idle"] else (f"💚 Heal {effect['amount']}" if effect["heal"] else f"💥 Damage {effect['amount']}")
+
+
+def counter_status_key(counter: int) -> str:
+    """The status ladder, first match wins: the two ends, then 50, then 10 (above and below zero), then neutral."""
+    counter = _counter_int(counter, "counter")
+    if counter == COUNTER_MAX:
+        return "max"
+    if counter == COUNTER_MIN:
+        return "min"
+    return "high" if counter >= 50 else "low" if counter <= -50 else "too_much" if counter >= 10 else "reverse" if counter <= -10 else "neutral"
+
+
+def counter_state() -> dict[str, Any]:
+    """The start: 0, step 1, no burst yet, and a history of just 0 (newest first)."""
+    return {"counter": 0, "step": 1, "burst": 0, "history": [0]}
+
+
+def counter_apply(state: dict[str, Any], action: str, value: Any = None) -> dict[str, Any]:
+    """One step of the controller as a pure function (the input is never changed).
+
+    ``change``/``restore`` clamp to -100..100 and do nothing when the value does not move (so the burst token stays); a move records the new value at the front of
+    a history of at most 8. ``undo`` drops the front and returns to the next one (it records nothing and bumps the burst). ``reset`` is a no-op at 0. ``step``
+    only accepts 1, 5 and 10 (anything else, or the current step, changes nothing). ``increment``/``decrement`` are ``change`` by plus or minus the step.
+    """
+    if action not in COUNTER_ACTIONS:
+        raise ValueError(f"unknown action: {action!r}")
+    counter, step, burst = _counter_int(state["counter"], "counter"), _counter_int(state["step"], "step"), _counter_int(state["burst"], "burst")
+    history = list(state["history"])
+    if not history or any(type(h) is not int for h in history) or history[0] != counter:
+        raise ValueError("history must start with the current value")
+    result = lambda c=counter, s=step, b=burst, h=history: {"counter": c, "step": s, "burst": b, "history": h}
+    if action == "step":
+        return result(s=value) if type(value) is int and value in COUNTER_STEPS and value != step else result()
+    if action == "undo":
+        return result(c=history[1], b=burst + 1, h=history[1:]) if len(history) > 1 else result()
+    if action == "reset":
+        target = 0
+    elif action in ("increment", "decrement"):
+        target = counter + (step if action == "increment" else -step)
+    elif action == "change":
+        target = counter + _counter_int(value, "delta")
+    else:
+        target = _counter_int(value, "value")
+    target = min(max(target, COUNTER_MIN), COUNTER_MAX)
+    if target == counter:
+        return result()
+    return result(c=target, b=burst + 1, h=[target, *history][:COUNTER_HISTORY])
+
+
+def hold_repeat_count(held_ms: float, *, buttons: int = 1) -> int:
+    """How many times a held button has fired after ``held_ms``: nothing for 350 ms, then once, then once more every 70 ms. Only the primary button (1) holds."""
+    if buttons != 1 or held_ms < HOLD_DELAY_MS:
+        return 0
+    return 1 + int((held_ms - HOLD_DELAY_MS) // HOLD_INTERVAL_MS)
+
+
+def hold_swallows_click(held_ms: float, *, buttons: int = 1) -> bool:
+    """After a hold has repeated, the click that follows the release is ignored once so it does not fire on top of the repeats."""
+    return hold_repeat_count(held_ms, buttons=buttons) > 0
+
+
+def irony_first(count: int, unit: float) -> int:
+    """The first message: a uniform pick of ``count`` using ``unit`` in [0, 1)."""
+    if count < 1 or not 0 <= unit < 1:
+        raise ValueError("count must be at least 1 and unit in [0, 1)")
+    return math.floor(unit * count)
+
+
+def irony_next(count: int, current: int | None, unit: float) -> int | None:
+    """The next message, never the one on screen: pick among the other ``count - 1`` and skip over the current index. With fewer than two messages there is no next."""
+    if not 0 <= unit < 1:
+        raise ValueError("unit must be in [0, 1)")
+    if count < 2:
+        return None
+    pick = math.floor(unit * (count - 1))
+    return pick + 1 if current is not None and 0 <= current <= pick else pick
+
+
+def irony_sequence(seed: int, steps: int, count: int = len(IRONIES)) -> list[int]:
+    """The first message and ``steps`` more, drawn from ``mulberry32(seed)``: consecutive entries are never equal."""
+    rng = mulberry32(seed)
+    out = [irony_first(count, next(rng))]
+    for _ in range(steps):
+        out.append(irony_next(count, out[-1], next(rng)))
+    return out
+
+
+def _rect(rect: Any) -> tuple[float, float, float, float]:
+    if not isinstance(rect, (list, tuple)) or len(rect) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in rect):
+        raise ValueError("a rectangle is four finite numbers: left, top, right, bottom")
+    return tuple(float(v) for v in rect)
+
+
+def rect_overlaps(a: Any, b: Any) -> bool:
+    """Flutter's ``Rect.overlaps``: rectangles that only touch along an edge do not overlap."""
+    (al, at, ar, ab), (bl, bt, br, bb) = _rect(a), _rect(b)
+    return not (ar <= bl or br <= al or ab <= bt or bb <= at)
+
+
+def rect_inside(inner: Any, outer: Any) -> bool:
+    """``inner`` lies within ``outer``, edges included."""
+    (il, it, ir, ib), (ol, ot, orr, ob) = _rect(inner), _rect(outer)
+    return il >= ol and it >= ot and ir <= orr and ib <= ob
+
+
+def rect_deflate(rect: Any, by: float) -> tuple[float, float, float, float]:
+    left, top, right, bottom = _rect(rect)
+    return (left + by, top + by, right - by, bottom - by)
+
+
+def _rect_center(rect: tuple[float, float, float, float]) -> tuple[float, float]:
+    # Flutter's Rect.center is left + width / 2, top + height / 2 (not (left + right) / 2): the same rounding in both languages.
+    left, top, right, bottom = rect
+    return (left + (right - left) / 2.0, top + (bottom - top) / 2.0)
+
+
+def rect_clamp_inside(rect: Any, viewport: Any, padding: float = IRONY_PADDING) -> tuple[float, float, float, float]:
+    """Move ``rect`` into ``viewport`` shrunk by ``padding``; a rectangle as large as the inset is centred instead."""
+    left, top, right, bottom = _rect(rect)
+    inset = rect_deflate(viewport, padding)
+    cx, cy = _rect_center(inset)
+    rx, ry = _rect_center((left, top, right, bottom))
+    dx = dy = 0.0
+    if right - left >= inset[2] - inset[0]:
+        dx = cx - rx
+    else:
+        if left < inset[0]:
+            dx = inset[0] - left
+        if right > inset[2]:
+            dx = inset[2] - right
+    if bottom - top >= inset[3] - inset[1]:
+        dy = cy - ry
+    else:
+        if top < inset[1]:
+            dy = inset[1] - top
+        if bottom > inset[3]:
+            dy = inset[3] - bottom
+    return (left + dx, top + dy, right + dx, bottom + dy)
+
+
+def irony_drop(arena: Any, card: Any, handle: Any) -> dict[str, Any]:
+    """What happens when the drag ends, from three rectangles in arena coordinates (``arena`` is width and height; the others left, top, right, bottom).
+
+    The card entirely outside the arena (edges touching do not count as inside) spawns the next message and goes back to the middle. Otherwise the whole drag
+    handle plus 8 px of padding must be inside the arena, or the card moves by the least amount that brings it in (a handle as large as the arena is centred).
+    A missing card measurement ends the drag without any change; a missing handle one does not move the card.
+    """
+    width, height = (float(v) for v in arena)
+    if not (math.isfinite(width) and math.isfinite(height)):
+        raise ValueError("the arena size must be finite")
+    viewport = (0.0, 0.0, width, height)
+    if card is None:
+        return {"action": "none", "dx": 0.0, "dy": 0.0}
+    if not rect_overlaps(card, viewport):
+        return {"action": "spawn", "dx": 0.0, "dy": 0.0}
+    if handle is None or rect_inside(handle, rect_deflate(viewport, IRONY_PADDING)):
+        return {"action": "none", "dx": 0.0, "dy": 0.0}
+    clamped = rect_clamp_inside(handle, viewport, IRONY_PADDING)
+    (cx, cy), (hx, hy) = _rect_center(clamped), _rect_center(_rect(handle))
+    return {"action": "snap", "dx": cx - hx, "dy": cy - hy}
+
+
+_CSS["playground.css"] = (
+    "@layer components{.ui-play h3{margin:24px 0 8px}.ui-counter-value{font-size:3rem;line-height:1.1;margin:8px 0;font-variant-numeric:tabular-nums}"
+    ".ui-counter-orbs{min-height:56px;font-size:28px;line-height:1.2;margin:8px 0;overflow-wrap:anywhere}"
+    ".ui-counter-bar{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-counter-bar label{display:inline-block;margin:0}"
+    ".ui-counter-actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.ui-counter-history{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;padding:0;list-style:none}"
+    ".ui-counter-actions button,.ui-counter-history button{touch-action:manipulation}"
+    ".ui-counter-orbs[data-playing]{animation:ui-orb-rise 700ms ease-out}@keyframes ui-orb-rise{from{opacity:.25;transform:translateY(0)}to{opacity:1;transform:translateY(-16px)}}"
+    ".ui-irony-arena{position:relative;overflow:hidden;min-height:320px;margin:8px 0;border:1px solid var(--ui-border);border-radius:var(--ui-radius,12px);touch-action:pan-y}"
+    ".ui-irony-card{position:absolute;left:50%;top:50%;translate:-50% -50%;transform:translate(var(--ox,0px),var(--oy,0px)) scale(var(--s,1));transition:transform 140ms ease-out;"
+    "width:min(520px,calc(100% - 48px));margin:0;padding:8px 24px 28px;box-sizing:border-box;border:1px solid var(--ui-border);border-radius:var(--ui-radius,12px);"
+    "background:var(--ui-panel);color:var(--ui-fg);box-shadow:0 2px 8px rgba(0,0,0,.2)}"
+    ".ui-irony-card[data-dragging]{--s:1.035;transition:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}"
+    ".ui-irony-handle{display:block;width:48px;height:32px;margin:0 auto;border:0;background:none;color:inherit;font:inherit;line-height:32px;text-align:center;cursor:grab;touch-action:none}"
+    ".ui-irony-handle:focus-visible{outline:2px solid currentColor;outline-offset:2px}"
+    ".ui-irony-text{margin:8px 0 0;font-size:1.5rem;line-height:1.35;text-align:center;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere}"
+    ".ui-irony-tone{margin:8px 0 0;text-align:center}"
+    ".ui-irony-arena[data-spawn]::after{content:\"\";position:absolute;left:50%;top:50%;width:80%;aspect-ratio:1;border:3px solid currentColor;border-radius:50%;"
+    "transform:translate(-50%,-50%);animation:ui-irony-ring 850ms ease-out forwards;pointer-events:none}@keyframes ui-irony-ring{from{opacity:.55;scale:.15}to{opacity:0;scale:1}}"
+    "@media(prefers-reduced-motion:reduce){.ui-counter-orbs[data-playing],.ui-irony-arena[data-spawn]::after{animation:none}.ui-irony-card{transition:none}}}")
+
+
+def playground_html() -> str:
+    """The Counter Playground and the Irony generator as semantic HTML; the page script fills in the numbers, the orbs and the message."""
+    steps = "".join(f'<label><input type="radio" name="counter-step" value="{s}"{" checked" if s == 1 else ""}> Step {s}</label>' for s in COUNTER_STEPS)
+    data = escape(json.dumps({"ironies": [{"text": t, "tone": tone} for t, tone in IRONIES], "status": COUNTER_STATUS}, ensure_ascii=False, separators=(",", ":")), quote=True)
+    return (f'<section class="ui-panel ui-play" id="playground" data-ui-play data-play="{data}">'
+            '<h2>Counter Playground</h2><p class="ui-muted">A counter from -100 to 100 with a step of 1, 5 or 10, a history of the last eight values, and a damage or heal readout. '
+            'Hold a button to keep stepping. Everything stays in this page.</p>'
+            '<div data-counter><p>Current value</p><p class="ui-counter-value" data-counter-value aria-live="polite">0</p>'
+            '<p class="ui-counter-orbs" data-counter-orbs aria-hidden="true"></p><p class="ui-counter-label" data-counter-label>Orbs ready…</p>'
+            '<p data-counter-status class="ui-muted">Keep experimenting 👾</p>'
+            f'<fieldset class="ui-counter-bar"><legend>Step</legend>{steps}</fieldset>'
+            '<div class="ui-counter-actions"><button class="ui-button" type="button" data-counter-decrement>Decrease</button> '
+            '<button class="ui-button" type="button" data-counter-increment>Increase</button> '
+            '<button class="ui-button" type="button" data-counter-reset>Reset</button> <button class="ui-button" type="button" data-counter-undo>Undo</button></div>'
+            '<h3>Recent values</h3><p class="ui-muted">Tap a value to restore it.</p><ul class="ui-counter-history" data-counter-history></ul></div>'
+            '<h2 id="irony-title">Irony generator</h2><p class="ui-muted">Drag the card by its handle and let it leave the box to get another message. '
+            'If only part of the card is out, the handle is brought back inside. The text can be selected and copied.</p>'
+            '<div class="ui-irony-arena" data-irony-arena data-irony-index="0"><div class="ui-irony-card" data-irony-card>'
+            '<button class="ui-irony-handle" type="button" data-irony-handle aria-label="Drag to move message" title="Drag to move message">⠿</button>'
+            '<p class="ui-irony-text" data-irony-text></p><p class="ui-irony-tone ui-muted" data-irony-tone></p></div></div>'
+            '<p><button class="ui-button" type="button" data-irony-next>New irony</button></p></section>')
+
+
+def playground_document(*, theme: str = "modern") -> str:
+    """A single-file page for the playground."""
+    return render_document(trusted_html='<main class="ui-page">' + playground_html() + "</main>" + module_script(_JS["playground.js"]), title="Playground",
                            theme=theme, css=bundled_css())
 
 
@@ -5266,6 +5552,8 @@ globalThis.webUiCoordinates={fixed,parseCoordinate,tryParseMapsUrl,toDms,coordin
 if(typeof document!=="undefined")bindCoordinates();
 """
 
+_RNG_JS = r"""export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
+"""
 _JS["composition.js"] = r"""/* web-ui composition: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed. Python (web_ui.chord_with_inversion, metronome_position, ...) is the reference. */
 export const FLAT_KEYS=["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"],SHARP_KEYS=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
 export const SELECTABLE_KEYS=["C","C♯","D♭","D","D♯","E♭","E","F","F♯","G♭","G","G♯","A♭","A","A♯","B♭","B"];
@@ -5303,8 +5591,7 @@ export function tapTempo(taps,tap,resetGap=2000000,maxIntervals=5){const kept=ta
 export function parseNotes(text){const out=[];for(const token of text.split(/[ \t\r\n\f\v,]+/)){if(!token)continue;const m=/^([A-Ga-g])([#b♯♭]?)(-?[0-9])$/.exec(token);if(!m)throw new Error("invalid note: "+token);out.push(m[1].toUpperCase()+({"#":"♯",b:"♭"}[m[2]]??m[2])+m[3])}return out}
 export function notesPerBar(beats,unit,noteUnit){if(noteUnit!==4&&noteUnit!==8)throw new Error("only quarter and eighth notes are supported");const v=beats*noteUnit/unit;if(!Number.isInteger(v)||v<=0)throw new Error("the selected note value does not divide this bar evenly");return v}
 export function noteBars(notes,beats,unit,noteUnit){const size=notesPerBar(beats,unit,noteUnit),out=[];for(let i=0;i<notes.length;i+=size)out.push(notes.slice(i,i+size));return out}
-export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
-export const SEED_KEYS=["B♭","B","C","D♭","D","E♭","E","F","G♭","G","A♭","A"],SEED_MODES=["Major","Minor"],SEED_TIMES=["4/4","3/4","6/8"];
+""" + _RNG_JS + r"""export const SEED_KEYS=["B♭","B","C","D♭","D","E♭","E","F","G♭","G","A♭","A"],SEED_MODES=["Major","Minor"],SEED_TIMES=["4/4","3/4","6/8"];
 export const SEED_PROGRESSIONS={Major:["I – V – vi – IV","I – vi – IV – V","ii – V – I – vi","I – IV – V – IV"],Minor:["i – VI – III – VII","i – iv – VII – III","i – VII – VI – VII","i – iv – v – i"]};
 export function songSeed(seed,avoid=null){const rng=mulberry32(seed),pick=o=>o[Math.floor(rng()*o.length)];let result;
  for(let i=0;i<8;i++){const mode=pick(SEED_MODES);result={tonic:pick(SEED_KEYS),mode,bpm:80+Math.floor(rng()*81),time:pick(SEED_TIMES),progression:pick(SEED_PROGRESSIONS[mode])};
@@ -5351,8 +5638,7 @@ export function emojiPath(notation,pages){
  const by=new Map(pages.map(p=>[emojiKey(p.emoji),p.href])),parts=emojiKey(notation).split(/([→↔])/),path=[parts[0]];
  for(let i=1;i+1<parts.length;i+=2){const there=parts[i+1];if(parts[i]==="→")path.push(there);else path.push(there,path[path.length-1])}
  return path.map(k=>{if(!by.has(k))throw new Error("unknown page emoji: "+JSON.stringify(k));return by.get(k)})}
-export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
-export function doorDraw(seed,count,k){if(!(k>=0&&k<=count))throw new Error("k must be from 0 to count");const rng=mulberry32(seed),order=Array.from({length:count},(_,i)=>i);
+""" + _RNG_JS + r"""export function doorDraw(seed,count,k){if(!(k>=0&&k<=count))throw new Error("k must be from 0 to count");const rng=mulberry32(seed),order=Array.from({length:count},(_,i)=>i);
  for(let i=0;i<k;i++){const j=i+Math.floor(rng()*(count-i));[order[i],order[j]]=[order[j],order[i]]}return order.slice(0,k)}
 export function doorOptions(door,seed=door.seed){const stable=door.pages.filter(p=>p.group==="stable"),found=door.pages.filter(p=>p.group==="discover"),drawn=doorDraw(seed,found.length,door.k).map(i=>found[i]);
  return[stable[0],...drawn,...stable.slice(1)].map(p=>({...p,current:p.href===door.current,drawn:drawn.includes(p)}))}
@@ -5371,6 +5657,92 @@ export function bindDoor(root=document){return[...root.querySelectorAll("[data-u
  input.addEventListener("input",show);fill();show();box.dataset.door_ready="";return box})}
 globalThis.webUiDoor={emojiKey,emojiPath,mulberry32,doorDraw,doorOptions,bindDoor};
 if(typeof document!=="undefined")bindDoor();
+"""
+
+_JS["playground.js"] = r"""/* web-ui playground: the Counter Playground, the hold-to-repeat button and the Irony generator in the page. Python (web_ui.counter_apply, hold_repeat_count, irony_drop, ...) is the reference; this must agree. */
+""" + _RNG_JS + r"""export const COUNTER_MIN=-100,COUNTER_MAX=100,COUNTER_STEPS=[1,5,10],COUNTER_HISTORY=8,HOLD_DELAY=350,HOLD_INTERVAL=70,IRONY_PADDING=8;
+const ATTACK=["🔥","💧","🌳","💡","🔮"],HEAL=["❤️","💚","✨"],MAX_ORBS=6,ACTIONS=["step","increment","decrement","change","restore","undo","reset"];
+const int=(v,n)=>{if(!Number.isInteger(v))throw new Error(n+" must be an integer");return v};
+export function counterEffect(counter){int(counter,"counter");if(counter===0)return{counter:0,amount:0,heal:false,idle:true,orbs:[]};
+ const heal=counter<0,amount=Math.abs(counter),palette=heal?HEAL:ATTACK;
+ return{counter,amount,heal,idle:false,orbs:Array.from({length:Math.min(Math.max(amount,1),MAX_ORBS)},(_,i)=>palette[i%palette.length])}}
+export function counterLabel(counter){const e=counterEffect(counter);return e.idle?"Orbs ready…":e.heal?"💚 Heal "+e.amount:"💥 Damage "+e.amount}
+export function counterStatusKey(counter){int(counter,"counter");if(counter===COUNTER_MAX)return"max";if(counter===COUNTER_MIN)return"min";
+ return counter>=50?"high":counter<=-50?"low":counter>=10?"too_much":counter<=-10?"reverse":"neutral"}
+export const counterState=()=>({counter:0,step:1,burst:0,history:[0]});
+export function counterApply(state,action,value){
+ if(!ACTIONS.includes(action))throw new Error("unknown action: "+action);
+ const counter=int(state.counter,"counter"),step=int(state.step,"step"),burst=int(state.burst,"burst"),history=[...state.history];
+ if(!history.length||history.some(h=>!Number.isInteger(h))||history[0]!==counter)throw new Error("history must start with the current value");
+ const make=(o={})=>({counter,step,burst,history,...o});
+ if(action==="step")return Number.isInteger(value)&&COUNTER_STEPS.includes(value)&&value!==step?make({step:value}):make();
+ if(action==="undo")return history.length>1?make({counter:history[1],burst:burst+1,history:history.slice(1)}):make();
+ let target;
+ if(action==="reset")target=0;else if(action==="increment"||action==="decrement")target=counter+(action==="increment"?step:-step);
+ else if(action==="change")target=counter+int(value,"delta");else target=int(value,"value");
+ target=Math.min(Math.max(target,COUNTER_MIN),COUNTER_MAX);
+ return target===counter?make():make({counter:target,burst:burst+1,history:[target,...history].slice(0,COUNTER_HISTORY)})}
+export const holdRepeatCount=(heldMs,buttons=1)=>buttons!==1||heldMs<HOLD_DELAY?0:1+Math.floor((heldMs-HOLD_DELAY)/HOLD_INTERVAL);
+export const holdSwallowsClick=(heldMs,buttons=1)=>holdRepeatCount(heldMs,buttons)>0;
+export function ironyFirst(count,unit){if(count<1||!(unit>=0&&unit<1))throw new Error("count must be at least 1 and unit in [0, 1)");return Math.floor(unit*count)}
+export function ironyNext(count,current,unit){if(!(unit>=0&&unit<1))throw new Error("unit must be in [0, 1)");if(count<2)return null;
+ const pick=Math.floor(unit*(count-1));return current!==null&&current!==undefined&&current>=0&&current<=pick?pick+1:pick}
+export function ironySequence(seed,steps,count){const rng=mulberry32(seed),out=[ironyFirst(count,rng())];for(let i=0;i<steps;i++)out.push(ironyNext(count,out[out.length-1],rng()));return out}
+const rect=r=>{if(!Array.isArray(r)||r.length!==4||r.some(v=>typeof v!=="number"||!Number.isFinite(v)))throw new Error("a rectangle is four finite numbers: left, top, right, bottom");return r};
+export function rectOverlaps(a,b){const[al,at,ar,ab]=rect(a),[bl,bt,br,bb]=rect(b);return!(ar<=bl||br<=al||ab<=bt||bb<=at)}
+export function rectInside(inner,outer){const[il,it,ir,ib]=rect(inner),[ol,ot,or,ob]=rect(outer);return il>=ol&&it>=ot&&ir<=or&&ib<=ob}
+export function rectDeflate(r,by){const[l,t,rr,b]=rect(r);return[l+by,t+by,rr-by,b-by]}
+const center=([l,t,r,b])=>[l+(r-l)/2,t+(b-t)/2];
+export function rectClampInside(r,viewport,padding=IRONY_PADDING){const[left,top,right,bottom]=rect(r),inset=rectDeflate(viewport,padding),[cx,cy]=center(inset),[rx,ry]=center([left,top,right,bottom]);let dx=0,dy=0;
+ if(right-left>=inset[2]-inset[0])dx=cx-rx;else{if(left<inset[0])dx=inset[0]-left;if(right>inset[2])dx=inset[2]-right}
+ if(bottom-top>=inset[3]-inset[1])dy=cy-ry;else{if(top<inset[1])dy=inset[1]-top;if(bottom>inset[3])dy=inset[3]-bottom}
+ return[left+dx,top+dy,right+dx,bottom+dy]}
+export function ironyDrop(arena,card,handle){const width=Number(arena[0]),height=Number(arena[1]);if(!(Number.isFinite(width)&&Number.isFinite(height)))throw new Error("the arena size must be finite");
+ const viewport=[0,0,width,height],none={action:"none",dx:0,dy:0};
+ if(card===null)return none;if(!rectOverlaps(card,viewport))return{action:"spawn",dx:0,dy:0};
+ if(handle===null||rectInside(handle,rectDeflate(viewport,IRONY_PADDING)))return none;
+ const clamped=rectClampInside(handle,viewport,IRONY_PADDING),[cx,cy]=center(clamped),[hx,hy]=center(rect(handle));return{action:"snap",dx:cx-hx,dy:cy-hy}}
+export function holdRepeat(button,fire){let timer=null,every=null,pointer=null,repeated=false;
+ const stop=()=>{clearTimeout(timer);clearInterval(every);timer=every=null;pointer=null};
+ button.addEventListener("pointerdown",e=>{if(button.disabled||pointer!==null||e.buttons!==1)return;pointer=e.pointerId;repeated=false;
+  const end=ev=>{if(ev.pointerId!==pointer)return;window.removeEventListener("pointerup",end);window.removeEventListener("pointercancel",end);stop();setTimeout(()=>{repeated=false},0)};
+  window.addEventListener("pointerup",end);window.addEventListener("pointercancel",end);
+  timer=setTimeout(()=>{if(button.disabled||pointer===null)return;repeated=true;fire();every=setInterval(()=>{if(button.disabled){stop();return}repeated=true;fire()},HOLD_INTERVAL)},HOLD_DELAY)});
+ button.addEventListener("click",()=>{if(button.disabled)return;if(repeated){repeated=false;return}fire()});
+ button.addEventListener("contextmenu",e=>{if(pointer!==null||repeated)e.preventDefault()})}
+export function bindPlayground(root=document){return[...root.querySelectorAll("[data-ui-play]")].map(box=>{
+ const data=JSON.parse(box.dataset.play),$=s=>box.querySelector(s),ironies=data.ironies;
+ let state=counterState(),shownBurst=0;
+ const val=$("[data-counter-value]"),orbs=$("[data-counter-orbs]"),label=$("[data-counter-label]"),status=$("[data-counter-status]"),hist=$("[data-counter-history]"),
+  inc=$("[data-counter-increment]"),dec=$("[data-counter-decrement]"),reset=$("[data-counter-reset]"),undo=$("[data-counter-undo]"),radios=[...box.querySelectorAll('input[name="counter-step"]')];
+ const render=()=>{const e=counterEffect(state.counter);val.textContent=String(state.counter);orbs.textContent=e.orbs.join(" ");orbs.dataset.kind=e.idle?"idle":e.heal?"heal":"damage";
+  label.textContent=counterLabel(state.counter);status.textContent=data.status[counterStatusKey(state.counter)];
+  radios.forEach(r=>{r.checked=Number(r.value)===state.step});inc.disabled=state.counter>=COUNTER_MAX;dec.disabled=state.counter<=COUNTER_MIN;reset.disabled=state.counter===0;undo.disabled=state.history.length<2;
+  hist.replaceChildren(...state.history.map((v,i)=>{const li=document.createElement("li"),b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=String(v);
+   if(i===0){b.disabled=true;b.setAttribute("aria-label","Current value "+v)}else{b.setAttribute("aria-label","Restore "+v);b.addEventListener("click",()=>act("restore",v))}li.append(b);return li}));
+  box.dataset.value=String(state.counter);box.dataset.burst=String(state.burst);
+  if(state.burst!==shownBurst){shownBurst=state.burst;orbs.removeAttribute("data-playing");if(!e.idle){void orbs.offsetWidth;orbs.setAttribute("data-playing","")}}};
+ const act=(action,value)=>{state=counterApply(state,action,value);render()};
+ holdRepeat(inc,()=>act("increment"));holdRepeat(dec,()=>act("decrement"));reset.addEventListener("click",()=>act("reset"));undo.addEventListener("click",()=>act("undo"));
+ radios.forEach(r=>r.addEventListener("change",()=>{if(r.checked)act("step",Number(r.value))}));render();
+ const arena=$("[data-irony-arena]"),card=$("[data-irony-card]"),handle=$("[data-irony-handle]"),text=$("[data-irony-text]"),tone=$("[data-irony-tone]"),next=$("[data-irony-next]");
+ const seed=box.hasAttribute("data-play-seed")?Number(box.getAttribute("data-play-seed")):Math.floor(Math.random()*4294967296),rng=mulberry32(seed);
+ let index=ironyFirst(ironies.length,rng()),ox=0,oy=0,drag=null;
+ const show=()=>{text.textContent=ironies[index].text;tone.textContent=ironies[index].tone;arena.dataset.ironyIndex=String(index);card.style.setProperty("--ox",ox+"px");card.style.setProperty("--oy",oy+"px")};
+ const spawn=()=>{const i=ironyNext(ironies.length,index,rng());if(i!==null)index=i;ox=oy=0;show();arena.removeAttribute("data-spawn");void arena.offsetWidth;arena.setAttribute("data-spawn","")};
+ handle.addEventListener("pointerdown",e=>{if(drag||(e.pointerType==="mouse"&&e.button!==0))return;drag={id:e.pointerId,x:e.clientX,y:e.clientY};handle.setPointerCapture(e.pointerId);card.setAttribute("data-dragging","");e.preventDefault()});
+ handle.addEventListener("pointermove",e=>{if(!drag||e.pointerId!==drag.id)return;ox+=e.clientX-drag.x;oy+=e.clientY-drag.y;drag.x=e.clientX;drag.y=e.clientY;
+  card.style.setProperty("--ox",ox+"px");card.style.setProperty("--oy",oy+"px")});
+ const finish=e=>{if(!drag||e.pointerId!==drag.id)return;drag=null;
+  const a=arena.getBoundingClientRect(),c=card.getBoundingClientRect(),h=handle.getBoundingClientRect(),rel=r=>[r.left-a.left,r.top-a.top,r.right-a.left,r.bottom-a.top];
+  const r=ironyDrop([a.width,a.height],rel(c),rel(h));card.removeAttribute("data-dragging");
+  if(r.action==="spawn")spawn();else{if(r.action==="snap"){ox+=r.dx;oy+=r.dy}show()}
+  box.dispatchEvent(new CustomEvent("ui-irony-drop",{bubbles:true,detail:r}))};
+ handle.addEventListener("pointerup",finish);handle.addEventListener("pointercancel",finish);
+ next.addEventListener("click",spawn);show();box.dataset.play_ready="";return box})}
+globalThis.webUiPlayground={COUNTER_MIN,COUNTER_MAX,COUNTER_STEPS,HOLD_DELAY,HOLD_INTERVAL,IRONY_PADDING,mulberry32,counterEffect,counterLabel,counterStatusKey,counterState,counterApply,holdRepeatCount,holdSwallowsClick,
+ ironyFirst,ironyNext,ironySequence,rectOverlaps,rectInside,rectDeflate,rectClampInside,ironyDrop,holdRepeat,bindPlayground};
+if(typeof document!=="undefined")bindPlayground();
 """
 
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
@@ -6038,7 +6410,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article>'
             '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article>'
             '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
-            '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
+            '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -6072,6 +6445,7 @@ def example_pages() -> dict[str, str]:
         "examples/photo-studio.html": photo_document(),
         "examples/composition-studio.html": studio_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
+        "examples/playground.html": playground_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
