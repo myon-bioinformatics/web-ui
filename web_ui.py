@@ -28,11 +28,13 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from typing import Any
 import urllib.error
 import urllib.request
 import zlib
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qsl, urlsplit
 
 THEMES = ("modern", "github-like")
@@ -4163,9 +4165,28 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-coordinates": {"page": "coordinates.html", "elements": ["#coord h2", "#coord-lat", "#coord-lon", "#coord-url", "#coord [data-use-url]"],
                            "click": {"target": "#coord [data-use-url]", "observe": "#coord [data-status]", "attribute": "textContent", "before": "Valid.",
                                      "after": "Could not find latitude/longitude in that Maps URL."}},
+    "web-ui-playground": {"page": "playground.html", "elements": ["#playground > h2:first-child", "#playground [data-counter-value]", "#playground [data-counter-decrement]", "#playground [data-counter-increment]",
+                                                                   "#playground [data-counter-reset]"],
+                          "click": {"target": "#playground [data-counter-increment]", "observe": "#playground", "attribute": "data-value", "before": "0", "after": "1"}},
+    # The irony part is lower on the page: the probe wants every element inside the first screen, so this one opens at its heading (#irony-title).
+    "web-ui-irony": {"page": "playground.html", "fragment": "irony-title", "elements": ["#irony-title", "#playground [data-irony-handle]", "#playground [data-irony-next]"],
+                     "click": {"target": "#playground [data-irony-next]", "observe": "#playground [data-irony-arena]", "attribute": "data-spawn", "before": None, "after": ""}},
+    "web-ui-mcp-lab": {"page": "mcp-lab.html", "elements": ["#mcp h2", "#mcp [data-mcp-sessions]", "#mcp [data-mcp-template=\"initialize\"]"],
+                       "click": {"target": "#mcp [data-mcp-template=\"initialize\"]", "observe": "#mcp", "attribute": "data-template", "before": None, "after": "initialize"}},
+    # The request form is lower on the page, so this one opens at it (#mcp-method) to keep everything on the first screen.
+    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method", "elements": ["#mcp-method", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
+                        "click": {"target": "#mcp [data-mcp-send]", "observe": "#mcp", "attribute": "data-http-status", "before": None, "after": "400"}},
+    "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
+                           "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
+                                     "after": "Nothing to read: paste a report first."}},
     "web-ui-photo-studio": {"page": "photo-studio.html", "elements": ["#photo h2", "#photo [data-status]", "#photo label[for=\"photo-file\"]", "#photo [data-paste]", "#photo .ui-photo-help summary"],
                             "click": {"target": "#photo .ui-photo-help summary", "observe": "#photo .ui-photo-help", "attribute": "open", "before": None, "after": ""}},
 }
+
+
+def btk_adapter_url(spec: dict[str, Any], base: str = BTK_ADAPTER_BASE) -> str:
+    """The page address for an adapter spec: ``base`` + the page, then ``#fragment`` when the spec opens at an anchor (so everything it checks is on the first screen)."""
+    return base + spec["page"] + ("#" + spec["fragment"] if spec.get("fragment") else "")
 
 
 def btk_adapter(adapter_id: str, url: str | None = None) -> dict[str, Any]:
@@ -4174,7 +4195,7 @@ def btk_adapter(adapter_id: str, url: str | None = None) -> dict[str, Any]:
         spec = BTK_ADAPTERS[adapter_id]
     except KeyError:
         raise ValueError(f"unknown adapter: {adapter_id!r}; one of {', '.join(sorted(BTK_ADAPTERS))}") from None
-    return {"schema": "btk-platform-adapter/1", "id": adapter_id, "url": url or BTK_ADAPTER_BASE + spec["page"], "elements": list(spec["elements"]), "click": dict(spec["click"])}
+    return {"schema": "btk-platform-adapter/1", "id": adapter_id, "url": url or btk_adapter_url(spec), "elements": list(spec["elements"]), "click": dict(spec["click"])}
 
 
 # --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
@@ -4593,6 +4614,1675 @@ def door_document(spec: Any, *, theme: str = "modern") -> str:
                            theme=theme, css=bundled_css())
 
 
+# --- Playground: the Counter Playground, the hold-to-repeat button and the Irony generator --------------------------------------------
+# Absorbs flutter_navigation_basic's lib/features/counter_playground (domain/counter_playground_controller.dart, domain/counter_battle_effect.dart, the status
+# ladder in presentation/counter_playground_page.dart), lib/shared/widgets/hold_repeating_button.dart and lib/features/irony_generator (data/ironies.dart,
+# domain/irony_generator_controller.dart, the drag rules in presentation/irony_generator_page.dart). Their Dart tests (test/features/counter_*,
+# test/shared/hold_repeating_button_test.dart, test/features/irony_generator_interaction_test.dart) are the golden values. Python is the reference;
+# ``playground.js`` must agree. Deliberate difference: the random pick is driven by the Door's seeded ``mulberry32`` (Dart's ``Random(7)`` cannot be reproduced
+# here), and the page adds a button for "next irony" so the drag is not the only way to get one.
+COUNTER_MIN, COUNTER_MAX = -100, 100
+COUNTER_STEPS = (1, 5, 10)
+COUNTER_HISTORY = 8
+COUNTER_ATTACK_ORBS = ("🔥", "💧", "🌳", "💡", "🔮")
+COUNTER_HEAL_ORBS = ("❤️", "💚", "✨")
+COUNTER_MAX_ORBS = 6
+COUNTER_ACTIONS = ("step", "increment", "decrement", "change", "restore", "undo", "reset")
+COUNTER_STATUS = {"max": "Maximum reached 🚀", "min": "Minimum reached 🧊", "high": "High score territory 🔥", "low": "Going underground 🕳️",
+                  "too_much": "Too much 😈", "reverse": "Reverse mode 👻", "neutral": "Keep experimenting 👾"}
+HOLD_DELAY_MS, HOLD_INTERVAL_MS = 350, 70
+IRONY_PADDING = 8
+IRONIES = (
+    ("Humans automate everything, then schedule meetings to discuss the automation.", "Tech"),
+    ("The strongest password is usually defeated by the person holding it.", "Tech"),
+    ("We built instant messaging so everyone could wait longer for a reply.", "Tech"),
+    ("Software saves time until the update starts.", "Tech"),
+    ("The cloud is just someone else’s computer with better branding.", "Tech"),
+    ("Everyone values honesty right up until the status report arrives.", "Work"),
+    ("The shortest meeting is the one that was replaced by an email.", "Work"),
+    ("A deadline becomes realistic immediately after it is missed.", "Work"),
+    ("We optimize productivity by adding another productivity tool.", "Work"),
+    ("The busiest calendar often has the least room for actual work.", "Work"),
+    ("People buy smart devices so they can spend more time configuring them.", "Daily"),
+    ("Convenience is carrying five chargers for three devices.", "Daily"),
+    ("The quickest queue is always the one you did not choose.", "Daily"),
+    ("A silent notification is still checked immediately.", "Daily"),
+    ("We save things for later until later needs its own storage plan.", "Daily"),
+    ("Humans invented maps and still ask which way the station is.", "Human"),
+    ("Everyone wants a simple answer to a complicated question.", "Human"),
+    ("Experience is knowing exactly which mistake you are repeating.", "Human"),
+    ("The more choices we have, the longer we spend choosing nothing.", "Human"),
+    ("We dislike uncertainty, so we make confident predictions about it.", "Human"),
+)
+
+
+def _counter_int(value: Any, name: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    return value
+
+
+def counter_effect(counter: int) -> dict[str, Any]:
+    """The Puzzle & Dragons-style readout: positive counts deal damage, negative ones heal by their absolute value; at most six orbs are shown."""
+    counter = _counter_int(counter, "counter")
+    if counter == 0:
+        return {"counter": 0, "amount": 0, "heal": False, "idle": True, "orbs": []}
+    heal, amount = counter < 0, abs(counter)
+    palette = COUNTER_HEAL_ORBS if heal else COUNTER_ATTACK_ORBS
+    return {"counter": counter, "amount": amount, "heal": heal, "idle": False,
+            "orbs": [palette[i % len(palette)] for i in range(min(max(amount, 1), COUNTER_MAX_ORBS))]}
+
+
+def counter_label(counter: int) -> str:
+    """The line under the orbs: ``💥 Damage 3``, ``💚 Heal 2`` or ``Orbs ready…`` at zero."""
+    effect = counter_effect(counter)
+    return "Orbs ready…" if effect["idle"] else (f"💚 Heal {effect['amount']}" if effect["heal"] else f"💥 Damage {effect['amount']}")
+
+
+def counter_status_key(counter: int) -> str:
+    """The status ladder, first match wins: the two ends, then 50, then 10 (above and below zero), then neutral."""
+    counter = _counter_int(counter, "counter")
+    if counter == COUNTER_MAX:
+        return "max"
+    if counter == COUNTER_MIN:
+        return "min"
+    return "high" if counter >= 50 else "low" if counter <= -50 else "too_much" if counter >= 10 else "reverse" if counter <= -10 else "neutral"
+
+
+def counter_state() -> dict[str, Any]:
+    """The start: 0, step 1, no burst yet, and a history of just 0 (newest first)."""
+    return {"counter": 0, "step": 1, "burst": 0, "history": [0]}
+
+
+def counter_apply(state: dict[str, Any], action: str, value: Any = None) -> dict[str, Any]:
+    """One step of the controller as a pure function (the input is never changed).
+
+    ``change``/``restore`` clamp to -100..100 and do nothing when the value does not move (so the burst token stays); a move records the new value at the front of
+    a history of at most 8. ``undo`` drops the front and returns to the next one (it records nothing and bumps the burst). ``reset`` is a no-op at 0. ``step``
+    only accepts 1, 5 and 10 (anything else, or the current step, changes nothing). ``increment``/``decrement`` are ``change`` by plus or minus the step.
+    """
+    if action not in COUNTER_ACTIONS:
+        raise ValueError(f"unknown action: {action!r}")
+    counter, step, burst = _counter_int(state["counter"], "counter"), _counter_int(state["step"], "step"), _counter_int(state["burst"], "burst")
+    history = list(state["history"])
+    if not history or any(type(h) is not int for h in history) or history[0] != counter:
+        raise ValueError("history must start with the current value")
+    result = lambda c=counter, s=step, b=burst, h=history: {"counter": c, "step": s, "burst": b, "history": h}
+    if action == "step":
+        return result(s=value) if type(value) is int and value in COUNTER_STEPS and value != step else result()
+    if action == "undo":
+        return result(c=history[1], b=burst + 1, h=history[1:]) if len(history) > 1 else result()
+    if action == "reset":
+        target = 0
+    elif action in ("increment", "decrement"):
+        target = counter + (step if action == "increment" else -step)
+    elif action == "change":
+        target = counter + _counter_int(value, "delta")
+    else:
+        target = _counter_int(value, "value")
+    target = min(max(target, COUNTER_MIN), COUNTER_MAX)
+    if target == counter:
+        return result()
+    return result(c=target, b=burst + 1, h=[target, *history][:COUNTER_HISTORY])
+
+
+def hold_repeat_count(held_ms: float, *, buttons: int = 1) -> int:
+    """How many times a held button has fired after ``held_ms``: nothing for 350 ms, then once, then once more every 70 ms. Only the primary button (1) holds."""
+    if buttons != 1 or held_ms < HOLD_DELAY_MS:
+        return 0
+    return 1 + int((held_ms - HOLD_DELAY_MS) // HOLD_INTERVAL_MS)
+
+
+def hold_swallows_click(held_ms: float, *, buttons: int = 1) -> bool:
+    """After a hold has repeated, the click that follows the release is ignored once so it does not fire on top of the repeats."""
+    return hold_repeat_count(held_ms, buttons=buttons) > 0
+
+
+def irony_first(count: int, unit: float) -> int:
+    """The first message: a uniform pick of ``count`` using ``unit`` in [0, 1)."""
+    if count < 1 or not 0 <= unit < 1:
+        raise ValueError("count must be at least 1 and unit in [0, 1)")
+    return math.floor(unit * count)
+
+
+def irony_next(count: int, current: int | None, unit: float) -> int | None:
+    """The next message, never the one on screen: pick among the other ``count - 1`` and skip over the current index. With fewer than two messages there is no next."""
+    if not 0 <= unit < 1:
+        raise ValueError("unit must be in [0, 1)")
+    if count < 2:
+        return None
+    pick = math.floor(unit * (count - 1))
+    return pick + 1 if current is not None and 0 <= current <= pick else pick
+
+
+def irony_sequence(seed: int, steps: int, count: int = len(IRONIES)) -> list[int]:
+    """The first message and ``steps`` more, drawn from ``mulberry32(seed)``: consecutive entries are never equal."""
+    rng = mulberry32(seed)
+    out = [irony_first(count, next(rng))]
+    for _ in range(steps):
+        out.append(irony_next(count, out[-1], next(rng)))
+    return out
+
+
+def _rect(rect: Any) -> tuple[float, float, float, float]:
+    if not isinstance(rect, (list, tuple)) or len(rect) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in rect):
+        raise ValueError("a rectangle is four finite numbers: left, top, right, bottom")
+    return tuple(float(v) for v in rect)
+
+
+def rect_overlaps(a: Any, b: Any) -> bool:
+    """Flutter's ``Rect.overlaps``: rectangles that only touch along an edge do not overlap."""
+    (al, at, ar, ab), (bl, bt, br, bb) = _rect(a), _rect(b)
+    return not (ar <= bl or br <= al or ab <= bt or bb <= at)
+
+
+def rect_inside(inner: Any, outer: Any) -> bool:
+    """``inner`` lies within ``outer``, edges included."""
+    (il, it, ir, ib), (ol, ot, orr, ob) = _rect(inner), _rect(outer)
+    return il >= ol and it >= ot and ir <= orr and ib <= ob
+
+
+def rect_deflate(rect: Any, by: float) -> tuple[float, float, float, float]:
+    left, top, right, bottom = _rect(rect)
+    return (left + by, top + by, right - by, bottom - by)
+
+
+def _rect_center(rect: tuple[float, float, float, float]) -> tuple[float, float]:
+    # Flutter's Rect.center is left + width / 2, top + height / 2 (not (left + right) / 2): the same rounding in both languages.
+    left, top, right, bottom = rect
+    return (left + (right - left) / 2.0, top + (bottom - top) / 2.0)
+
+
+def rect_clamp_inside(rect: Any, viewport: Any, padding: float = IRONY_PADDING) -> tuple[float, float, float, float]:
+    """Move ``rect`` into ``viewport`` shrunk by ``padding``; a rectangle as large as the inset is centred instead."""
+    left, top, right, bottom = _rect(rect)
+    inset = rect_deflate(viewport, padding)
+    cx, cy = _rect_center(inset)
+    rx, ry = _rect_center((left, top, right, bottom))
+    dx = dy = 0.0
+    if right - left >= inset[2] - inset[0]:
+        dx = cx - rx
+    else:
+        if left < inset[0]:
+            dx = inset[0] - left
+        if right > inset[2]:
+            dx = inset[2] - right
+    if bottom - top >= inset[3] - inset[1]:
+        dy = cy - ry
+    else:
+        if top < inset[1]:
+            dy = inset[1] - top
+        if bottom > inset[3]:
+            dy = inset[3] - bottom
+    return (left + dx, top + dy, right + dx, bottom + dy)
+
+
+def irony_drop(arena: Any, card: Any, handle: Any) -> dict[str, Any]:
+    """What happens when the drag ends, from three rectangles in arena coordinates (``arena`` is width and height; the others left, top, right, bottom).
+
+    The card entirely outside the arena (edges touching do not count as inside) spawns the next message and goes back to the middle. Otherwise the whole drag
+    handle plus 8 px of padding must be inside the arena, or the card moves by the least amount that brings it in (a handle as large as the arena is centred).
+    A missing card measurement ends the drag without any change; a missing handle one does not move the card.
+    """
+    width, height = (float(v) for v in arena)
+    if not (math.isfinite(width) and math.isfinite(height)):
+        raise ValueError("the arena size must be finite")
+    viewport = (0.0, 0.0, width, height)
+    if card is None:
+        return {"action": "none", "dx": 0.0, "dy": 0.0}
+    if not rect_overlaps(card, viewport):
+        return {"action": "spawn", "dx": 0.0, "dy": 0.0}
+    if handle is None or rect_inside(handle, rect_deflate(viewport, IRONY_PADDING)):
+        return {"action": "none", "dx": 0.0, "dy": 0.0}
+    clamped = rect_clamp_inside(handle, viewport, IRONY_PADDING)
+    (cx, cy), (hx, hy) = _rect_center(clamped), _rect_center(_rect(handle))
+    return {"action": "snap", "dx": cx - hx, "dy": cy - hy}
+
+
+_CSS["playground.css"] = (
+    "@layer components{.ui-play h3{margin:24px 0 8px}.ui-counter-value{font-size:3rem;line-height:1.1;margin:8px 0;font-variant-numeric:tabular-nums}"
+    ".ui-counter-orbs{min-height:56px;font-size:28px;line-height:1.2;margin:8px 0;overflow-wrap:anywhere}"
+    ".ui-counter-bar{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-counter-bar label{display:inline-block;margin:0}"
+    ".ui-counter-actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.ui-counter-history{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;padding:0;list-style:none}"
+    ".ui-counter-actions button,.ui-counter-history button{touch-action:manipulation}"
+    ".ui-counter-orbs[data-playing]{animation:ui-orb-rise 700ms ease-out}@keyframes ui-orb-rise{from{opacity:.25;transform:translateY(0)}to{opacity:1;transform:translateY(-16px)}}"
+    ".ui-irony-arena{position:relative;overflow:hidden;min-height:320px;margin:8px 0;border:1px solid var(--ui-border);border-radius:var(--ui-radius,12px);touch-action:pan-y}"
+    ".ui-irony-card{position:absolute;left:50%;top:50%;translate:-50% -50%;transform:translate(var(--ox,0px),var(--oy,0px)) scale(var(--s,1));transition:transform 140ms ease-out;"
+    "width:min(520px,calc(100% - 48px));margin:0;padding:8px 24px 28px;box-sizing:border-box;border:1px solid var(--ui-border);border-radius:var(--ui-radius,12px);"
+    "background:var(--ui-panel);color:var(--ui-fg);box-shadow:0 2px 8px rgba(0,0,0,.2)}"
+    ".ui-irony-card[data-dragging]{--s:1.035;transition:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}"
+    ".ui-irony-handle{display:block;width:48px;height:32px;margin:0 auto;border:0;background:none;color:inherit;font:inherit;line-height:32px;text-align:center;cursor:grab;touch-action:none}"
+    ".ui-irony-handle:focus-visible{outline:2px solid currentColor;outline-offset:2px}"
+    ".ui-irony-text{margin:8px 0 0;font-size:1.5rem;line-height:1.35;text-align:center;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere}"
+    ".ui-irony-tone{margin:8px 0 0;text-align:center}"
+    ".ui-irony-arena[data-spawn]::after{content:\"\";position:absolute;left:50%;top:50%;width:80%;aspect-ratio:1;border:3px solid currentColor;border-radius:50%;"
+    "transform:translate(-50%,-50%);animation:ui-irony-ring 850ms ease-out forwards;pointer-events:none}@keyframes ui-irony-ring{from{opacity:.55;scale:.15}to{opacity:0;scale:1}}"
+    "@media(prefers-reduced-motion:reduce){.ui-counter-orbs[data-playing],.ui-irony-arena[data-spawn]::after{animation:none}.ui-irony-card{transition:none}}}")
+
+
+def playground_html() -> str:
+    """The Counter Playground and the Irony generator as semantic HTML; the page script fills in the numbers, the orbs and the message."""
+    steps = "".join(f'<label><input type="radio" name="counter-step" value="{s}"{" checked" if s == 1 else ""}> Step {s}</label>' for s in COUNTER_STEPS)
+    data = escape(json.dumps({"ironies": [{"text": t, "tone": tone} for t, tone in IRONIES], "status": COUNTER_STATUS}, ensure_ascii=False, separators=(",", ":")), quote=True)
+    return (f'<section class="ui-panel ui-play" id="playground" data-ui-play data-play="{data}">'
+            '<h2>Counter Playground</h2><p class="ui-muted">A counter from -100 to 100 with a step of 1, 5 or 10, a history of the last eight values, and a damage or heal readout. '
+            'Hold a button to keep stepping. Everything stays in this page.</p>'
+            '<div data-counter><p>Current value</p><p class="ui-counter-value" data-counter-value aria-live="polite">0</p>'
+            '<p class="ui-counter-orbs" data-counter-orbs aria-hidden="true"></p><p class="ui-counter-label" data-counter-label>Orbs ready…</p>'
+            '<p data-counter-status class="ui-muted">Keep experimenting 👾</p>'
+            f'<fieldset class="ui-counter-bar"><legend>Step</legend>{steps}</fieldset>'
+            '<div class="ui-counter-actions"><button class="ui-button" type="button" data-counter-decrement>Decrease</button> '
+            '<button class="ui-button" type="button" data-counter-increment>Increase</button> '
+            '<button class="ui-button" type="button" data-counter-reset>Reset</button> <button class="ui-button" type="button" data-counter-undo>Undo</button></div>'
+            '<h3>Recent values</h3><p class="ui-muted">Tap a value to restore it.</p><ul class="ui-counter-history" data-counter-history></ul></div>'
+            '<h2 id="irony-title">Irony generator</h2><p class="ui-muted">Drag the card by its handle and let it leave the box to get another message. '
+            'If only part of the card is out, the handle is brought back inside. The text can be selected and copied.</p>'
+            '<div class="ui-irony-arena" data-irony-arena data-irony-index="0"><div class="ui-irony-card" data-irony-card>'
+            '<button class="ui-irony-handle" type="button" data-irony-handle aria-label="Drag to move message" title="Drag to move message">⠿</button>'
+            '<p class="ui-irony-text" data-irony-text></p><p class="ui-irony-tone ui-muted" data-irony-tone></p></div></div>'
+            '<p><button class="ui-button" type="button" data-irony-next>New irony</button></p></section>')
+
+
+def playground_document(*, theme: str = "modern") -> str:
+    """A single-file page for the playground."""
+    return render_document(trusted_html='<main class="ui-page">' + playground_html() + "</main>" + module_script(_JS["playground.js"]), title="Playground",
+                           theme=theme, css=bundled_css())
+
+
+# --- Test reports: JUnit evidence, Flutter machine events, outcome tallies, failure history and the allowlisted runners -----------------
+# Absorbs flutter_navigation_basic's python/outcomes.py, flutter_machine_junit.py, validate_runner_junit.py, junit_history.py, failure_identity.py (the identity rule),
+# multi_test_runner.py, node_test_runner.py and expected_child_failure.py. Their Python tests (python/tests/test_outcomes.py, test_flutter_machine_junit.py,
+# test_validate_runner_junit.py, test_junit_history.py, test_multi_test_runner.py, test_node_test_runner.py, test_expected_child_failure.py) are the golden values;
+# vendor/xprobe.py's ``cases_from_junit`` supplies the identity rule (parameter suffix removed, first failure/error child, DTD and entities refused, 1 MB). Python is
+# the reference; ``report.js`` must agree on everything that needs no process or file.
+# Deliberate differences from the originals: (1) a failed, non-hidden "loading <file>" test counts as an ``error`` (the tally used to skip every loading test, so a
+# compile failure looked like zero tests); (2) ``ok`` also needs a passed test: nothing ran is not green; (3) a boolean is never an ID and only JSON ``true`` is a flag
+# (the page cannot tell ``1.0`` from ``1``, so the Python side does not either); (4) only strings are used as names, reasons and error text (``str(obj)`` differs
+# between languages); (5) messages never contain the input or the parser position; (6) characters XML 1.0 cannot carry are written as U+FFFD, so the converted report
+# always parses; (7) a ``skipped`` whose message starts with ``known:`` or ``xfail:`` (or whose type is ``pytest.xfail``) is counted as ``xfailed``; (8) a missing
+# class is written as ``(none)`` in a failure identity (the originals refused the whole report); (9) lines are split on \r\n, \r and \n only.
+OUTCOME_KEYS = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
+JUNIT_MAX_BYTES = 1_000_000
+JUNIT_MAX_IDENTITIES = 1000
+FLUTTER_RESULTS = ("success", "failure", "error")
+TEST_RUNNERS = ("deno", "playwright-node", "playwright-python")
+LEDGER_MAX_PATTERNS = 500
+CHILD_STREAM_LIMIT = 1024 * 1024
+_XML_BAD = re.compile("[^\t\n\r -\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def _is_int(value: Any) -> bool:
+    return type(value) is int
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError("JSON constants (NaN, Infinity) are not allowed")
+
+
+def _json_line(line: str) -> Any:
+    return json.loads(line, parse_constant=_reject_json_constant)
+
+
+def _text_lines(text: str) -> list[str]:
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def _only_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _only_str(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def outcome_counts() -> dict[str, int]:
+    return {key: 0 for key in OUTCOME_KEYS}
+
+
+def counts_line(counts: dict[str, int]) -> str:
+    """``passed=2 failed=1 skipped=3 xfailed=1 xpassed=0 error=0``: pytest's mix on one line."""
+    return " ".join(f"{key}={counts.get(key, 0)}" for key in OUTCOME_KEYS)
+
+
+def counts_summary(counts: dict[str, int], *, source: str) -> dict[str, Any]:
+    """The tally as a receipt. ``ok`` needs no failure and no error and at least one passed test (nothing ran is not green)."""
+    clean = {key: int(counts.get(key, 0)) for key in OUTCOME_KEYS}
+    return {"source": source, "counts": clean, "total": sum(clean.values()), "ok": clean["failed"] == 0 and clean["error"] == 0 and clean["passed"] > 0}
+
+
+def flutter_outcomes(text: str) -> dict[str, int]:
+    """Tally Flutter / ``package:test`` JSON reporter events (one JSON object per line).
+
+    Flutter has success, failure, error and skip. There is no native xfail: a skip whose reason starts with ``known:`` or ``xfail:`` is counted as ``xfailed``, so a catalogue
+    can mark known gaps without failing CI. A line that is not JSON, or JSON that is not an object, counts as an ``error`` (a truncated file must not look like a green empty run).
+    Hidden tests are not counted, and neither is a successful "loading <file>" pseudo-test; a failed one is an ``error``.
+    """
+    counts, starts = outcome_counts(), {}
+    for raw in _text_lines(text):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = _json_line(line)
+        except (ValueError, RecursionError):
+            counts["error"] += 1
+            continue
+        if not isinstance(event, dict):
+            counts["error"] += 1
+            continue
+        kind = event.get("type")
+        if kind == "testStart":
+            test = event.get("test")
+            if test is not None and not isinstance(test, dict):
+                counts["error"] += 1
+            elif _is_int((test or {}).get("id")):
+                starts[test["id"]] = test
+        elif kind == "testDone":
+            if event.get("hidden") is True:
+                continue
+            tid = event.get("testID")
+            meta = starts.get(tid) if _is_int(tid) else None
+            result, skipped = event.get("result"), event.get("skipped") is True
+            if _only_str((meta or {}).get("name")).startswith("loading ") and result == "success":
+                continue
+            reason = _only_str(_only_dict((meta or {}).get("metadata")).get("skipReason")).lower()
+            if skipped or result == "skipped":
+                counts["xfailed" if reason.startswith(("known:", "xfail:")) else "skipped"] += 1
+            elif result == "success":
+                counts["passed"] += 1
+            elif result == "error":
+                counts["error"] += 1
+            else:
+                counts["failed"] += 1
+    return counts
+
+
+def _xml_clean(text: str) -> str:
+    return _XML_BAD.sub("\ufffd", text)
+
+
+def _xml_text(text: str) -> str:
+    return _xml_clean(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _xml_attr(text: str) -> str:
+    return _xml_text(text).replace('"', "&quot;").replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#09;")
+
+
+def flutter_machine_junit(text: str) -> dict[str, Any]:
+    """Convert Flutter machine JSON test events into per-case JUnit XML.
+
+    Follows the Dart test JSON reporter protocol: a skipped test reports ``result: "success"`` with ``skipped: true``; hidden pseudo-tests (a successful ``loading <file>``) are
+    dropped but a failed load stays visible, so a compile error is never lost; ``classname`` is the suite path, so the same test name in two files keeps two identities.
+    Anything incomplete (no ``done``, a test without a result, an orphan or repeated event, no visible test) is a ``ValueError``. Returns ``{"xml", "tests"}``.
+    """
+    suites: dict[int, str] = {}
+    tests: dict[int, dict[str, Any]] = {}
+    done = False
+    for raw in _text_lines(text):
+        if not raw.strip():
+            continue
+        try:
+            event = _json_line(raw)
+        except (ValueError, RecursionError):
+            raise ValueError("invalid JSON in a Flutter event") from None
+        if not isinstance(event, dict):
+            raise ValueError("invalid Flutter event")
+        kind = event.get("type")
+        if kind == "suite":
+            suite = _only_dict(event.get("suite"))
+            if _is_int(suite.get("id")):
+                suites[suite["id"]] = _only_str(suite.get("path")) or "flutter"
+        elif kind == "testStart":
+            test = _only_dict(event.get("test"))
+            identifier = test.get("id")
+            if not _is_int(identifier) or identifier in tests:
+                raise ValueError("duplicate or missing Flutter test ID")
+            suite_id = test.get("suiteID")
+            tests[identifier] = {"name": _only_str(test.get("name")), "suite": suites.get(suite_id, "flutter") if _is_int(suite_id) else "flutter",
+                                 "skip_reason": _only_str(_only_dict(test.get("metadata")).get("skipReason")),
+                                 "result": None, "skipped": False, "hidden": False, "errors": []}
+        elif kind == "error":
+            identifier = event.get("testID")
+            if not _is_int(identifier) or identifier not in tests:
+                raise ValueError("orphan Flutter error")
+            tests[identifier]["errors"].append("\n".join(_only_str(event.get(k)) for k in ("error", "stackTrace") if _only_str(event.get(k))))
+        elif kind == "testDone":
+            identifier = event.get("testID")
+            if not _is_int(identifier) or identifier not in tests or tests[identifier]["result"] is not None:
+                raise ValueError("orphan or duplicate Flutter completion")
+            item = tests[identifier]
+            item["result"], item["skipped"], item["hidden"] = event.get("result"), event.get("skipped") is True, event.get("hidden") is True
+        elif kind == "done":
+            done = True
+    if not done or any(not t["name"] or t["result"] not in FLUTTER_RESULTS for t in tests.values()):
+        raise ValueError("incomplete Flutter machine report")
+    visible = [t for _, t in sorted(tests.items()) if not t["hidden"]]
+    if not visible:
+        raise ValueError("Flutter machine report contains no visible tests")
+    rows = []
+    for item in visible:
+        head = f'<testcase name="{_xml_attr(item["name"])}" classname="{_xml_attr(item["suite"])}"'
+        if item["result"] in ("failure", "error"):
+            body = _xml_text("\n\n".join(item["errors"]))
+            tag = f'<{item["result"]} message="Flutter test {item["result"]}"'
+            rows.append(f"  {head}>\n    {tag}>{body}</{item['result']}>\n  </testcase>" if body else f"  {head}>\n    {tag} />\n  </testcase>")
+        elif item["skipped"]:
+            rows.append(f'  {head}>\n    <skipped message="{_xml_attr(item["skip_reason"])}" />\n  </testcase>')
+        else:
+            rows.append(f"  {head} />")
+    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="{len(visible)}">\n' + "\n".join(rows) + "\n</testsuite>\n"
+    return {"xml": xml, "tests": len(visible)}
+
+
+def _junit_root(text: str, *, max_bytes: int = JUNIT_MAX_BYTES):
+    if not isinstance(text, str):
+        raise ValueError("JUnit text must be a string")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    if len(text.encode("utf-8", "surrogatepass")) > max_bytes:
+        raise ValueError("JUnit exceeds the byte limit")
+    if re.search(r"<![ \t\n\r\f\v]*(?:DOCTYPE|ENTITY)", text, re.I | re.A):
+        raise ValueError("DTD and entity declarations are unsupported")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        raise ValueError("missing or malformed JUnit XML") from None
+    if root.tag not in ("testsuite", "testsuites"):
+        raise ValueError("not a JUnit testsuite")
+    return root
+
+
+def _first_text(element: Any) -> str:
+    return element.text or ""
+
+
+def junit_cases(text: str, *, max_bytes: int = JUNIT_MAX_BYTES) -> list[dict[str, Any]]:
+    """Every ``testcase`` at any depth (Node nests describe() blocks as child suites), failing closed: missing or malformed XML, a root that is not a testsuite, no testcase,
+    a testcase without a name, a DTD or entity declaration, or more than ``max_bytes`` is a ``ValueError``.
+
+    A case is ``failed`` (first failure/error child is ``failure``), ``error`` (it is ``error``), ``xfailed`` / ``skipped`` (a ``skipped`` child) or ``passed``.
+    """
+    root = _junit_root(text, max_bytes=max_bytes)
+    out = []
+    for case in root.iter("testcase"):
+        name = case.get("name") or ""
+        if not name:
+            raise ValueError("JUnit testcase without name")
+        problem = next((child for child in case if child.tag in ("failure", "error")), None)
+        skip = case.find("skipped")
+        if problem is not None:
+            outcome = "failed" if problem.tag == "failure" else "error"
+        elif skip is not None:
+            reason = (skip.get("message") or "")
+            outcome = "xfailed" if skip.get("type") == "pytest.xfail" or reason.lower().startswith(("known:", "xfail:")) else "skipped"
+        else:
+            outcome = "passed"
+        out.append({"name": name, "class": case.get("classname") or "", "outcome": outcome, "kind": problem.tag if problem is not None else None,
+                    "message": (problem.get("message") or _first_text(problem)).strip() if problem is not None else "",
+                    "failure": case.find("failure") is not None, "error": case.find("error") is not None, "skipped": skip is not None})
+    if not out:
+        raise ValueError("JUnit report contains no testcases")
+    return out
+
+
+def junit_inspect(text: str) -> dict[str, int]:
+    """The check made before a runner's report joins a shared collection (``validate_runner_junit.inspect``): cases with a failure, with an error, and skipped ones."""
+    cases = junit_cases(text)
+    return {"tests": len(cases), "failures": sum(c["failure"] for c in cases), "errors": sum(c["error"] for c in cases), "skipped": sum(c["skipped"] for c in cases)}
+
+
+def _clip(text: str, limit: int) -> str:
+    return text[:limit]
+
+
+def junit_report(text: str, *, messages: bool = False) -> dict[str, Any]:
+    """Outcome counts and the failing cases of a JUnit report. A failure carries the SHA-256 of its message, not the message (``messages=True`` adds the first 2,000 characters)."""
+    cases = junit_cases(text)
+    counts = outcome_counts()
+    for case in cases:
+        counts[case["outcome"]] += 1
+    failures = []
+    for case in cases:
+        if case["kind"] is None:
+            continue
+        item = {"class": _clip(case["class"], 200), "name": _clip(case["name"], 200), "kind": case["kind"],
+                "message_sha256": hashlib.sha256(case["message"].encode("utf-8")).hexdigest()}
+        if messages:
+            item["message"] = _clip(case["message"], 2000)
+        failures.append(item)
+    summary = counts_summary(counts, source="junit")
+    return {"schema": "junit-report/1", "total": len(cases), "counts": summary["counts"], "ok": summary["ok"], "failures": failures}
+
+
+def junit_failure_records(text: str, repository: str = "local/report", *, max_cases: int = JUNIT_MAX_IDENTITIES) -> dict[str, Any]:
+    """Failure identities in the compact corpus shape (``category``, ``context``, ``value``): class, test and kind of each failing case, parameter suffix (from ``[``) removed,
+    messages and logs omitted. Returns ``{"records", "truncated"}``; more than ``max_cases`` failures is truncated, not an error."""
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be owner/name")
+    records = []
+    for case in junit_cases(text):
+        if case["kind"] is None:
+            continue
+        if len(records) == max_cases:
+            return {"records": records, "truncated": True}
+        records.append({"category": "test_failure", "context": {"repository": repository},
+                        "value": {"class": case["class"].split("[", 1)[0] or "(none)", "test": case["name"].split("[", 1)[0], "kind": case["kind"]}})
+    return {"records": records, "truncated": False}
+
+
+def junit_history_load(records: Any) -> list[dict[str, Any]]:
+    """Fingerprint failure records (a list of dicts or the text of a JSONL file). Only ``test_failure`` records count. The fingerprint is a test-identity fingerprint
+    (repository, class, test, kind), not a root-cause fingerprint, and it ignores run-specific context."""
+    if isinstance(records, str):
+        rows = []
+        for number, line in enumerate(_text_lines(records), 1):
+            if line.strip():
+                try:
+                    rows.append((number, _json_line(line)))
+                except (ValueError, RecursionError):
+                    raise ValueError(f"invalid failure record at line {number}") from None
+    else:
+        rows = list(enumerate(records, 1))
+    result = []
+    for number, item in rows:
+        if not isinstance(item, dict) or item.get("category") != "test_failure":
+            continue
+        value, context = item.get("value"), item.get("context")
+        if not isinstance(value, dict) or not isinstance(context, dict):
+            raise ValueError(f"invalid failure record at line {number}")
+        identity = {"repository": context.get("repository"), "class": value.get("class"), "test": value.get("test"), "kind": value.get("kind")}
+        if not all(isinstance(v, str) and v for v in identity.values()):
+            raise ValueError(f"incomplete failure identity at line {number}")
+        token = json.dumps(identity, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        result.append({"fingerprint": "junit-basic-v1:" + hashlib.sha256(token).hexdigest(), "identity": identity})
+    return result
+
+
+def _history_findings(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def count(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            entry = grouped.setdefault(row["fingerprint"], {"identity": row["identity"], "count": 0})
+            entry["count"] += 1
+        return grouped
+    now, old = count(current), count(previous)
+    findings = []
+    for fingerprint in sorted(now.keys() | old.keys()):
+        a, b = now.get(fingerprint), old.get(fingerprint)
+        findings.append({"fingerprint": fingerprint, "identity": (a or b)["identity"], "status": "new" if b is None else "resolved" if a is None else "recurring",
+                         "current_count": a["count"] if a else 0, "previous_count": b["count"] if b else 0})
+    return findings
+
+
+def junit_history(current: list[dict[str, Any]], previous: list[dict[str, Any]], *, commit_sha: str, run_id: str, previous_commit_sha: str | None = None,
+                  previous_run_id: str | None = None) -> dict[str, Any]:
+    """Compare the failure identities of two consecutive CI runs: new, recurring or resolved, with how many times each occurred (``junit_history.compare``)."""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha):
+        raise ValueError("commit SHA must contain 40 hex characters")
+    if previous_commit_sha is not None and not re.fullmatch(r"[0-9a-fA-F]{40}", previous_commit_sha):
+        raise ValueError("previous commit SHA must contain 40 hex characters")
+    if not re.fullmatch(r"[0-9]+", run_id) or (previous_run_id is not None and not re.fullmatch(r"[0-9]+", previous_run_id)):
+        raise ValueError("run IDs must be decimal")
+    findings = _history_findings(current, previous)
+    return {"schema": "junit-history/1", "commit_sha": commit_sha, "run_id": run_id, "previous_commit_sha": previous_commit_sha, "previous_run_id": previous_run_id,
+            "fingerprint_scope": "repository+class+test+kind (not root cause)",
+            "summary": {s: sum(f["status"] == s for f in findings) for s in ("new", "recurring", "resolved")}, "findings": findings}
+
+
+def junit_diff(current_text: str, previous_text: str, repository: str = "local/report") -> dict[str, Any]:
+    """The same comparison straight from two JUnit reports (no commit or run ID needed)."""
+    load = lambda text: junit_history_load(junit_failure_records(text, repository)["records"])
+    findings = _history_findings(load(current_text), load(previous_text))
+    return {"schema": "junit-diff/1", "fingerprint_scope": "repository+class+test+kind (not root cause)",
+            "summary": {s: sum(f["status"] == s for f in findings) for s in ("new", "recurring", "resolved")}, "findings": findings}
+
+
+def attempt_history(runner: str, files: list[str], attempts: list[dict[str, Any]], scope: str = "same-selected-files") -> dict[str, Any]:
+    """What was run and what happened, with ``initial_failed`` and ``flaky_recovered`` (the first attempt failed and the one retry passed). A retry never masks the first failure."""
+    return {"schema": "test-attempts/1", "runner": runner, "files": files, "retry_scope": scope, "attempts": attempts,
+            "initial_failed": attempts[0]["exit_code"] != 0,
+            "flaky_recovered": len(attempts) == 2 and attempts[0]["exit_code"] != 0 and attempts[1]["exit_code"] == 0}
+
+
+def failure_ledger_update(ledger: dict[str, Any] | None, runner: str, attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Accumulate failure fingerprints across runs without keeping raw error text (a new ledger when ``ledger`` is None; the input is never changed)."""
+    if ledger is None:
+        data: dict[str, Any] = {"schema": "failure-patterns/1", "patterns": {}}
+    else:
+        if not isinstance(ledger, dict) or ledger.get("schema") != "failure-patterns/1" or not isinstance(ledger.get("patterns"), dict):
+            raise ValueError("invalid failure ledger schema")
+        data = {"schema": ledger["schema"], "patterns": {k: dict(v) for k, v in ledger["patterns"].items()}}
+    for attempt in attempts:
+        for failure in attempt["failures"]:
+            key = runner + ":" + failure["kind"] + ":" + failure["message_sha256"]
+            pattern = data["patterns"].setdefault(key, {"runner": runner, "kind": failure["kind"], "message_sha256": failure["message_sha256"], "occurrences": 0})
+            pattern["occurrences"] += 1
+    if len(data["patterns"]) > LEDGER_MAX_PATTERNS:
+        raise ValueError(f"failure ledger reached {LEDGER_MAX_PATTERNS} distinct patterns; archive it first")
+    return data
+
+
+def failure_ledger_file(path: Path, runner: str, attempts: list[dict[str, Any]]) -> None:
+    """``failure_ledger_update`` on a file: a corrupt existing file is refused (and left as it is); the write is atomic."""
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = None
+    if path.exists():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("invalid existing failure ledger; refusing overwrite") from exc
+        if not isinstance(current, dict):
+            raise ValueError("invalid failure ledger schema")
+    data = failure_ledger_update(current, runner, attempts)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp.replace(path)
+
+
+def runner_command(runner: str, *, root: Path, files: list[str], report: Path) -> tuple[list[str], Path, dict[str, str]]:
+    """The command, working directory and environment of an allowlisted runner (Deno, Playwright for Node, Playwright for Python): no shell, no arbitrary command, every
+    test file must exist inside the repository, and Node Playwright files must be under ``e2e``."""
+    if runner not in TEST_RUNNERS or not files:
+        raise ValueError("unsupported runner or empty file selection")
+    base = root.resolve()
+    paths = []
+    for file in files:
+        candidate = (base / file).resolve()
+        if not candidate.is_file() or not candidate.is_relative_to(base):
+            raise ValueError("test file must exist inside repository")
+        paths.append(str(candidate))
+    report = report.resolve()
+    if runner == "deno":
+        return ["deno", "test", "--junit-path", str(report), *paths], base, {}
+    if runner == "playwright-node":
+        e2e = base / "e2e"
+        if not all(Path(p).is_relative_to(e2e) for p in paths):
+            raise ValueError("Node Playwright test files must be under e2e")
+        return ["npx", "--no-install", "playwright", "test", "--reporter=junit", *[str(Path(p).relative_to(e2e)) for p in paths]], e2e, {"PLAYWRIGHT_JUNIT_OUTPUT_FILE": str(report)}
+    return [sys.executable, "-m", "pytest", "--junitxml=" + str(report), *paths], base, {}
+
+
+def junit_file_summary(path: Path) -> dict[str, Any]:
+    """A report file's tally in the shape the attempt records use (``failed`` counts failures and errors, ``skipped`` counts known gaps too); a missing file, a symlink or bad
+    XML is a ``ValueError``."""
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("missing or malformed JUnit evidence")
+    try:
+        report = junit_report(path.read_bytes().decode("utf-8"))
+    except UnicodeDecodeError:
+        raise ValueError("missing or malformed JUnit evidence") from None
+    counts = report["counts"]
+    return {"total": report["total"], "passed": counts["passed"], "failed": counts["failed"] + counts["error"], "skipped": counts["skipped"] + counts["xfailed"],
+            "failures": [{k: f[k] for k in ("name", "class", "message_sha256", "kind")} for f in report["failures"]]}
+
+
+def _retry_report(report: Path) -> Path:
+    return report.with_name(report.stem + ".retry" + report.suffix)
+
+
+def _ledger_best_effort(ledger: Path | None, runner: str, attempts: list[dict[str, Any]]) -> None:
+    """A secondary diagnostic write must never replace the test exit status."""
+    if ledger is None:
+        return
+    try:
+        failure_ledger_file(ledger, runner, attempts)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"warning: failure ledger update skipped: {exc}", file=sys.stderr)
+
+
+def run_test_suite(runner: str, *, root: Path, files: list[str], report: Path, history: Path, retry_failed: bool = False, timeout: int = 300,
+                   ledger: Path | None = None, invoke: Any = None) -> int:
+    """Run the selected files with an allowlisted runner, check the JUnit it wrote, optionally retry the same files once, and record every attempt.
+
+    A missing or empty report, or a run that executed nothing, fails closed; a stale report from an earlier run is removed first, so it cannot stand in for this one; a retry
+    that passes never hides the first failure (the exit status is the first attempt's); the ledger is best effort. ``invoke`` replaces ``subprocess.run`` in tests.
+    """
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    command, cwd, extra_env = runner_command(runner, root=root, files=files, report=report)
+    report, history = report.resolve(), history.resolve()
+    report.parent.mkdir(parents=True, exist_ok=True)
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.unlink(missing_ok=True)
+    report.unlink(missing_ok=True)
+    _retry_report(report).unlink(missing_ok=True)
+    invoke = invoke or subprocess.run
+    attempts = []
+    for number in (1, 2) if retry_failed else (1,):
+        output = report if number == 1 else _retry_report(report)
+        output.unlink(missing_ok=True)
+        this = [arg.replace(str(report), str(output)) for arg in command]
+        env = {**os.environ, **{k: v.replace(str(report), str(output)) for k, v in extra_env.items()}}
+        try:
+            code = invoke(this, cwd=cwd, env=env, timeout=timeout, check=False).returncode
+        except FileNotFoundError:
+            code = 127
+        except subprocess.TimeoutExpired:
+            code = 124
+        try:
+            result = junit_file_summary(output)
+        except ValueError as exc:
+            result = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "failures": [], "evidence_error": str(exc)}
+            code = code or 1
+        if code == 0 and (result["failed"] or result["passed"] == 0):
+            code = 1
+        attempts.append({"attempt": number, "exit_code": code, "junit": str(output), **result})
+        print(f'{runner}: attempt={number} exit={code} passed={result["passed"]} failed={result["failed"]}')
+        if code == 0:
+            break
+    history.write_text(json.dumps(attempt_history(runner, files, attempts), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _ledger_best_effort(ledger, runner, attempts)
+    return attempts[0]["exit_code"]
+
+
+def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path | None = None, name_pattern: str | None = None, timeout: int = 300,
+                  node: str = "node") -> int:
+    """Run Node's native test runner (spec output on the screen, JUnit in ``report``) and keep a small JSON receipt; the JUnit stays the canonical artifact.
+
+    Nothing stale is trusted (the report and receipt are removed first); a missing Node is 127, a timeout 124, a missing or empty report, all tests skipped, or a name filter
+    that selected nothing (only file-level cases) fails closed. Node owns the regex semantics of ``name_pattern``.
+    """
+    if not files:
+        print("node runner: no test files selected", file=sys.stderr)
+        return 2
+    report = report.resolve()
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.unlink(missing_ok=True)
+    if receipt is not None:
+        receipt.unlink(missing_ok=True)
+    command = [node, "--test", "--test-reporter=spec", "--test-reporter-destination=stdout", "--test-reporter=junit", f"--test-reporter-destination={report}"]
+    if name_pattern is not None:
+        command.extend(["--test-name-pattern", name_pattern])
+    command.extend(files)
+    try:
+        code = subprocess.run(command, cwd=root, timeout=timeout, check=False).returncode
+    except FileNotFoundError:
+        print("node runner: Node executable not found", file=sys.stderr)
+        return 127
+    except subprocess.TimeoutExpired:
+        print(f"node runner: timed out after {timeout}s", file=sys.stderr)
+        return 124
+    try:
+        cases = junit_cases(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        print(f"node runner: missing or invalid Node JUnit: {report}", file=sys.stderr)
+        return code if code != 0 else 1
+    summary = {"passed": 0, "failed": 0, "skipped": 0, "total": len(cases), "failures": [], "names": [c["name"] for c in cases]}
+    for case in cases:
+        if case["kind"] is not None:
+            summary["failed"] += 1
+            summary["failures"].append({"name": case["name"], "message": case["message"][:2000]})
+        elif case["outcome"] in ("skipped", "xfailed"):
+            summary["skipped"] += 1
+        else:
+            summary["passed"] += 1
+    if summary["passed"] + summary["failed"] == 0:
+        print("node runner: no executed tests (all skipped)", file=sys.stderr)
+        return code if code != 0 else 1
+    selected = {(root / name).resolve() for name in files}
+    if name_pattern is not None and all((root / name).resolve() in selected for name in summary["names"]):
+        print("node runner: no selected tests (only file-level JUnit cases)", file=sys.stderr)
+        return code if code != 0 else 1
+    summary.update({"runner": "node", "exit_code": code, "ok": code == 0 and summary["failed"] == 0, "junit": str(report)})
+    if receipt is not None:
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"node: passed={summary['passed']} failed={summary['failed']} skipped={summary['skipped']} exit={code}")
+    for failure in summary["failures"]:
+        print(f"FAIL {failure['name']}: {failure['message']}", file=sys.stderr)
+    return code if code != 0 else (1 if summary["failed"] else 0)
+
+
+def expected_child_failure(command: list[str], *, expect_exit: list[int], output_dir: Path, timeout: float = 30.0) -> tuple[int, dict[str, Any]]:
+    """Run a child command that is *meant* to fail and keep bounded evidence (stdout and stderr up to 1 MiB each, and a receipt). The outer exit status is 0 only when the child
+    exited with one of the expected nonzero codes in time; zero cannot be declared an expected failure. Returns ``(status, receipt)``."""
+    if not expect_exit or any(code == 0 for code in expect_exit):
+        raise ValueError("--expect-exit must be nonzero; this wrapper is for intentional failures")
+    if timeout <= 0:
+        raise ValueError("--timeout must be greater than zero")
+    if not command:
+        raise ValueError("child command is required")
+    bound = lambda data: (data[:CHILD_STREAM_LIMIT], len(data) > CHILD_STREAM_LIMIT)
+    out = output_dir.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    timed_out = False
+    try:
+        done = subprocess.run(command, capture_output=True, text=False, shell=False, timeout=timeout)
+        exit_code = done.returncode
+        stdout, stdout_cut = bound(done.stdout)
+        stderr, stderr_cut = bound(done.stderr)
+    except subprocess.TimeoutExpired as error:
+        timed_out, exit_code = True, None
+        stdout, stdout_cut = bound(error.stdout or b"")
+        stderr, stderr_cut = bound(error.stderr or b"")
+    (out / "stdout.bin").write_bytes(stdout)
+    (out / "stderr.bin").write_bytes(stderr)
+    matched = not timed_out and exit_code in expect_exit
+    receipt = {"schema": "expected-child-failure/1", "exit_code": exit_code, "expected_exit_codes": sorted(set(expect_exit)), "matched_expectation": matched,
+               "timed_out": timed_out, "timeout_seconds": timeout, "stdout_truncated": stdout_cut, "stderr_truncated": stderr_cut, "stream_limit_bytes": CHILD_STREAM_LIMIT,
+               "command_executable": Path(command[0]).name, "argument_count": len(command) - 1}
+    (out / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return (0 if matched else 1), receipt
+
+
+def report_kind(text: str) -> str | None:
+    """``junit`` for text that starts with ``<``, ``flutter`` for text that starts with ``{`` (one JSON event per line), otherwise None (after trimming, BOM first)."""
+    head = (text[1:] if text.startswith("\ufeff") else text).strip()[:1]
+    return "junit" if head == "<" else "flutter" if head == "{" else None
+
+
+def report_read(text: str, previous: str | None = None, *, messages: bool = False) -> dict[str, Any]:
+    """What the test report page shows for a pasted report: its kind, counts, the one-line summary, the failing cases and, for Flutter events, the same run as JUnit XML (or why
+    that was not possible); with a previous JUnit run, what is new, recurring or resolved."""
+    kind = report_kind(text)
+    if kind is None:
+        raise ValueError("Paste JUnit XML (it starts with <) or Flutter test events (JSON lines).")
+    out: dict[str, Any] = {"kind": kind, "junit": None, "convert_error": None}
+    if kind == "junit":
+        report = junit_report(text, messages=messages)
+        out.update(total=report["total"], counts=report["counts"], ok=report["ok"], failures=report["failures"])
+    else:
+        summary = counts_summary(flutter_outcomes(text), source="flutter-json")
+        out.update(total=summary["total"], counts=summary["counts"], ok=summary["ok"], failures=[])
+        try:
+            converted = flutter_machine_junit(text)
+            out.update(junit=converted["xml"], failures=junit_report(converted["xml"], messages=messages)["failures"])
+        except ValueError as error:
+            out["convert_error"] = str(error)
+    out["line"] = f"{counts_line(out['counts'])} total={out['total']} ok={'true' if out['ok'] else 'false'}"
+    if previous is not None and previous.strip():
+        if kind != "junit":
+            raise ValueError("Comparing with a previous run needs JUnit XML for both.")
+        out["diff"] = junit_diff(text, previous)
+    return out
+
+
+_CSS["report.css"] = ("@layer components{.ui-report h3{margin:24px 0 8px}.ui-report label{display:block;margin:8px 0 4px}.ui-report .ui-input{width:100%;box-sizing:border-box}.ui-report textarea{min-height:96px;"
+                      "font-family:var(--ui-font-mono,monospace)}.ui-report-line{margin:8px 0;font-weight:600;overflow-wrap:anywhere}.ui-report-check{display:inline-block!important;margin:0 0 0 8px!important}"
+                      ".ui-report table{border-collapse:collapse;width:100%}.ui-report th,.ui-report td{border:1px solid var(--ui-border);padding:4px 8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}"
+                      ".ui-report-status{margin:8px 0}.ui-report code{overflow-wrap:anywhere}.ui-report-more{margin:8px 0}}")
+
+
+def report_html() -> str:
+    """The test report tool as semantic HTML: paste or drop JUnit XML (or Flutter JSON events), optionally compare with the previous run; the page script fills in the rest."""
+    return ('<section class="ui-panel ui-report" id="report" data-ui-report><h2>Test report</h2>'
+            '<p class="ui-muted">Paste a JUnit XML report or Flutter test events (one JSON object per line), or choose a file. Read in this page; nothing is sent.</p>'
+            '<label for="report-input">Current run</label><textarea class="ui-input" id="report-input" data-report-input spellcheck="false" autocomplete="off" rows="4"></textarea>'
+            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
+            '<p><button class="ui-button" type="button" data-report-run>Read the report</button> <button class="ui-button" type="button" data-report-copy>Copy summary</button> '
+            '<button class="ui-button" type="button" data-report-convert hidden>Copy as JUnit XML</button> <label class="ui-report-check"><input type="checkbox" data-report-messages> Show failure messages</label></p>'
+            '<p class="ui-report-status ui-muted" role="status" aria-live="polite" data-report-status>Nothing read yet.</p>'
+            '<p class="ui-report-line" data-report-line></p>'
+            '<details class="ui-report-more"><summary>Compare with a previous run</summary><label for="report-previous">Previous run (JUnit XML): what is new, recurring or resolved</label>'
+            '<textarea class="ui-input" id="report-previous" data-report-previous spellcheck="false" autocomplete="off" rows="4"></textarea></details>'
+            '<div data-report-out></div></section>')
+
+
+def report_document(*, theme: str = "modern") -> str:
+    """A single-file page for the test report."""
+    return render_document(trusted_html='<main class="ui-page">' + report_html() + "</main>" + module_script(_JS["report.js"]), title="Test report", theme=theme, css=bundled_css())
+
+
+# --- MCP lab: JSON-RPC, the dual-era Streamable HTTP rules, a session client, OAuth metadata, PKCE and a Bearer audience check --------------------
+# Absorbs flutter_navigation_basic's lib/shared/mcp (json_rpc.dart, mcp_protocol.dart, mcp_foundation.dart, mcp_modern_http.dart, mcp_session_client.dart, oauth_pkce.dart)
+# and build_tools/src/mock_mcp.dart (the mock server's routes and Origin policy). Their Dart tests (test/shared/mcp/mcp_foundation_test.dart, mcp_integration_test.dart) are the
+# golden values, RFC 7636 Appendix B is the PKCE oracle. Python is the reference; ``mcp.js`` must agree on every request, in the same order, with the same session ids.
+# Deliberate differences: (1) ids and the PKCE verifier come from an injected random source (Dart's ``Random(42)`` cannot be reproduced; the default is the OS's secure one);
+# (2) the Bearer check takes the clock in seconds and splits ``Authorization`` on ASCII whitespace only; (3) a JSON number written ``-32603.0`` is a float, and the page cannot
+# tell it from an integer, so the tests do not use one; (4) error messages are the Dart ``FormatException`` messages, without the class name; (5) base64 in a header name is
+# checked strictly (alphabet, padding, UTF-8) in both languages; Dart's decoder may differ on the bits after the last group, which no test depends on.
+MCP_LEGACY_VERSION = "2025-03-26"
+MCP_CURRENT_VERSION = "2026-07-28"
+MCP_META_VERSION = "io.modelcontextprotocol/protocolVersion"
+MCP_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+MCP_META_CLIENT_CAPS = "io.modelcontextprotocol/clientCapabilities"
+RPC_PARSE_ERROR, RPC_INVALID_REQUEST, RPC_METHOD_NOT_FOUND, RPC_INVALID_PARAMS, RPC_INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
+RPC_UNAUTHORIZED, RPC_FORBIDDEN, RPC_SESSION_REQUIRED, RPC_SESSION_INVALID, RPC_HEADER_MISMATCH, RPC_UNSUPPORTED_VERSION = -32001, -32003, -32010, -32011, -32020, -32022
+MCP_HEADERS = {"protocol": "mcp-protocol-version", "session": "mcp-session-id", "method": "mcp-method", "name": "mcp-name"}
+_HEADER_SENTINEL = re.compile(r"=\?base64\?([A-Za-z0-9+/=]+)\?=")
+_BASE64_STRICT = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+_PKCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+
+
+def mcp_support_matrix() -> dict[str, Any]:
+    """What this foundation implements (the order of the Dart ``McpSupportMatrix.asJson``); in-app OAuth on the web is never promised."""
+    return {"specificationVersion": MCP_LEGACY_VERSION, "currentOfficialVersion": MCP_CURRENT_VERSION, "implementsCurrentOfficial": True, "legacyMcpEra": True,
+            "currentOfficialEra": True, "streamableHttp": True, "jsonRpc": True, "sessionHeader": True, "oauthDiscovery": True, "pkceS256": True, "bearerAudienceCheck": True,
+            "flutterWebInAppOAuthGuaranteed": False, "legacySseDefault": False}
+
+
+def _compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _base64_strict(text: str) -> bytes:
+    if not _BASE64_STRICT.fullmatch(text):
+        raise ValueError("invalid base64")
+    return base64.b64decode(text)
+
+
+def _b64url_nopad(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _rpc_text(value: Any) -> str:
+    """A value as the Dart code prints it in a message: ``null``, ``true``, a string as it is, anything else as compact JSON."""
+    return value if isinstance(value, str) else _compact(value)
+
+
+def rpc_failure(id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": id, "error": error}
+
+
+def rpc_result(id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": id, "result": result}
+
+
+def rpc_request(method: str, *, id: Any = None, params: Any = None) -> dict[str, Any]:
+    """A request as it goes on the wire: ``id`` and ``params`` are left out when absent (no ``id`` makes it a notification)."""
+    out: dict[str, Any] = {"jsonrpc": "2.0"}
+    if id is not None:
+        out["id"] = id
+    out["method"] = method
+    if params is not None:
+        out["params"] = params
+    return out
+
+
+def rpc_request_parse(raw: Any) -> dict[str, Any] | None:
+    """A JSON-RPC 2.0 request from text or an object, or None: version must be ``"2.0"`` and the method a non-empty string. The result has ``id``, ``method`` and ``params`` keys (None when absent)."""
+    try:
+        value = json.loads(raw, parse_constant=_reject_json_constant) if isinstance(raw, str) else raw
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(value, dict) or value.get("jsonrpc") != "2.0" or not isinstance(value.get("method"), str) or not value["method"]:
+        return None
+    return {"jsonrpc": "2.0", "id": value.get("id"), "method": value["method"], "params": value.get("params")}
+
+
+def rpc_is_notification(request: dict[str, Any]) -> bool:
+    return request.get("id") is None
+
+
+def rpc_response_parse(value: Any, expected_id: Any = None) -> dict[str, Any]:
+    """Validate a response: version 2.0, exactly one of ``result`` and ``error``, an integer ``code`` and a string ``message``, and (when given) the id the request used."""
+    if not isinstance(value, dict) or value.get("jsonrpc") != "2.0":
+        raise ValueError("invalid JSON-RPC response version")
+    has_result, has_error = "result" in value, "error" in value
+    if has_result == has_error:
+        raise ValueError("JSON-RPC response must contain exactly one of result or error")
+    if has_error:
+        error = value["error"]
+        if not isinstance(error, dict):
+            raise ValueError("invalid JSON-RPC error payload")
+        if type(error.get("code")) is not int:
+            raise ValueError("JSON-RPC error code must be an int")
+        if not isinstance(error.get("message"), str):
+            raise ValueError("JSON-RPC error message must be a String")
+        response = rpc_failure(value.get("id"), error["code"], error["message"], error.get("data"))
+    else:
+        response = rpc_result(value.get("id"), value["result"])
+    if expected_id is not None and response["id"] != expected_id:
+        raise ValueError(f"JSON-RPC response id mismatch: expected {_rpc_text(expected_id)} got {_rpc_text(response['id'])}")
+    return response
+
+
+def mcp_header_needs_encoding(value: str) -> bool:
+    """True when a header value cannot travel as it is: leading or trailing space, anything outside printable ASCII, or the shape of the sentinel itself."""
+    if value != value.strip(" ") or _HEADER_SENTINEL.fullmatch(value) or (value.startswith("=?") and value.endswith("?=")):
+        return True
+    return any(ord(c) < 0x20 or ord(c) > 0x7E for c in value)
+
+
+def mcp_header_encode(value: str) -> str:
+    """The value itself when it is safe, otherwise ``=?base64?<base64 of the UTF-8>?=``."""
+    return value if not mcp_header_needs_encoding(value) else "=?base64?" + base64.b64encode(value.encode("utf-8")).decode("ascii") + "?="
+
+
+def mcp_header_decode(value: str) -> str | None:
+    """The original value of a plain or sentinel-encoded header; None for a malformed sentinel (bad base64 or UTF-8, or the shape of one that is not well formed)."""
+    match = _HEADER_SENTINEL.fullmatch(value)
+    if match:
+        try:
+            return _base64_strict(match.group(1)).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return None if value.startswith("=?") and "?=" in value else value
+
+
+def mcp_streamable_headers(*, session_id: str | None = None, protocol_version: str = MCP_LEGACY_VERSION, accept_event_stream: bool = True, method: str | None = None,
+                           name: str | None = None) -> dict[str, str]:
+    """The headers of a Streamable HTTP POST. A name is encoded when it needs it."""
+    headers = {"content-type": "application/json", "accept": "application/json, text/event-stream" if accept_event_stream else "application/json",
+               MCP_HEADERS["protocol"]: protocol_version}
+    if session_id:
+        headers[MCP_HEADERS["session"]] = session_id
+    if method:
+        headers[MCP_HEADERS["method"]] = method
+    if name:
+        headers[MCP_HEADERS["name"]] = mcp_header_encode(name)
+    return headers
+
+
+def mcp_session_id(random_unit: Any = None, byte_length: int = 18) -> str:
+    """A URL-safe session id with no padding: ``byte_length`` bytes (18 by default) from ``random_unit`` (a callable giving floats in [0, 1); default: the OS's secure source)."""
+    if random_unit is None:
+        return _b64url_nopad(os.urandom(byte_length))
+    return _b64url_nopad(bytes(math.floor(random_unit() * 256) for _ in range(byte_length)))
+
+
+def pkce_challenge_s256(verifier: str) -> str:
+    """RFC 7636 S256: base64url (no padding) of the SHA-256 of the verifier."""
+    return _b64url_nopad(hashlib.sha256(verifier.encode("utf-8")).digest())
+
+
+def pkce_pair(random_unit: Any = None, verifier_length: int = 64) -> dict[str, str]:
+    """A new verifier of 43 to 128 unreserved characters and its S256 challenge."""
+    if not 43 <= verifier_length <= 128:
+        raise ValueError("verifier_length must be 43..128")
+    if random_unit is None:
+        random_unit = lambda: int.from_bytes(os.urandom(4), "big") / 4294967296
+    verifier = "".join(_PKCE_ALPHABET[math.floor(random_unit() * len(_PKCE_ALPHABET))] for _ in range(verifier_length))
+    return {"codeVerifier": verifier, "codeChallenge": pkce_challenge_s256(verifier), "codeChallengeMethod": "S256"}
+
+
+def _string_list(value: dict[str, Any], key: str) -> list[str] | None:
+    if key not in value:
+        return None
+    items = value[key]
+    if not isinstance(items, list) or any(not isinstance(i, str) for i in items):
+        raise ValueError(f"invalid OAuth metadata field: {key}")
+    return list(items)
+
+
+def _optional_string(value: dict[str, Any], key: str) -> str | None:
+    if value.get(key) is None:
+        return None
+    if not isinstance(value[key], str) or not value[key]:
+        raise ValueError(f"invalid OAuth metadata field: {key}")
+    return value[key]
+
+
+def oauth_server_metadata(doc: Any) -> dict[str, Any]:
+    """Authorization server metadata (RFC 8414 subset). It never invents what the server left out: no ``code_challenge_methods_supported`` means no PKCE, an absent token auth
+    method list is ``client_secret_basic``, an absent grant list is ``authorization_code`` and ``implicit``; ``response_types_supported`` is required."""
+    if not isinstance(doc, dict):
+        raise ValueError("OAuth metadata must be an object")
+    methods = _string_list(doc, "code_challenge_methods_supported") or []
+    auth_methods = _string_list(doc, "token_endpoint_auth_methods_supported")
+    responses = _string_list(doc, "response_types_supported")
+    if not responses:
+        raise ValueError("missing OAuth metadata field: response_types_supported")
+    grants = _string_list(doc, "grant_types_supported")
+    for key in ("issuer", "authorization_endpoint", "token_endpoint"):
+        if not isinstance(doc.get(key), str) or not doc[key]:
+            raise ValueError(f"missing OAuth metadata field: {key}")
+    out = {"issuer": doc["issuer"], "authorization_endpoint": doc["authorization_endpoint"], "token_endpoint": doc["token_endpoint"]}
+    registration = _optional_string(doc, "registration_endpoint")
+    if registration is not None:
+        out["registration_endpoint"] = registration
+    out.update(scopes_supported=_string_list(doc, "scopes_supported") or [], response_types_supported=responses,
+               grant_types_supported=grants if grants is not None else ["authorization_code", "implicit"], code_challenge_methods_supported=methods,
+               token_endpoint_auth_methods_supported=auth_methods if auth_methods is not None else ["client_secret_basic"])
+    out["supportsPkceS256"] = any(m.upper() == "S256" for m in methods)
+    return out
+
+
+def oauth_resource_metadata(doc: Any) -> dict[str, Any]:
+    """Protected resource metadata (RFC 9728 subset) for an MCP server over HTTP."""
+    if not isinstance(doc, dict):
+        raise ValueError("OAuth metadata must be an object")
+    if not isinstance(doc.get("resource"), str) or not doc["resource"]:
+        raise ValueError("missing protected resource")
+    servers = doc.get("authorization_servers")
+    if not isinstance(servers, list) or not servers:
+        raise ValueError("missing authorization_servers")
+    if any(not isinstance(s, str) or not s for s in servers):
+        raise ValueError("invalid OAuth metadata field: authorization_servers")
+    scopes = _string_list({k: v for k, v in doc.items() if v is not None}, "scopes_supported") or []
+    methods = _string_list({k: v for k, v in doc.items() if v is not None}, "bearer_methods_supported")
+    out = {"resource": doc["resource"], "authorization_servers": list(servers), "scopes_supported": scopes, "bearer_methods_supported": methods if methods is not None else ["header"]}
+    name = _optional_string(doc, "resource_name")
+    if name is not None:
+        out["resource_name"] = name
+    return out
+
+
+def bearer_inspect(authorization: str | None, expected_audience: str, now: float | None = None) -> dict[str, Any]:
+    """Check a demo JWT-shaped Bearer locally: ``missing``, ``malformed``, ``expired`` (expiry not after ``now``, in seconds), ``wrong_audience`` or ``ok``. The signature is *not* verified:
+    use it only with fixture tokens. Audience may be a string or a non-empty list of non-empty strings; any entry may match; an expired token is reported before a wrong audience."""
+    if not authorization:
+        return {"status": "missing", "audience": None, "expires_at": None}
+    parts = re.split(r"[ \t\n\r\f\v]+", authorization)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return {"status": "malformed", "audience": None, "expires_at": None}
+    segments = parts[1].split(".")
+    malformed = {"status": "malformed", "audience": None, "expires_at": None}
+    if len(segments) < 2:
+        return malformed
+    try:
+        segment = segments[1] + "=" * (-len(segments[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(_strict_urlsafe(segment)).decode("utf-8"), parse_constant=_reject_json_constant)
+        if not isinstance(payload, dict):
+            return malformed
+        aud, exp = payload.get("aud"), payload.get("exp")
+        audiences: list[str] = []
+        if isinstance(aud, str):
+            audiences.append(aud)
+        elif isinstance(aud, list):
+            if not aud or any(not isinstance(i, str) or not i for i in aud):
+                return malformed
+            audiences.extend(aud)
+        elif aud is not None:
+            return malformed
+        audience = audiences[0] if audiences else None
+        expires_at = None
+        if isinstance(exp, (int, float)) and not isinstance(exp, bool):
+            expires_at = int(exp)
+        if expires_at is not None and expires_at <= (time.time() if now is None else now):
+            return {"status": "expired", "audience": audience, "expires_at": expires_at}
+        if expected_audience not in audiences:
+            return {"status": "wrong_audience", "audience": audience, "expires_at": expires_at}
+        return {"status": "ok", "audience": expected_audience, "expires_at": expires_at}
+    except (ValueError, OverflowError, RecursionError):
+        return malformed
+
+
+def _strict_urlsafe(text: str) -> str:
+    if not re.fullmatch(r"(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}==|[A-Za-z0-9_-]{3}=)?", text):
+        raise ValueError("invalid base64url")
+    return text
+
+
+def demo_bearer_token(audience: Any, expires_at: int) -> str:
+    """An unsigned JWT-shaped token for local audience tests (``alg: none``)."""
+    part = lambda value: _b64url_nopad(_compact(value).encode("utf-8"))
+    return part({"alg": "none", "typ": "JWT"}) + "." + part({"aud": audience, "exp": expires_at}) + ".demo-sig"
+
+
+def _mcp_map(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def mcp_meta_version(request: dict[str, Any]) -> str | None:
+    """``params._meta["io.modelcontextprotocol/protocolVersion"]`` when it is a string."""
+    params = request.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    version = meta.get(MCP_META_VERSION) if isinstance(meta, dict) else None
+    return version if isinstance(version, str) else None
+
+
+def mcp_looks_modern(request: dict[str, Any], header_protocol: str | None, meta_version: str | None = None) -> bool:
+    """A request counts as current-official when it is ``server/discover``, carries a ``_meta`` protocol version, or says so in the ``MCP-Protocol-Version`` header."""
+    resolved = meta_version if meta_version is not None else mcp_meta_version(request)
+    return request["method"] == "server/discover" or resolved is not None or header_protocol == MCP_CURRENT_VERSION
+
+
+def mcp_validate_modern(request: dict[str, Any], header_protocol: str | None, meta_version: str | None, header_method: str | None, header_name: str | None) -> dict[str, Any] | None:
+    """Check a current-official request's headers against its body: a failure response (answer it with HTTP 400), or None when it is sound. The checks run in a fixed order."""
+    def fail(message: str, data: Any = None, code: int = RPC_HEADER_MISMATCH) -> dict[str, Any]:
+        return rpc_failure(request.get("id"), code, message, data)
+    if not header_protocol:
+        return fail("MCP-Protocol-Version header is required")
+    params = request["params"] if isinstance(request.get("params"), dict) else None
+    meta = params["_meta"] if params is not None and isinstance(params.get("_meta"), dict) else None
+    if meta is None:
+        return fail("params._meta is required")
+    if not meta_version:
+        return fail("params._meta protocolVersion is required")
+    if header_protocol != meta_version:
+        return fail("MCP-Protocol-Version does not match body _meta", {"header": header_protocol, "meta": meta_version})
+    if header_protocol != MCP_CURRENT_VERSION:
+        return fail("Unsupported protocol version", {"supported": [MCP_LEGACY_VERSION, MCP_CURRENT_VERSION], "requested": header_protocol}, RPC_UNSUPPORTED_VERSION)
+    info = meta.get(MCP_META_CLIENT_INFO)
+    if not isinstance(info, dict):
+        return fail("params._meta clientInfo must be an object")
+    if not isinstance(info.get("name"), str) or not info["name"]:
+        return fail("params._meta clientInfo.name must be a non-empty string")
+    if not isinstance(info.get("version"), str) or not info["version"]:
+        return fail("params._meta clientInfo.version must be a non-empty string")
+    if not isinstance(meta.get(MCP_META_CLIENT_CAPS), dict):
+        return fail("params._meta clientCapabilities must be an object")
+    if not header_method:
+        return fail("Mcp-Method header is required")
+    if header_method != request["method"]:
+        return fail("Mcp-Method does not match JSON-RPC method", {"header": header_method, "method": request["method"]})
+    if request["method"] in ("tools/call", "resources/read", "prompts/get"):
+        expected = params.get("uri" if request["method"] == "resources/read" else "name")
+        if not header_name:
+            return fail("Mcp-Name header is required")
+        decoded = mcp_header_decode(header_name)
+        if decoded is None:
+            return fail("Mcp-Name header is malformed")
+        if isinstance(expected, str) and decoded != expected:
+            return fail("Mcp-Name does not match body params", {"header": header_name, "decoded": decoded, "expected": expected})
+    return None
+
+
+_MCP_CAPABILITIES = {"tools": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False}, "prompts": {"listChanged": False}}
+_MCP_SERVER_INFO = {"name": "flutter-navigation-basic-mcp-foundation", "version": "0.1.0"}
+
+
+class McpFoundation:
+    """The dual-era demo MCP server as a state machine: ``initialize`` opens a session (legacy ``2025-03-26``), while the current-official ``2026-07-28`` requests carry their own
+    ``_meta`` and need no session. It serves ``ping``, tools (``echo``), resources (``demo://readme``) and prompts (``greet``). A foundation stub, not a full MCP host."""
+
+    def __init__(self, session_id_factory: Any = None):
+        self.session_id_factory = session_id_factory or mcp_session_id
+        self.sessions: dict[str, dict[str, Any]] = {}
+
+    def session(self, session_id: str | None) -> dict[str, Any] | None:
+        return self.sessions.get(session_id) if session_id is not None else None
+
+    def handle_rpc(self, request: dict[str, Any], session_id: str | None = None, bearer: dict[str, str] | None = None) -> tuple[dict[str, Any], str | None]:
+        """One request in, ``(response, session id to set)`` out. ``bearer`` is ``{"status": "ok" | "unauthorized" | "forbidden", "reason": ...}`` from the HTTP layer."""
+        rid, method = request.get("id"), request["method"]
+        if bearer is not None and bearer["status"] != "ok":
+            code = RPC_FORBIDDEN if bearer["status"] == "forbidden" else RPC_UNAUTHORIZED
+            return rpc_failure(rid, code, bearer["status"], {"reason": bearer["reason"]}), session_id
+        if method == "initialize":
+            return self._initialize(request)
+        if method == "notifications/initialized":
+            return self._require_session(request, session_id, lambda _s: rpc_result(rid, None))
+        if method == "ping":
+            return self._require_session(request, session_id, lambda _s: rpc_result(rid, {}))
+        if method == "server/discover":
+            return rpc_result(rid, {"resultType": "complete", "protocolVersions": [MCP_LEGACY_VERSION, MCP_CURRENT_VERSION], "capabilities": _MCP_CAPABILITIES, "serverInfo": _MCP_SERVER_INFO,
+                                    "instructions": f"Dual-era demo server. Prefer {MCP_CURRENT_VERSION} with per-request _meta, or legacy initialize + session."}), None
+        params = _mcp_map(request.get("params"))
+        invalid = lambda message: rpc_failure(rid, RPC_INVALID_PARAMS, message)
+        if method == "tools/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"tools": [{"name": "echo", "description": "Echo a string argument", "inputSchema": {
+                "type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}), list_result=True)
+        if method == "tools/call":
+            def call(_s: Any) -> dict[str, Any]:
+                args = _mcp_map(params.get("arguments")) if params else None
+                if (params.get("name") if params else None) != "echo":
+                    return invalid("unknown tool")
+                text = (args or {}).get("text")
+                if not isinstance(text, str):
+                    return invalid("missing text")
+                return rpc_result(rid, {"content": [{"type": "text", "text": text}], "isError": False})
+            return self._modern_or_session(request, session_id, call)
+        if method == "resources/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"resources": [{"uri": "demo://readme", "name": "README", "mimeType": "text/plain"}]}), list_result=True)
+        if method == "resources/read":
+            def read(_s: Any) -> dict[str, Any]:
+                uri = params.get("uri") if params else None
+                if uri != "demo://readme":
+                    return invalid("unknown resource")
+                return rpc_result(rid, {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "MCP foundation demo resource"}]})
+            return self._modern_or_session(request, session_id, read)
+        if method == "prompts/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"prompts": [{"name": "greet", "description": "Greeting prompt"}]}), list_result=True)
+        if method == "prompts/get":
+            def get(_s: Any) -> dict[str, Any]:
+                if (params.get("name") if params else None) != "greet":
+                    return invalid("unknown prompt")
+                return rpc_result(rid, {"description": "Greeting prompt", "messages": [{"role": "user", "content": {"type": "text", "text": "Hello from MCP foundation"}}]})
+            return self._modern_or_session(request, session_id, get)
+        return rpc_failure(rid, RPC_METHOD_NOT_FOUND, f"method not found: {method}"), session_id
+
+    def _initialize(self, request: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        rid = request.get("id")
+        bad = lambda message: (rpc_failure(rid, RPC_INVALID_PARAMS, message), None)
+        params = _mcp_map(request.get("params"))
+        if params is None:
+            return bad("initialize params must be an object")
+        if not isinstance(params.get("protocolVersion"), str) or not params["protocolVersion"]:
+            return bad("protocolVersion must be a non-empty string")
+        if _mcp_map(params.get("capabilities")) is None:
+            return bad("capabilities must be an object")
+        info = _mcp_map(params.get("clientInfo"))
+        if info is None:
+            return bad("clientInfo must be an object")
+        if not isinstance(info.get("name"), str) or not info["name"]:
+            return bad("clientInfo.name must be a non-empty string")
+        if not isinstance(info.get("version"), str) or not info["version"]:
+            return bad("clientInfo.version must be a non-empty string")
+        session_id = self.session_id_factory()
+        self.sessions[session_id] = {"id": session_id, "protocolVersion": MCP_LEGACY_VERSION, "clientInfo": info}
+        return rpc_result(rid, {"protocolVersion": MCP_LEGACY_VERSION, "capabilities": _MCP_CAPABILITIES, "serverInfo": _MCP_SERVER_INFO}), session_id
+
+    def _modern_or_session(self, request: dict[str, Any], session_id: str | None, build: Any, list_result: bool = False) -> tuple[dict[str, Any], str | None]:
+        params = _mcp_map(request.get("params"))
+        meta = _mcp_map(params.get("_meta")) if params else None
+        if meta is not None and meta.get(MCP_META_VERSION) == MCP_CURRENT_VERSION:
+            response = build(None)
+            if "result" in response:       # current-official results say they are complete; lists also carry cache hints
+                result = response["result"]
+                if not isinstance(result, dict):
+                    result = {"resultType": "complete", "value": result}
+                else:
+                    result = dict(result)
+                    result.setdefault("resultType", "complete")
+                    if list_result:
+                        result.setdefault("ttlMs", 60000)
+                        result.setdefault("cacheScope", "private")
+                response = rpc_result(response["id"], result)
+            return response, None
+        return self._require_session(request, session_id, build)
+
+    def _require_session(self, request: dict[str, Any], session_id: str | None, build: Any) -> tuple[dict[str, Any], str | None]:
+        rid = request.get("id")
+        if not session_id:
+            return rpc_failure(rid, RPC_SESSION_REQUIRED, "Mcp-Session-Id required"), session_id
+        session = self.sessions.get(session_id)
+        if session is None:
+            return rpc_failure(rid, RPC_SESSION_INVALID, "unknown session"), session_id
+        return build(session), session_id
+
+
+def mcp_header(headers: dict[str, str], name: str) -> str | None:
+    """A header by name, ignoring case (the first match)."""
+    wanted = name.lower()
+    return next((v for k, v in headers.items() if k.lower() == wanted), None)
+
+
+def mcp_origin_allows(allowed: Any, origin: str | None) -> bool:
+    """The DNS-rebinding guard: no Origin is fine (curl, a CLI); one that is present must be on the list."""
+    return not origin or origin in allowed
+
+
+def mcp_origins_for_port(port: int) -> list[str]:
+    return [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]
+
+
+class McpRoutes:
+    """The mock server's routes: the OAuth discovery documents, ``/mcp/support-matrix`` and the Streamable HTTP endpoint ``/mcp``, with the dual-era status rules.
+
+    Legacy requests need ``Mcp-Session-Id`` after ``initialize`` (400 if absent, 404 if unknown); current-official requests are checked against their ``_meta`` (400); an unknown
+    current-official method is 404, an unknown legacy one is 200 with a JSON-RPC error; an accepted notification is 202 with no body; a Bearer is checked against the audience
+    (401 or 403). ``session_error_status=True`` is the in-process transport: it maps session errors from the handler to 400 and 404 and ignores Origin and Authorization.
+    """
+
+    def __init__(self, handler: McpFoundation | None = None, *, resource: str = "http://127.0.0.1:8787/mcp", issuer: str = "http://127.0.0.1:8787",
+                 expected_audience: str = "http://127.0.0.1:8787/mcp", allowed_origins: Any = None, clock: Any = None, session_error_status: bool = False,
+                 force_bearer: dict[str, str] | None = None):
+        self.handler = handler or McpFoundation()
+        self.resource, self.issuer, self.expected_audience = resource, issuer, expected_audience
+        self.allowed_origins = list(allowed_origins) if allowed_origins is not None else mcp_origins_for_port(8787)
+        self.clock, self.session_error_status, self.force_bearer = clock, session_error_status, force_bearer
+
+    @classmethod
+    def for_port(cls, port: int, handler: McpFoundation | None = None, **kwargs: Any) -> "McpRoutes":
+        """Discovery URLs, audience and Origin list that follow the real listen port."""
+        base = f"http://127.0.0.1:{port}"
+        return cls(handler, resource=base + "/mcp", issuer=base, expected_audience=base + "/mcp", allowed_origins=mcp_origins_for_port(port), **kwargs)
+
+    def handle(self, method: str, path: str, headers: dict[str, str], raw_body: str | None) -> dict[str, Any] | None:
+        """A response ``{"status", "headers", "body"}`` for an MCP or OAuth demo route, or None for any other path."""
+        path = path[:-1] if path.endswith("/") and len(path) > 1 else path
+        if path == "/.well-known/oauth-authorization-server":
+            doc = oauth_server_metadata({"issuer": self.issuer, "authorization_endpoint": self.issuer + "/oauth/authorize", "token_endpoint": self.issuer + "/oauth/token",
+                                         "scopes_supported": ["mcp"], "response_types_supported": ["code"], "grant_types_supported": ["authorization_code"],
+                                         "code_challenge_methods_supported": ["S256"], "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"]})
+            doc.pop("supportsPkceS256")
+            return {"status": 200, "headers": {}, "body": doc}
+        if path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
+            return {"status": 200, "headers": {}, "body": oauth_resource_metadata({"resource": self.resource, "authorization_servers": [self.issuer], "scopes_supported": ["mcp"]})}
+        if path == "/mcp/support-matrix":
+            return {"status": 200, "headers": {}, "body": mcp_support_matrix()}
+        if path != "/mcp":
+            return None
+        if method.upper() != "POST":
+            return {"status": 405, "headers": {"allow": "POST"}, "body": {"error": "method_not_allowed"}}
+        return self._post(headers, raw_body)
+
+    def _post(self, headers: dict[str, str], raw_body: str | None) -> dict[str, Any]:
+        origin = None if self.session_error_status else mcp_header(headers, "origin")
+        if not mcp_origin_allows(self.allowed_origins, origin):
+            return {"status": 403, "headers": {}, "body": {"error": "origin_forbidden", "origin": origin}}
+        request = rpc_request_parse(raw_body)
+        if request is None:
+            return {"status": 400, "headers": {}, "body": rpc_failure(None, RPC_PARSE_ERROR, "parse error")}
+        gate = self.force_bearer
+        auth = None if self.session_error_status else mcp_header(headers, "authorization")
+        if auth:
+            claim = bearer_inspect(auth, self.expected_audience, self.clock() if self.clock else None)
+            gate = {"ok": {"status": "ok", "reason": "ok"}, "wrong_audience": {"status": "forbidden", "reason": "wrong_audience"}, "expired": {"status": "unauthorized", "reason": "expired"},
+                    "missing": {"status": "unauthorized", "reason": "invalid_bearer"}, "malformed": {"status": "unauthorized", "reason": "invalid_bearer"}}[claim["status"]]
+        inbound = mcp_header(headers, MCP_HEADERS["session"])
+        header_protocol = mcp_header(headers, MCP_HEADERS["protocol"])
+        meta_version = mcp_meta_version(request)
+        modern = mcp_looks_modern(request, header_protocol, meta_version)
+        if modern:
+            error = mcp_validate_modern(request, header_protocol, meta_version, mcp_header(headers, MCP_HEADERS["method"]), mcp_header(headers, MCP_HEADERS["name"]))
+            if error is not None:
+                return {"status": 400, "headers": {MCP_HEADERS["protocol"]: MCP_CURRENT_VERSION}, "body": error}
+        elif request["method"] != "initialize":
+            if not inbound:
+                return {"status": 400, "headers": {}, "body": {"error": "session_required", "message": "Mcp-Session-Id required after initialize"}}
+            if self.handler.session(inbound) is None:
+                return {"status": 404, "headers": {}, "body": {"error": "session_not_found", "message": "unknown Mcp-Session-Id"}}
+        response, out_session = self.handler.handle_rpc(request, None if modern else inbound, gate)
+        out_headers = {}
+        if out_session is not None:
+            out_headers[MCP_HEADERS["session"]] = out_session
+        out_headers[MCP_HEADERS["protocol"]] = MCP_CURRENT_VERSION if modern else MCP_LEGACY_VERSION
+        error = response.get("error")
+        code = error["code"] if error else None
+        for status, name, rpc_code in ((401, "unauthorized", RPC_UNAUTHORIZED), (403, "forbidden", RPC_FORBIDDEN)):
+            if code == rpc_code:
+                return {"status": status, "headers": out_headers, "body": {"error": name, "message": error["message"], "reason": error.get("data")}}
+        if rpc_is_notification(request):
+            if error:
+                return {"status": 400, "headers": out_headers, "body": {"error": "notification_rejected", "message": error["message"], "code": error["code"]}}
+            return {"status": 202, "headers": out_headers, "body": None}
+        if modern and code == RPC_METHOD_NOT_FOUND:
+            return {"status": 404, "headers": out_headers, "body": response}
+        status = 200
+        if self.session_error_status:
+            status = 400 if code == RPC_SESSION_REQUIRED else 404 if code == RPC_SESSION_INVALID else 200
+        return {"status": status, "headers": out_headers, "body": response}
+
+
+class McpClient:
+    """A client for the dual-era demos. ``transport(headers, body_text)`` returns ``{"status_code", "headers", "body"}``.
+
+    Whatever the server sends is checked: a response must be well-formed JSON-RPC with the id of the request; a non-2xx status is never success, even if its body looks like a
+    result; a session id is kept only from a successful response (never from a failed ``initialize``); a rejected notification is an error the demos stop on.
+    """
+
+    def __init__(self, transport: Any, client_name: str = "flutter-navigation-basic", client_version: str = "0.1.0"):
+        self.transport, self.client_name, self.client_version = transport, client_name, client_version
+        self.session_id: str | None = None
+        self.protocol_version = MCP_LEGACY_VERSION
+        self._next_id = 1
+
+    def initialize(self) -> dict[str, Any]:
+        request = rpc_request("initialize", id=self._take_id(), params={"protocolVersion": MCP_LEGACY_VERSION, "capabilities": {}, "clientInfo": {"name": self.client_name, "version": self.client_version}})
+        response, session = self._send(request)
+        if "error" not in response:
+            self.session_id = session or self.session_id
+            result = response["result"]
+            if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
+                self.protocol_version = result["protocolVersion"]
+        return response
+
+    def notify_initialized(self) -> dict[str, Any]:
+        return self._send(rpc_request("notifications/initialized"))[0]
+
+    def list_tools(self) -> dict[str, Any]:
+        return self._rpc("tools/list")
+
+    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
+
+    def list_resources(self) -> dict[str, Any]:
+        return self._rpc("resources/list")
+
+    def list_prompts(self) -> dict[str, Any]:
+        return self._rpc("prompts/list")
+
+    def ping(self) -> dict[str, Any]:
+        return self._rpc("ping")
+
+    def run_echo_demo(self, text: str = "hello") -> dict[str, Any]:
+        """initialize, notifications/initialized, tools/list and tools/call(echo) on the legacy path; stops at the first error."""
+        log: list[str] = []
+        done = lambda ok, last=None: {"ok": ok, "log": log, "session_id": self.session_id, "last_response": last}
+        init = self.initialize()
+        log.append("initialize → " + _compact(init))
+        if "error" in init:
+            return done(False)
+        notified = self.notify_initialized()
+        if "error" in notified:
+            log.append(f"notifications/initialized → rejected {_compact(notified)} (session={self.session_id})")
+            return done(False)
+        log.append(f"notifications/initialized → accepted (session={self.session_id})")
+        listed = self.list_tools()
+        log.append("tools/list → " + _compact(listed))
+        if "error" in listed:
+            return done(False)
+        called = self.call_tool("echo", {"text": text})
+        log.append("tools/call(echo) → " + _compact(called))
+        return done("error" not in called, called)
+
+    def run_modern_echo_demo(self, text: str = "hello") -> dict[str, Any]:
+        """The current-official path: server/discover, tools/list, tools/call(echo), with no initialize and no session; every request carries its ``_meta``."""
+        log: list[str] = []
+        self.protocol_version, self.session_id = MCP_CURRENT_VERSION, None
+        done = lambda ok, last=None: {"ok": ok, "log": log, "session_id": self.session_id, "last_response": last}
+        meta = lambda extra=None: {"_meta": {MCP_META_VERSION: MCP_CURRENT_VERSION, MCP_META_CLIENT_INFO: {"name": self.client_name, "version": self.client_version}, MCP_META_CLIENT_CAPS: {}}, **(extra or {})}
+        discover = self._rpc("server/discover", meta())
+        log.append("server/discover → " + _compact(discover))
+        if "error" in discover:
+            return done(False)
+        listed = self._rpc("tools/list", meta())
+        log.append("tools/list → " + _compact(listed))
+        if "error" in listed:
+            return done(False)
+        called = self._rpc("tools/call", meta({"name": "echo", "arguments": {"text": text}}))
+        log.append("tools/call(echo) → " + _compact(called))
+        return done("error" not in called, called)
+
+    def _take_id(self) -> int:
+        value, self._next_id = self._next_id, self._next_id + 1
+        return value
+
+    def _rpc(self, method: str, params: Any = None) -> dict[str, Any]:
+        return self._send(rpc_request(method, id=self._take_id(), params=params))[0]
+
+    def _send(self, request: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        params, name = request.get("params"), None
+        if isinstance(params, dict):
+            if request["method"] in ("tools/call", "prompts/get") and isinstance(params.get("name"), str):
+                name = params["name"]
+            elif request["method"] == "resources/read" and isinstance(params.get("uri"), str):
+                name = params["uri"]
+        headers = mcp_streamable_headers(session_id=self.session_id, protocol_version=self.protocol_version, method=request["method"], name=name)
+        sent = self.transport(headers, _compact(request))
+        returned = mcp_header(sent["headers"], MCP_HEADERS["session"])
+        http_ok = 200 <= sent["status_code"] < 300
+        if "id" not in request:
+            if http_ok:
+                if returned:
+                    self.session_id = returned
+                return rpc_result(None, None), self.session_id
+            return rpc_failure(None, RPC_INTERNAL_ERROR, "notification rejected", {"statusCode": sent["status_code"], "body": sent["body"]}), self.session_id
+        body = sent["body"]
+        rid = request["id"]
+        status_code = lambda code_when_other: RPC_UNAUTHORIZED if sent["status_code"] == 401 else RPC_FORBIDDEN if sent["status_code"] == 403 else code_when_other
+        if isinstance(body, dict):
+            if "error" in body and "jsonrpc" not in body:
+                error = body["error"]
+                response = rpc_failure(rid, status_code(RPC_INTERNAL_ERROR), error if isinstance(error, str) else _compact(error) if error is not None else "http_error", body)
+            else:
+                try:
+                    response = rpc_response_parse(body, rid)
+                except ValueError as error:
+                    response = rpc_failure(rid, RPC_INTERNAL_ERROR, f"invalid JSON-RPC response: {error}", {"statusCode": sent["status_code"], "body": body})
+        else:
+            response = rpc_failure(rid, RPC_INTERNAL_ERROR, "unexpected transport body", {"statusCode": sent["status_code"], "body": body})
+        if not http_ok and "error" not in response:
+            response = rpc_failure(rid, status_code(RPC_INTERNAL_ERROR), f"HTTP {sent['status_code']} with result-shaped body", {"statusCode": sent["status_code"], "body": body})
+        if http_ok and "error" not in response and returned:
+            self.session_id = returned
+        return response, self.session_id
+
+
+def mcp_in_process(routes: McpRoutes, path: str = "/mcp") -> Any:
+    """A client transport that posts straight into a ``McpRoutes`` (no network)."""
+    def post(headers: dict[str, str], body: str) -> dict[str, Any]:
+        out = routes.handle("POST", path, headers, body)
+        return {"status_code": 404, "headers": {}, "body": {"error": "not_found"}} if out is None else {"status_code": out["status"], "headers": out["headers"], "body": out["body"]}
+    return post
+
+
+def mcp_foundation_transport(handler: McpFoundation, force_bearer: dict[str, str] | None = None) -> Any:
+    """A client transport that posts into a handler with the same status rules as the routes, but no Origin, no Authorization and session errors as 400 and 404."""
+    return mcp_in_process(McpRoutes(handler, session_error_status=True, force_bearer=force_bearer))
+
+
+def mcp_exchange(routes: McpRoutes, request: dict[str, Any]) -> dict[str, Any]:
+    """One HTTP exchange against the in-page server, from ``{"method", "path", "headers", "body"}``: what the lab's "Send" does."""
+    method, path = request.get("method", "POST"), request.get("path", "/mcp")
+    headers = request.get("headers", {})
+    if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+        raise ValueError("headers must be an object of strings")
+    body = request.get("body")
+    if body is not None and not isinstance(body, str):
+        body = _compact(body)
+    out = routes.handle(method, path, headers, body)
+    return {"status": 404, "headers": {}, "body": {"error": "not_found"}} if out is None else out
+
+
+_CSS["mcp.css"] = ("@layer components{.ui-mcp h3{margin:24px 0 8px}.ui-mcp label{display:block;margin:8px 0 4px}.ui-mcp .ui-input{width:100%;box-sizing:border-box}.ui-mcp textarea{min-height:96px;"
+                   "font-family:var(--ui-font-mono,monospace)}.ui-mcp-row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-mcp pre{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere;"
+                   "max-height:320px;overflow:auto}.ui-mcp code{overflow-wrap:anywhere}.ui-mcp-status{margin:8px 0;font-weight:600}.ui-mcp-kind{display:flex;flex-wrap:wrap;gap:8px 16px;border:0;padding:0;margin:8px 0}"
+                   ".ui-mcp-kind label{display:inline-block;margin:0}}")
+
+_MCP_SAMPLE_SERVER_DOC = {"issuer": "https://auth.example.test/", "authorization_endpoint": "https://auth.example.test/authorize", "token_endpoint": "https://auth.example.test/token",
+                          "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"], "scopes_supported": ["mcp"]}
+
+
+def mcp_html() -> str:
+    """The MCP lab as semantic HTML: an in-page server to send requests to, two demos, and small tools for header names, PKCE, a Bearer and OAuth metadata."""
+    templates = (("initialize", "initialize"), ("initialized", "notifications/initialized"), ("toolsList", "tools/list"), ("toolsCall", "tools/call (echo)"),
+                 ("discover", "server/discover (2026-07-28)"), ("modernCall", "tools/call (2026-07-28)"))
+    buttons = "".join(f'<button class="ui-button" type="button" data-mcp-template="{key}">{escape(label)}</button> ' for key, label in templates)
+    sample = escape(json.dumps(_MCP_SAMPLE_SERVER_DOC, indent=2), quote=False)
+    return ('<section class="ui-panel ui-mcp" id="mcp" data-ui-mcp><h2>MCP lab</h2>'
+            '<p class="ui-muted">A small MCP server that lives in this page (nothing is sent anywhere): send it requests, run a demo, and try the helpers. It speaks the legacy 2025-03-26 '
+            'protocol (initialize and Mcp-Session-Id) and the current 2026-07-28 one (server/discover and per-request _meta).</p>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-mcp-sessions></p>'
+            '<h3>Send a request</h3><p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
+            f'<div class="ui-mcp-row">{buttons}</div>'
+            '<label for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
+            '<label for="mcp-path">Path</label><input class="ui-input" id="mcp-path" data-mcp-path value="/mcp" autocomplete="off">'
+            '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="3"></textarea>'
+            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="8"></textarea>'
+            '<p><button class="ui-button" type="button" data-mcp-send>Send</button> <button class="ui-button" type="button" data-mcp-reset>Reset the server</button></p>'
+            '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-http-status>Nothing sent yet.</p><pre data-mcp-out-headers></pre><pre data-mcp-out-body></pre>'
+            '<h3>Run a demo</h3><label for="mcp-demo-text">Text to echo</label><input class="ui-input" id="mcp-demo-text" data-mcp-demo-text value="hello" autocomplete="off">'
+            '<p><button class="ui-button" type="button" data-mcp-demo-legacy>Legacy echo demo</button> <button class="ui-button" type="button" data-mcp-demo-modern>Current echo demo</button></p>'
+            '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-demo-status></p><ol data-mcp-demo-log></ol>'
+            '<h3>Header names</h3><p class="ui-muted">A name that is not plain printable ASCII travels as <code>=?base64?...?=</code>.</p>'
+            '<label for="mcp-codec">Name</label><input class="ui-input" id="mcp-codec" data-mcp-codec-in value="エコー" autocomplete="off"><pre data-mcp-codec-out></pre>'
+            '<h3>PKCE (RFC 7636, S256)</h3><label for="mcp-verifier">Code verifier</label>'
+            '<input class="ui-input" id="mcp-verifier" data-mcp-verifier value="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" autocomplete="off" spellcheck="false">'
+            '<p>Challenge: <code data-mcp-challenge></code></p><p class="ui-muted">The value above is the verifier of the RFC\'s Appendix B; its challenge is '
+            '<code>E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM</code>.</p><p><button class="ui-button" type="button" data-mcp-pkce-new>New verifier</button></p>'
+            '<h3>Bearer audience</h3><p class="ui-muted">Reads a JWT-shaped demo token (the signature is not checked).</p>'
+            '<label for="mcp-auth">Authorization header</label><input class="ui-input" id="mcp-auth" data-mcp-auth placeholder="Bearer header.payload.signature" autocomplete="off" spellcheck="false">'
+            '<label for="mcp-aud">Expected audience</label><input class="ui-input" id="mcp-aud" data-mcp-aud value="http://127.0.0.1:8787/mcp" autocomplete="off">'
+            '<p><button class="ui-button" type="button" data-mcp-auth-demo>Make a demo token (valid for an hour)</button></p><p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-auth-out></p>'
+            '<h3>OAuth metadata</h3><fieldset class="ui-mcp-kind"><legend>Document</legend><label><input type="radio" name="mcp-meta-kind" value="server" checked> Authorization server</label>'
+            '<label><input type="radio" name="mcp-meta-kind" value="resource"> Protected resource</label></fieldset>'
+            f'<label for="mcp-meta">JSON</label><textarea class="ui-input" id="mcp-meta" data-mcp-meta spellcheck="false" rows="8">{sample}</textarea><pre data-mcp-meta-out></pre></section>')
+
+
+def mcp_document(*, theme: str = "modern") -> str:
+    """A single-file page for the MCP lab."""
+    return render_document(trusted_html='<main class="ui-page">' + mcp_html() + "</main>" + module_script(_JS["mcp.js"]), title="MCP lab", theme=theme, css=bundled_css())
+
+
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
 # Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
 # lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
@@ -4611,7 +6301,7 @@ _SHELF_URL = re.compile(r"https?://[^ \t\r\n\f\v<>\"]+", re.I | re.A)
 
 def _shelf_strip(text: str) -> str:
     """Strip one leading BOM, then Unicode whitespace (what ``str.strip`` and JavaScript's ``trim`` share, plus U+0085 and the file separators)."""
-    return (text[1:] if text.startswith("﻿") else text).strip(" \t\n\r\f\v\x1c\x1d\x1e\x1f\x85\xa0        "
+    return (text[1:] if text.startswith("\ufeff") else text).strip(" \t\n\r\f\v\x1c\x1d\x1e\x1f\x85\xa0        "
                                                                   "        　")
 
 
@@ -5266,6 +6956,8 @@ globalThis.webUiCoordinates={fixed,parseCoordinate,tryParseMapsUrl,toDms,coordin
 if(typeof document!=="undefined")bindCoordinates();
 """
 
+_RNG_JS = r"""export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
+"""
 _JS["composition.js"] = r"""/* web-ui composition: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed. Python (web_ui.chord_with_inversion, metronome_position, ...) is the reference. */
 export const FLAT_KEYS=["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"],SHARP_KEYS=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
 export const SELECTABLE_KEYS=["C","C♯","D♭","D","D♯","E♭","E","F","F♯","G♭","G","G♯","A♭","A","A♯","B♭","B"];
@@ -5303,8 +6995,7 @@ export function tapTempo(taps,tap,resetGap=2000000,maxIntervals=5){const kept=ta
 export function parseNotes(text){const out=[];for(const token of text.split(/[ \t\r\n\f\v,]+/)){if(!token)continue;const m=/^([A-Ga-g])([#b♯♭]?)(-?[0-9])$/.exec(token);if(!m)throw new Error("invalid note: "+token);out.push(m[1].toUpperCase()+({"#":"♯",b:"♭"}[m[2]]??m[2])+m[3])}return out}
 export function notesPerBar(beats,unit,noteUnit){if(noteUnit!==4&&noteUnit!==8)throw new Error("only quarter and eighth notes are supported");const v=beats*noteUnit/unit;if(!Number.isInteger(v)||v<=0)throw new Error("the selected note value does not divide this bar evenly");return v}
 export function noteBars(notes,beats,unit,noteUnit){const size=notesPerBar(beats,unit,noteUnit),out=[];for(let i=0;i<notes.length;i+=size)out.push(notes.slice(i,i+size));return out}
-export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
-export const SEED_KEYS=["B♭","B","C","D♭","D","E♭","E","F","G♭","G","A♭","A"],SEED_MODES=["Major","Minor"],SEED_TIMES=["4/4","3/4","6/8"];
+""" + _RNG_JS + r"""export const SEED_KEYS=["B♭","B","C","D♭","D","E♭","E","F","G♭","G","A♭","A"],SEED_MODES=["Major","Minor"],SEED_TIMES=["4/4","3/4","6/8"];
 export const SEED_PROGRESSIONS={Major:["I – V – vi – IV","I – vi – IV – V","ii – V – I – vi","I – IV – V – IV"],Minor:["i – VI – III – VII","i – iv – VII – III","i – VII – VI – VII","i – iv – v – i"]};
 export function songSeed(seed,avoid=null){const rng=mulberry32(seed),pick=o=>o[Math.floor(rng()*o.length)];let result;
  for(let i=0;i<8;i++){const mode=pick(SEED_MODES);result={tonic:pick(SEED_KEYS),mode,bpm:80+Math.floor(rng()*81),time:pick(SEED_TIMES),progression:pick(SEED_PROGRESSIONS[mode])};
@@ -5351,8 +7042,7 @@ export function emojiPath(notation,pages){
  const by=new Map(pages.map(p=>[emojiKey(p.emoji),p.href])),parts=emojiKey(notation).split(/([→↔])/),path=[parts[0]];
  for(let i=1;i+1<parts.length;i+=2){const there=parts[i+1];if(parts[i]==="→")path.push(there);else path.push(there,path[path.length-1])}
  return path.map(k=>{if(!by.has(k))throw new Error("unknown page emoji: "+JSON.stringify(k));return by.get(k)})}
-export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
-export function doorDraw(seed,count,k){if(!(k>=0&&k<=count))throw new Error("k must be from 0 to count");const rng=mulberry32(seed),order=Array.from({length:count},(_,i)=>i);
+""" + _RNG_JS + r"""export function doorDraw(seed,count,k){if(!(k>=0&&k<=count))throw new Error("k must be from 0 to count");const rng=mulberry32(seed),order=Array.from({length:count},(_,i)=>i);
  for(let i=0;i<k;i++){const j=i+Math.floor(rng()*(count-i));[order[i],order[j]]=[order[j],order[i]]}return order.slice(0,k)}
 export function doorOptions(door,seed=door.seed){const stable=door.pages.filter(p=>p.group==="stable"),found=door.pages.filter(p=>p.group==="discover"),drawn=doorDraw(seed,found.length,door.k).map(i=>found[i]);
  return[stable[0],...drawn,...stable.slice(1)].map(p=>({...p,current:p.href===door.current,drawn:drawn.includes(p)}))}
@@ -5373,9 +7063,449 @@ globalThis.webUiDoor={emojiKey,emojiPath,mulberry32,doorDraw,doorOptions,bindDoo
 if(typeof document!=="undefined")bindDoor();
 """
 
+_JS["playground.js"] = r"""/* web-ui playground: the Counter Playground, the hold-to-repeat button and the Irony generator in the page. Python (web_ui.counter_apply, hold_repeat_count, irony_drop, ...) is the reference; this must agree. */
+""" + _RNG_JS + r"""export const COUNTER_MIN=-100,COUNTER_MAX=100,COUNTER_STEPS=[1,5,10],COUNTER_HISTORY=8,HOLD_DELAY=350,HOLD_INTERVAL=70,IRONY_PADDING=8;
+const ATTACK=["🔥","💧","🌳","💡","🔮"],HEAL=["❤️","💚","✨"],MAX_ORBS=6,ACTIONS=["step","increment","decrement","change","restore","undo","reset"];
+const int=(v,n)=>{if(!Number.isInteger(v))throw new Error(n+" must be an integer");return v};
+export function counterEffect(counter){int(counter,"counter");if(counter===0)return{counter:0,amount:0,heal:false,idle:true,orbs:[]};
+ const heal=counter<0,amount=Math.abs(counter),palette=heal?HEAL:ATTACK;
+ return{counter,amount,heal,idle:false,orbs:Array.from({length:Math.min(Math.max(amount,1),MAX_ORBS)},(_,i)=>palette[i%palette.length])}}
+export function counterLabel(counter){const e=counterEffect(counter);return e.idle?"Orbs ready…":e.heal?"💚 Heal "+e.amount:"💥 Damage "+e.amount}
+export function counterStatusKey(counter){int(counter,"counter");if(counter===COUNTER_MAX)return"max";if(counter===COUNTER_MIN)return"min";
+ return counter>=50?"high":counter<=-50?"low":counter>=10?"too_much":counter<=-10?"reverse":"neutral"}
+export const counterState=()=>({counter:0,step:1,burst:0,history:[0]});
+export function counterApply(state,action,value){
+ if(!ACTIONS.includes(action))throw new Error("unknown action: "+action);
+ const counter=int(state.counter,"counter"),step=int(state.step,"step"),burst=int(state.burst,"burst"),history=[...state.history];
+ if(!history.length||history.some(h=>!Number.isInteger(h))||history[0]!==counter)throw new Error("history must start with the current value");
+ const make=(o={})=>({counter,step,burst,history,...o});
+ if(action==="step")return Number.isInteger(value)&&COUNTER_STEPS.includes(value)&&value!==step?make({step:value}):make();
+ if(action==="undo")return history.length>1?make({counter:history[1],burst:burst+1,history:history.slice(1)}):make();
+ let target;
+ if(action==="reset")target=0;else if(action==="increment"||action==="decrement")target=counter+(action==="increment"?step:-step);
+ else if(action==="change")target=counter+int(value,"delta");else target=int(value,"value");
+ target=Math.min(Math.max(target,COUNTER_MIN),COUNTER_MAX);
+ return target===counter?make():make({counter:target,burst:burst+1,history:[target,...history].slice(0,COUNTER_HISTORY)})}
+export const holdRepeatCount=(heldMs,buttons=1)=>buttons!==1||heldMs<HOLD_DELAY?0:1+Math.floor((heldMs-HOLD_DELAY)/HOLD_INTERVAL);
+export const holdSwallowsClick=(heldMs,buttons=1)=>holdRepeatCount(heldMs,buttons)>0;
+export function ironyFirst(count,unit){if(count<1||!(unit>=0&&unit<1))throw new Error("count must be at least 1 and unit in [0, 1)");return Math.floor(unit*count)}
+export function ironyNext(count,current,unit){if(!(unit>=0&&unit<1))throw new Error("unit must be in [0, 1)");if(count<2)return null;
+ const pick=Math.floor(unit*(count-1));return current!==null&&current!==undefined&&current>=0&&current<=pick?pick+1:pick}
+export function ironySequence(seed,steps,count){const rng=mulberry32(seed),out=[ironyFirst(count,rng())];for(let i=0;i<steps;i++)out.push(ironyNext(count,out[out.length-1],rng()));return out}
+const rect=r=>{if(!Array.isArray(r)||r.length!==4||r.some(v=>typeof v!=="number"||!Number.isFinite(v)))throw new Error("a rectangle is four finite numbers: left, top, right, bottom");return r};
+export function rectOverlaps(a,b){const[al,at,ar,ab]=rect(a),[bl,bt,br,bb]=rect(b);return!(ar<=bl||br<=al||ab<=bt||bb<=at)}
+export function rectInside(inner,outer){const[il,it,ir,ib]=rect(inner),[ol,ot,or,ob]=rect(outer);return il>=ol&&it>=ot&&ir<=or&&ib<=ob}
+export function rectDeflate(r,by){const[l,t,rr,b]=rect(r);return[l+by,t+by,rr-by,b-by]}
+const center=([l,t,r,b])=>[l+(r-l)/2,t+(b-t)/2];
+export function rectClampInside(r,viewport,padding=IRONY_PADDING){const[left,top,right,bottom]=rect(r),inset=rectDeflate(viewport,padding),[cx,cy]=center(inset),[rx,ry]=center([left,top,right,bottom]);let dx=0,dy=0;
+ if(right-left>=inset[2]-inset[0])dx=cx-rx;else{if(left<inset[0])dx=inset[0]-left;if(right>inset[2])dx=inset[2]-right}
+ if(bottom-top>=inset[3]-inset[1])dy=cy-ry;else{if(top<inset[1])dy=inset[1]-top;if(bottom>inset[3])dy=inset[3]-bottom}
+ return[left+dx,top+dy,right+dx,bottom+dy]}
+export function ironyDrop(arena,card,handle){const width=Number(arena[0]),height=Number(arena[1]);if(!(Number.isFinite(width)&&Number.isFinite(height)))throw new Error("the arena size must be finite");
+ const viewport=[0,0,width,height],none={action:"none",dx:0,dy:0};
+ if(card===null)return none;if(!rectOverlaps(card,viewport))return{action:"spawn",dx:0,dy:0};
+ if(handle===null||rectInside(handle,rectDeflate(viewport,IRONY_PADDING)))return none;
+ const clamped=rectClampInside(handle,viewport,IRONY_PADDING),[cx,cy]=center(clamped),[hx,hy]=center(rect(handle));return{action:"snap",dx:cx-hx,dy:cy-hy}}
+export function holdRepeat(button,fire){let timer=null,every=null,pointer=null,repeated=false;
+ const stop=()=>{clearTimeout(timer);clearInterval(every);timer=every=null;pointer=null};
+ button.addEventListener("pointerdown",e=>{if(button.disabled||pointer!==null||e.buttons!==1)return;pointer=e.pointerId;repeated=false;
+  const end=ev=>{if(ev.pointerId!==pointer)return;window.removeEventListener("pointerup",end);window.removeEventListener("pointercancel",end);stop();setTimeout(()=>{repeated=false},0)};
+  window.addEventListener("pointerup",end);window.addEventListener("pointercancel",end);
+  timer=setTimeout(()=>{if(button.disabled||pointer===null)return;repeated=true;fire();every=setInterval(()=>{if(button.disabled){stop();return}repeated=true;fire()},HOLD_INTERVAL)},HOLD_DELAY)});
+ button.addEventListener("click",()=>{if(button.disabled)return;if(repeated){repeated=false;return}fire()});
+ button.addEventListener("contextmenu",e=>{if(pointer!==null||repeated)e.preventDefault()})}
+export function bindPlayground(root=document){return[...root.querySelectorAll("[data-ui-play]")].map(box=>{
+ const data=JSON.parse(box.dataset.play),$=s=>box.querySelector(s),ironies=data.ironies;
+ let state=counterState(),shownBurst=0;
+ const val=$("[data-counter-value]"),orbs=$("[data-counter-orbs]"),label=$("[data-counter-label]"),status=$("[data-counter-status]"),hist=$("[data-counter-history]"),
+  inc=$("[data-counter-increment]"),dec=$("[data-counter-decrement]"),reset=$("[data-counter-reset]"),undo=$("[data-counter-undo]"),radios=[...box.querySelectorAll('input[name="counter-step"]')];
+ const render=()=>{const e=counterEffect(state.counter);val.textContent=String(state.counter);orbs.textContent=e.orbs.join(" ");orbs.dataset.kind=e.idle?"idle":e.heal?"heal":"damage";
+  label.textContent=counterLabel(state.counter);status.textContent=data.status[counterStatusKey(state.counter)];
+  radios.forEach(r=>{r.checked=Number(r.value)===state.step});inc.disabled=state.counter>=COUNTER_MAX;dec.disabled=state.counter<=COUNTER_MIN;reset.disabled=state.counter===0;undo.disabled=state.history.length<2;
+  hist.replaceChildren(...state.history.map((v,i)=>{const li=document.createElement("li"),b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=String(v);
+   if(i===0){b.disabled=true;b.setAttribute("aria-label","Current value "+v)}else{b.setAttribute("aria-label","Restore "+v);b.addEventListener("click",()=>act("restore",v))}li.append(b);return li}));
+  box.dataset.value=String(state.counter);box.dataset.burst=String(state.burst);
+  if(state.burst!==shownBurst){shownBurst=state.burst;orbs.removeAttribute("data-playing");if(!e.idle){void orbs.offsetWidth;orbs.setAttribute("data-playing","")}}};
+ const act=(action,value)=>{state=counterApply(state,action,value);render()};
+ holdRepeat(inc,()=>act("increment"));holdRepeat(dec,()=>act("decrement"));reset.addEventListener("click",()=>act("reset"));undo.addEventListener("click",()=>act("undo"));
+ radios.forEach(r=>r.addEventListener("change",()=>{if(r.checked)act("step",Number(r.value))}));render();
+ const arena=$("[data-irony-arena]"),card=$("[data-irony-card]"),handle=$("[data-irony-handle]"),text=$("[data-irony-text]"),tone=$("[data-irony-tone]"),next=$("[data-irony-next]");
+ const seed=box.hasAttribute("data-play-seed")?Number(box.getAttribute("data-play-seed")):Math.floor(Math.random()*4294967296),rng=mulberry32(seed);
+ let index=ironyFirst(ironies.length,rng()),ox=0,oy=0,drag=null;
+ const show=()=>{text.textContent=ironies[index].text;tone.textContent=ironies[index].tone;arena.dataset.ironyIndex=String(index);card.style.setProperty("--ox",ox+"px");card.style.setProperty("--oy",oy+"px")};
+ const spawn=()=>{const i=ironyNext(ironies.length,index,rng());if(i!==null)index=i;ox=oy=0;show();arena.removeAttribute("data-spawn");void arena.offsetWidth;arena.setAttribute("data-spawn","")};
+ handle.addEventListener("pointerdown",e=>{if(drag||(e.pointerType==="mouse"&&e.button!==0))return;drag={id:e.pointerId,x:e.clientX,y:e.clientY};handle.setPointerCapture(e.pointerId);card.setAttribute("data-dragging","");e.preventDefault()});
+ handle.addEventListener("pointermove",e=>{if(!drag||e.pointerId!==drag.id)return;ox+=e.clientX-drag.x;oy+=e.clientY-drag.y;drag.x=e.clientX;drag.y=e.clientY;
+  card.style.setProperty("--ox",ox+"px");card.style.setProperty("--oy",oy+"px")});
+ const finish=e=>{if(!drag||e.pointerId!==drag.id)return;drag=null;
+  const a=arena.getBoundingClientRect(),c=card.getBoundingClientRect(),h=handle.getBoundingClientRect(),rel=r=>[r.left-a.left,r.top-a.top,r.right-a.left,r.bottom-a.top];
+  const r=ironyDrop([a.width,a.height],rel(c),rel(h));card.removeAttribute("data-dragging");
+  if(r.action==="spawn")spawn();else{if(r.action==="snap"){ox+=r.dx;oy+=r.dy}show()}
+  box.dispatchEvent(new CustomEvent("ui-irony-drop",{bubbles:true,detail:r}))};
+ handle.addEventListener("pointerup",finish);handle.addEventListener("pointercancel",finish);
+ next.addEventListener("click",spawn);show();box.dataset.play_ready="";return box})}
+globalThis.webUiPlayground={COUNTER_MIN,COUNTER_MAX,COUNTER_STEPS,HOLD_DELAY,HOLD_INTERVAL,IRONY_PADDING,mulberry32,counterEffect,counterLabel,counterStatusKey,counterState,counterApply,holdRepeatCount,holdSwallowsClick,
+ ironyFirst,ironyNext,ironySequence,rectOverlaps,rectInside,rectDeflate,rectClampInside,ironyDrop,holdRepeat,bindPlayground};
+if(typeof document!=="undefined")bindPlayground();
+"""
+
+_TEXT_JS = r"""const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+export const pyStrip=s=>s.replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+"""
+_SHA_JS = r"""const SHA_K=new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+ 0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+ 0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+ 0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+export function sha256Bytes(input){const data=typeof input==="string"?new TextEncoder().encode(input):input,len=data.length,padded=new Uint8Array(((len+9+63)>>6)<<6);
+ padded.set(data);padded[len]=0x80;const view=new DataView(padded.buffer),bits=len*8;view.setUint32(padded.length-8,Math.floor(bits/4294967296));view.setUint32(padded.length-4,bits>>>0);
+ const H=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]),W=new Uint32Array(64),rotr=(x,n)=>(x>>>n)|(x<<(32-n));
+ for(let off=0;off<padded.length;off+=64){for(let i=0;i<16;i++)W[i]=view.getUint32(off+i*4);
+  for(let i=16;i<64;i++){const a=W[i-15],b=W[i-2],s0=rotr(a,7)^rotr(a,18)^(a>>>3),s1=rotr(b,17)^rotr(b,19)^(b>>>10);W[i]=(W[i-16]+s0+W[i-7]+s1)>>>0}
+  let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+  for(let i=0;i<64;i++){const S1=rotr(e,6)^rotr(e,11)^rotr(e,25),ch=(e&f)^(~e&g),t1=(h+S1+ch+SHA_K[i]+W[i])>>>0,S0=rotr(a,2)^rotr(a,13)^rotr(a,22),maj=(a&b)^(a&c)^(b&c),t2=(S0+maj)>>>0;
+   h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0}
+  H[0]+=a;H[1]+=b;H[2]+=c;H[3]+=d;H[4]+=e;H[5]+=f;H[6]+=g;H[7]+=h}
+ const out=new Uint8Array(32),o=new DataView(out.buffer);H.forEach((x,i)=>o.setUint32(i*4,x));return out}
+export const sha256Hex=input=>Array.from(sha256Bytes(input),x=>x.toString(16).padStart(2,"0")).join("");
+"""
+_JS["report.js"] = r"""/* web-ui report: read a JUnit XML report or Flutter test events in the page (nothing is sent). Python (web_ui.junit_report, flutter_outcomes, flutter_machine_junit, junit_history, report_read, ...) is the reference; this must agree. */
+""" + _TEXT_JS + _SHA_JS + r"""export const OUTCOME_KEYS=["passed","failed","skipped","xfailed","xpassed","error"],JUNIT_MAX_BYTES=1000000,JUNIT_MAX_IDENTITIES=1000,FLUTTER_RESULTS=["success","failure","error"];
+const isInt=v=>typeof v==="number"&&Number.isInteger(v),isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v),onlyDict=v=>isObj(v)?v:{},onlyStr=v=>typeof v==="string"?v:"";
+const textLines=t=>t.split(/\r\n|\r|\n/),clip=(s,n)=>Array.from(s).slice(0,n).join(""),has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k),get=(o,k)=>has(o,k)?o[k]:undefined;
+export const outcomeCounts=()=>Object.fromEntries(OUTCOME_KEYS.map(k=>[k,0]));
+export const countsLine=c=>OUTCOME_KEYS.map(k=>k+"="+(c[k]||0)).join(" ");
+export function countsSummary(counts,source){const clean=Object.fromEntries(OUTCOME_KEYS.map(k=>[k,Math.trunc(counts[k]||0)])),total=OUTCOME_KEYS.reduce((n,k)=>n+clean[k],0);
+ return{source,counts:clean,total,ok:clean.failed===0&&clean.error===0&&clean.passed>0}}
+export function flutterOutcomes(text){const counts=outcomeCounts(),starts=new Map();
+ for(const raw of textLines(text)){const line=pyStrip(raw);if(!line)continue;let event;try{event=JSON.parse(line)}catch(e){counts.error++;continue}
+  if(!isObj(event)){counts.error++;continue}const kind=get(event,"type");
+  if(kind==="testStart"){const test=get(event,"test");if(test!==undefined&&test!==null&&!isObj(test))counts.error++;else if(isInt(get(test||{},"id")))starts.set(test.id,test)}
+  else if(kind==="testDone"){if(get(event,"hidden")===true)continue;const tid=get(event,"testID"),meta=isInt(tid)?starts.get(tid):undefined,result=get(event,"result"),skipped=get(event,"skipped")===true;
+   if(onlyStr(get(meta||{},"name")).startsWith("loading ")&&result==="success")continue;
+   const reason=onlyStr(get(onlyDict(get(meta||{},"metadata")),"skipReason")).toLowerCase();
+   if(skipped||result==="skipped")counts[reason.startsWith("known:")||reason.startsWith("xfail:")?"xfailed":"skipped"]++;
+   else if(result==="success")counts.passed++;else if(result==="error")counts.error++;else counts.failed++}}
+ return counts}
+const XML_BAD=/[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/gu;
+const xmlClean=s=>s.replace(XML_BAD,"\ufffd"),xmlText=s=>xmlClean(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"),
+ xmlAttr=s=>xmlText(s).replace(/"/g,"&quot;").replace(/\n/g,"&#10;").replace(/\r/g,"&#13;").replace(/\t/g,"&#09;");
+export function flutterMachineJunit(text){const suites=new Map(),tests=new Map();let done=false;
+ for(const raw of textLines(text)){if(!pyStrip(raw))continue;let event;try{event=JSON.parse(raw)}catch(e){throw new Error("invalid JSON in a Flutter event")}
+  if(!isObj(event))throw new Error("invalid Flutter event");const kind=get(event,"type");
+  if(kind==="suite"){const suite=onlyDict(get(event,"suite"));if(isInt(get(suite,"id")))suites.set(suite.id,onlyStr(get(suite,"path"))||"flutter")}
+  else if(kind==="testStart"){const test=onlyDict(get(event,"test")),id=get(test,"id");if(!isInt(id)||tests.has(id))throw new Error("duplicate or missing Flutter test ID");
+   const sid=get(test,"suiteID");tests.set(id,{name:onlyStr(get(test,"name")),suite:isInt(sid)&&suites.has(sid)?suites.get(sid):"flutter",skip_reason:onlyStr(get(onlyDict(get(test,"metadata")),"skipReason")),result:null,skipped:false,hidden:false,errors:[]})}
+  else if(kind==="error"){const id=get(event,"testID");if(!isInt(id)||!tests.has(id))throw new Error("orphan Flutter error");
+   tests.get(id).errors.push(["error","stackTrace"].map(k=>onlyStr(get(event,k))).filter(s=>s).join("\n"))}
+  else if(kind==="testDone"){const id=get(event,"testID");if(!isInt(id)||!tests.has(id)||tests.get(id).result!==null)throw new Error("orphan or duplicate Flutter completion");
+   const item=tests.get(id);item.result=get(event,"result")??null;item.skipped=get(event,"skipped")===true;item.hidden=get(event,"hidden")===true}
+  else if(kind==="done")done=true}
+ if(!done||[...tests.values()].some(t=>!t.name||!FLUTTER_RESULTS.includes(t.result)))throw new Error("incomplete Flutter machine report");
+ const visible=[...tests.entries()].sort((a,b)=>a[0]-b[0]).map(e=>e[1]).filter(t=>!t.hidden);if(!visible.length)throw new Error("Flutter machine report contains no visible tests");
+ const rows=visible.map(item=>{const head='<testcase name="'+xmlAttr(item.name)+'" classname="'+xmlAttr(item.suite)+'"';
+  if(item.result==="failure"||item.result==="error"){const body=xmlText(item.errors.join("\n\n")),tag='<'+item.result+' message="Flutter test '+item.result+'"';
+   return body?"  "+head+">\n    "+tag+">"+body+"</"+item.result+">\n  </testcase>":"  "+head+">\n    "+tag+" />\n  </testcase>"}
+  return item.skipped?"  "+head+'>\n    <skipped message="'+xmlAttr(item.skip_reason)+'" />\n  </testcase>':"  "+head+" />"});
+ return{xml:'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="'+visible.length+'">\n'+rows.join("\n")+"\n</testsuite>\n",tests:visible.length}}
+const tagOf=el=>el.namespaceURI?"{"+el.namespaceURI+"}"+el.localName:el.localName;
+function leadingText(el){let s="";for(const n of el.childNodes){if(n.nodeType===1)break;if(n.nodeType===3||n.nodeType===4)s+=n.data}return s}
+function junitRoot(text,maxBytes=JUNIT_MAX_BYTES){if(typeof text!=="string")throw new Error("JUnit text must be a string");if(text.startsWith("\ufeff"))text=text.slice(1);
+ if(new TextEncoder().encode(text).length>maxBytes)throw new Error("JUnit exceeds the byte limit");
+ if(/<![ \t\n\r\f\v]*(?:DOCTYPE|ENTITY)/i.test(text))throw new Error("DTD and entity declarations are unsupported");
+ const doc=new DOMParser().parseFromString(text,"application/xml");if(doc.getElementsByTagNameNS("*","parsererror").length||!doc.documentElement)throw new Error("missing or malformed JUnit XML");
+ const root=doc.documentElement;if(tagOf(root)!=="testsuite"&&tagOf(root)!=="testsuites")throw new Error("not a JUnit testsuite");return root}
+export function junitCases(text,maxBytes=JUNIT_MAX_BYTES){const root=junitRoot(text,maxBytes),out=[];
+ for(const el of root.getElementsByTagNameNS("*","testcase")){if(el.namespaceURI)continue;const name=el.getAttribute("name")||"";if(!name)throw new Error("JUnit testcase without name");
+  const kids=[...el.children],problem=kids.find(c=>tagOf(c)==="failure"||tagOf(c)==="error")||null,skip=kids.find(c=>tagOf(c)==="skipped")||null;let outcome;
+  if(problem)outcome=tagOf(problem)==="failure"?"failed":"error";
+  else if(skip){const reason=skip.getAttribute("message")||"";outcome=skip.getAttribute("type")==="pytest.xfail"||reason.toLowerCase().startsWith("known:")||reason.toLowerCase().startsWith("xfail:")?"xfailed":"skipped"}else outcome="passed";
+  out.push({name,class:el.getAttribute("classname")||"",outcome,kind:problem?tagOf(problem):null,message:problem?pyStrip(problem.getAttribute("message")||leadingText(problem)):"",
+   failure:kids.some(c=>tagOf(c)==="failure"),error:kids.some(c=>tagOf(c)==="error"),skipped:!!skip})}
+ if(!out.length)throw new Error("JUnit report contains no testcases");return out}
+export function junitInspect(text){const cases=junitCases(text);return{tests:cases.length,failures:cases.filter(c=>c.failure).length,errors:cases.filter(c=>c.error).length,skipped:cases.filter(c=>c.skipped).length}}
+export function junitReport(text,messages=false){const cases=junitCases(text),counts=outcomeCounts();for(const c of cases)counts[c.outcome]++;
+ const failures=cases.filter(c=>c.kind!==null).map(c=>{const item={class:clip(c.class,200),name:clip(c.name,200),kind:c.kind,message_sha256:sha256Hex(c.message)};if(messages)item.message=clip(c.message,2000);return item}),summary=countsSummary(counts,"junit");
+ return{schema:"junit-report/1",total:cases.length,counts:summary.counts,ok:summary.ok,failures}}
+export function junitFailureRecords(text,repository="local/report",maxCases=JUNIT_MAX_IDENTITIES){
+ if(typeof repository!=="string"||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("repository must be owner/name");const records=[];
+ for(const c of junitCases(text)){if(c.kind===null)continue;if(records.length===maxCases)return{records,truncated:true};
+  records.push({category:"test_failure",context:{repository},value:{class:c.class.split("[",1)[0]||"(none)",test:c.name.split("[",1)[0],kind:c.kind}})}
+ return{records,truncated:false}}
+export function junitHistoryLoad(records){let rows;
+ if(typeof records==="string"){rows=[];textLines(records).forEach((line,i)=>{if(pyStrip(line)){try{rows.push([i+1,JSON.parse(line)])}catch(e){throw new Error("invalid failure record at line "+(i+1))}}})}else rows=records.map((r,i)=>[i+1,r]);
+ const result=[];for(const[number,item]of rows){if(!isObj(item)||get(item,"category")!=="test_failure")continue;const value=get(item,"value"),context=get(item,"context");
+  if(!isObj(value)||!isObj(context))throw new Error("invalid failure record at line "+number);
+  const identity={repository:get(context,"repository"),class:get(value,"class"),test:get(value,"test"),kind:get(value,"kind")};
+  if(!Object.values(identity).every(v=>typeof v==="string"&&v))throw new Error("incomplete failure identity at line "+number);
+  const token='{"class":'+JSON.stringify(identity.class)+',"kind":'+JSON.stringify(identity.kind)+',"repository":'+JSON.stringify(identity.repository)+',"test":'+JSON.stringify(identity.test)+"}";
+  result.push({fingerprint:"junit-basic-v1:"+sha256Hex(token),identity})}
+ return result}
+function historyFindings(current,previous){const count=rows=>{const g=new Map();for(const r of rows){if(!g.has(r.fingerprint))g.set(r.fingerprint,{identity:r.identity,count:0});g.get(r.fingerprint).count++}return g},now=count(current),old=count(previous);
+ return[...new Set([...now.keys(),...old.keys()])].sort().map(f=>{const a=now.get(f),b=old.get(f);return{fingerprint:f,identity:(a||b).identity,status:!b?"new":!a?"resolved":"recurring",current_count:a?a.count:0,previous_count:b?b.count:0}})}
+const summaryOf=findings=>Object.fromEntries(["new","recurring","resolved"].map(s=>[s,findings.filter(f=>f.status===s).length]));
+export function junitHistory(current,previous,o){const{commit_sha,run_id,previous_commit_sha=null,previous_run_id=null}=o;
+ if(!/^[0-9a-fA-F]{40}$/.test(commit_sha))throw new Error("commit SHA must contain 40 hex characters");
+ if(previous_commit_sha!==null&&!/^[0-9a-fA-F]{40}$/.test(previous_commit_sha))throw new Error("previous commit SHA must contain 40 hex characters");
+ if(!/^[0-9]+$/.test(run_id)||(previous_run_id!==null&&!/^[0-9]+$/.test(previous_run_id)))throw new Error("run IDs must be decimal");
+ const findings=historyFindings(current,previous);return{schema:"junit-history/1",commit_sha,run_id,previous_commit_sha,previous_run_id,fingerprint_scope:"repository+class+test+kind (not root cause)",summary:summaryOf(findings),findings}}
+export function junitDiff(currentText,previousText,repository="local/report"){const load=t=>junitHistoryLoad(junitFailureRecords(t,repository).records),findings=historyFindings(load(currentText),load(previousText));
+ return{schema:"junit-diff/1",fingerprint_scope:"repository+class+test+kind (not root cause)",summary:summaryOf(findings),findings}}
+export function attemptHistory(runner,files,attempts,scope="same-selected-files"){return{schema:"test-attempts/1",runner,files,retry_scope:scope,attempts,initial_failed:attempts[0].exit_code!==0,
+ flaky_recovered:attempts.length===2&&attempts[0].exit_code!==0&&attempts[1].exit_code===0}}
+export function failureLedgerUpdate(ledger,runner,attempts){let data;
+ if(ledger===null||ledger===undefined)data={schema:"failure-patterns/1",patterns:{}};else{if(!isObj(ledger)||ledger.schema!=="failure-patterns/1"||!isObj(ledger.patterns))throw new Error("invalid failure ledger schema");
+  data={schema:ledger.schema,patterns:Object.fromEntries(Object.entries(ledger.patterns).map(([k,v])=>[k,{...v}]))}}
+ for(const attempt of attempts)for(const f of attempt.failures){const key=runner+":"+f.kind+":"+f.message_sha256;
+  if(!has(data.patterns,key))data.patterns[key]={runner,kind:f.kind,message_sha256:f.message_sha256,occurrences:0};data.patterns[key].occurrences++}
+ if(Object.keys(data.patterns).length>500)throw new Error("failure ledger reached 500 distinct patterns; archive it first");return data}
+export function reportKind(text){const head=pyStrip(text.startsWith("\ufeff")?text.slice(1):text).slice(0,1);return head==="<"?"junit":head==="{"?"flutter":null}
+export function reportRead(text,previous=null,messages=false){const kind=reportKind(text);if(kind===null)throw new Error("Paste JUnit XML (it starts with <) or Flutter test events (JSON lines).");
+ const out={kind,junit:null,convert_error:null};
+ if(kind==="junit"){const r=junitReport(text,messages);Object.assign(out,{total:r.total,counts:r.counts,ok:r.ok,failures:r.failures})}
+ else{const s=countsSummary(flutterOutcomes(text),"flutter-json");Object.assign(out,{total:s.total,counts:s.counts,ok:s.ok,failures:[]});
+  try{const c=flutterMachineJunit(text);out.junit=c.xml;out.failures=junitReport(c.xml,messages).failures}catch(e){out.convert_error=e.message}}
+ out.line=countsLine(out.counts)+" total="+out.total+" ok="+(out.ok?"true":"false");
+ if(previous!==null&&pyStrip(previous)){if(kind!=="junit")throw new Error("Comparing with a previous run needs JUnit XML for both.");out.diff=junitDiff(text,previous)}
+ return out}
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+export function bindReport(root=document){return[...root.querySelectorAll("[data-ui-report]")].map(box=>{
+ const $=s=>box.querySelector(s),input=$("[data-report-input]"),previous=$("[data-report-previous]"),file=$("[data-report-file]"),messages=$("[data-report-messages]"),status=$("[data-report-status]"),line=$("[data-report-line]"),out=$("[data-report-out]"),convert=$("[data-report-convert]");
+ let last=null;
+ const clear=()=>{line.textContent="";out.replaceChildren();convert.hidden=true;last=null};
+ const run=()=>{clear();if(!pyStrip(input.value)){status.textContent="Nothing to read: paste a report first.";box.dataset.reportState="empty";return}
+  let r;try{r=reportRead(input.value,pyStrip(previous.value)?previous.value:null,messages.checked)}catch(e){status.textContent=e.message;box.dataset.reportState="error";return}
+  last=r;line.textContent=r.line;status.textContent=(r.kind==="junit"?"Read a JUnit report":"Read Flutter test events")+(r.ok?": no failures.":": "+(r.counts.failed+r.counts.error)+" failing.");box.dataset.reportState=r.ok?"ok":"failing";
+  if(r.failures.length){const rows=r.failures.map(f=>el("tr",{},el("td",{text:f.class}),el("td",{text:f.name}),el("td",{text:f.kind}),el("td",{},el("code",{text:messages.checked&&f.message!==undefined?f.message:f.message_sha256.slice(0,16)}))));
+   out.append(el("h3",{text:"Failing cases"}),el("table",{},el("thead",{},el("tr",{},...["Class","Test","Kind",messages.checked?"Message":"Message SHA-256 (first 16)"].map(t=>el("th",{text:t})))),el("tbody",{},...rows)))}
+  if(r.diff){const s=r.diff.summary;out.append(el("h3",{text:"Compared with the previous run"}),el("p",{text:"new="+s.new+" recurring="+s.recurring+" resolved="+s.resolved}));
+   if(r.diff.findings.length)out.append(el("ul",{},...r.diff.findings.map(f=>el("li",{text:f.status+": "+f.identity.class+" · "+f.identity.test+" ("+f.identity.kind+") ×"+f.current_count+" now, ×"+f.previous_count+" before"}))))}
+  if(r.convert_error)out.append(el("p",{class:"ui-muted",text:"Not converted to JUnit: "+r.convert_error+"."}));convert.hidden=!r.junit};
+ const copy=async text=>{try{await navigator.clipboard.writeText(text);status.textContent="Copied."}catch(e){status.textContent="Copying was refused; select the text and copy it yourself."}};
+ const summaryText=()=>{if(!last)return"";const lines=[last.line];for(const f of last.failures)lines.push("- "+f.class+" · "+f.name+" ("+f.kind+") "+(f.message!==undefined?f.message:f.message_sha256));if(last.diff)lines.push("new="+last.diff.summary.new+" recurring="+last.diff.summary.recurring+" resolved="+last.diff.summary.resolved);return lines.join("\n")};
+ $("[data-report-run]").addEventListener("click",run);$("[data-report-copy]").addEventListener("click",()=>{if(!last)run();if(last)copy(summaryText())});convert.addEventListener("click",()=>{if(last&&last.junit)copy(last.junit)});
+ const load=async f=>{if(!f)return;if(f.size>JUNIT_MAX_BYTES){status.textContent="That file is over 1 MB.";return}input.value=await f.text();run()};
+ file.addEventListener("change",()=>load(file.files[0]));
+ input.addEventListener("dragover",e=>e.preventDefault());input.addEventListener("drop",e=>{e.preventDefault();load(e.dataTransfer&&e.dataTransfer.files[0])});
+ messages.addEventListener("change",()=>{if(last)run()});box.dataset.report_ready="";return box})}
+globalThis.webUiReport={sha256Hex,sha256Bytes,pyStrip,outcomeCounts,countsLine,countsSummary,flutterOutcomes,flutterMachineJunit,junitCases,junitInspect,junitReport,junitFailureRecords,junitHistoryLoad,junitHistory,junitDiff,
+ attemptHistory,failureLedgerUpdate,reportKind,reportRead,bindReport};
+if(typeof document!=="undefined")bindReport();
+"""
+
+
+_JS["mcp.js"] = r"""/* web-ui mcp: JSON-RPC, the dual-era MCP Streamable HTTP rules, an in-page server, a session client, OAuth metadata, PKCE and a Bearer audience check (nothing is sent). Python (web_ui.McpFoundation, McpRoutes, McpClient, ...) is the reference; this must agree. */
+""" + _SHA_JS + _RNG_JS + r"""export const MCP_LEGACY_VERSION="2025-03-26",MCP_CURRENT_VERSION="2026-07-28",MCP_META_VERSION="io.modelcontextprotocol/protocolVersion",MCP_META_CLIENT_INFO="io.modelcontextprotocol/clientInfo",MCP_META_CLIENT_CAPS="io.modelcontextprotocol/clientCapabilities";
+export const RPC={PARSE_ERROR:-32700,INVALID_REQUEST:-32600,METHOD_NOT_FOUND:-32601,INVALID_PARAMS:-32602,INTERNAL_ERROR:-32603,UNAUTHORIZED:-32001,FORBIDDEN:-32003,SESSION_REQUIRED:-32010,SESSION_INVALID:-32011,HEADER_MISMATCH:-32020,UNSUPPORTED_VERSION:-32022};
+export const MCP_HEADERS={protocol:"mcp-protocol-version",session:"mcp-session-id",method:"mcp-method",name:"mcp-name"};
+const isDict=v=>v!==null&&typeof v==="object"&&!Array.isArray(v),has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k),compact=v=>JSON.stringify(v),nul=v=>v===undefined?null:v;
+const HEADER_SENTINEL=/^=\?base64\?([A-Za-z0-9+/=]+)\?=$/,BASE64_STRICT=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,BASE64URL_STRICT=/^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}==|[A-Za-z0-9_-]{3}=)?$/,PKCE_ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const bytesToBinary=b=>{let s="";for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return s},binaryToBytes=s=>Uint8Array.from(s,c=>c.charCodeAt(0));
+const b64=bytes=>btoa(bytesToBinary(bytes)),b64urlNopad=bytes=>b64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function base64Strict(text){if(!BASE64_STRICT.test(text))throw new Error("invalid base64");return binaryToBytes(atob(text))}
+const utf8Strict=bytes=>new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(bytes),utf8=s=>new TextEncoder().encode(s);
+export const mcpSupportMatrix=()=>({specificationVersion:MCP_LEGACY_VERSION,currentOfficialVersion:MCP_CURRENT_VERSION,implementsCurrentOfficial:true,legacyMcpEra:true,currentOfficialEra:true,streamableHttp:true,jsonRpc:true,sessionHeader:true,oauthDiscovery:true,pkceS256:true,bearerAudienceCheck:true,flutterWebInAppOAuthGuaranteed:false,legacySseDefault:false});
+export function rpcFailure(id,code,message,data=null){const error={code,message};if(data!==null&&data!==undefined)error.data=data;return{jsonrpc:"2.0",id:nul(id),error}}
+export const rpcResult=(id,result)=>({jsonrpc:"2.0",id:nul(id),result:nul(result)});
+export function rpcRequest(method,o={}){const out={jsonrpc:"2.0"};if(o.id!==null&&o.id!==undefined)out.id=o.id;out.method=method;if(o.params!==null&&o.params!==undefined)out.params=o.params;return out}
+export function rpcRequestParse(raw){let value;try{value=typeof raw==="string"?JSON.parse(raw):raw}catch(e){return null}
+ if(!isDict(value)||get(value,"jsonrpc")!=="2.0"||typeof get(value,"method")!=="string"||!value.method)return null;return{jsonrpc:"2.0",id:nul(get(value,"id")),method:value.method,params:nul(get(value,"params"))}}
+function get(o,k){return has(o,k)?o[k]:undefined}
+const rpcText=v=>typeof v==="string"?v:compact(v);
+export const rpcIsNotification=r=>r.id===null||r.id===undefined;
+export function rpcResponseParse(value,expectedId=null){if(!isDict(value)||get(value,"jsonrpc")!=="2.0")throw new Error("invalid JSON-RPC response version");
+ const hasResult=has(value,"result"),hasError=has(value,"error");if(hasResult===hasError)throw new Error("JSON-RPC response must contain exactly one of result or error");let response;
+ if(hasError){const error=value.error;if(!isDict(error))throw new Error("invalid JSON-RPC error payload");if(!Number.isInteger(get(error,"code")))throw new Error("JSON-RPC error code must be an int");
+  if(typeof get(error,"message")!=="string")throw new Error("JSON-RPC error message must be a String");response=rpcFailure(nul(get(value,"id")),error.code,error.message,nul(get(error,"data")))}
+ else response=rpcResult(nul(get(value,"id")),value.result);
+ if(expectedId!==null&&expectedId!==undefined&&response.id!==expectedId)throw new Error("JSON-RPC response id mismatch: expected "+rpcText(expectedId)+" got "+rpcText(response.id));return response}
+export function mcpHeaderNeedsEncoding(value){if(value!==value.replace(/^ +| +$/g,"")||HEADER_SENTINEL.test(value)||(value.startsWith("=?")&&value.endsWith("?=")))return true;
+ for(let i=0;i<value.length;i++){const c=value.charCodeAt(i);if(c<0x20||c>0x7e)return true}return false}
+export const mcpHeaderEncode=value=>mcpHeaderNeedsEncoding(value)?"=?base64?"+b64(utf8(value))+"?=":value;
+export function mcpHeaderDecode(value){const m=HEADER_SENTINEL.exec(value);if(m){try{return utf8Strict(base64Strict(m[1]))}catch(e){return null}}return value.startsWith("=?")&&value.includes("?=")?null:value}
+export function mcpStreamableHeaders(o={}){const{sessionId=null,protocolVersion=MCP_LEGACY_VERSION,acceptEventStream=true,method=null,name=null}=o,
+ headers={"content-type":"application/json",accept:acceptEventStream?"application/json, text/event-stream":"application/json"};headers[MCP_HEADERS.protocol]=protocolVersion;
+ if(sessionId)headers[MCP_HEADERS.session]=sessionId;if(method)headers[MCP_HEADERS.method]=method;if(name)headers[MCP_HEADERS.name]=mcpHeaderEncode(name);return headers}
+const secureBytes=n=>{const b=new Uint8Array(n);crypto.getRandomValues(b);return b};
+export function mcpSessionId(randomUnit=null,byteLength=18){return b64urlNopad(randomUnit===null?secureBytes(byteLength):Uint8Array.from({length:byteLength},()=>Math.floor(randomUnit()*256)))}
+export const pkceChallengeS256=verifier=>b64urlNopad(sha256Bytes(verifier));
+export function pkcePair(randomUnit=null,verifierLength=64){if(!(verifierLength>=43&&verifierLength<=128))throw new Error("verifier_length must be 43..128");
+ const unit=randomUnit||(()=>new Uint32Array(secureBytes(4).buffer)[0]/4294967296);let verifier="";for(let i=0;i<verifierLength;i++)verifier+=PKCE_ALPHABET[Math.floor(unit()*PKCE_ALPHABET.length)];
+ return{codeVerifier:verifier,codeChallenge:pkceChallengeS256(verifier),codeChallengeMethod:"S256"}}
+function stringList(doc,key){if(!has(doc,key))return null;const items=doc[key];if(!Array.isArray(items)||items.some(i=>typeof i!=="string"))throw new Error("invalid OAuth metadata field: "+key);return[...items]}
+function optionalString(doc,key){const v=get(doc,key);if(v===undefined||v===null)return null;if(typeof v!=="string"||!v)throw new Error("invalid OAuth metadata field: "+key);return v}
+export function oauthServerMetadata(doc){if(!isDict(doc))throw new Error("OAuth metadata must be an object");
+ const methods=stringList(doc,"code_challenge_methods_supported")||[],authMethods=stringList(doc,"token_endpoint_auth_methods_supported"),responses=stringList(doc,"response_types_supported");
+ if(!responses||!responses.length)throw new Error("missing OAuth metadata field: response_types_supported");const grants=stringList(doc,"grant_types_supported");
+ for(const key of["issuer","authorization_endpoint","token_endpoint"])if(typeof get(doc,key)!=="string"||!doc[key])throw new Error("missing OAuth metadata field: "+key);
+ const out={issuer:doc.issuer,authorization_endpoint:doc.authorization_endpoint,token_endpoint:doc.token_endpoint},registration=optionalString(doc,"registration_endpoint");if(registration!==null)out.registration_endpoint=registration;
+ out.scopes_supported=stringList(doc,"scopes_supported")||[];out.response_types_supported=responses;out.grant_types_supported=grants!==null?grants:["authorization_code","implicit"];out.code_challenge_methods_supported=methods;
+ out.token_endpoint_auth_methods_supported=authMethods!==null?authMethods:["client_secret_basic"];out.supportsPkceS256=methods.some(m=>m.toUpperCase()==="S256");return out}
+export function oauthResourceMetadata(doc){if(!isDict(doc))throw new Error("OAuth metadata must be an object");if(typeof get(doc,"resource")!=="string"||!doc.resource)throw new Error("missing protected resource");
+ const servers=get(doc,"authorization_servers");if(!Array.isArray(servers)||!servers.length)throw new Error("missing authorization_servers");if(servers.some(s=>typeof s!=="string"||!s))throw new Error("invalid OAuth metadata field: authorization_servers");
+ const present=Object.fromEntries(Object.entries(doc).filter(([,v])=>v!==null)),scopes=stringList(present,"scopes_supported")||[],methods=stringList(present,"bearer_methods_supported"),
+  out={resource:doc.resource,authorization_servers:[...servers],scopes_supported:scopes,bearer_methods_supported:methods!==null?methods:["header"]},name=optionalString(doc,"resource_name");if(name!==null)out.resource_name=name;return out}
+export function bearerInspect(authorization,expectedAudience,now=null){const bad=()=>({status:"malformed",audience:null,expires_at:null});if(!authorization)return{status:"missing",audience:null,expires_at:null};
+ const parts=authorization.split(/[ \t\n\r\f\v]+/);if(parts.length!==2||parts[0].toLowerCase()!=="bearer")return bad();const segments=parts[1].split(".");if(segments.length<2)return bad();
+ try{const segment=segments[1]+"=".repeat((4-segments[1].length%4)%4);if(!BASE64URL_STRICT.test(segment))return bad();
+  const payload=JSON.parse(utf8Strict(binaryToBytes(atob(segment.replace(/-/g,"+").replace(/_/g,"/")))));if(!isDict(payload))return bad();const aud=get(payload,"aud"),exp=get(payload,"exp"),audiences=[];
+  if(typeof aud==="string")audiences.push(aud);else if(Array.isArray(aud)){if(!aud.length||aud.some(i=>typeof i!=="string"||!i))return bad();audiences.push(...aud)}else if(aud!==undefined&&aud!==null)return bad();
+  const audience=audiences.length?audiences[0]:null;let expiresAt=null;if(typeof exp==="number"){if(!Number.isFinite(exp))return bad();expiresAt=Math.trunc(exp)}
+  if(expiresAt!==null&&expiresAt<=(now===null?Date.now()/1000:now))return{status:"expired",audience,expires_at:expiresAt};
+  if(!audiences.includes(expectedAudience))return{status:"wrong_audience",audience,expires_at:expiresAt};return{status:"ok",audience:expectedAudience,expires_at:expiresAt}}catch(e){return bad()}}
+export function demoBearerToken(audience,expiresAt){const part=v=>b64urlNopad(utf8(compact(v)));return part({alg:"none",typ:"JWT"})+"."+part({aud:audience,exp:expiresAt})+".demo-sig"}
+export function mcpMetaVersion(request){const params=request.params,meta=isDict(params)?get(params,"_meta"):null,version=isDict(meta)?get(meta,MCP_META_VERSION):null;return typeof version==="string"?version:null}
+export const mcpLooksModern=(request,headerProtocol,metaVersion=null)=>request.method==="server/discover"||(metaVersion!==null?metaVersion:mcpMetaVersion(request))!==null||headerProtocol===MCP_CURRENT_VERSION;
+export function mcpValidateModern(request,headerProtocol,metaVersion,headerMethod,headerName){const fail=(message,data=null,code=RPC.HEADER_MISMATCH)=>rpcFailure(request.id,code,message,data);
+ if(!headerProtocol)return fail("MCP-Protocol-Version header is required");const params=isDict(request.params)?request.params:null,meta=params!==null&&isDict(get(params,"_meta"))?params._meta:null;
+ if(meta===null)return fail("params._meta is required");if(!metaVersion)return fail("params._meta protocolVersion is required");
+ if(headerProtocol!==metaVersion)return fail("MCP-Protocol-Version does not match body _meta",{header:headerProtocol,meta:metaVersion});
+ if(headerProtocol!==MCP_CURRENT_VERSION)return fail("Unsupported protocol version",{supported:[MCP_LEGACY_VERSION,MCP_CURRENT_VERSION],requested:headerProtocol},RPC.UNSUPPORTED_VERSION);
+ const info=get(meta,MCP_META_CLIENT_INFO);if(!isDict(info))return fail("params._meta clientInfo must be an object");
+ if(typeof get(info,"name")!=="string"||!info.name)return fail("params._meta clientInfo.name must be a non-empty string");if(typeof get(info,"version")!=="string"||!info.version)return fail("params._meta clientInfo.version must be a non-empty string");
+ if(!isDict(get(meta,MCP_META_CLIENT_CAPS)))return fail("params._meta clientCapabilities must be an object");if(!headerMethod)return fail("Mcp-Method header is required");
+ if(headerMethod!==request.method)return fail("Mcp-Method does not match JSON-RPC method",{header:headerMethod,method:request.method});
+ if(["tools/call","resources/read","prompts/get"].includes(request.method)){const expected=get(params,request.method==="resources/read"?"uri":"name");if(!headerName)return fail("Mcp-Name header is required");
+  const decoded=mcpHeaderDecode(headerName);if(decoded===null)return fail("Mcp-Name header is malformed");if(typeof expected==="string"&&decoded!==expected)return fail("Mcp-Name does not match body params",{header:headerName,decoded,expected})}
+ return null}
+const MCP_CAPABILITIES={tools:{listChanged:false},resources:{subscribe:false,listChanged:false},prompts:{listChanged:false}},MCP_SERVER_INFO={name:"flutter-navigation-basic-mcp-foundation",version:"0.1.0"};
+const mapOf=v=>isDict(v)?v:null;
+export class McpFoundation{
+ constructor(sessionIdFactory=null){this.sessionIdFactory=sessionIdFactory||(()=>mcpSessionId());this.sessions=new Map()}
+ session(id){return id===null||id===undefined?null:(this.sessions.get(id)||null)}
+ handleRpc(request,sessionId=null,bearer=null){const rid=nul(request.id),method=request.method;
+  if(bearer!==null&&bearer.status!=="ok")return[rpcFailure(rid,bearer.status==="forbidden"?RPC.FORBIDDEN:RPC.UNAUTHORIZED,bearer.status,{reason:bearer.reason}),sessionId];
+  if(method==="initialize")return this._initialize(request);
+  if(method==="notifications/initialized")return this._requireSession(request,sessionId,()=>rpcResult(rid,null));
+  if(method==="ping")return this._requireSession(request,sessionId,()=>rpcResult(rid,{}));
+  if(method==="server/discover")return[rpcResult(rid,{resultType:"complete",protocolVersions:[MCP_LEGACY_VERSION,MCP_CURRENT_VERSION],capabilities:MCP_CAPABILITIES,serverInfo:MCP_SERVER_INFO,
+   instructions:"Dual-era demo server. Prefer "+MCP_CURRENT_VERSION+" with per-request _meta, or legacy initialize + session."}),null];
+  const params=mapOf(request.params),invalid=message=>rpcFailure(rid,RPC.INVALID_PARAMS,message);
+  if(method==="tools/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{tools:[{name:"echo",description:"Echo a string argument",inputSchema:{type:"object",properties:{text:{type:"string"}},required:["text"]}}]}),true);
+  if(method==="tools/call")return this._modernOrSession(request,sessionId,()=>{const args=params?mapOf(get(params,"arguments")):null;if((params?get(params,"name"):undefined)!=="echo")return invalid("unknown tool");
+   const text=(args||{}).text;if(typeof text!=="string")return invalid("missing text");return rpcResult(rid,{content:[{type:"text",text}],isError:false})});
+  if(method==="resources/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{resources:[{uri:"demo://readme",name:"README",mimeType:"text/plain"}]}),true);
+  if(method==="resources/read")return this._modernOrSession(request,sessionId,()=>{const uri=params?get(params,"uri"):undefined;if(uri!=="demo://readme")return invalid("unknown resource");
+   return rpcResult(rid,{contents:[{uri,mimeType:"text/plain",text:"MCP foundation demo resource"}]})});
+  if(method==="prompts/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{prompts:[{name:"greet",description:"Greeting prompt"}]}),true);
+  if(method==="prompts/get")return this._modernOrSession(request,sessionId,()=>{if((params?get(params,"name"):undefined)!=="greet")return invalid("unknown prompt");
+   return rpcResult(rid,{description:"Greeting prompt",messages:[{role:"user",content:{type:"text",text:"Hello from MCP foundation"}}]})});
+  return[rpcFailure(rid,RPC.METHOD_NOT_FOUND,"method not found: "+method),sessionId]}
+ _initialize(request){const rid=nul(request.id),bad=message=>[rpcFailure(rid,RPC.INVALID_PARAMS,message),null],params=mapOf(request.params);
+  if(params===null)return bad("initialize params must be an object");if(typeof get(params,"protocolVersion")!=="string"||!params.protocolVersion)return bad("protocolVersion must be a non-empty string");
+  if(mapOf(get(params,"capabilities"))===null)return bad("capabilities must be an object");const info=mapOf(get(params,"clientInfo"));if(info===null)return bad("clientInfo must be an object");
+  if(typeof get(info,"name")!=="string"||!info.name)return bad("clientInfo.name must be a non-empty string");if(typeof get(info,"version")!=="string"||!info.version)return bad("clientInfo.version must be a non-empty string");
+  const id=this.sessionIdFactory();this.sessions.set(id,{id,protocolVersion:MCP_LEGACY_VERSION,clientInfo:info});
+  return[rpcResult(rid,{protocolVersion:MCP_LEGACY_VERSION,capabilities:MCP_CAPABILITIES,serverInfo:MCP_SERVER_INFO}),id]}
+ _modernOrSession(request,sessionId,build,listResult=false){const params=mapOf(request.params),meta=params?mapOf(get(params,"_meta")):null;
+  if(meta!==null&&get(meta,MCP_META_VERSION)===MCP_CURRENT_VERSION){let response=build(null);
+   if(has(response,"result")){let result=response.result;if(!isDict(result))result={resultType:"complete",value:result};else{result={...result};if(!has(result,"resultType"))result.resultType="complete";
+    if(listResult){if(!has(result,"ttlMs"))result.ttlMs=60000;if(!has(result,"cacheScope"))result.cacheScope="private"}}response=rpcResult(response.id,result)}
+   return[response,null]}
+  return this._requireSession(request,sessionId,build)}
+ _requireSession(request,sessionId,build){const rid=nul(request.id);if(!sessionId)return[rpcFailure(rid,RPC.SESSION_REQUIRED,"Mcp-Session-Id required"),sessionId];
+  const session=this.sessions.get(sessionId);if(!session)return[rpcFailure(rid,RPC.SESSION_INVALID,"unknown session"),sessionId];return[build(session),sessionId]}}
+export const mcpHeader=(headers,name)=>{const wanted=name.toLowerCase();for(const[k,v]of Object.entries(headers))if(k.toLowerCase()===wanted)return v;return null};
+export const mcpOriginAllows=(allowed,origin)=>!origin||allowed.includes(origin);
+export const mcpOriginsForPort=port=>["http://127.0.0.1:"+port,"http://localhost:"+port];
+const BEARER_GATES={ok:{status:"ok",reason:"ok"},wrong_audience:{status:"forbidden",reason:"wrong_audience"},expired:{status:"unauthorized",reason:"expired"},missing:{status:"unauthorized",reason:"invalid_bearer"},malformed:{status:"unauthorized",reason:"invalid_bearer"}};
+export class McpRoutes{
+ constructor(handler=null,o={}){this.handler=handler||new McpFoundation();this.resource=o.resource||"http://127.0.0.1:8787/mcp";this.issuer=o.issuer||"http://127.0.0.1:8787";this.expectedAudience=o.expectedAudience||"http://127.0.0.1:8787/mcp";
+  this.allowedOrigins=o.allowedOrigins?[...o.allowedOrigins]:mcpOriginsForPort(8787);this.clock=o.clock||null;this.sessionErrorStatus=!!o.sessionErrorStatus;this.forceBearer=o.forceBearer||null}
+ static forPort(port,handler=null,o={}){const base="http://127.0.0.1:"+port;return new McpRoutes(handler,{resource:base+"/mcp",issuer:base,expectedAudience:base+"/mcp",allowedOrigins:mcpOriginsForPort(port),...o})}
+ handle(method,path,headers,rawBody){if(path.endsWith("/")&&path.length>1)path=path.slice(0,-1);
+  if(path==="/.well-known/oauth-authorization-server"){const doc=oauthServerMetadata({issuer:this.issuer,authorization_endpoint:this.issuer+"/oauth/authorize",token_endpoint:this.issuer+"/oauth/token",scopes_supported:["mcp"],response_types_supported:["code"],
+    grant_types_supported:["authorization_code"],code_challenge_methods_supported:["S256"],token_endpoint_auth_methods_supported:["none","client_secret_basic"]});delete doc.supportsPkceS256;return{status:200,headers:{},body:doc}}
+  if(path==="/.well-known/oauth-protected-resource"||path==="/.well-known/oauth-protected-resource/mcp")return{status:200,headers:{},body:oauthResourceMetadata({resource:this.resource,authorization_servers:[this.issuer],scopes_supported:["mcp"]})};
+  if(path==="/mcp/support-matrix")return{status:200,headers:{},body:mcpSupportMatrix()};if(path!=="/mcp")return null;
+  if(method.toUpperCase()!=="POST")return{status:405,headers:{allow:"POST"},body:{error:"method_not_allowed"}};return this._post(headers,rawBody)}
+ _post(headers,rawBody){const origin=this.sessionErrorStatus?null:mcpHeader(headers,"origin");if(!mcpOriginAllows(this.allowedOrigins,origin))return{status:403,headers:{},body:{error:"origin_forbidden",origin}};
+  const request=rpcRequestParse(rawBody);if(request===null)return{status:400,headers:{},body:rpcFailure(null,RPC.PARSE_ERROR,"parse error")};
+  let gate=this.forceBearer;const auth=this.sessionErrorStatus?null:mcpHeader(headers,"authorization");if(auth)gate=BEARER_GATES[bearerInspect(auth,this.expectedAudience,this.clock?this.clock():null).status];
+  const inbound=mcpHeader(headers,MCP_HEADERS.session),headerProtocol=mcpHeader(headers,MCP_HEADERS.protocol),metaVersion=mcpMetaVersion(request),modern=mcpLooksModern(request,headerProtocol,metaVersion);
+  if(modern){const error=mcpValidateModern(request,headerProtocol,metaVersion,mcpHeader(headers,MCP_HEADERS.method),mcpHeader(headers,MCP_HEADERS.name));if(error!==null)return{status:400,headers:{[MCP_HEADERS.protocol]:MCP_CURRENT_VERSION},body:error}}
+  else if(request.method!=="initialize"){if(!inbound)return{status:400,headers:{},body:{error:"session_required",message:"Mcp-Session-Id required after initialize"}};
+   if(this.handler.session(inbound)===null)return{status:404,headers:{},body:{error:"session_not_found",message:"unknown Mcp-Session-Id"}}}
+  const[response,outSession]=this.handler.handleRpc(request,modern?null:inbound,gate),outHeaders={};if(outSession!==null&&outSession!==undefined)outHeaders[MCP_HEADERS.session]=outSession;
+  outHeaders[MCP_HEADERS.protocol]=modern?MCP_CURRENT_VERSION:MCP_LEGACY_VERSION;const error=has(response,"error")?response.error:null,code=error?error.code:null;
+  for(const[status,name,rpcCode]of[[401,"unauthorized",RPC.UNAUTHORIZED],[403,"forbidden",RPC.FORBIDDEN]])if(code===rpcCode)return{status,headers:outHeaders,body:{error:name,message:error.message,reason:nul(error.data)}};
+  if(rpcIsNotification(request)){if(error)return{status:400,headers:outHeaders,body:{error:"notification_rejected",message:error.message,code:error.code}};return{status:202,headers:outHeaders,body:null}}
+  if(modern&&code===RPC.METHOD_NOT_FOUND)return{status:404,headers:outHeaders,body:response};
+  let status=200;if(this.sessionErrorStatus)status=code===RPC.SESSION_REQUIRED?400:code===RPC.SESSION_INVALID?404:200;return{status,headers:outHeaders,body:response}}}
+export class McpClient{
+ constructor(transport,clientName="flutter-navigation-basic",clientVersion="0.1.0"){this.transport=transport;this.clientName=clientName;this.clientVersion=clientVersion;this.sessionId=null;this.protocolVersion=MCP_LEGACY_VERSION;this._nextId=1}
+ initialize(){const request=rpcRequest("initialize",{id:this._takeId(),params:{protocolVersion:MCP_LEGACY_VERSION,capabilities:{},clientInfo:{name:this.clientName,version:this.clientVersion}}}),[response,session]=this._send(request);
+  if(!has(response,"error")){this.sessionId=session||this.sessionId;const result=response.result;if(isDict(result)&&typeof get(result,"protocolVersion")==="string")this.protocolVersion=result.protocolVersion}return response}
+ notifyInitialized(){return this._send(rpcRequest("notifications/initialized"))[0]}
+ listTools(){return this._rpc("tools/list")}
+ callTool(name,args={}){return this._rpc("tools/call",{name,arguments:args})}
+ listResources(){return this._rpc("resources/list")}
+ listPrompts(){return this._rpc("prompts/list")}
+ ping(){return this._rpc("ping")}
+ runEchoDemo(text="hello"){const log=[],done=(ok,last=null)=>({ok,log,session_id:this.sessionId,last_response:last});const init=this.initialize();log.push("initialize → "+compact(init));if(has(init,"error"))return done(false);
+  const notified=this.notifyInitialized();if(has(notified,"error")){log.push("notifications/initialized → rejected "+compact(notified)+" (session="+this.sessionId+")");return done(false)}
+  log.push("notifications/initialized → accepted (session="+this.sessionId+")");const listed=this.listTools();log.push("tools/list → "+compact(listed));if(has(listed,"error"))return done(false);
+  const called=this.callTool("echo",{text});log.push("tools/call(echo) → "+compact(called));return done(!has(called,"error"),called)}
+ runModernEchoDemo(text="hello"){const log=[];this.protocolVersion=MCP_CURRENT_VERSION;this.sessionId=null;const done=(ok,last=null)=>({ok,log,session_id:this.sessionId,last_response:last}),
+  meta=(extra={})=>({_meta:{[MCP_META_VERSION]:MCP_CURRENT_VERSION,[MCP_META_CLIENT_INFO]:{name:this.clientName,version:this.clientVersion},[MCP_META_CLIENT_CAPS]:{}},...extra});
+  const discover=this._rpc("server/discover",meta());log.push("server/discover → "+compact(discover));if(has(discover,"error"))return done(false);
+  const listed=this._rpc("tools/list",meta());log.push("tools/list → "+compact(listed));if(has(listed,"error"))return done(false);
+  const called=this._rpc("tools/call",meta({name:"echo",arguments:{text}}));log.push("tools/call(echo) → "+compact(called));return done(!has(called,"error"),called)}
+ _takeId(){return this._nextId++}
+ _rpc(method,params=null){return this._send(rpcRequest(method,{id:this._takeId(),params}))[0]}
+ _send(request){const params=request.params;let name=null;if(isDict(params)){if((request.method==="tools/call"||request.method==="prompts/get")&&typeof get(params,"name")==="string")name=params.name;else if(request.method==="resources/read"&&typeof get(params,"uri")==="string")name=params.uri}
+  const headers=mcpStreamableHeaders({sessionId:this.sessionId,protocolVersion:this.protocolVersion,method:request.method,name}),sent=this.transport(headers,compact(request)),returned=mcpHeader(sent.headers,MCP_HEADERS.session),httpOk=sent.status_code>=200&&sent.status_code<300;
+  if(!has(request,"id")){if(httpOk){if(returned)this.sessionId=returned;return[rpcResult(null,null),this.sessionId]}return[rpcFailure(null,RPC.INTERNAL_ERROR,"notification rejected",{statusCode:sent.status_code,body:nul(sent.body)}),this.sessionId]}
+  const body=sent.body,rid=request.id,statusCode=other=>sent.status_code===401?RPC.UNAUTHORIZED:sent.status_code===403?RPC.FORBIDDEN:other;let response;
+  if(isDict(body)){if(has(body,"error")&&!has(body,"jsonrpc")){const error=body.error;response=rpcFailure(rid,statusCode(RPC.INTERNAL_ERROR),typeof error==="string"?error:error!==null?compact(error):"http_error",body)}
+   else{try{response=rpcResponseParse(body,rid)}catch(e){response=rpcFailure(rid,RPC.INTERNAL_ERROR,"invalid JSON-RPC response: "+e.message,{statusCode:sent.status_code,body})}}}
+  else response=rpcFailure(rid,RPC.INTERNAL_ERROR,"unexpected transport body",{statusCode:sent.status_code,body:nul(body)});
+  if(!httpOk&&!has(response,"error"))response=rpcFailure(rid,statusCode(RPC.INTERNAL_ERROR),"HTTP "+sent.status_code+" with result-shaped body",{statusCode:sent.status_code,body:nul(body)});
+  if(httpOk&&!has(response,"error")&&returned)this.sessionId=returned;return[response,this.sessionId]}}
+export function mcpInProcess(routes,path="/mcp"){return(headers,body)=>{const out=routes.handle("POST",path,headers,body);return out===null?{status_code:404,headers:{},body:{error:"not_found"}}:{status_code:out.status,headers:out.headers,body:out.body}}}
+export const mcpFoundationTransport=(handler,forceBearer=null)=>mcpInProcess(new McpRoutes(handler,{sessionErrorStatus:true,forceBearer}));
+export function mcpExchange(routes,request){const method=has(request,"method")?request.method:"POST",path=has(request,"path")?request.path:"/mcp",headers=has(request,"headers")?request.headers:{};
+ if(!isDict(headers)||Object.values(headers).some(v=>typeof v!=="string"))throw new Error("headers must be an object of strings");let body=has(request,"body")?request.body:null;if(body!==null&&typeof body!=="string")body=compact(body);
+ const out=routes.handle(method,path,headers,body);return out===null?{status:404,headers:{},body:{error:"not_found"}}:out}
+const api={mcpSupportMatrix,rpcFailure,rpcResult,rpcRequest,rpcRequestParse,rpcIsNotification,rpcResponseParse,mcpHeaderNeedsEncoding,mcpHeaderEncode,mcpHeaderDecode,mcpStreamableHeaders,mcpSessionId,pkceChallengeS256,pkcePair,oauthServerMetadata,oauthResourceMetadata,
+ bearerInspect,demoBearerToken,mcpMetaVersion,mcpLooksModern,mcpValidateModern,McpFoundation,mcpHeader,mcpOriginAllows,mcpOriginsForPort,McpRoutes,McpClient,mcpInProcess,mcpFoundationTransport,mcpExchange,sha256Hex,mulberry32};
+globalThis.webUiMcp=api;
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+const pretty=v=>JSON.stringify(v,null,2);
+export function bindMcp(root=document){return[...root.querySelectorAll("[data-ui-mcp]")].map(box=>{
+ const $=s=>box.querySelector(s),$$=s=>[...box.querySelectorAll(s)];let routes=new McpRoutes(null,{clock:()=>Date.now()/1000}),lastSession="";
+ const sessionsNote=$("[data-mcp-sessions]"),refresh=()=>{sessionsNote.textContent=routes.handler.sessions.size+" session(s) open on the in-page server."+(routes.handler.sessions.size?" Last: "+lastSession:"");box.dataset.sessions=String(routes.handler.sessions.size)};
+ const method=$("[data-mcp-method]"),path=$("[data-mcp-path]"),headersBox=$("[data-mcp-headers]"),body=$("[data-mcp-body]"),statusLine=$("[data-mcp-http-status]"),outHeaders=$("[data-mcp-out-headers]"),outBody=$("[data-mcp-out-body]");
+ const parseHeaders=text=>{const out={};for(const raw of text.split(/\r\n|\r|\n/)){const line=raw.trim();if(!line)continue;const i=line.indexOf(":");if(i<1)throw new Error("Each header line is name: value ("+line.slice(0,40)+")");out[line.slice(0,i).trim()]=line.slice(i+1).trim()}return out};
+ const send=()=>{try{const result=mcpExchange(routes,{method:method.value,path:path.value,headers:parseHeaders(headersBox.value),body:body.value===""?null:body.value});
+   statusLine.textContent="HTTP "+result.status;outHeaders.textContent=Object.entries(result.headers).map(([k,v])=>k+": "+v).join("\n")||"(no headers)";outBody.textContent=result.body===null?"(empty)":pretty(result.body);box.dataset.httpStatus=String(result.status);
+   const session=mcpHeader(result.headers,MCP_HEADERS.session);if(session&&result.status>=200&&result.status<300)lastSession=session;refresh()}catch(e){statusLine.textContent=e.message;outHeaders.textContent="";outBody.textContent="";box.dataset.httpStatus="error"}};
+ const meta={[MCP_META_VERSION]:MCP_CURRENT_VERSION,[MCP_META_CLIENT_INFO]:{name:"web-ui",version:"0"},[MCP_META_CLIENT_CAPS]:{}};
+ const templates={initialize:()=>({h:"",b:{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:MCP_LEGACY_VERSION,capabilities:{},clientInfo:{name:"web-ui",version:"0"}}}}),
+  initialized:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",method:"notifications/initialized"}}),
+  toolsList:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",id:2,method:"tools/list"}}),
+  toolsCall:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"echo",arguments:{text:"hello"}}}}),
+  discover:()=>({h:MCP_HEADERS.protocol+": "+MCP_CURRENT_VERSION+"\n"+MCP_HEADERS.method+": server/discover",b:{jsonrpc:"2.0",id:4,method:"server/discover",params:{_meta:meta}}}),
+  modernCall:()=>({h:MCP_HEADERS.protocol+": "+MCP_CURRENT_VERSION+"\n"+MCP_HEADERS.method+": tools/call\n"+MCP_HEADERS.name+": echo",b:{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"echo",arguments:{text:"hello"},_meta:meta}}})};
+ for(const button of $$("[data-mcp-template]")){button.addEventListener("click",()=>{const t=templates[button.dataset.mcpTemplate]();box.dataset.template=button.dataset.mcpTemplate;method.value="POST";path.value="/mcp";headersBox.value=t.h;body.value=pretty(t.b)})}
+ $("[data-mcp-send]").addEventListener("click",send);$("[data-mcp-reset]").addEventListener("click",()=>{routes=new McpRoutes(null,{clock:()=>Date.now()/1000});lastSession="";statusLine.textContent="Server reset.";outHeaders.textContent="";outBody.textContent="";refresh()});
+ const demo=(which)=>{const transport=mcpInProcess(routes),client=new McpClient(transport),result=which==="modern"?client.runModernEchoDemo($("[data-mcp-demo-text]").value):client.runEchoDemo($("[data-mcp-demo-text]").value);
+  const log=$("[data-mcp-demo-log]");log.replaceChildren(...result.log.map(line=>el("li",{},el("code",{text:line}))));$("[data-mcp-demo-status]").textContent=(result.ok?"Demo finished: ok.":"Demo stopped on an error.")+(result.session_id?" Session "+result.session_id+".":" No session.");box.dataset.demo=which+":"+(result.ok?"ok":"failed");if(result.session_id)lastSession=result.session_id;refresh()};
+ $("[data-mcp-demo-legacy]").addEventListener("click",()=>demo("legacy"));$("[data-mcp-demo-modern]").addEventListener("click",()=>demo("modern"));
+ const codecIn=$("[data-mcp-codec-in]"),codecOut=$("[data-mcp-codec-out]"),codec=()=>{const v=codecIn.value,e=mcpHeaderEncode(v),d=mcpHeaderDecode(e);codecOut.textContent="Needs encoding: "+(mcpHeaderNeedsEncoding(v)?"yes":"no")+"\nEncoded: "+e+"\nDecoded back: "+(d===null?"(malformed)":JSON.stringify(d))+(d===v?"":"\nNot the same as the input.")+"\nAs typed, decoded: "+(mcpHeaderDecode(v)===null?"(malformed)":JSON.stringify(mcpHeaderDecode(v)))};
+ codecIn.addEventListener("input",codec);codec();
+ const verifier=$("[data-mcp-verifier]"),challenge=$("[data-mcp-challenge]"),pkce=()=>{challenge.textContent=verifier.value?pkceChallengeS256(verifier.value):"";box.dataset.challenge=challenge.textContent};
+ verifier.addEventListener("input",pkce);$("[data-mcp-pkce-new]").addEventListener("click",()=>{verifier.value=pkcePair().codeVerifier;pkce()});pkce();
+ const auth=$("[data-mcp-auth]"),aud=$("[data-mcp-aud]"),authOut=$("[data-mcp-auth-out]"),authRun=()=>{const r=bearerInspect(auth.value,aud.value);authOut.textContent=r.status+(r.audience?" · audience "+r.audience:"")+(r.expires_at!==null?" · expires "+new Date(r.expires_at*1000).toISOString():"");box.dataset.bearer=r.status};
+ auth.addEventListener("input",authRun);aud.addEventListener("input",authRun);$("[data-mcp-auth-demo]").addEventListener("click",()=>{auth.value="Bearer "+demoBearerToken(aud.value,Math.floor(Date.now()/1000)+3600);authRun()});authRun();
+ const meta1=$("[data-mcp-meta]"),metaOut=$("[data-mcp-meta-out]"),metaRun=()=>{try{const kind=$$('input[name="mcp-meta-kind"]').find(r=>r.checked).value,doc=JSON.parse(meta1.value);metaOut.textContent=pretty(kind==="server"?oauthServerMetadata(doc):oauthResourceMetadata(doc));box.dataset.meta="ok"}
+  catch(e){metaOut.textContent=e instanceof SyntaxError?"Not JSON.":e.message;box.dataset.meta="error"}};
+ meta1.addEventListener("input",metaRun);$$('input[name="mcp-meta-kind"]').forEach(r=>r.addEventListener("change",metaRun));metaRun();refresh();box.dataset.mcp_ready="";return box})}
+if(typeof document!=="undefined")bindMcp();
+"""
+
+
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
-const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
-export const strip=s=>(s.startsWith("﻿")?s.slice(1):s).replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+""" + _TEXT_JS + r"""export const strip=s=>pyStrip(s.startsWith("\ufeff")?s.slice(1):s);
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
 export const shelfMaxChars=n=>4*Math.floor((n+2)/3);
 export function sniffImageMime(b){return b.length>=8&&b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47&&b[4]===0x0d&&b[5]===0x0a&&b[6]===0x1a&&b[7]===0x0a?"image/png":b.length>=3&&b[0]===0xff&&b[1]===0xd8&&b[2]===0xff?"image/jpeg":
@@ -6295,7 +8425,10 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Play studio</h2><p><a href="./play-studio.html">Counter garden and Irony quest</a>.</p></article>'
             '<article class="ui-card"><h2>Timeline</h2><p><a href="./timeline.html">Dated events in UTC order</a>.</p></article>'
             '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
-            '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
+            '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
+            '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
+            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -6331,6 +8464,9 @@ def example_pages() -> dict[str, str]:
         "examples/play-studio.html": play_document(),
         "examples/timeline.html": timeline_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
+        "examples/playground.html": playground_document(),
+        "examples/test-report.html": report_document(),
+        "examples/mcp-lab.html": mcp_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -6704,6 +8840,71 @@ def write_site(directory: str | Path) -> list[str]:
     return written + write_js(directory) + write_examples(directory)
 
 
+def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """The command-line side of the test reports: exit 0 when everything passed, 1 when a test failed or the events were not ok, 2 when the input was invalid."""
+    out = lambda value: sys.stdout.write(json.dumps(value, ensure_ascii=False) + "\n")
+    if args.junit:
+        if args.previous and len(args.junit) != 1:
+            parser.error("--previous needs exactly one --junit file")
+        status = 0
+        for path in args.junit:
+            try:
+                if not path.is_file() or path.is_symlink():
+                    raise ValueError("JUnit report is missing or not a regular file")
+                text = path.read_bytes().decode("utf-8")
+                report = junit_report(text)
+                if args.previous:
+                    previous = args.previous
+                    if not previous.is_file() or previous.is_symlink():
+                        raise ValueError("previous JUnit report is missing or not a regular file")
+                    report["diff"] = junit_diff(text, previous.read_bytes().decode("utf-8"))
+            except (OSError, ValueError) as error:
+                print(f"invalid JUnit: {error}", file=sys.stderr)
+                return 2
+            out(report)
+            status = max(status, 0 if report["ok"] else 1)
+        return status
+    if args.flutter_events:
+        try:
+            text = args.flutter_events.read_text(encoding="utf-8")
+            if args.to:
+                converted = flutter_machine_junit(text)
+                args.to.parent.mkdir(parents=True, exist_ok=True)
+                args.to.write_text(converted["xml"], encoding="utf-8")
+        except (OSError, ValueError) as error:
+            print(f"invalid Flutter events: {error}", file=sys.stderr)
+            return 2
+        summary = counts_summary(flutter_outcomes(text), source="flutter-json")
+        print(counts_line(summary["counts"]))
+        print(f"total={summary['total']} ok={'true' if summary['ok'] else 'false'}" + (f" converted={converted['tests']}" if args.to else ""))
+        return 0 if summary["ok"] else 1
+    if args.run_tests:
+        if not args.test_file:
+            print("external runner requires --test-file", file=sys.stderr)
+            return 2
+        root = Path.cwd()
+        try:
+            if args.run_tests == "node":
+                return node_test_run(root=root, files=args.test_file, report=args.report, receipt=args.receipt, name_pattern=args.name_pattern, timeout=int(args.timeout))
+            return run_test_suite(args.run_tests, root=root, files=args.test_file, report=args.report, history=args.history, ledger=args.ledger, retry_failed=args.retry_failed,
+                                  timeout=int(args.timeout))
+        except (ValueError, OSError) as error:
+            print(f"external runner: {error}", file=sys.stderr)
+            return 2
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command or not args.output_dir:
+        parser.error("--expect-exit needs --output-dir and a command after --")
+    try:
+        status, receipt = expected_child_failure(command, expect_exit=args.expect_exit, output_dir=args.output_dir, timeout=args.timeout)
+    except ValueError as error:
+        print(f"--expect-exit: {error}", file=sys.stderr)
+        return 2
+    out(receipt)
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
@@ -6738,7 +8939,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     parser.add_argument("--sri", type=Path, metavar="FILE",
                         help="print the sha384 SRI and SHA-256 hex of FILE (for pinning a new asset) and exit")
+    reports = parser.add_argument_group("test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
+    reports.add_argument("--junit", nargs="+", type=Path, metavar="FILE", help="read JUnit XML reports (fail closed) and print one JSON report per file; exit 1 if a test failed, 2 if a report is invalid")
+    reports.add_argument("--previous", type=Path, metavar="FILE", help="with --junit and one file: also say what is new, recurring or resolved against this earlier JUnit report")
+    reports.add_argument("--flutter-events", type=Path, metavar="FILE", help="read Flutter machine JSON events: print the outcome counts (exit 1 unless ok); with --to also write the JUnit XML")
+    reports.add_argument("--to", type=Path, metavar="FILE", help="with --flutter-events: write the converted JUnit XML here (an incomplete event stream is exit 2)")
+    reports.add_argument("--run-tests", choices=(*TEST_RUNNERS, "node"), metavar="RUNNER", help=f"run test files with an allowlisted runner ({', '.join(TEST_RUNNERS)}, node) and check its JUnit")
+    reports.add_argument("--test-file", action="append", default=[], metavar="FILE", help="with --run-tests: a test file inside the repository (repeat for more)")
+    reports.add_argument("--report", type=Path, default=Path("build/test-results/report.xml"), metavar="FILE", help="with --run-tests: where the runner writes its JUnit")
+    reports.add_argument("--history", type=Path, default=Path("build/test-results/attempts.json"), metavar="FILE", help="with --run-tests (not node): the attempt record")
+    reports.add_argument("--receipt", type=Path, metavar="FILE", help="with --run-tests node: the JSON receipt")
+    reports.add_argument("--ledger", type=Path, metavar="FILE", help="with --run-tests: accumulate failure fingerprints here (best effort)")
+    reports.add_argument("--retry-failed", action="store_true", help="with --run-tests: run the same files once more after a failure (the first failure is never masked)")
+    reports.add_argument("--name-pattern", metavar="REGEX", help="with --run-tests node: Node's --test-name-pattern")
+    reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
+    reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
+    reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
+    parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.junit or args.flutter_events or args.run_tests or args.expect_exit:
+        return _reports_main(parser, args)
+    if args.command:
+        parser.error("unexpected arguments: " + " ".join(args.command))
     if args.sri:
         try:
             raw = args.sri.read_bytes()

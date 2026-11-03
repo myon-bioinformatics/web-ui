@@ -13,6 +13,8 @@ from unittest import mock
 import json
 import math
 
+import hashlib
+import xml.etree.ElementTree as ET
 import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 
@@ -2053,15 +2055,18 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-photo-studio", "web-ui-showcase"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
                 self.assertEqual(self.contract_errors(config), [])
                 self.assertEqual(config["id"], adapter_id)
                 self.assertIn("examples/" + w.BTK_ADAPTERS[adapter_id]["page"], pages)
-                self.assertEqual(config["url"], "http://127.0.0.1:8000/examples/" + w.BTK_ADAPTERS[adapter_id]["page"])
+                self.assertEqual(config["url"], w.btk_adapter_url(w.BTK_ADAPTERS[adapter_id]))
+                self.assertTrue(config["url"].startswith("http://127.0.0.1:8000/examples/" + w.BTK_ADAPTERS[adapter_id]["page"]))
         self.assertEqual(w.btk_adapter("web-ui-door", "http://localhost:9/x.html")["url"], "http://localhost:9/x.html")
+        self.assertEqual(w.btk_adapter("web-ui-irony")["url"], "http://127.0.0.1:8000/examples/playground.html#irony-title")
+        self.assertEqual(w.btk_adapter("web-ui-door")["url"], "http://127.0.0.1:8000/examples/door.html")
         self.assertIsNot(w.btk_adapter("web-ui-door")["elements"], w.BTK_ADAPTERS["web-ui-door"]["elements"])      # a copy: callers cannot change the table
         with self.assertRaises(ValueError):
             w.btk_adapter("flutter-home")
@@ -2338,6 +2343,1233 @@ class ClipboardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES))
         self.assertTrue(w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES - 8)))
+
+
+class PlaygroundTests(unittest.TestCase):
+    """The Counter Playground, the hold-to-repeat button and the Irony generator. The Dart tests of flutter_navigation_basic (counter_playground_controller_test,
+    counter_battle_effect_test, counter_battle_effect_ui_test, hold_repeating_button_test, irony_generator_interaction_test) are the golden values."""
+
+    def run_actions(self, *steps):
+        state = web_ui.counter_state()
+        for step in steps:
+            state = web_ui.counter_apply(state, *step)
+        return state
+
+    def test_the_controller_dart_tests(self):
+        state = web_ui.counter_state()
+        self.assertEqual((state["counter"], state["step"], state["history"]), (0, 1, [0]))
+        self.assertTrue(web_ui.counter_effect(0)["idle"])
+        up = self.run_actions(("increment",))
+        self.assertEqual((up["counter"], up["burst"]), (1, 1))
+        self.assertEqual((web_ui.counter_effect(1)["heal"], web_ui.counter_effect(1)["amount"]), (False, 1))
+        down = self.run_actions(("decrement",))
+        self.assertEqual((down["counter"], web_ui.counter_effect(-1)["heal"], web_ui.counter_effect(-1)["amount"]), (-1, True, 1))
+        ten = self.run_actions(*[("increment",)] * 10)
+        self.assertEqual((ten["counter"], web_ui.counter_effect(10)["amount"]), (10, 10))
+        cleared = self.run_actions(("change", 5), ("reset",))
+        self.assertEqual(cleared["counter"], 0)
+        self.assertTrue(web_ui.counter_effect(cleared["counter"])["idle"])
+
+    def test_the_ends_clamp_and_do_not_bump_the_burst(self):
+        top = self.run_actions(("change", web_ui.COUNTER_MAX))
+        self.assertEqual(top["counter"], 100)
+        self.assertEqual(web_ui.counter_apply(top, "increment"), top)
+        self.assertEqual(web_ui.counter_apply(top, "change", 7), top)
+        bottom = self.run_actions(("change", web_ui.COUNTER_MIN))
+        self.assertEqual(bottom["counter"], -100)
+        self.assertEqual(web_ui.counter_apply(bottom, "decrement"), bottom)
+        step10 = self.run_actions(("step", 10), *[("increment",)] * 9)
+        self.assertEqual((step10["counter"], step10["burst"]), (90, 9))
+        over = web_ui.counter_apply(step10, "change", 50)
+        self.assertEqual((over["counter"], over["burst"], over["history"][:2]), (100, 10, [100, 90]))
+
+    def test_step_history_undo_and_restore_follow_the_controller(self):
+        state = self.run_actions(("step", 5), ("increment",))
+        self.assertEqual((state["counter"], state["history"]), (5, [5, 0]))
+        state = web_ui.counter_apply(state, "decrement")
+        self.assertEqual((state["counter"], state["history"]), (0, [0, 5, 0]))
+        state = web_ui.counter_apply(state, "undo")
+        self.assertEqual((state["counter"], state["history"]), (5, [5, 0]))
+        state = web_ui.counter_apply(state, "restore", 2)
+        self.assertEqual((state["counter"], state["history"]), (2, [2, 5, 0]))
+        state = web_ui.counter_apply(state, "reset")
+        self.assertEqual((state["counter"], state["history"]), (0, [0, 2, 5, 0]))
+
+    def test_undo_records_nothing_and_bumps_the_burst_but_only_when_there_is_something_to_undo(self):
+        first = web_ui.counter_state()
+        self.assertEqual(web_ui.counter_apply(first, "undo"), first)
+        moved = web_ui.counter_apply(first, "change", 3)
+        back = web_ui.counter_apply(moved, "undo")
+        self.assertEqual(back, {"counter": 0, "step": 1, "burst": 2, "history": [0]})
+        self.assertEqual(web_ui.counter_apply(first, "reset"), first)
+        self.assertEqual(web_ui.counter_apply(moved, "restore", 3), moved)
+        self.assertEqual(web_ui.counter_apply(moved, "restore", 300)["counter"], 100)
+
+    def test_the_history_keeps_the_eight_newest_values(self):
+        state = web_ui.counter_state()
+        for n in range(1, 13):
+            state = web_ui.counter_apply(state, "change", 1)
+            self.assertEqual(len(state["history"]), min(n + 1, web_ui.COUNTER_HISTORY))
+        self.assertEqual(state["history"], [12, 11, 10, 9, 8, 7, 6, 5])
+        for _ in range(7):
+            state = web_ui.counter_apply(state, "undo")
+        self.assertEqual((state["counter"], state["history"]), (5, [5]))
+        self.assertEqual(web_ui.counter_apply(state, "undo"), state)
+
+    def test_only_steps_one_five_and_ten_are_accepted(self):
+        state = web_ui.counter_state()
+        for value in (2, 0, -5, 11, True, 5.0, "5", None):
+            self.assertEqual(web_ui.counter_apply(state, "step", value), state, value)
+        self.assertEqual(web_ui.counter_apply(state, "step", 1), state)
+        self.assertEqual([web_ui.counter_apply(state, "step", s)["step"] for s in web_ui.COUNTER_STEPS], [1, 5, 10])
+        self.assertEqual(web_ui.counter_apply(web_ui.counter_apply(state, "step", 10), "step", 10)["burst"], 0)
+
+    def test_bad_input_is_an_error_not_a_guess(self):
+        state = web_ui.counter_state()
+        for bad in (("nope",), ("change", "3"), ("change", 1.5), ("change", True), ("restore",), ("restore", None)):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.counter_apply(state, *bad)
+        for broken in ({**state, "history": []}, {**state, "history": [1]}, {**state, "history": [0, "x"]}, {**state, "counter": True}, {**state, "step": 1.0}):
+            with self.assertRaises(ValueError, msg=broken):
+                web_ui.counter_apply(broken, "increment")
+        self.assertEqual(state, web_ui.counter_state(), "the input is never changed")
+
+    def test_the_battle_effect_dart_tests(self):
+        self.assertEqual(web_ui.counter_effect(0), {"counter": 0, "amount": 0, "heal": False, "idle": True, "orbs": []})
+        damage = web_ui.counter_effect(3)
+        self.assertEqual((damage["heal"], damage["amount"], damage["orbs"]), (False, 3, ["🔥", "💧", "🌳"]))
+        heal = web_ui.counter_effect(-2)
+        self.assertEqual((heal["heal"], heal["amount"], heal["orbs"]), (True, 2, ["❤️", "💚"]))
+        big = web_ui.counter_effect(20)
+        self.assertEqual((big["amount"], len(big["orbs"])), (20, web_ui.COUNTER_MAX_ORBS))
+        self.assertEqual(web_ui.counter_effect(7)["orbs"], ["🔥", "💧", "🌳", "💡", "🔮", "🔥"])
+        self.assertEqual(web_ui.counter_effect(-7)["orbs"], ["❤️", "💚", "✨", "❤️", "💚", "✨"])
+        self.assertEqual([web_ui.counter_label(n) for n in (1, -1, 0, 20, -100)], ["💥 Damage 1", "💚 Heal 1", "Orbs ready…", "💥 Damage 20", "💚 Heal 100"])
+
+    def test_the_status_ladder_is_first_match_wins(self):
+        ladder = {100: "max", 99: "high", 50: "high", 49: "too_much", 10: "too_much", 9: "neutral", 1: "neutral", 0: "neutral", -1: "neutral", -9: "neutral",
+                  -10: "reverse", -49: "reverse", -50: "low", -99: "low", -100: "min"}
+        self.assertEqual({n: web_ui.counter_status_key(n) for n in ladder}, ladder)
+        self.assertEqual(set(ladder.values()), set(web_ui.COUNTER_STATUS))
+        self.assertEqual(web_ui.COUNTER_STATUS["too_much"], "Too much 😈")
+
+    def test_holding_fires_after_350_ms_and_then_every_70_ms(self):
+        self.assertEqual([web_ui.hold_repeat_count(ms) for ms in (0, 100, 349, 349.9, 350, 419, 419.9, 420, 489, 490, 700, 1050)], [0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 6, 11])
+        self.assertGreaterEqual(web_ui.hold_repeat_count(350), 1)
+        self.assertGreaterEqual(web_ui.hold_repeat_count(350 + 70 + 70), 3)
+        self.assertEqual([web_ui.hold_repeat_count(5000, buttons=b) for b in (1, 2, 4, 0)], [web_ui.hold_repeat_count(5000), 0, 0, 0])
+        self.assertEqual([web_ui.hold_swallows_click(ms) for ms in (0, 349, 350, 5000)], [False, False, True, True])
+        self.assertFalse(web_ui.hold_swallows_click(5000, buttons=2))
+
+    def test_the_ironies_are_the_darts_twenty(self):
+        self.assertEqual(len(web_ui.IRONIES), 20)
+        self.assertEqual(len({text for text, _ in web_ui.IRONIES}), 20)
+        self.assertEqual(list(dict.fromkeys(tone for _, tone in web_ui.IRONIES)), ["Tech", "Work", "Daily", "Human"])
+        self.assertEqual([sum(tone == name for _, tone in web_ui.IRONIES) for name in ("Tech", "Work", "Daily", "Human")], [5, 5, 5, 5])
+        self.assertEqual(web_ui.IRONIES[4][0], "The cloud is just someone else’s computer with better branding.")
+        source = Path("/home/claude/myon-bioinformatics/flutter_navigation_basic/lib/data/ironies.dart")
+        if source.is_file():
+            dart = re.findall(r"IronyEntry\(text: '((?:[^'\\]|\\.)*)', tone: '(\w+)'\)", source.read_text(encoding="utf-8"))
+            self.assertEqual(tuple(dart), web_ui.IRONIES)
+
+    def test_the_next_irony_is_never_the_one_on_screen_and_every_other_one_can_come(self):
+        for count in (2, 3, 20):
+            for current in range(count):
+                seen = {web_ui.irony_next(count, current, (k + 0.5) / (count - 1)) for k in range(count - 1)}
+                self.assertEqual(seen, set(range(count)) - {current}, (count, current))
+        self.assertIsNone(web_ui.irony_next(1, 0, 0.5))
+        self.assertIsNone(web_ui.irony_next(0, None, 0.5))
+        self.assertIn(web_ui.irony_next(5, None, 0.999999), range(5))
+        self.assertEqual([web_ui.irony_first(20, u) for u in (0, 0.049999, 0.05, 0.999999)], [0, 0, 1, 19])
+        for bad in (-0.1, 1.0, 2):
+            with self.assertRaises(ValueError):
+                web_ui.irony_next(5, 0, bad)
+            with self.assertRaises(ValueError):
+                web_ui.irony_first(5, bad)
+        with self.assertRaises(ValueError):
+            web_ui.irony_first(0, 0.5)
+        for seed in (7, 11, 13, 17, 0, 4294967295):
+            run = web_ui.irony_sequence(seed, 2000)
+            self.assertTrue(all(a != b for a, b in zip(run, run[1:])), seed)
+            self.assertEqual(run, web_ui.irony_sequence(seed, 2000))
+            self.assertGreaterEqual(len(set(run)), 19, "a long run reaches (almost) all of them")
+
+    # The Dart widget tests pump an 800x600 surface; the body under the app bar is 800x544, the card (max width 520) is centred and the handle sits at the top of it.
+    ARENA = (800, 544)
+    CARD = (140.0, 172.0, 660.0, 372.0)
+    HANDLE = (376.0, 180.0, 424.0, 212.0)
+
+    @staticmethod
+    def shifted(rect, dx, dy):
+        return (rect[0] + dx, rect[1] + dy, rect[2] + dx, rect[3] + dy)
+
+    def drop(self, dx, dy):
+        return web_ui.irony_drop(self.ARENA, self.shifted(self.CARD, dx, dy), self.shifted(self.HANDLE, dx, dy))
+
+    def test_a_small_drag_keeps_the_message(self):
+        self.assertEqual(self.drop(48, 32), {"action": "none", "dx": 0.0, "dy": 0.0})
+
+    def test_moving_the_card_fully_outside_spawns_the_next_message(self):
+        self.assertEqual(self.drop(1600, 0)["action"], "spawn")
+        self.assertEqual(self.drop(0, 600)["action"], "spawn")
+        self.assertEqual(self.drop(-900, 0)["action"], "spawn")
+        # touching along an edge is not overlapping; one pixel of overlap is
+        self.assertEqual(self.drop(800 - 140.0, 0)["action"], "spawn")
+        self.assertEqual(self.drop(800 - 140.0 - 1, 0)["action"], "snap")
+
+    def test_partial_exit_snaps_the_handle_back_inside_eight_pixels(self):
+        for dy in (0 - self.HANDLE[3] - 12, 0 - self.HANDLE[3] + 4, -300.0, -175.0):
+            handle = self.shifted(self.HANDLE, 0, dy)
+            card = self.shifted(self.CARD, 0, dy)
+            self.assertGreater(card[3], 0, "precondition: the card body stays partly visible")
+            result = web_ui.irony_drop(self.ARENA, card, handle)
+            self.assertEqual(result["action"], "snap", dy)
+            moved = self.shifted(handle, result["dx"], result["dy"])
+            self.assertTrue(web_ui.rect_inside(moved, web_ui.rect_deflate((0, 0, *self.ARENA), 8)), (dy, moved))
+            self.assertAlmostEqual(moved[1], 8.0)
+
+    def test_a_handle_exactly_on_the_safe_inset_stays_where_it_is(self):
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (8, 8, 56, 40))["action"], "none")
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (7.5, 8, 55.5, 40))["action"], "snap")
+        self.assertEqual(web_ui.irony_drop(self.ARENA, (0, 0, 100, 100), (8, 8, 56, 40))["action"], "none")
+
+    def test_missing_measurements_end_the_drag_quietly(self):
+        none = {"action": "none", "dx": 0.0, "dy": 0.0}
+        self.assertEqual(web_ui.irony_drop(self.ARENA, None, self.HANDLE), none)
+        self.assertEqual(web_ui.irony_drop(self.ARENA, None, None), none)
+        self.assertEqual(web_ui.irony_drop(self.ARENA, self.CARD, None), none)
+
+    def test_a_handle_as_large_as_the_arena_is_centred(self):
+        result = web_ui.irony_drop((100, 100), (0, 0, 120, 120), (-10, -10, 110, 110))
+        self.assertEqual(result["action"], "snap")
+        self.assertEqual((result["dx"], result["dy"]), (0.0, 0.0))
+        shifted = web_ui.irony_drop((100, 100), (-20, -20, 100, 100), (-30, -30, 90, 90))
+        self.assertEqual((shifted["dx"], shifted["dy"]), (20.0, 20.0))
+
+    def test_rect_rules(self):
+        self.assertTrue(web_ui.rect_overlaps((0, 0, 10, 10), (9, 9, 20, 20)))
+        self.assertFalse(web_ui.rect_overlaps((0, 0, 10, 10), (10, 0, 20, 10)))
+        self.assertFalse(web_ui.rect_overlaps((0, 0, 10, 10), (0, 10, 10, 20)))
+        self.assertTrue(web_ui.rect_inside((1, 1, 9, 9), (0, 0, 10, 10)))
+        self.assertTrue(web_ui.rect_inside((0, 0, 10, 10), (0, 0, 10, 10)))
+        self.assertFalse(web_ui.rect_inside((0, 0, 10.5, 10), (0, 0, 10, 10)))
+        self.assertEqual(web_ui.rect_deflate((0, 0, 100, 50), 8), (8.0, 8.0, 92.0, 42.0))
+        self.assertEqual(web_ui.rect_clamp_inside((-20, 5, 30, 25), (0, 0, 100, 100), 8), (8.0, 8.0, 58.0, 28.0))
+        for bad in ((1, 2, 3), (1, 2, 3, float("nan")), (1, 2, 3, True), "abcd", None):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.rect_overlaps(bad, (0, 0, 1, 1))
+        with self.assertRaises(ValueError):
+            web_ui.irony_drop((float("inf"), 10), self.CARD, self.HANDLE)
+
+    def test_a_seeded_fuzz_always_ends_with_the_handle_reachable_or_the_card_gone(self):
+        rng = random.Random(20261103)
+        for _ in range(5000):
+            width, height = rng.randint(120, 1000), rng.randint(120, 1000)
+            card = (rng.uniform(-600, 1200), rng.uniform(-600, 1200))
+            cw, ch, hw, hh = rng.uniform(40, 520), rng.uniform(40, 300), rng.uniform(16, 64), rng.uniform(16, 48)
+            card_rect = (card[0], card[1], card[0] + cw, card[1] + ch)
+            handle = (card[0] + rng.uniform(0, max(cw - hw, 0)), card[1] + rng.uniform(0, max(ch - hh, 0)))
+            handle_rect = (handle[0], handle[1], handle[0] + hw, handle[1] + hh)
+            result = web_ui.irony_drop((width, height), card_rect, handle_rect)
+            if not web_ui.rect_overlaps(card_rect, (0, 0, width, height)):
+                self.assertEqual(result["action"], "spawn")
+                continue
+            moved = self.shifted(handle_rect, result["dx"], result["dy"])
+            self.assertIn(result["action"], ("none", "snap"))
+            # the card moves by (clamped centre - centre), as in the Dart page, so it can land a rounding error (1e-13) off the exact inset: allow that
+            if hw <= width - 16 and hh <= height - 16:
+                self.assertTrue(web_ui.rect_inside(moved, web_ui.rect_deflate((0, 0, width, height), 8 - 1e-9)), (result, moved, width, height))
+
+    def test_the_page_is_semantic_and_self_contained(self):
+        html = web_ui.playground_document()
+        for needle in ('data-ui-play', 'data-counter-increment', 'data-counter-decrement', 'data-counter-reset', 'data-counter-undo', 'data-counter-history', 'data-irony-arena',
+                       'data-irony-handle', 'aria-label="Drag to move message"', 'data-irony-next', 'aria-live="polite"', 'name="counter-step"'):
+            self.assertIn(needle, html)
+        self.assertEqual(html.count('<script'), 1)
+        self.assertNotIn('http://', html.split('<style', 1)[0])
+        self.assertIn("examples/playground.html", web_ui.example_pages())
+        self.assertIn("./playground.html", web_ui.example_pages()["examples/index.html"])
+        self.assertEqual(json.loads(re.search(r'data-play="([^"]*)"', html).group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["status"], web_ui.COUNTER_STATUS)
+
+
+def flutter_case(tid, sid, name, result="success", **done):
+    return [{"type": "testStart", "test": {"id": tid, "suiteID": sid, "name": name}}, {"type": "testDone", "testID": tid, "result": result, **done}]
+
+
+def ndjson(events):
+    return "\n".join(json.dumps(e) for e in events)
+
+
+class ReportTests(unittest.TestCase):
+    """Test reports: the Python tests of flutter_navigation_basic's outcomes, flutter_machine_junit, validate_runner_junit, junit_history, multi_test_runner,
+    node_test_runner and expected_child_failure are the golden values (ported case by case)."""
+
+    SHA = "a" * 40
+
+    def parse(self, xml):
+        return ET.fromstring(xml)
+
+    # --- outcomes (python/tests/test_outcomes.py)
+    def test_a_known_skip_is_xfailed_and_a_plain_skip_is_skipped(self):
+        events = [
+            {"type": "testStart", "test": {"id": 1, "name": "loading suite", "metadata": {"skip": False, "skipReason": None}}},
+            {"type": "testDone", "testID": 1, "result": "success", "skipped": False, "hidden": True},
+            {"type": "testStart", "test": {"id": 2, "name": "works", "metadata": {"skip": False, "skipReason": None}}},
+            {"type": "testDone", "testID": 2, "result": "success", "skipped": False, "hidden": False},
+            {"type": "testStart", "test": {"id": 3, "name": "known gap", "metadata": {"skip": True, "skipReason": "known: pattern catalogue not on latest-stable"}}},
+            {"type": "testDone", "testID": 3, "result": "success", "skipped": True, "hidden": False},
+            {"type": "testStart", "test": {"id": 4, "name": "plain skip", "metadata": {"skip": True, "skipReason": "not in this env"}}},
+            {"type": "testDone", "testID": 4, "result": "success", "skipped": True, "hidden": False},
+            {"type": "testStart", "test": {"id": 5, "name": "x", "metadata": {"skip": True, "skipReason": "XFAIL: upper case counts too"}}},
+            {"type": "testDone", "testID": 5, "result": "success", "skipped": True},
+        ]
+        counts = web_ui.flutter_outcomes(ndjson(events))
+        self.assertEqual((counts["passed"], counts["xfailed"], counts["skipped"], counts["failed"]), (1, 2, 1, 0))
+        self.assertIn("xfailed=2", web_ui.counts_line(counts))
+
+    def test_bad_lines_count_as_errors_and_garbage_alone_is_not_ok(self):
+        lines = [json.dumps({"type": "testStart", "test": {"id": 1, "name": "works"}}), json.dumps({"type": "testDone", "testID": 1, "result": "success"}), "{not-json", "42", ""]
+        counts = web_ui.flutter_outcomes("\n".join(lines))
+        self.assertEqual((counts["passed"], counts["error"]), (1, 2))
+        self.assertFalse(web_ui.counts_summary(counts, source="flutter-json")["ok"])
+        garbage = web_ui.flutter_outcomes("truncated...\n{broken")
+        self.assertEqual(garbage, {"passed": 0, "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0, "error": 2})
+        self.assertFalse(web_ui.counts_summary(garbage, source="flutter-json")["ok"])
+        self.assertEqual(web_ui.flutter_outcomes('{"a": NaN}\n{"type": "testStart", "test": [1]}')["error"], 2, "JSON constants and a non-object test are errors")
+
+    def test_the_receipt_round_trips(self):
+        payload = web_ui.counts_summary({"passed": 1, "failed": 0, "skipped": 2, "xfailed": 1, "xpassed": 0, "error": 0}, source="pytest")
+        loaded = json.loads(json.dumps(payload))
+        self.assertEqual((loaded["ok"], loaded["counts"]["xfailed"], loaded["total"]), (True, 1, 4))
+
+    def test_nothing_passed_is_not_green_and_a_failed_load_is_an_error(self):
+        self.assertFalse(web_ui.counts_summary({}, source="x")["ok"])
+        self.assertFalse(web_ui.counts_summary({"skipped": 5}, source="x")["ok"])
+        self.assertTrue(web_ui.counts_summary({"passed": 1, "skipped": 5}, source="x")["ok"])
+        broken = ndjson([*flutter_case(1, 0, "loading test/broken_test.dart", result="error", hidden=False), {"type": "done", "success": False}])
+        self.assertEqual(web_ui.flutter_outcomes(broken)["error"], 1)
+        shown = ndjson([*flutter_case(1, 0, "loading test/ok_test.dart"), *flutter_case(2, 0, "real"), {"type": "done", "success": True}])
+        self.assertEqual(web_ui.flutter_outcomes(shown)["passed"], 1, "a successful, visible loading pseudo-test is not a test")
+        ids = ndjson([{"type": "testStart", "test": {"id": True, "name": "a", "metadata": {"skipReason": "known: x"}}}, {"type": "testDone", "testID": True, "result": "success", "skipped": True}])
+        self.assertEqual(web_ui.flutter_outcomes(ids)["skipped"], 1, "a boolean is never a test ID, so the start's skip reason is not linked to the completion")
+
+    # --- Flutter machine events to JUnit (python/tests/test_flutter_machine_junit.py)
+    def convert(self, events):
+        return web_ui.flutter_machine_junit(ndjson(events))
+
+    def test_per_case_failure_is_preserved(self):
+        events = [{"type": "testStart", "test": {"id": 1, "name": "passes"}}, {"type": "testDone", "testID": 1, "result": "success"},
+                  {"type": "testStart", "test": {"id": 2, "name": "fails"}}, {"type": "error", "testID": 2, "error": "expected true"},
+                  {"type": "testDone", "testID": 2, "result": "failure"}, {"type": "done", "success": False}]
+        done = self.convert(events)
+        self.assertEqual(done["tests"], 2)
+        cases = self.parse(done["xml"]).findall("testcase")
+        self.assertEqual([c.get("name") for c in cases], ["passes", "fails"])
+        self.assertIsNotNone(cases[1].find("failure"))
+        self.assertEqual(cases[1].find("failure").text, "expected true")
+
+    def test_skip_hidden_and_suite_identity_follow_the_protocol(self):
+        suite = lambda sid, path: {"type": "suite", "suite": {"id": sid, "path": path}}
+        events = [suite(0, "test/a_test.dart"), suite(1, "test/b_test.dart"), *flutter_case(1, 0, "loading test/a_test.dart", hidden=True), *flutter_case(2, 0, "same name"),
+                  *flutter_case(3, 1, "same name"), {"type": "testStart", "test": {"id": 4, "suiteID": 1, "name": "skip me", "metadata": {"skipReason": "known: gap"}}},
+                  {"type": "testDone", "testID": 4, "result": "success", "skipped": True}, {"type": "done", "success": True}]
+        cases = self.parse(self.convert(events)["xml"]).findall("testcase")
+        self.assertEqual([(c.get("classname"), c.get("name")) for c in cases], [("test/a_test.dart", "same name"), ("test/b_test.dart", "same name"), ("test/b_test.dart", "skip me")])
+        self.assertEqual(cases[2].find("skipped").get("message"), "known: gap")
+        self.assertTrue(all(c.find("skipped") is None for c in cases[:2]))
+
+    def test_a_failed_load_stays_visible(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": "test/broken_test.dart"}}, {"type": "testStart", "test": {"id": 1, "suiteID": 0, "name": "loading test/broken_test.dart"}},
+                  {"type": "error", "testID": 1, "error": "Compilation failed"}, {"type": "testDone", "testID": 1, "result": "error", "hidden": False}, {"type": "done", "success": False}]
+        cases = self.parse(self.convert(events)["xml"]).findall("testcase")
+        self.assertEqual(len(cases), 1)
+        self.assertIn("Compilation failed", cases[0].find("error").text)
+
+    def test_incomplete_or_inconsistent_events_are_rejected(self):
+        done = {"type": "done", "success": True}
+        bad = {
+            "only hidden": [*flutter_case(1, 0, "loading x", hidden=True), done],
+            "no done": [{"type": "testStart", "test": {"id": 1, "name": "x"}}, {"type": "testDone", "testID": 1, "result": "success"}],
+            "never completed": [{"type": "testStart", "test": {"id": 1, "name": "x"}}, done],
+            "bad result": [*flutter_case(1, 0, "x", result="weird"), done],
+            "duplicate id": [*flutter_case(1, 0, "x"), {"type": "testStart", "test": {"id": 1, "name": "y"}}, done],
+            "missing id": [{"type": "testStart", "test": {"name": "x"}}, done],
+            "boolean id": [{"type": "testStart", "test": {"id": True, "name": "x"}}, done],
+            "nameless": [*flutter_case(1, 0, ""), done],
+            "orphan error": [{"type": "error", "testID": 9, "error": "e"}, *flutter_case(1, 0, "x"), done],
+            "orphan completion": [{"type": "testDone", "testID": 9, "result": "success"}, *flutter_case(1, 0, "x"), done],
+            "repeated completion": [*flutter_case(1, 0, "x"), {"type": "testDone", "testID": 1, "result": "success"}, done],
+        }
+        for name, events in bad.items():
+            with self.assertRaises(ValueError, msg=name):
+                self.convert(events)
+        for text in ("{broken", "42", "[]", '{"a": NaN}'):
+            with self.assertRaises(ValueError, msg=text):
+                web_ui.flutter_machine_junit(text)
+
+    def test_the_converted_xml_is_exact_and_always_parses(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": 'test/<a>&"b".dart'}}, *flutter_case(1, 0, 'x < y & "z"\ttab'), {"type": "testStart", "test": {"id": 2, "suiteID": 0, "name": "bad"}},
+                  {"type": "error", "testID": 2, "error": "boom \x1b[31mred\x1b[0m < & >", "stackTrace": "line1\nline2"}, {"type": "testDone", "testID": 2, "result": "failure"},
+                  {"type": "testStart", "test": {"id": 3, "suiteID": 0, "name": "gap", "metadata": {"skipReason": 'xfail: "q"'}}},
+                  {"type": "testDone", "testID": 3, "result": "success", "skipped": True}, {"type": "testStart", "test": {"id": 4, "suiteID": 0, "name": "empty failure"}},
+                  {"type": "testDone", "testID": 4, "result": "error"}, {"type": "done", "success": False}]
+        xml = self.convert(events)["xml"]
+        self.assertEqual(xml, '<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="4">\n'
+                              '  <testcase name="x &lt; y &amp; &quot;z&quot;&#09;tab" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart" />\n'
+                              '  <testcase name="bad" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <failure message="Flutter test failure">boom �[31mred�[0m &lt; &amp; &gt;\nline1\nline2</failure>\n  </testcase>\n'
+                              '  <testcase name="gap" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <skipped message="xfail: &quot;q&quot;" />\n  </testcase>\n'
+                              '  <testcase name="empty failure" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <error message="Flutter test error" />\n  </testcase>\n</testsuite>\n')
+        root = self.parse(xml)
+        self.assertEqual(root.findall("testcase")[0].get("name"), 'x < y & "z"\ttab')
+        report = web_ui.junit_report(xml)
+        self.assertEqual((report["counts"]["passed"], report["counts"]["failed"], report["counts"]["xfailed"], report["counts"]["error"]), (1, 1, 1, 1))
+
+    def test_a_realistic_stream_gives_the_same_counts_as_junit(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": "test/a_test.dart"}}, *flutter_case(1, 0, "loading test/a_test.dart", hidden=True), *flutter_case(2, 0, "ok"),
+                  *flutter_case(3, 0, "bad", result="failure"), *flutter_case(4, 0, "boom", result="error"),
+                  {"type": "testStart", "test": {"id": 5, "suiteID": 0, "name": "gap", "metadata": {"skipReason": "known: x"}}}, {"type": "testDone", "testID": 5, "result": "success", "skipped": True},
+                  {"type": "testStart", "test": {"id": 6, "suiteID": 0, "name": "skip", "metadata": {"skipReason": "later"}}}, {"type": "testDone", "testID": 6, "result": "success", "skipped": True},
+                  {"type": "done", "success": False}]
+        text = ndjson(events)
+        self.assertEqual(web_ui.flutter_outcomes(text), web_ui.junit_report(web_ui.flutter_machine_junit(text)["xml"])["counts"])
+        self.assertEqual(web_ui.flutter_outcomes(text), {"passed": 1, "failed": 1, "skipped": 1, "xfailed": 1, "xpassed": 0, "error": 1})
+
+    # --- JUnit validation and report (python/tests/test_validate_runner_junit.py, test_multi_test_runner.py, test_node_test_runner.py)
+    def test_native_junit_cases_are_counted(self):
+        xml = '<testsuite tests="3"><testcase name="pass"/><testcase name="fail"><failure message="oops"/></testcase><testcase name="skip"><skipped/></testcase></testsuite>'
+        self.assertEqual(web_ui.junit_inspect(xml), {"tests": 3, "failures": 1, "errors": 0, "skipped": 1})
+
+    def test_nested_suites_are_searched_at_any_depth(self):
+        xml = '<testsuite name="root"><testsuite name="group"><testcase name="inner"/></testsuite><testcase name="top"/></testsuite>'
+        self.assertEqual(web_ui.junit_inspect(xml)["tests"], 2)
+        self.assertEqual(web_ui.junit_inspect('<testsuites><testsuite><testsuite><testcase name="deep"/></testsuite></testsuite></testsuites>')["tests"], 1)
+
+    def test_invalid_reports_fail_closed(self):
+        for xml in ("<testsuite/>", "<testsuite><testcase/></testsuite>", "<testsuite><testcase name='x'></testsuite>", "<not-junit><testcase name='x'/></not-junit>", "", "   ", "<broken",
+                    '<testsuite xmlns="urn:x"><testcase name="a"/></testsuite>', '<!DOCTYPE testsuite [<!ENTITY a "b">]><testsuite><testcase name="&a;"/></testsuite>',
+                    '<!doctype x><testsuite><testcase name="a"/></testsuite>', '<testsuite><testcase name=""/></testsuite>', "<testsuites/>"):
+            with self.assertRaises(ValueError, msg=xml):
+                web_ui.junit_cases(xml)
+        with self.assertRaises(ValueError):
+            web_ui.junit_cases("<testsuite>" + '<testcase name="a"/>' * 60000 + "</testsuite>")
+        with self.assertRaises(ValueError):
+            web_ui.junit_cases(None)
+        self.assertEqual(len(web_ui.junit_cases("﻿" + '<testsuite><testcase name="a"/></testsuite>')), 1)
+        self.assertEqual(len(web_ui.junit_cases('<?xml version="1.0" encoding="UTF-8"?>\n<testsuite><testcase name="a"/></testsuite>')), 1)
+
+    def test_a_report_counts_outcomes_and_keeps_messages_out(self):
+        xml = ('<testsuites><testsuite><testcase classname="c" name="ok"/><testcase classname="c" name="bad"><failure message="SECRET_TOKEN">trace</failure></testcase>'
+               '<testcase classname="c" name="boom"><error>text only</error></testcase><testcase name="gap"><skipped message="Known: later"/></testcase>'
+               '<testcase name="xf"><skipped type="pytest.xfail" message="reason"/></testcase><testcase name="skip"><skipped/></testcase></testsuite></testsuites>')
+        report = web_ui.junit_report(xml)
+        self.assertEqual(report["counts"], {"passed": 1, "failed": 1, "skipped": 1, "xfailed": 2, "xpassed": 0, "error": 1})
+        self.assertEqual((report["total"], report["ok"], report["schema"]), (6, False, "junit-report/1"))
+        self.assertEqual([(f["name"], f["kind"]) for f in report["failures"]], [("bad", "failure"), ("boom", "error")])
+        self.assertEqual(report["failures"][0]["message_sha256"], hashlib.sha256(b"SECRET_TOKEN").hexdigest())
+        self.assertEqual(report["failures"][1]["message_sha256"], hashlib.sha256(b"text only").hexdigest())
+        self.assertNotIn("SECRET_TOKEN", json.dumps(report))
+        shown = web_ui.junit_report(xml, messages=True)
+        self.assertEqual([f["message"] for f in shown["failures"]], ["SECRET_TOKEN", "text only"])
+
+    def test_the_node_report_golden(self):
+        xml = '<testsuites><testcase name="ok"/><testcase name="bad"><failure message="boom">stack</failure></testcase><testcase name="skip"><skipped/></testcase></testsuites>'
+        report = web_ui.junit_report(xml, messages=True)
+        self.assertEqual((report["counts"]["passed"], report["counts"]["failed"], report["counts"]["skipped"], report["total"]), (1, 1, 1, 3))
+        self.assertEqual([(f["name"], f["message"]) for f in report["failures"]], [("bad", "boom")])
+        self.assertEqual([c["name"] for c in web_ui.junit_cases(xml)], ["ok", "bad", "skip"])
+
+    def test_a_message_longer_than_the_limit_is_cut_by_characters_not_bytes(self):
+        xml = f'<testsuite><testcase classname="{"é" * 300}" name="{"😀" * 300}"><failure message="{"x" * 3000}"/></testcase></testsuite>'
+        failure = web_ui.junit_report(xml, messages=True)["failures"][0]
+        self.assertEqual((len(failure["class"]), len(failure["name"]), len(failure["message"])), (200, 200, 2000))
+        self.assertEqual(failure["name"], "😀" * 200)
+
+    def test_text_after_a_comment_or_cdata_is_the_message(self):
+        xml = '<testsuite><testcase name="a"><failure>one<!-- c -->two<![CDATA[ <three> ]]><b/>ignored</failure></testcase></testsuite>'
+        self.assertEqual(web_ui.junit_cases(xml)[0]["message"], "onetwo <three>")
+
+    # --- failure history (python/tests/test_junit_history.py)
+    def sample(self, test="test_one", kind="failure", report="run-specific"):
+        return {"category": "test_failure", "context": {"repository": "myon-bioinformatics/flutter_navigation_basic", "report_id": report, "commit_sha": None},
+                "value": {"class": "test_oracle", "test": test, "kind": kind}}
+
+    def test_the_fingerprint_ignores_run_specific_context(self):
+        a = web_ui.junit_history_load(json.dumps(self.sample(report="first")) + "\n")
+        b = web_ui.junit_history_load(json.dumps(self.sample(report="second")) + "\n")
+        self.assertEqual(a[0]["fingerprint"], b[0]["fingerprint"])
+        self.assertTrue(a[0]["fingerprint"].startswith("junit-basic-v1:"))
+        token = json.dumps({"class": "test_oracle", "kind": "failure", "repository": "myon-bioinformatics/flutter_navigation_basic", "test": "test_one"}, separators=(",", ":"))
+        self.assertEqual(a[0]["fingerprint"], "junit-basic-v1:" + hashlib.sha256(token.encode()).hexdigest())
+
+    def test_new_recurring_and_resolved_with_counts(self):
+        rows = lambda name, count: web_ui.junit_history_load([self.sample(name)] * count)
+        report = web_ui.junit_history(rows("same", 2) + rows("new", 1), rows("old", 1) + rows("same", 1), commit_sha=self.SHA, run_id="42", previous_commit_sha="b" * 40, previous_run_id="41")
+        self.assertEqual(report["summary"], {"new": 1, "recurring": 1, "resolved": 1})
+        recurring = next(x for x in report["findings"] if x["status"] == "recurring")
+        self.assertEqual((recurring["previous_count"], recurring["current_count"]), (1, 2))
+        self.assertEqual([f["fingerprint"] for f in report["findings"]], sorted(f["fingerprint"] for f in report["findings"]))
+        self.assertEqual((report["schema"], report["fingerprint_scope"]), ("junit-history/1", "repository+class+test+kind (not root cause)"))
+
+    def test_an_error_and_a_failure_have_distinct_fingerprints(self):
+        found = web_ui.junit_history_load([self.sample(kind=k) for k in ("failure", "error")])
+        self.assertEqual(len({x["fingerprint"] for x in found}), 2)
+
+    def test_bad_history_input_is_an_error(self):
+        for kwargs in ({"commit_sha": "invalid", "run_id": "42"}, {"commit_sha": self.SHA, "run_id": "4x"}, {"commit_sha": self.SHA, "run_id": "42", "previous_commit_sha": "zz"},
+                       {"commit_sha": self.SHA, "run_id": "42", "previous_run_id": "-1"}, {"commit_sha": self.SHA + "\n", "run_id": "42"}):
+            with self.assertRaises(ValueError, msg=kwargs):
+                web_ui.junit_history([], [], **kwargs)
+        for records in ([{"category": "test_failure", "context": {}, "value": {}}], [{"category": "test_failure", "context": [], "value": {}}],
+                        [{"category": "test_failure", "context": {"repository": "a/b"}, "value": {"class": "", "test": "t", "kind": "failure"}}], '{"category": "test_failure"}\n{broken'):
+            with self.assertRaises(ValueError, msg=records):
+                web_ui.junit_history_load(records)
+        self.assertEqual(web_ui.junit_history_load([{"category": "other"}, 5, None]), [])
+
+    def test_identities_come_straight_from_a_report_without_parameters_or_messages(self):
+        xml = ('<testsuite><testcase classname="tests.test_a[py3]" name="test_x[1-2]"><failure message="m1"/></testcase><testcase classname="tests.test_a" name="test_x[3-4]"><error message="m2"/></testcase>'
+               '<testcase name="solo"><failure/></testcase><testcase name="fine"/></testsuite>')
+        got = web_ui.junit_failure_records(xml, "o/n")
+        self.assertEqual([r["value"] for r in got["records"]], [{"class": "tests.test_a", "test": "test_x", "kind": "failure"}, {"class": "tests.test_a", "test": "test_x", "kind": "error"},
+                                                                   {"class": "(none)", "test": "solo", "kind": "failure"}])
+        self.assertFalse(got["truncated"])
+        self.assertNotIn("m1", json.dumps(got))
+        many = '<testsuite>' + "".join(f'<testcase name="t{i}"><failure/></testcase>' for i in range(7)) + "</testsuite>"
+        self.assertEqual((len(web_ui.junit_failure_records(many, "o/n", max_cases=5)["records"]), web_ui.junit_failure_records(many, "o/n", max_cases=5)["truncated"]), (5, True))
+        self.assertFalse(web_ui.junit_failure_records(many, "o/n", max_cases=7)["truncated"])
+        for repo in ("", "no-slash", "a/b/c", "a/ b", None):
+            with self.assertRaises(ValueError, msg=repo):
+                web_ui.junit_failure_records(xml, repo)
+
+    def test_two_reports_diff_into_new_recurring_and_resolved(self):
+        suite = lambda *names: "<testsuite>" + "".join(f'<testcase classname="c" name="{n}"><failure/></testcase>' for n in names) + '<testcase name="fine"/></testsuite>'
+        diff = web_ui.junit_diff(suite("same", "new", "same[2]"), suite("same", "gone"))
+        self.assertEqual(diff["summary"], {"new": 1, "recurring": 1, "resolved": 1})
+        recurring = next(f for f in diff["findings"] if f["status"] == "recurring")
+        self.assertEqual((recurring["current_count"], recurring["previous_count"]), (2, 1), "a parameterized failure shares its identity")
+        self.assertEqual(diff["schema"], "junit-diff/1")
+
+    # --- ledger and attempt records (multi_test_runner)
+    def test_the_failure_ledger_accumulates_without_raw_text_and_rejects_corruption(self):
+        failure = {"kind": "failure", "message_sha256": "a" * 64}
+        attempts = [{"failures": [failure]}]
+        once = web_ui.failure_ledger_update(None, "node", attempts)
+        twice = web_ui.failure_ledger_update(once, "node", attempts)
+        self.assertEqual((once["schema"], next(iter(once["patterns"].values()))["occurrences"], next(iter(twice["patterns"].values()))["occurrences"]), ("failure-patterns/1", 1, 2))
+        self.assertEqual(next(iter(once["patterns"].values()))["occurrences"], 1, "the input ledger is not changed")
+        for broken in ({"schema": "x", "patterns": {}}, {"schema": "failure-patterns/1", "patterns": []}, [], "text"):
+            with self.assertRaises(ValueError, msg=broken):
+                web_ui.failure_ledger_update(broken, "node", attempts)
+        many = [{"failures": [{"kind": "failure", "message_sha256": f"{i:064x}"} for i in range(501)]}]
+        with self.assertRaises(ValueError):
+            web_ui.failure_ledger_update(None, "node", many)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "patterns.json"
+            web_ui.failure_ledger_file(path, "node", attempts)
+            web_ui.failure_ledger_file(path, "node", attempts)
+            self.assertEqual(next(iter(json.loads(path.read_text())["patterns"].values()))["occurrences"], 2)
+            path.write_text("{broken")
+            with self.assertRaises(ValueError):
+                web_ui.failure_ledger_file(path, "node", attempts)
+            self.assertEqual(path.read_text(), "{broken")
+
+    def test_attempt_records_say_when_a_retry_recovered(self):
+        first, second = {"exit_code": 1}, {"exit_code": 0}
+        self.assertEqual({k: web_ui.attempt_history("deno", ["a.ts"], [first, second])[k] for k in ("initial_failed", "flaky_recovered")}, {"initial_failed": True, "flaky_recovered": True})
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [first, first])["flaky_recovered"])
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [second])["initial_failed"])
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [first])["flaky_recovered"])
+
+    # --- allowlisted runners (python/tests/test_multi_test_runner.py, test_node_test_runner.py)
+    def test_runner_commands_are_allowlisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "e2e").mkdir()
+            for file in ("e2e/test.spec.ts", "test.ts", "test_pw.py"):
+                (root / file).write_text("test")
+            report = root / "report.xml"
+            deno, cwd, env = web_ui.runner_command("deno", root=root, files=["test.ts"], report=report)
+            self.assertEqual((deno[:3], cwd, env), (["deno", "test", "--junit-path"], root.resolve(), {}))
+            node, cwd, env = web_ui.runner_command("playwright-node", root=root, files=["e2e/test.spec.ts"], report=report)
+            self.assertEqual((node[:4], cwd, env["PLAYWRIGHT_JUNIT_OUTPUT_FILE"]), (["npx", "--no-install", "playwright", "test"], root.resolve() / "e2e", str(report.resolve())))
+            self.assertEqual(node[-1], "test.spec.ts")
+            py, _, _ = web_ui.runner_command("playwright-python", root=root, files=["test_pw.py"], report=report)
+            self.assertEqual(py[:3], [sys.executable, "-m", "pytest"])
+            for files in ([], ["../escape.py"], ["not-found.ts"]):
+                with self.assertRaises(ValueError, msg=files):
+                    web_ui.runner_command("deno", root=root, files=files, report=report)
+            (root.parent / "outside.spec.ts").write_text("test")
+            for runner, files in (("playwright-node", ["test.ts"]), ("make", ["test.ts"]), ("deno", ["../outside.spec.ts"])):
+                with self.assertRaises(ValueError, msg=runner):
+                    web_ui.runner_command(runner, root=root, files=files, report=report)
+            (root.parent / "outside.spec.ts").unlink()
+
+    def suite(self, tmp, invoke, **kwargs):
+        (tmp / "test_pw.py").write_text("test")
+        return web_ui.run_test_suite("playwright-python", root=tmp, files=["test_pw.py"], report=kwargs.pop("report", tmp / "r.xml"), history=kwargs.pop("history", tmp / "history.json"),
+                                     invoke=invoke, **kwargs)
+
+    def test_a_retry_keeps_the_first_failure_and_hashes_the_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            calls = []
+            def invoke(cmd, **kwargs):
+                calls.append(cmd)
+                output = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--junitxml=")))
+                if len(calls) == 1:
+                    output.write_text('<testsuites><testsuite><testcase name="bad"><failure message="SECRET_TOKEN"/></testcase></testsuite></testsuites>')
+                    return mock.Mock(returncode=1)
+                output.write_text('<testsuites><testsuite><testcase name="ok"/></testsuite></testsuites>')
+                return mock.Mock(returncode=0)
+            self.assertEqual(self.suite(tmp, invoke, retry_failed=True), 1)
+            data = json.loads((tmp / "history.json").read_text())
+            self.assertEqual((len(calls), len(data["attempts"]), data["initial_failed"], data["flaky_recovered"]), (2, 2, True, True))
+            self.assertNotIn("SECRET_TOKEN", (tmp / "history.json").read_text())
+            self.assertEqual(data["attempts"][0]["failures"][0]["message_sha256"], hashlib.sha256(b"SECRET_TOKEN").hexdigest())
+
+    def test_missing_or_all_skipped_junit_fails_closed(self):
+        for xml in (None, '<testsuites><testsuite><testcase name="skip"><skipped/></testcase></testsuite></testsuites>'):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                def invoke(cmd, **kwargs):
+                    if xml:
+                        (tmp / "r.xml").write_text(xml)
+                    return mock.Mock(returncode=0)
+                self.assertEqual(self.suite(tmp, invoke), 1, xml)
+
+    def test_the_first_success_removes_a_previous_retry_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            retry = tmp / "r.retry.xml"
+            retry.write_text('<testsuites><testcase name="old-retry"/></testsuites>')
+            def invoke(cmd, **kwargs):
+                (tmp / "r.xml").write_text('<testsuites><testcase name="ok"/></testsuites>')
+                return mock.Mock(returncode=0)
+            self.assertEqual(self.suite(tmp, invoke, retry_failed=True), 0)
+            self.assertFalse(retry.exists())
+            self.assertEqual(len(json.loads((tmp / "history.json").read_text())["attempts"]), 1)
+
+    def test_a_stale_report_never_stands_in_and_a_missing_runner_is_127(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "r.xml").write_text('<testsuites><testcase name="stale"/></testsuites>')
+            def missing(cmd, **kwargs):
+                raise FileNotFoundError()
+            self.assertEqual(self.suite(tmp, missing), 127)
+            self.assertFalse((tmp / "r.xml").exists())
+            def slow(cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, 1)
+            self.assertEqual(self.suite(tmp, slow), 124)
+            with self.assertRaises(ValueError):
+                self.suite(tmp, missing, timeout=0)
+
+    def test_a_corrupt_ledger_does_not_mask_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            ledger = tmp / "ledger.json"
+            ledger.write_text("{broken")
+            def invoke(cmd, **kwargs):
+                (tmp / "r.xml").write_text('<testsuites><testcase name="bad"><failure message="expected"/></testcase></testsuites>')
+                return mock.Mock(returncode=1)
+            with mock.patch("sys.stderr") as err:
+                self.assertEqual(self.suite(tmp, invoke, ledger=ledger), 1)
+            self.assertEqual(ledger.read_text(), "{broken")
+            self.assertIn("warning: failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
+
+    @unittest.skipUnless(shutil.which("node"), "Node unavailable")
+    def test_real_node_success_failure_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            js = tmp / "checks.test.mjs"
+            js.write_text("import test from 'node:test';\ntest('passes', () => {});\ntest('fails', () => {throw new Error('sentinel failure')});\n")
+            report, receipt = tmp / "node.xml", tmp / "summary.json"
+            with mock.patch("sys.stdout"):
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt), 1)
+                data = json.loads(receipt.read_text())
+                self.assertEqual((data["failed"], data["passed"]), (1, 1))
+                self.assertIn("sentinel failure", data["failures"][0]["message"])
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt, name_pattern="^passes$"), 0)
+                self.assertEqual(json.loads(receipt.read_text())["failed"], 0)
+                receipt.write_text('{"ok":true}')
+                self.assertNotEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt, name_pattern="^never-matches$"), 0)
+                self.assertFalse(receipt.exists())
+                for style in (js.name, "./" + js.name, str(js)):
+                    self.assertNotEqual(web_ui.node_test_run(root=tmp, files=[style], report=report, name_pattern="^never-matches$"), 0, style)
+
+    def test_node_runner_fails_closed_without_node_or_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report, receipt = tmp / "node.xml", tmp / "summary.json"
+            report.write_text('<testsuites><testcase name="stale"/></testsuites>')
+            receipt.write_text('{"ok":true}')
+            with mock.patch("sys.stderr"):
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=["x.test.mjs"], report=report, receipt=receipt, node="__node_does_not_exist__"), 127)
+                self.assertEqual((report.exists(), receipt.exists()), (False, False))
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[], report=report), 2)
+
+    # --- a child that is meant to fail (python/tests/test_expected_child_failure.py)
+    def child(self, expect, code, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "evidence"
+            status, receipt = web_ui.expected_child_failure([sys.executable, "-c", code], expect_exit=expect, output_dir=out, **kwargs)
+            return status, receipt, {n: (out / n).read_bytes() for n in ("stdout.bin", "stderr.bin")}, json.loads((out / "receipt.json").read_text())
+
+    def test_an_expected_failure_is_recorded_without_failing_the_outer_test(self):
+        status, receipt, streams, saved = self.child([7], "import sys; print('intentional stdout'); print('intentional stderr', file=sys.stderr); raise SystemExit(7)")
+        self.assertEqual((status, receipt["schema"], receipt["exit_code"], receipt["expected_exit_codes"], receipt["matched_expectation"], receipt["argument_count"]),
+                         (0, "expected-child-failure/1", 7, [7], True, 2))
+        self.assertEqual((streams["stdout.bin"], streams["stderr.bin"]), (b"intentional stdout\n", b"intentional stderr\n"))
+        self.assertEqual(saved, receipt)
+
+    def test_an_unexpected_result_fails_the_outer_contract(self):
+        status, receipt, _, _ = self.child([7], "raise SystemExit(3)")
+        self.assertEqual((status, receipt["exit_code"], receipt["matched_expectation"]), (1, 3, False))
+
+    def test_zero_cannot_be_an_expected_failure(self):
+        for expect in ([0], [], [7, 0]):
+            with self.assertRaises(ValueError, msg=expect):
+                web_ui.expected_child_failure([sys.executable, "-c", "pass"], expect_exit=expect, output_dir=Path(tempfile.gettempdir()) / "unused-evidence")
+        with self.assertRaises(ValueError):
+            web_ui.expected_child_failure([sys.executable], expect_exit=[7], output_dir=Path(tempfile.gettempdir()) / "unused-evidence", timeout=0)
+        with self.assertRaises(ValueError):
+            web_ui.expected_child_failure([], expect_exit=[7], output_dir=Path(tempfile.gettempdir()) / "unused-evidence")
+
+    def test_a_timeout_is_bounded_and_recorded(self):
+        status, receipt, _, _ = self.child([7], "import time; time.sleep(5)", timeout=0.2)
+        self.assertEqual((status, receipt["timed_out"], receipt["exit_code"], receipt["matched_expectation"]), (1, True, None, False))
+        self.assertGreater(receipt["stream_limit_bytes"], 0)
+
+    def test_large_output_is_truncated_and_marked(self):
+        status, receipt, streams, _ = self.child([7], "import sys; sys.stdout.write('x' * (2 * 1024 * 1024)); raise SystemExit(7)")
+        self.assertEqual((status, receipt["stdout_truncated"], receipt["stderr_truncated"], len(streams["stdout.bin"])), (0, True, False, receipt["stream_limit_bytes"]))
+
+    # --- what the page shows
+    def test_the_page_reads_either_kind_and_explains_what_it_could_not_do(self):
+        junit = '<testsuite><testcase name="a"/><testcase classname="c" name="b"><failure message="m"/></testcase></testsuite>'
+        read = web_ui.report_read(junit)
+        self.assertEqual((read["kind"], read["line"], read["ok"], len(read["failures"])), ("junit", "passed=1 failed=1 skipped=0 xfailed=0 xpassed=0 error=0 total=2 ok=false", False, 1))
+        stream = ndjson([{"type": "suite", "suite": {"id": 0, "path": "t.dart"}}, *flutter_case(1, 0, "ok"), *flutter_case(2, 0, "bad", result="failure"), {"type": "done", "success": False}])
+        flutter = web_ui.report_read(stream)
+        self.assertEqual((flutter["kind"], flutter["counts"]["failed"], flutter["failures"][0]["name"], flutter["junit"] is not None, flutter["convert_error"]), ("flutter", 1, "bad", True, None))
+        partial = web_ui.report_read(ndjson(flutter_case(1, 0, "ok")))
+        self.assertEqual((partial["junit"], partial["convert_error"], partial["failures"]), (None, "incomplete Flutter machine report", []))
+        self.assertIn("diff", web_ui.report_read(junit, junit))
+        self.assertNotIn("diff", web_ui.report_read(junit, "   "))
+        with self.assertRaises(ValueError):
+            web_ui.report_read(stream, junit)
+        for text in ("", "plain words", "[1]"):
+            with self.assertRaises(ValueError, msg=text):
+                web_ui.report_read(text)
+        self.assertEqual([web_ui.report_kind(t) for t in ("<a/>", "  \n<a/>", "﻿<a/>", "{}", " {", "x", "")], ["junit", "junit", "junit", "flutter", "flutter", None, None])
+
+    def test_the_command_line_reads_reports_and_converts_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            good, bad, older = tmp / "good.xml", tmp / "bad.xml", tmp / "older.xml"
+            good.write_text('<testsuite><testcase name="a"/></testsuite>')
+            bad.write_text('<testsuite><testcase name="a"/><testcase name="b"><failure message="m"/></testcase></testsuite>')
+            older.write_text('<testsuite><testcase name="a"/><testcase name="gone"><failure/></testcase></testsuite>')
+            run = lambda *args, **kw: subprocess.run([sys.executable, "-S", str(ROOT / "web_ui.py"), *args], capture_output=True, text=True, timeout=60, **kw)
+            ok = run("--junit", str(good))
+            self.assertEqual((ok.returncode, json.loads(ok.stdout)["ok"]), (0, True))
+            failing = run("--junit", str(bad), "--previous", str(older))
+            self.assertEqual(failing.returncode, 1)
+            self.assertEqual(json.loads(failing.stdout)["diff"]["summary"], {"new": 1, "recurring": 0, "resolved": 1})
+            both = run("--junit", str(good), str(bad))
+            self.assertEqual((both.returncode, len(both.stdout.strip().splitlines())), (1, 2))
+            invalid = run("--junit", str(tmp / "missing.xml"))
+            self.assertEqual(invalid.returncode, 2)
+            self.assertNotIn(str(tmp), invalid.stderr.replace("missing.xml", ""))
+            events = tmp / "events.jsonl"
+            events.write_text(ndjson([*flutter_case(1, 0, "ok"), {"type": "done", "success": True}]))
+            counts = run("--flutter-events", str(events), "--to", str(tmp / "out.xml"))
+            self.assertEqual(counts.returncode, 0, counts.stderr)
+            self.assertIn("passed=1", counts.stdout)
+            self.assertEqual(web_ui.junit_inspect((tmp / "out.xml").read_text())["tests"], 1)
+            events.write_text("{broken")
+            self.assertEqual(run("--flutter-events", str(events)).returncode, 1)
+            self.assertEqual(run("--flutter-events", str(events), "--to", str(tmp / "never.xml")).returncode, 2)
+            self.assertFalse((tmp / "never.xml").exists())
+            expected = run("--expect-exit", "7", "--output-dir", str(tmp / "evidence"), "--", sys.executable, "-c", "raise SystemExit(7)")
+            self.assertEqual(expected.returncode, 0, expected.stderr)
+            self.assertEqual(json.loads((tmp / "evidence" / "receipt.json").read_text())["matched_expectation"], True)
+            self.assertEqual(run("--expect-exit", "0", "--output-dir", str(tmp / "e2"), "--", sys.executable, "-c", "pass").returncode, 2)
+
+
+class McpTests(unittest.TestCase):
+    """The MCP foundation: test/shared/mcp/mcp_foundation_test.dart and mcp_integration_test.dart of flutter_navigation_basic are the golden values (ported case by case);
+    RFC 7636 Appendix B is the PKCE oracle."""
+
+    LEGACY, CURRENT = "2025-03-26", "2026-07-28"
+    META = "io.modelcontextprotocol/protocolVersion"
+
+    def routes(self, session="sess-1", **kwargs):
+        return web_ui.McpRoutes(web_ui.McpFoundation(lambda: session), **kwargs)
+
+    def post(self, routes, body, headers=None, method="POST", path="/mcp"):
+        return routes.handle(method, path, headers or {}, json.dumps(body) if not isinstance(body, str) and body is not None else body)
+
+    def init_body(self, rid=1, version=None):
+        return {"jsonrpc": "2.0", "id": rid, "method": "initialize", "params": {"protocolVersion": version or self.LEGACY, "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
+
+    def modern_meta(self, version=None):
+        return {self.META: version or self.CURRENT, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"}, "io.modelcontextprotocol/clientCapabilities": {}}
+
+    def modern_headers(self, method, name=None, version=None):
+        out = {"mcp-protocol-version": version or self.CURRENT, "mcp-method": method}
+        if name is not None:
+            out["mcp-name"] = name
+        return out
+
+    # --- JSON-RPC
+    def test_a_request_is_parsed_or_refused(self):
+        ok = web_ui.rpc_request_parse({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual((ok["method"], web_ui.rpc_is_notification(ok)), ("ping", False))
+        self.assertTrue(web_ui.rpc_is_notification(web_ui.rpc_request_parse('{"jsonrpc":"2.0","method":"x"}')))
+        self.assertTrue(web_ui.rpc_is_notification(web_ui.rpc_request_parse('{"jsonrpc":"2.0","id":null,"method":"x"}')))
+        for bad in ({"jsonrpc": "1.0", "method": "ping"}, {"jsonrpc": "2.0"}, {"jsonrpc": "2.0", "method": ""}, {"jsonrpc": "2.0", "method": 5}, "[1]", "{broken", "NaN", '{"jsonrpc":"2.0","method":"a","x":NaN}', None, 42, []):
+            self.assertIsNone(web_ui.rpc_request_parse(bad), bad)
+        self.assertEqual(web_ui.rpc_request("ping"), {"jsonrpc": "2.0", "method": "ping"})
+        self.assertEqual(list(web_ui.rpc_request("a", id=1, params={})), ["jsonrpc", "id", "method", "params"])
+
+    def test_a_response_must_have_exactly_one_of_result_and_error(self):
+        parse = web_ui.rpc_response_parse
+        for bad in ({"jsonrpc": "1.0", "id": 1, "result": {"ok": True}}, {"jsonrpc": "2.0", "id": 1, "result": {}, "error": {"code": -1, "message": "x"}}, {"jsonrpc": "2.0", "id": 1},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"code": "-32603", "message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": 42}},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603}}, {"jsonrpc": "2.0", "id": 1, "error": "text"},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"code": True, "message": "x"}}, [], None):
+            with self.assertRaises(ValueError, msg=bad):
+                parse(bad)
+        with self.assertRaises(ValueError):
+            parse({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}, 1)
+        self.assertEqual(parse({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}, 1)["result"], {"ok": True})
+        self.assertEqual(parse({"jsonrpc": "2.0", "id": 2, "result": 1})["id"], 2, "no expected id: nothing to compare")
+        valid = parse({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "boom", "data": {"k": 1}}})
+        self.assertEqual((valid["error"]["code"], valid["error"]["message"], valid["error"]["data"]), (-32603, "boom", {"k": 1}))
+
+    # --- PKCE and OAuth metadata
+    def test_pkce_matches_rfc_7636_appendix_b(self):
+        self.assertEqual(web_ui.pkce_challenge_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        pair = web_ui.pkce_pair(web_ui.mulberry32(42).__next__, 64)
+        self.assertEqual((len(pair["codeVerifier"]), pair["codeChallengeMethod"], pair["codeChallenge"]), (64, "S256", web_ui.pkce_challenge_s256(pair["codeVerifier"])))
+        self.assertTrue(re.fullmatch(r"[A-Za-z0-9._~-]{64}", pair["codeVerifier"]))
+        self.assertEqual(len(web_ui.pkce_pair(None, 43)["codeVerifier"]), 43)
+        self.assertEqual(len(web_ui.pkce_pair(None, 128)["codeVerifier"]), 128)
+        for length in (42, 129, 0):
+            with self.assertRaises(ValueError):
+                web_ui.pkce_pair(None, length)
+
+    AS_DOC = {"issuer": "https://auth.example.test/", "authorization_endpoint": "https://auth.example.test/authorize", "token_endpoint": "https://auth.example.test/token", "response_types_supported": ["code"]}
+
+    def test_oauth_metadata_never_invents_what_a_server_left_out(self):
+        full = web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": ["S256"], "scopes_supported": ["mcp"]})
+        self.assertTrue(full["supportsPkceS256"])
+        omitted = web_ui.oauth_server_metadata(self.AS_DOC)
+        self.assertEqual((omitted["code_challenge_methods_supported"], omitted["supportsPkceS256"], omitted["token_endpoint_auth_methods_supported"], omitted["grant_types_supported"]),
+                         ([], False, ["client_secret_basic"], ["authorization_code", "implicit"]))
+        empty = web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": [], "token_endpoint_auth_methods_supported": ["none"]})
+        self.assertEqual((empty["supportsPkceS256"], empty["token_endpoint_auth_methods_supported"]), (False, ["none"]))
+        self.assertTrue(web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": ["s256"]})["supportsPkceS256"])
+        prm = web_ui.oauth_resource_metadata({"resource": "https://mcp.example.test/", "authorization_servers": ["https://auth.example.test/"], "scopes_supported": ["mcp"]})
+        self.assertEqual((len(prm["authorization_servers"]), prm["bearer_methods_supported"]), (1, ["header"]))
+
+    def test_oauth_metadata_rejects_the_wrong_types(self):
+        without = {k: v for k, v in self.AS_DOC.items() if k != "response_types_supported"}
+        for bad in (without, {**self.AS_DOC, "response_types_supported": []}, {**self.AS_DOC, "response_types_supported": "code"}, {**self.AS_DOC, "response_types_supported": ["code", 1]},
+                    {**self.AS_DOC, "registration_endpoint": 123}, {**self.AS_DOC, "registration_endpoint": ""}, {**self.AS_DOC, "issuer": ""}, {**self.AS_DOC, "token_endpoint": None},
+                    {**self.AS_DOC, "scopes_supported": None}, {**self.AS_DOC, "code_challenge_methods_supported": "S256"}, [], "x"):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.oauth_server_metadata(bad)
+        resource = {"resource": "https://mcp.example.test/", "authorization_servers": ["https://auth.example.test/"]}
+        for bad in ({**resource, "authorization_servers": ["https://auth.example.test/", 1]}, {**resource, "authorization_servers": [""]}, {**resource, "authorization_servers": []},
+                    {**resource, "resource_name": 9}, {**resource, "resource": ""}, {**resource, "bearer_methods_supported": "header"}, {"authorization_servers": ["a"]}, []):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.oauth_resource_metadata(bad)
+        self.assertEqual(web_ui.oauth_resource_metadata({**resource, "scopes_supported": None, "bearer_methods_supported": None})["bearer_methods_supported"], ["header"])
+        self.assertEqual(str(self.fail_message(web_ui.oauth_server_metadata, {**without, "issuer": ""})), "missing OAuth metadata field: response_types_supported", "Dart checks the arrays before the issuer")
+
+    @staticmethod
+    def fail_message(fn, *args):
+        try:
+            fn(*args)
+        except ValueError as error:
+            return error
+        raise AssertionError("no error")
+
+    # --- Bearer audience
+    def jwt(self, aud, exp):
+        return web_ui.demo_bearer_token(aud, exp).rsplit(".", 1)[0] + ".sig"
+
+    def test_bearer_audience_missing_expired_wrong_and_ok(self):
+        now = 1789387200       # 2026-09-14 12:00 UTC, the Dart tests' clock
+        inspect = lambda header, aud="https://mcp.example.test": web_ui.bearer_inspect(header, aud, now)["status"]
+        self.assertEqual(inspect(None), "missing")
+        self.assertEqual(inspect(""), "missing")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", 1)), "expired")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://other.test", 9999999999)), "wrong_audience")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", 9999999999)), "ok")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", "https://mcp.example.test"], 9999999999)), "ok")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", "https://b.test"], 9999999999)), "wrong_audience")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", 42], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt([], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt([""], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt(7, 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://other.test", 1)), "expired", "expiry is reported before the audience")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", now)), "expired", "an expiry that is not after now is expired")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", now + 1)), "ok")
+        self.assertEqual(web_ui.bearer_inspect("Bearer " + self.jwt("a", 9999999999), "a", now), {"status": "ok", "audience": "a", "expires_at": 9999999999})
+        for bad in ("not-a-jwt", "Bearer not-a-jwt", "Bearer", "Basic abc.def.ghi", "Bearer a b", " Bearer x.y.z", "Bearer x.%%%.z", "Bearer x.W10.z", "Bearer x.bm90LWpzb24.z"):
+            self.assertEqual(inspect(bad), "malformed", bad)
+        self.assertEqual(inspect("Bearer x.e30=.z"), "wrong_audience", "a payload with no aud has no audience to match")
+        self.assertEqual(inspect("bearer " + self.jwt("https://mcp.example.test", 9999999999)), "ok", "the scheme is case-insensitive")
+        self.assertEqual(inspect("Bearer\t" + self.jwt("https://mcp.example.test", 9999999999)), "ok")
+        no_exp = web_ui.demo_bearer_token("a", 1).split(".")
+        no_exp[1] = web_ui._b64url_nopad(b'{"aud":"a"}')
+        self.assertEqual(web_ui.bearer_inspect("Bearer " + ".".join(no_exp), "a", now)["status"], "ok", "no exp: no expiry")
+
+    # --- Foundation handler
+    def initialize(self, handler, params=None, rid=1):
+        request = web_ui.rpc_request("initialize", id=rid, params=params if params is not None else {"protocolVersion": self.LEGACY, "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})
+        return handler.handle_rpc(request)
+
+    def test_the_session_flow_initialize_list_call(self):
+        handler = web_ui.McpFoundation(lambda: "sess-1")
+        response, session = self.initialize(handler)
+        self.assertEqual((session, response["result"]["protocolVersion"]), ("sess-1", self.LEGACY))
+        listed, _ = handler.handle_rpc(web_ui.rpc_request("tools/list", id=2), "sess-1")
+        self.assertTrue(listed["result"]["tools"])
+        called, _ = handler.handle_rpc(web_ui.rpc_request("tools/call", id=3, params={"name": "echo", "arguments": {"text": "hi"}}), "sess-1")
+        self.assertEqual(called["result"]["content"][0]["text"], "hi")
+        self.assertEqual(called["result"]["isError"], False)
+
+    def test_an_unsupported_client_version_negotiates_down_to_the_pin(self):
+        response, session = self.initialize(web_ui.McpFoundation(lambda: "sess-1"), {"protocolVersion": "1999-01-01", "capabilities": {}, "clientInfo": {"name": "x", "version": "0"}})
+        self.assertEqual((response["result"]["protocolVersion"], session), (self.LEGACY, "sess-1"))
+
+    def test_initialize_rejects_missing_and_malformed_fields_without_a_session(self):
+        info = {"name": "x", "version": "0"}
+        v = self.LEGACY
+        cases = [{"capabilities": {}, "clientInfo": info}, {"protocolVersion": 20250326, "capabilities": {}, "clientInfo": info}, {"protocolVersion": "", "capabilities": {}, "clientInfo": info},
+                 {"protocolVersion": v, "clientInfo": info}, {"protocolVersion": v, "capabilities": "nope", "clientInfo": info}, {"protocolVersion": v, "capabilities": {}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": "nope"}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x"}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "", "version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x", "version": ""}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": 1, "version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x", "version": 2}}, "nope", None]
+        for params in cases:
+            handler = web_ui.McpFoundation(lambda: "sess-1")
+            response, session = handler.handle_rpc(web_ui.rpc_request("initialize", id=1, params=params))
+            self.assertEqual((response["error"]["code"], session, handler.session("sess-1")), (web_ui.RPC_INVALID_PARAMS, None, None), params)
+
+    def test_requests_that_need_a_session_say_so(self):
+        handler = web_ui.McpFoundation(lambda: "sess-1")
+        no_session, _ = handler.handle_rpc(web_ui.rpc_request("tools/list", id=1))
+        self.assertEqual(no_session["error"]["code"], web_ui.RPC_SESSION_REQUIRED)
+        initialized, _ = handler.handle_rpc(web_ui.rpc_request("notifications/initialized"))
+        self.assertEqual(initialized["error"]["code"], web_ui.RPC_SESSION_REQUIRED)
+        unknown, returned = handler.handle_rpc(web_ui.rpc_request("ping", id=2), "nope")
+        self.assertEqual((unknown["error"]["code"], returned), (web_ui.RPC_SESSION_INVALID, "nope"))
+        self.initialize(handler)
+        for request in (web_ui.rpc_request("resources/list", id=2), web_ui.rpc_request("prompts/get", id=3, params={"name": "greet"}), web_ui.rpc_request("ping", id=4),
+                        web_ui.rpc_request("notifications/initialized"), web_ui.rpc_request("resources/read", id=5, params={"uri": "demo://readme"})):
+            self.assertNotIn("error", handler.handle_rpc(request, "sess-1")[0], request)
+        self.assertEqual(handler.handle_rpc(web_ui.rpc_request("ping", id=4), "sess-1")[0]["result"], {})
+        for bad in (web_ui.rpc_request("tools/call", id=6, params={"name": "nope"}), web_ui.rpc_request("tools/call", id=6, params={"name": "echo", "arguments": {"text": 5}}),
+                    web_ui.rpc_request("tools/call", id=6, params={"name": "echo"}), web_ui.rpc_request("resources/read", id=6, params={"uri": "x"}), web_ui.rpc_request("prompts/get", id=6, params={"name": "x"})):
+            self.assertEqual(handler.handle_rpc(bad, "sess-1")[0]["error"]["code"], web_ui.RPC_INVALID_PARAMS, bad)
+
+    def test_default_session_ids_are_high_entropy_and_do_not_repeat(self):
+        ids = [web_ui.mcp_session_id() for _ in range(20)]
+        self.assertEqual(len(set(ids)), 20)
+        for item in ids:
+            self.assertTrue(re.fullmatch(r"[A-Za-z0-9_-]{24}", item), item)
+        seeded = web_ui.mulberry32(5)
+        self.assertEqual(web_ui.mcp_session_id(seeded.__next__), web_ui.mcp_session_id(web_ui.mulberry32(5).__next__))
+        self.assertEqual(len(web_ui.mcp_session_id(seeded.__next__, 5)), 7)
+        handler = web_ui.McpFoundation()
+        a = self.initialize(handler)[1]
+        b = self.initialize(handler)[1]
+        self.assertNotEqual(a, b)
+        self.assertEqual(sorted(handler.sessions), sorted([a, b]))
+
+    # --- HTTP routes: sessions, Origin, auth, discovery
+    def test_session_required_and_session_not_found(self):
+        routes = self.routes("sess-http")
+        missing = self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual((missing["status"], missing["body"]["error"]), (400, "session_required"))
+        unknown = self.post(routes, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, {"mcp-session-id": "nope"})
+        self.assertEqual((unknown["status"], unknown["body"]["error"]), (404, "session_not_found"))
+        legacy = self.post(routes, {"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
+        self.assertEqual((legacy["status"], legacy["body"]["error"]), (400, "session_required"))
+
+    def test_origin_allowed_rejected_and_absent(self):
+        routes = self.routes("sess-http")
+        init = self.post(routes, self.init_body())
+        self.assertEqual(init["status"], 200)
+        session = init["headers"]["mcp-session-id"]
+        listed = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+        self.assertEqual(self.post(routes, listed, {"mcp-session-id": session, "origin": "http://127.0.0.1:8787"})["status"], 200)
+        self.assertEqual(self.post(routes, listed, {"mcp-session-id": session, "origin": "http://localhost:8787"})["status"], 200)
+        rejected = self.post(routes, {**listed, "id": 3}, {"mcp-session-id": session, "origin": "https://evil.example"})
+        self.assertEqual((rejected["status"], rejected["body"]), (403, {"error": "origin_forbidden", "origin": "https://evil.example"}))
+        self.assertEqual(self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"mcp-session-id": session})["status"], 202)
+        self.assertEqual(self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"mcp-session-id": session, "ORIGIN": "https://evil.example"})["status"], 403, "header names ignore case")
+
+    def test_bearer_invalid_expired_or_for_another_audience_is_401_or_403(self):
+        routes = self.routes("sess-auth", expected_audience="http://127.0.0.1:8787/mcp", clock=lambda: 1789387200)
+        session = self.post(routes, self.init_body())["headers"]["mcp-session-id"]
+        note = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        token = lambda aud, exp: "Bearer " + web_ui.demo_bearer_token(aud, exp)
+        expired = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://127.0.0.1:8787/mcp", 1577836800)})
+        self.assertEqual((expired["status"], expired["body"]["error"], expired["body"]["reason"]), (401, "unauthorized", {"reason": "expired"}))
+        wrong = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://evil.example/mcp", 4070908800)})
+        self.assertEqual((wrong["status"], wrong["body"]["error"], wrong["body"]["reason"]), (403, "forbidden", {"reason": "wrong_audience"}))
+        self.assertEqual(self.post(routes, note, {"mcp-session-id": session, "authorization": "Bearer not-a-jwt"})["status"], 401)
+        ok = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://127.0.0.1:8787/mcp", 4070908800)})
+        self.assertEqual(ok["status"], 202)
+        self.assertEqual(self.post(routes, note, {"mcp-session-id": session})["status"], 202, "no Authorization header: no gate")
+
+    def test_discovery_follows_the_listen_port(self):
+        routes = web_ui.McpRoutes.for_port(9999)
+        self.assertEqual((routes.issuer, routes.resource, routes.expected_audience), ("http://127.0.0.1:9999", "http://127.0.0.1:9999/mcp", "http://127.0.0.1:9999/mcp"))
+        self.assertTrue(web_ui.mcp_origin_allows(routes.allowed_origins, "http://127.0.0.1:9999"))
+        self.assertFalse(web_ui.mcp_origin_allows(routes.allowed_origins, "http://127.0.0.1:8787"))
+        self.assertTrue(web_ui.mcp_origin_allows(routes.allowed_origins, None) and web_ui.mcp_origin_allows(routes.allowed_origins, ""))
+        server = routes.handle("GET", "/.well-known/oauth-authorization-server", {}, None)
+        self.assertEqual((server["status"], server["body"]["issuer"], server["body"]["authorization_endpoint"], server["body"]["token_endpoint"]),
+                         (200, "http://127.0.0.1:9999", "http://127.0.0.1:9999/oauth/authorize", "http://127.0.0.1:9999/oauth/token"))
+        self.assertEqual(server["body"]["code_challenge_methods_supported"], ["S256"])
+        self.assertNotIn("supportsPkceS256", server["body"])
+        for path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource/"):
+            resource = routes.handle("GET", path, {}, None)
+            self.assertEqual((resource["body"]["resource"], resource["body"]["authorization_servers"]), ("http://127.0.0.1:9999/mcp", ["http://127.0.0.1:9999"]), path)
+        matrix = routes.handle("GET", "/mcp/support-matrix", {}, None)["body"]
+        self.assertEqual((matrix["specificationVersion"], matrix["currentOfficialVersion"], matrix["flutterWebInAppOAuthGuaranteed"], matrix["legacySseDefault"], matrix["legacyMcpEra"],
+                          matrix["currentOfficialEra"], matrix["implementsCurrentOfficial"]), (self.LEGACY, self.CURRENT, False, False, True, True, True))
+        self.assertIsNone(routes.handle("GET", "/nope", {}, None))
+        not_post = routes.handle("GET", "/mcp", {}, None)
+        self.assertEqual((not_post["status"], not_post["body"], not_post["headers"]), (405, {"error": "method_not_allowed"}, {"allow": "POST"}))
+        self.assertEqual(routes.handle("get", "/mcp/", {}, None)["status"], 405)
+
+    def test_a_body_that_is_not_json_rpc_is_a_parse_error(self):
+        routes = self.routes()
+        for body in ("{broken", "[]", '{"jsonrpc":"1.0","method":"x"}', None, ""):
+            out = routes.handle("POST", "/mcp", {}, body)
+            self.assertEqual((out["status"], out["body"]["error"]["code"], out["body"]["id"]), (400, web_ui.RPC_PARSE_ERROR, None), body)
+
+    # --- the current-official era
+    def test_server_discover_and_modern_calls_need_no_session(self):
+        routes = self.routes("sess-modern")
+        discover = self.post(routes, {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": self.modern_meta()}}, self.modern_headers("server/discover"))
+        self.assertEqual((discover["status"], discover["body"]["result"]["resultType"], discover["headers"]["mcp-protocol-version"]), (200, "complete", self.CURRENT))
+        self.assertEqual(discover["body"]["result"]["protocolVersions"], [self.LEGACY, self.CURRENT])
+        self.assertNotIn("mcp-session-id", discover["headers"])
+        listed = self.post(routes, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"_meta": self.modern_meta()}}, self.modern_headers("tools/list"))
+        result = listed["body"]["result"]
+        self.assertEqual((listed["status"], result["resultType"], result["ttlMs"], result["cacheScope"]), (200, "complete", 60000, "private"))
+        called = self.post(routes, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "via-http"}, "_meta": self.modern_meta()}},
+                           self.modern_headers("tools/call", "echo"))
+        self.assertEqual((called["status"], called["body"]["result"]["resultType"], called["body"]["result"]["content"][0]["text"]), (200, "complete", "via-http"))
+        self.assertNotIn("ttlMs", called["body"]["result"])
+
+    def test_modern_resources_and_prompts_have_the_modern_shape(self):
+        routes = self.routes()
+        def modern(method, rid, params=None, name=None):
+            return self.post(routes, {"jsonrpc": "2.0", "id": rid, "method": method, "params": {**(params or {}), "_meta": self.modern_meta()}}, self.modern_headers(method, name))["body"]["result"]
+        for method in ("resources/list", "prompts/list"):
+            result = modern(method, 71)
+            self.assertEqual((result["resultType"], result["ttlMs"], result["cacheScope"]), ("complete", 60000, "private"), method)
+        self.assertEqual(modern("resources/list", 71)["resources"][0]["uri"], "demo://readme")
+        self.assertEqual(modern("resources/read", 72, {"uri": "demo://readme"}, "demo://readme")["resultType"], "complete")
+        self.assertEqual(modern("prompts/get", 74, {"name": "greet"}, "greet")["resultType"], "complete")
+        ping = self.post(routes, {"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {"_meta": self.modern_meta()}}, self.modern_headers("ping"))
+        self.assertEqual((ping["status"], ping["body"]["error"]["code"]), (200, web_ui.RPC_SESSION_REQUIRED), "ping has no modern form here: the routes answer 200 with the JSON-RPC error")
+        shaped = web_ui.McpFoundation()._modern_or_session({"id": 1, "method": "x", "params": {"_meta": {self.META: self.CURRENT}}}, None, lambda _s: web_ui.rpc_result(1, 5))
+        self.assertEqual(shaped[0]["result"], {"resultType": "complete", "value": 5})
+
+    def test_a_modern_unknown_method_is_404_and_a_legacy_one_is_200(self):
+        routes = self.routes("sess-modern")
+        modern = self.post(routes, {"jsonrpc": "2.0", "id": 75, "method": "totally/unknown", "params": {"_meta": self.modern_meta()}}, self.modern_headers("totally/unknown"))
+        self.assertEqual((modern["status"], modern["body"]["error"]["code"]), (404, web_ui.RPC_METHOD_NOT_FOUND))
+        session = self.post(routes, self.init_body())["headers"]["mcp-session-id"]
+        legacy = self.post(routes, {"jsonrpc": "2.0", "id": 84, "method": "totally/unknown"}, {"mcp-session-id": session})
+        self.assertEqual((legacy["status"], legacy["body"]["error"]["code"], legacy["headers"]["mcp-protocol-version"]), (200, web_ui.RPC_METHOD_NOT_FOUND, self.LEGACY))
+
+    def modern_failure(self, headers, body, expect_status=400):
+        out = self.post(self.routes(), body, headers)
+        self.assertEqual(out["status"], expect_status, body)
+        self.assertEqual(out["headers"], {"mcp-protocol-version": self.CURRENT})
+        return out["body"]["error"]
+
+    def test_modern_envelope_failures_are_400_with_the_right_code_and_message(self):
+        discover = lambda meta, rid=70: {"jsonrpc": "2.0", "id": rid, "method": "server/discover", "params": {"_meta": meta}}
+        headers = self.modern_headers("server/discover")
+        meta = self.modern_meta()
+        self.assertIn("clientInfo", self.modern_failure(headers, discover({self.META: self.CURRENT}))["message"])
+        self.assertIn("clientInfo", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": "nope"}))["message"])
+        self.assertIn("clientInfo.name", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": {"name": "", "version": "0"}}))["message"])
+        self.assertIn("clientInfo.version", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": {"name": "x"}}))["message"])
+        self.assertIn("clientCapabilities", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientCapabilities": "nope"}))["message"])
+        self.assertIn("clientCapabilities", self.modern_failure(headers, discover({self.META: self.CURRENT, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"}}))["message"])
+        missing_method = self.modern_failure({"mcp-protocol-version": self.CURRENT}, discover(meta, 4))
+        self.assertEqual((missing_method["code"], missing_method["message"]), (web_ui.RPC_HEADER_MISMATCH, "Mcp-Method header is required"))
+        unsupported = self.modern_failure(self.modern_headers("server/discover", version="2099-01-01"), discover(self.modern_meta("2099-01-01"), 5))
+        self.assertEqual((unsupported["code"], unsupported["data"]), (web_ui.RPC_UNSUPPORTED_VERSION, {"supported": [self.LEGACY, self.CURRENT], "requested": "2099-01-01"}))
+        mismatch = self.modern_failure(headers, discover(self.modern_meta(self.LEGACY), 81))
+        self.assertEqual((mismatch["code"], mismatch["message"], mismatch["data"]), (web_ui.RPC_HEADER_MISMATCH, "MCP-Protocol-Version does not match body _meta", {"header": self.CURRENT, "meta": self.LEGACY}))
+        method_mismatch = self.modern_failure(self.modern_headers("tools/list"), discover(meta, 80))
+        self.assertEqual((method_mismatch["code"], method_mismatch["data"]), (web_ui.RPC_HEADER_MISMATCH, {"header": "tools/list", "method": "server/discover"}))
+        self.assertIn("Mcp-Method", method_mismatch["message"])
+        call = lambda: {"jsonrpc": "2.0", "id": 82, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "x"}, "_meta": meta}}
+        self.assertIn("Mcp-Name", self.modern_failure(self.modern_headers("tools/call"), call())["message"])
+        wrong_name = self.modern_failure(self.modern_headers("tools/call", "other"), call())
+        self.assertEqual((wrong_name["message"], wrong_name["data"]), ("Mcp-Name does not match body params", {"header": "other", "decoded": "other", "expected": "echo"}))
+        malformed = self.modern_failure(self.modern_headers("tools/call", "=?base64?!!!?="), call())
+        self.assertIn("malformed", malformed["message"])
+
+    def test_header_only_and_meta_only_modern_markers(self):
+        header_only = self.modern_failure({"mcp-protocol-version": self.CURRENT, "mcp-method": "totally/unknown"}, {"jsonrpc": "2.0", "id": 10, "method": "totally/unknown"})
+        self.assertEqual(header_only["code"], web_ui.RPC_HEADER_MISMATCH)
+        meta_only = self.modern_failure({"mcp-method": "totally/unknown"}, {"jsonrpc": "2.0", "id": 15, "method": "totally/unknown", "params": {"_meta": self.modern_meta()}})
+        self.assertIn("MCP-Protocol-Version", meta_only["message"])
+        legacy_versions = self.modern_failure({"mcp-protocol-version": self.LEGACY, "mcp-method": "x"}, {"jsonrpc": "2.0", "id": 16, "method": "x", "params": {"_meta": self.modern_meta(self.LEGACY)}})
+        self.assertEqual(legacy_versions["code"], web_ui.RPC_UNSUPPORTED_VERSION)
+        no_meta = self.modern_failure({"mcp-protocol-version": self.CURRENT}, {"jsonrpc": "2.0", "id": 17, "method": "x", "params": []})
+        self.assertEqual(no_meta["message"], "params._meta is required")
+        no_version = self.modern_failure({"mcp-protocol-version": self.CURRENT}, {"jsonrpc": "2.0", "id": 18, "method": "x", "params": {"_meta": {}}})
+        self.assertEqual(no_version["message"], "params._meta protocolVersion is required")
+
+    def test_header_names_travel_as_a_base64_sentinel_when_they_must(self):
+        unicode_name, spaced, sentinel = "エコー", " leading ", "=?base64?YQ==?="
+        for value in (unicode_name, spaced, sentinel, "trailing ", "tab\t", "x" + chr(127), "=?foo?="):
+            self.assertTrue(web_ui.mcp_header_needs_encoding(value), repr(value))
+        for value in ("echo", "demo://readme", "a b", "", "=?", "?=", "=?x"):
+            self.assertFalse(web_ui.mcp_header_needs_encoding(value), repr(value))
+        encoded = web_ui.mcp_header_encode(unicode_name)
+        self.assertTrue(encoded.startswith("=?base64?"))
+        self.assertEqual(web_ui.mcp_header_decode(encoded), unicode_name)
+        self.assertEqual(web_ui.mcp_header_decode(spaced), spaced)
+        self.assertEqual(web_ui.mcp_header_decode(web_ui.mcp_header_encode(spaced)), spaced)
+        self.assertEqual(web_ui.mcp_header_decode(web_ui.mcp_header_encode(sentinel)), sentinel)
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?!!!?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?notbase64?YQ==?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?YQ?="), "padding is required")
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?Y=Q=?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?/w==?="), "bytes that are not UTF-8")
+        self.assertEqual(web_ui.mcp_header_decode("=?base64?YQ==?="), "a")
+        self.assertEqual((web_ui.mcp_header_encode("echo"), web_ui.mcp_header_decode("echo")), ("echo", "echo"))
+        self.assertEqual(web_ui.mcp_header_decode("=?base64?" + base64.b64encode("﻿x".encode()).decode() + "?="), "﻿x", "a BOM is kept")
+        routes = self.routes()
+        called = self.post(routes, {"jsonrpc": "2.0", "id": 76, "method": "tools/call", "params": {"name": unicode_name, "arguments": {"text": "hi"}, "_meta": self.modern_meta()}},
+                           {**self.modern_headers("tools/call"), "mcp-name": encoded})
+        self.assertNotEqual(called["status"], 400)
+        self.assertNotEqual(called["body"].get("error", {}).get("code"), web_ui.RPC_HEADER_MISMATCH)
+        headers = web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="tools/call", name=unicode_name)
+        self.assertEqual(headers["mcp-name"], encoded)
+        self.assertEqual(list(headers), ["content-type", "accept", "mcp-protocol-version", "mcp-method", "mcp-name"])
+        legacy = web_ui.mcp_streamable_headers(session_id="s", accept_event_stream=False)
+        self.assertEqual(legacy, {"content-type": "application/json", "accept": "application/json", "mcp-protocol-version": self.LEGACY, "mcp-session-id": "s"})
+        self.assertNotIn("mcp-session-id", web_ui.mcp_streamable_headers(session_id=""))
+
+    # --- the client (mcp_integration_test.dart)
+    def test_both_echo_demos_over_the_handler_and_over_the_routes(self):
+        for make in (lambda: web_ui.mcp_foundation_transport(web_ui.McpFoundation()), lambda: web_ui.mcp_in_process(self.routes("sess-demo"))):
+            legacy = web_ui.McpClient(make()).run_echo_demo("ping")
+            self.assertEqual((legacy["ok"], bool(legacy["session_id"]), len(legacy["log"])), (True, True, 4))
+            self.assertEqual(legacy["last_response"]["result"]["content"][0]["text"], "ping")
+            modern = web_ui.McpClient(make()).run_modern_echo_demo("modern-ping")
+            self.assertEqual((modern["ok"], modern["session_id"]), (True, None))
+            self.assertEqual(modern["last_response"]["result"]["content"][0]["text"], "modern-ping")
+            self.assertEqual(modern["last_response"]["result"]["resultType"], "complete")
+        self.assertEqual(web_ui.McpClient(web_ui.mcp_in_process(self.routes("sess-demo"))).run_echo_demo("x")["session_id"], "sess-demo")
+        client = web_ui.McpClient(web_ui.mcp_in_process(self.routes("sess-1")))
+        client.run_echo_demo()
+        self.assertEqual((client.ping()["result"], client.list_resources()["result"]["resources"][0]["name"], client.list_prompts()["result"]["prompts"][0]["name"]), ({}, "README", "greet"))
+
+    def transport(self, responder):
+        return lambda headers, body: responder(headers, web_ui.rpc_request_parse(body))
+
+    def test_a_rejected_initialized_notification_stops_the_demo(self):
+        def respond(headers, request):
+            if request["method"] == "initialize":
+                return {"status_code": 200, "headers": {"mcp-session-id": "sess-reject-init"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY, "capabilities": {}, "serverInfo": {"name": "t", "version": "1"}})}
+            if request["method"] == "notifications/initialized":
+                return {"status_code": 404, "headers": {}, "body": {"error": "session_invalid"}}
+            return {"status_code": 500, "headers": {}, "body": {"error": "unexpected"}}
+        result = web_ui.McpClient(self.transport(respond)).run_echo_demo("nope")
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("rejected" in line for line in result["log"]))
+        self.assertEqual(len(result["log"]), 2)
+
+    def test_a_failed_initialize_does_not_keep_a_session_id(self):
+        failing = self.transport(lambda headers, request: {"status_code": 401, "headers": {"mcp-session-id": "should-not-keep"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY})})
+        client = web_ui.McpClient(failing)
+        init = client.initialize()
+        self.assertEqual((init["error"]["code"], client.session_id), (web_ui.RPC_UNAUTHORIZED, None))
+        lying = self.transport(lambda headers, request: {"status_code": 500, "headers": {"mcp-session-id": "sess-should-not-adopt"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY})})
+        client = web_ui.McpClient(lying)
+        init = client.initialize()
+        self.assertEqual((init["error"]["code"], init["error"]["message"], client.session_id), (web_ui.RPC_INTERNAL_ERROR, "HTTP 500 with result-shaped body", None))
+        forbidden = web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 403, "headers": {}, "body": {"error": "forbidden"}}))
+        self.assertEqual(forbidden.initialize()["error"]["code"], web_ui.RPC_FORBIDDEN)
+        plain = web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 502, "headers": {}, "body": {"error": {"nested": 1}}}))
+        self.assertEqual(plain.initialize()["error"]["message"], '{"nested":1}')
+        self.assertEqual(web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 200, "headers": {}, "body": "text"})).initialize()["error"]["message"], "unexpected transport body")
+
+    def test_a_malformed_json_rpc_error_becomes_a_failure_not_a_crash(self):
+        for body in ({"jsonrpc": "2.0", "id": 1, "error": {"code": "-32603", "message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": 42}},
+                     {"jsonrpc": "2.0", "id": 1, "error": {"message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603}}, {"jsonrpc": "2.0", "id": 99, "result": {}},
+                     {"jsonrpc": "2.0", "id": 1}, {"jsonrpc": "1.0", "id": 1, "result": {}}):
+            client = web_ui.McpClient(self.transport(lambda headers, request, body=body: {"status_code": 200, "headers": {"mcp-session-id": "sess-should-not-adopt"}, "body": body}))
+            init = client.initialize()
+            self.assertIn("invalid JSON-RPC response", init["error"]["message"], body)
+            self.assertIsNone(client.session_id)
+
+    def test_notification_status_parity(self):
+        modern = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {"_meta": self.modern_meta()}}
+        headers = web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="notifications/initialized")
+        post = lambda transport: transport(headers, json.dumps(modern))
+        unauthorized = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation(), {"status": "unauthorized", "reason": "expired"}))
+        self.assertEqual((unauthorized["status_code"], unauthorized["body"]["error"], unauthorized["body"]["message"], unauthorized["body"]["reason"]), (401, "unauthorized", "unauthorized", {"reason": "expired"}))
+        forbidden = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation(), {"status": "forbidden", "reason": "wrong_audience"}))
+        self.assertEqual((forbidden["status_code"], forbidden["body"]["error"]), (403, "forbidden"))
+        rejected = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation()))
+        self.assertEqual((rejected["status_code"], rejected["body"]["error"], rejected["body"]["code"]), (400, "notification_rejected", web_ui.RPC_SESSION_REQUIRED))
+        transport = web_ui.mcp_foundation_transport(web_ui.McpFoundation(lambda: "sess-notif-ok"))
+        init = transport({}, json.dumps(self.init_body()))
+        session = init["headers"]["mcp-session-id"]
+        accepted = transport({"mcp-session-id": session}, json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        self.assertEqual((init["status_code"], accepted["status_code"], accepted["body"]), (200, 202, None))
+
+    def test_the_foundation_transport_maps_session_errors_to_http_statuses(self):
+        transport = web_ui.mcp_foundation_transport(web_ui.McpFoundation())
+        missing = transport({}, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "totally/unknown"}))
+        self.assertEqual((missing["status_code"], missing["body"]["error"]), (400, "session_required"))
+        unknown = transport({"mcp-session-id": "no-such-session"}, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "totally/unknown"}))
+        self.assertEqual((unknown["status_code"], unknown["body"]["error"]), (404, "session_not_found"))
+        ping = transport(web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="ping"), json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {"_meta": self.modern_meta()}}))
+        self.assertEqual((ping["status_code"], ping["body"]["error"]["code"]), (400, web_ui.RPC_SESSION_REQUIRED), "the in-process transport maps a session error to 400; the routes answer 200")
+        origin = transport({"origin": "https://evil.example"}, json.dumps(self.init_body()))
+        self.assertEqual(origin["status_code"], 200, "the in-process transport ignores Origin")
+        parse = transport({}, "{broken")
+        self.assertEqual((parse["status_code"], parse["body"]["error"]["code"]), (400, web_ui.RPC_PARSE_ERROR))
+
+    def test_the_lab_exchange_wraps_the_routes(self):
+        routes = self.routes("sess-lab")
+        sent = web_ui.mcp_exchange(routes, {"body": self.init_body()})
+        self.assertEqual((sent["status"], sent["headers"]["mcp-session-id"]), (200, "sess-lab"))
+        self.assertEqual(web_ui.mcp_exchange(routes, {"method": "GET", "path": "/nope"})["status"], 404)
+        self.assertEqual(web_ui.mcp_exchange(routes, {"method": "GET", "path": "/mcp"})["status"], 405)
+        for bad in ({"headers": []}, {"headers": {"a": 1}}):
+            with self.assertRaises(ValueError):
+                web_ui.mcp_exchange(routes, bad)
+
+    def test_the_page_is_self_contained_and_in_the_index(self):
+        html = web_ui.mcp_document()
+        for needle in ("data-ui-mcp", "data-mcp-send", "data-mcp-template=\"toolsCall\"", "data-mcp-demo-legacy", "data-mcp-codec-in", "data-mcp-verifier", "data-mcp-auth", "data-mcp-meta", "aria-live=\"polite\""):
+            self.assertIn(needle, html)
+        self.assertEqual(html.count("<script"), 1)
+        self.assertIn("examples/mcp-lab.html", web_ui.example_pages())
+        self.assertIn("./mcp-lab.html", web_ui.example_pages()["examples/index.html"])
+        self.assertIn("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", html)
 
 
 if __name__ == '__main__':
