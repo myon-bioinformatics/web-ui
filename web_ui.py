@@ -2159,7 +2159,11 @@ def _world_hhmm(value: Any, label: str) -> int:
 
 def _gauge_glyph(value: Any) -> str:
     """One gauge cell: 1..8 visible characters (emoji sequences welcome); no spaces or control characters."""
-    if not isinstance(value, str) or not 1 <= len(value) <= 8 or not any(unicodedata.category(c)[0] in "LNSP" and c not in "\u115f\u1160\u2800\u3164\uffa0" for c in value) or any(c.isspace() or not (c.isprintable() or c == "\u200d") for c in value):
+    if not isinstance(value, str) or not 1 <= len(value) <= 8:
+        raise ValueError("a gauge glyph is 1..8 visible characters")
+    visible = any(unicodedata.category(c)[0] in "LNSP"
+                  and c not in "\u115f\u1160\u2800\u3164\uffa0" for c in value)
+    if not visible or any(c.isspace() or not (c.isprintable() or c == "\u200d") for c in value):
         raise ValueError("a gauge glyph is 1..8 visible characters")
     return value
 

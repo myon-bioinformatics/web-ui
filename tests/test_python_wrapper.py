@@ -461,7 +461,6 @@ class WorldTests(unittest.TestCase):
         self.assertIn(" data-offset-label>", html)
         self.assertNotIn("data-offset-label", web_ui.world_html(board({"text": "x"})))
 
-    @unittest.skipUnless(_has_tzdata(), "needs the system tz database")
     def test_gauge_unicode_visibility_and_scroll_budget(self):
         for glyph in ("\u200d", "\ufe0f", "\u0301", "\u200d\ufe0f", "\u3164", "\uffa0"):
             with self.subTest(glyph=repr(glyph)), self.assertRaises(ValueError):
@@ -476,6 +475,7 @@ class WorldTests(unittest.TestCase):
                                    "post": False, "offset_label": False, "offset_minutes": None, "zones": []})
         self.assertIn('data-chars="31"', html)  # text + space + longest cells + " 100%"
 
+    @unittest.skipUnless(_has_tzdata(), "needs the system tz database")
     def test_zone_table_follows_the_tz_database_and_known_transitions(self):
         import datetime as dt
         import zoneinfo
