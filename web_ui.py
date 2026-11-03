@@ -4133,6 +4133,8 @@ def photo_document(*, theme: str = "modern") -> str:
 # or clipping at several widths, and that a real click (a tap on touch profiles) changes one thing the page promises. The adapter says only what is app-owned:
 # the selectors and that one postcondition. Written here from Python (nothing is committed as JSON); ``--btk-adapter ID --url URL`` prints one. Pages that only
 # link elsewhere (the front page, the examples index) have no state to observe and no adapter.
+# A <select> is not listed as an element: WebKit reports its scrollWidth wider than its clientWidth, which the probe reads as clipping (seen on WebKit 27 on Linux),
+# so a select is covered through its label.
 
 BTK_ADAPTER_BASE = "http://127.0.0.1:8000/examples/"
 BTK_ADAPTERS: dict[str, dict[str, Any]] = {
@@ -4140,7 +4142,7 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
                         "click": {"target": "#showcase [data-ui-toggle]", "observe": "#showcase [data-ui-toggle]", "attribute": "aria-label", "before": "Favorite this page", "after": "Remove from favorites"}},
     "web-ui-clipboard-shelf": {"page": "clipboard-shelf.html", "elements": ["#shelf h2", "#shelf-input", "#shelf [data-shelf-add]", "#shelf [data-shelf-status]"],
                                "click": {"target": "#shelf [data-shelf-add]", "observe": "#shelf [data-shelf-status]", "attribute": "textContent", "before": "Nothing on the shelf yet.", "after": "Nothing to add."}},
-    "web-ui-door": {"page": "door.html", "elements": ["#door h2", "#door-select", "#door [data-door-draw]"],
+    "web-ui-door": {"page": "door.html", "elements": ["#door h2", "#door label[for=\"door-select\"]", "#door [data-door-draw]"],
                     "click": {"target": "#door [data-door-draw]", "observe": "#door", "attribute": "data-door-draws", "before": "0", "after": "1"}},
     "web-ui-composition-studio": {"page": "composition-studio.html", "elements": ["#studio h2", "#studio-bpm", "#studio [data-run]", "#studio [data-tap]"],
                                   "click": {"target": "#studio [data-run]", "observe": "#studio [data-run]", "attribute": "aria-pressed", "before": "false", "after": "true"}},
