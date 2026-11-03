@@ -9149,7 +9149,8 @@ _CSS["imagestudio.css"] = ("@layer components{.ui-imagestudio h3{margin:24px 0 8
                            ".ui-is-board svg{display:block;width:100%;height:auto}.ui-is-board:focus-visible{outline:medium solid var(--ui-accent);outline-offset:8px}"
                            ".ui-is-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-is-bar legend{padding:0 0 8px}"
                            ".ui-is-bar label,.ui-is-bar .ui-input{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;min-width:0;max-width:100%}.ui-is-bar .ui-input{width:auto}"
-                           ".ui-is-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:0 16px}.ui-is-grid input[type=number]{width:100%}"
+                           ".ui-is-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:0 16px}.ui-is-grid>*{min-width:0}.ui-is-grid input[type=number]{width:100%}"
+                           ".ui-imagestudio input[type=range]{width:100%;min-width:0;box-sizing:border-box}"
                            ".ui-is-layers{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-is-layers button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
                            ".ui-imagestudio input[type=color]{width:48px;height:40px;padding:0}.ui-is-history{margin:8px 0;padding-left:24px}.ui-is-history li{margin:8px 0}"
                            ".ui-is-file{max-width:100%;min-width:0}.ui-imagestudio details{margin:8px 0}.ui-imagestudio details summary{cursor:pointer}}")
