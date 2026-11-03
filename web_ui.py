@@ -24,11 +24,13 @@ import base64
 import os
 from collections import Counter, defaultdict
 from datetime import date
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -4185,6 +4187,11 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-pattern-run": {"page": "patterns.html", "fragment": "patterns-run-title",
                            "elements": ["#patterns-run-title", "#patterns [data-patterns-request]", "#patterns [data-patterns-run]", "#patterns [data-patterns-example]"],
                            "click": {"target": "#patterns [data-patterns-run]", "observe": "#patterns", "attribute": "data-runs", "before": "1", "after": "2"}},
+    "web-ui-image-studio": {"page": "image-studio.html", "elements": ["#imagestudio h2", "#imagestudio [data-is=\"board\"]", "#imagestudio [data-is=\"undo\"]", "#imagestudio [data-is=\"blank\"]"],
+                            "click": {"target": "#imagestudio [data-is=\"blank\"]", "observe": "#imagestudio", "attribute": "data-layers", "before": "8", "after": "0"}},
+    # The tools are lower on the page, so this one opens at their heading (#is-tools-title) to keep everything on the first screen.
+    "web-ui-image-stamp": {"page": "image-studio.html", "fragment": "is-tools-title", "elements": ["#is-tools-title", "#imagestudio [data-is=\"text\"]", "#imagestudio [data-stamp=\"🌱\"]"],
+                           "click": {"target": "#imagestudio [data-stamp=\"🌱\"]", "observe": "#imagestudio", "attribute": "data-tool", "before": "select", "after": "stamp"}},
     "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
                            "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
                                      "after": "Nothing to read: paste a report first."}},
@@ -8023,6 +8030,1191 @@ def patterns_document(*, theme: str = "modern") -> str:
     return render_document(trusted_html='<main class="ui-page">' + patterns_html() + "</main>" + module_script(_JS["patterns.js"]), title="792 patterns", theme=theme, css=bundled_css())
 
 
+# --- Image studio: layers of shapes, text, emoji, photos, clocks, arrows and heatmaps in one scene, its JSON, its SVG, its undo history --------------
+# Absorbs Ironmate's image studio (studio/core.js, image_studio.py, studio_*.py; docs/image-studio.md). Python is the reference; ``studio.js`` must agree. The independent oracle is
+# Ironmate's own core.js, run by Node: ``tests/fixtures/studio_golden.json`` holds its answers (scene validation and its refusal text, heat colors, matrices, mosaics, arrow geometry,
+# output sizes, the whole SVG of seeded scenes, history and workspace JSON), and every function was also run against core.js on thousands of seeded scenes.
+# Deliberate differences: (1) text is wrapped (``wrap: true``) at the segments of ``studio_words`` and ``studio_graphemes`` (Unicode word and grapheme rules for Latin, Hangul and
+# similar scripts, each Han or Hiragana character apart, Katakana runs together) because Intl.Segmenter's Japanese dictionary is not portable; the ASCII and Latin results equal ICU's.
+# (2) the clock's sin and cos are fdlibm's, computed with plain arithmetic (as Node does), so that no engine's libm decides the last digit of an SVG number.
+# (3) a PNG for the CLI is made in the page; here only SVG, JSON and Base64 of PNG bytes are made without a browser. (4) ids of the example scenes are fixed words, not clock readings.
+STUDIO_SCHEMA = "ironmate-image-studio/1"
+STUDIO_WORKSPACE_SCHEMA = "ironmate-studio-workspace/1"
+STUDIO_WORKSPACE_MAX_BYTES = 32 * 1024 * 1024
+STUDIO_PALETTE = ("#440154", "#3B528B", "#21918C", "#5EC962", "#FDE725")
+STUDIO_KINDS = ("rect", "ellipse", "triangle", "text", "image", "heatmap", "arrow", "clock")
+_STU_UNDEFINED = object()
+_STU_COLOR = re.compile(r"#[0-9a-f]{6}|none", re.I)
+_STU_PNG_URI = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
+
+
+def studio_parse(text: str) -> Any:
+    """JSON the way ``JSON.parse`` reads it: every number is a double (so ``9007199254740993`` is ``9007199254740992``), whole numbers up to 2**53 are integers, and NaN, Infinity or a
+    number beyond the double range is refused."""
+    def constant(name: str) -> Any:
+        raise ValueError(f"non-finite JSON constant: {name}")
+
+    def number(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("JSON number out of range")
+        return value
+
+    def whole(raw: str) -> Any:
+        value = number(raw)
+        return int(value) if abs(value) <= 2 ** 53 else value
+    try:
+        return json.loads(text, parse_constant=constant, parse_float=number, parse_int=whole)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply") from None
+
+
+class StudioError(ValueError):
+    """A scene, matrix or request the studio refuses; the text is core.js's (Japanese)."""
+
+
+def _stu_fail(message: str) -> None:
+    raise StudioError(message)
+
+
+def _stu_need(condition: Any, message: str) -> None:
+    if not condition:
+        raise StudioError(message)
+
+
+def _stu_round(x: float) -> int:
+    """Math.round: halves go up."""
+    r = math.floor(x)
+    return r + 1 if x - r >= 0.5 else r
+
+
+def _stu_num(value: Any, low: float, high: float) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def _stu_int(value: Any) -> bool:
+    """Number.isInteger of a JSON value (1.0 is the integer 1 in JavaScript)."""
+    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
+
+
+def _stu_color(value: Any) -> bool:
+    return isinstance(value, str) and _STU_COLOR.fullmatch(value) is not None
+
+
+def _stu_len(text: str) -> int:
+    """String.length: UTF-16 units."""
+    return len(text) + sum(1 for c in text if ord(c) > 0xFFFF)
+
+
+def _stu_get(obj: Any, key: str) -> Any:
+    return obj.get(key, _STU_UNDEFINED) if isinstance(obj, dict) else _STU_UNDEFINED
+
+
+def _stu_defined(obj: Any, key: str) -> bool:
+    return isinstance(obj, dict) and key in obj
+
+
+def js_number(x: Any) -> str:
+    """Number.prototype.toString for a number: whole numbers below 1e21 in full, the shortest digits otherwise, exponent form from 1e21 and below 1e-6."""
+    if type(x) is bool:
+        raise TypeError("not a number")
+    if isinstance(x, int):
+        if abs(x) < 2 ** 53:
+            return str(x)
+        x = float(x)
+    if not math.isfinite(x):
+        return "NaN" if x != x else ("Infinity" if x > 0 else "-Infinity")
+    if x == 0:
+        return "0"
+    parts = Decimal(repr(abs(x))).as_tuple()
+    all_digits = "".join(map(str, parts.digits))
+    n = len(all_digits) + parts.exponent
+    digits = all_digits.rstrip("0")
+    k = len(digits)
+    sign = "-" if x < 0 else ""
+    if k <= n <= 21:
+        return sign + digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * (-n) + digits
+    e = n - 1
+    return f"{sign}{digits[0]}{'.' + digits[1:] if k > 1 else ''}e{'+' if e >= 0 else '-'}{abs(e)}"
+
+
+def js_string(value: Any) -> str:
+    """String(value) for a JSON value."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return js_number(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return ",".join("" if v is None else js_string(v) for v in value)
+    return "[object Object]"
+
+
+def js_json(value: Any, indent: int | None = None, _level: int = 0) -> str:
+    """JSON.stringify(value) or JSON.stringify(value, null, indent): key order kept, numbers as JavaScript writes them."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return "null"
+        return js_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    pad = "\n" + " " * (indent * (_level + 1)) if indent else ""
+    end = "\n" + " " * (indent * _level) if indent else ""
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        return "[" + pad + ("," + pad).join(js_json(v, indent, _level + 1) for v in value) + end + "]"
+    if not value:
+        return "{}"
+    colon = ": " if indent else ":"
+    return "{" + pad + ("," + pad).join(json.dumps(k, ensure_ascii=False) + colon + js_json(value[k], indent, _level + 1) for k in _pat_js_keys_of(value)) + end + "}"
+
+
+def studio_clone(value: Any) -> Any:
+    """JSON.parse(JSON.stringify(value)): a deep copy in which 1.0 has become 1."""
+    return json.loads(js_json(value))
+
+
+def studio_escape(value: Any) -> str:
+    return js_string(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+
+
+# fdlibm's sin and cos with plain arithmetic, for |x| up to 8 (the angles of a clock are below 2 pi): V8 computes these the same way, libm in other engines may differ in the last digit.
+_STU_SIN = (-1.66666666666666324348e-01, 8.33333333332248946124e-03, -1.98412698298579493134e-04, 2.75573137070700676789e-06, -2.50507602534068634195e-08, 1.58969099521155010221e-10)
+_STU_COS = (4.16666666666666019037e-02, -1.38888888888741095749e-03, 2.48015872894767294178e-05, -2.75573143513906633035e-07, 2.08757232129817482790e-09, -1.13596475577881948265e-11)
+_STU_PIO2 = (6.36619772367581382433e-01, 1.57079632673412561417e+00, 6.07710050650619224932e-11, 6.07710050630396597660e-11, 2.02226624879595063154e-21, 2.02226624871116645580e-21,
+             8.47842766036889956997e-32)
+_STU_NPIO2_HW = (0x3FF921FB, 0x400921FB, 0x4012D97C, 0x401921FB, 0x401F6A7A, 0x4022D97C, 0x4025FDBB, 0x402921FB)
+
+
+def _stu_high(x: float) -> int:
+    return struct.unpack(">I", struct.pack(">d", x)[:4])[0]
+
+
+def _stu_ksin(x: float, y: float, iy: int) -> float:
+    z = x * x
+    v = z * x
+    s = _STU_SIN
+    r = s[1] + z * (s[2] + z * (s[3] + z * (s[4] + z * s[5])))
+    return x + v * (s[0] + z * r) if iy == 0 else x - ((z * (0.5 * y - v * r) - y) - v * s[0])
+
+
+def _stu_kcos(x: float, y: float) -> float:
+    ix = _stu_high(x) & 0x7fffffff
+    if ix < 0x3e400000 and int(x) == 0:
+        return 1.0
+    c = _STU_COS
+    z = x * x
+    r = z * (c[0] + z * (c[1] + z * (c[2] + z * (c[3] + z * (c[4] + z * c[5])))))
+    if ix < 0x3FD33333:
+        return 1.0 - (0.5 * z - (z * r - x * y))
+    qx = 0.28125 if ix > 0x3fe90000 else struct.unpack(">d", struct.pack(">II", ix - 0x00200000, 0))[0]
+    return (1.0 - qx) - ((0.5 * z - qx) - (z * r - x * y))
+
+
+def _stu_reduce(x: float) -> tuple[int, float, float]:
+    """x = n * pi/2 + (y0 + y1), as fdlibm's __ieee754_rem_pio2 reduces it for |x| from pi/4 up to 8."""
+    hx = _stu_high(x)
+    ix = hx & 0x7fffffff
+    inv, p1, p1t, p2, p2t, p3, p3t = _STU_PIO2
+    if ix < 0x4002d97c:
+        if hx < 0x80000000:
+            z = x - p1
+            if ix != 0x3ff921fb:
+                y0 = z - p1t
+                return 1, y0, (z - y0) - p1t
+            z -= p2
+            y0 = z - p2t
+            return 1, y0, (z - y0) - p2t
+        z = x + p1
+        if ix != 0x3ff921fb:
+            y0 = z + p1t
+            return -1, y0, (z - y0) + p1t
+        z += p2
+        y0 = z + p2t
+        return -1, y0, (z - y0) + p2t
+    _stu_need(abs(x) <= 8, "角度が大きすぎます")
+    t = abs(x)
+    n = int(t * inv + 0.5)
+    fn = float(n)
+    r = t - fn * p1
+    w = fn * p1t
+    y0 = r - w
+    if not (n < 32 and ix != _STU_NPIO2_HW[n - 1]):
+        j = ix >> 20
+        i = j - ((_stu_high(y0) >> 20) & 0x7ff)
+        if i > 16:
+            t = r
+            w = fn * p2
+            r = t - w
+            w = fn * p2t - ((t - r) - w)
+            y0 = r - w
+            i = j - ((_stu_high(y0) >> 20) & 0x7ff)
+            if i > 49:
+                t = r
+                w = fn * p3
+                r = t - w
+                w = fn * p3t - ((t - r) - w)
+                y0 = r - w
+    y1 = (r - y0) - w
+    return (-n, -y0, -y1) if hx >= 0x80000000 else (n, y0, y1)
+
+
+def studio_sin(x: float) -> float:
+    if _stu_high(x) & 0x7fffffff <= 0x3fe921fb:
+        return _stu_ksin(x, 0.0, 0)
+    n, y0, y1 = _stu_reduce(x)
+    k = n & 3
+    return _stu_ksin(y0, y1, 1) if k == 0 else _stu_kcos(y0, y1) if k == 1 else -_stu_ksin(y0, y1, 1) if k == 2 else -_stu_kcos(y0, y1)
+
+
+def studio_cos(x: float) -> float:
+    if _stu_high(x) & 0x7fffffff <= 0x3fe921fb:
+        return _stu_kcos(x, 0.0)
+    n, y0, y1 = _stu_reduce(x)
+    k = n & 3
+    return _stu_kcos(y0, y1) if k == 0 else -_stu_ksin(y0, y1, 1) if k == 1 else -_stu_kcos(y0, y1) if k == 2 else _stu_ksin(y0, y1, 1)
+
+
+def studio_heat_color(value: Any, low: Any, high: Any, levels: Any = 0) -> str:
+    """A five-stop scale from violet to yellow; ``None`` (missing) is ``"none"``. The value is never changed, only shown."""
+    if value is None:
+        return "none"
+    finite = lambda v: type(v) in (int, float) and math.isfinite(v)
+    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _stu_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
+    levels = int(levels)
+    t = 0.5 if high == low else max(0, min(1, (value - low) / (high - low)))
+    if levels:
+        t = _stu_round(t * (levels - 1)) / (levels - 1)
+    p = t * 4
+    i = min(3, math.floor(p))
+    a, b = (bytes.fromhex(c[1:]) for c in STUDIO_PALETTE[i:i + 2])
+    return "#" + "".join(f"{_stu_round(x + (y - x) * (p - i)):02X}" for x, y in zip(a, b))
+
+
+def studio_matrix(source: Any) -> dict[str, Any]:
+    """A numeric matrix, or the one heatmap trace of a Plotly figure, as the data of a heatmap layer (row zero on top; null is missing)."""
+    if isinstance(source, list):
+        trace: Any = {"z": source}
+    elif isinstance(source, dict) and isinstance(source.get("data"), list):
+        traces = [t for t in source["data"] if isinstance(t, dict) and t.get("type") == "heatmap"]
+        _stu_need(len(traces) == 1, "heatmapトレースは1つにしてください")
+        trace = traces[0]
+    else:
+        trace = source
+    z = trace.get("z") if isinstance(trace, dict) else None
+    cols = len(z[0]) if isinstance(z, list) and z and isinstance(z[0], list) else 0
+    _stu_need(isinstance(z, list) and cols and len(z) * cols <= 4096 and all(isinstance(r, list) and len(r) == cols for r in z), "1〜4096セルの長方形の数値行列が必要です")
+    values = [v for row in z for v in row if v is not None]
+    def safe(v: Any) -> bool:
+        if type(v) is int:
+            return abs(v) <= 2 ** 53 - 1
+        return type(v) is float and math.isfinite(v) and not (v.is_integer() and abs(v) > 2 ** 53 - 1)
+    _stu_need(all(safe(v) for v in values), "有限の数値またはnullを指定してください（巨大な整数は非対応）")
+    low = trace.get("zmin")
+    high = trace.get("zmax")
+    low = (min(values) if values else 0) if low is None else low
+    high = (max(values) if values else 1) if high is None else high
+    _stu_need(safe(low) and safe(high), "色の範囲には有限の安全な数値を指定してください")
+    studio_heat_color(low, low, high)
+    xlabels = trace.get("x")
+    ylabels = trace.get("y")
+    xlabels = list(range(cols)) if xlabels is None else xlabels
+    ylabels = list(range(len(z))) if ylabels is None else ylabels
+    _stu_need(isinstance(xlabels, list) and isinstance(ylabels, list) and len(xlabels) == cols and len(ylabels) == len(z), "軸ラベルの数が一致しません")
+    return {"z": studio_clone(z), "xlabels": studio_clone(xlabels), "ylabels": studio_clone(ylabels), "low": low, "high": high, "levels": 0, "labels": True}
+
+
+def studio_arrow_geometry(w: Any, h: Any, head: Any = 28, placement: Any = "tip") -> dict[str, Any]:
+    """The shaft and the three corners of a triangular head; the head is no larger than the box and sits at the tip or in the middle."""
+    _stu_need(_stu_num(w, 1, 8192) and _stu_num(h, 1, 8192) and _stu_num(head, 1, 512) and placement in ("tip", "middle"), "矢印の寸法が不正です")
+    size = min(head, w, h)
+    cx = w / 2 if placement == "middle" else w - size / 2
+    return {"line": [0, h / 2, w, h / 2], "points": [[cx + size / 2, h / 2], [cx - size / 2, h / 2 + size / 2], [cx - size / 2, h / 2 - size / 2]]}
+
+
+def studio_output_size(scene: Any, scale: Any = 1) -> dict[str, int]:
+    """Pixels of an export at ``scale`` (0.25 to 8): at most 8192 a side and 16 MP."""
+    _stu_need(_stu_num(scale, 0.25, 8), "出力倍率は0.25〜8です")
+    width, height = _stu_round(scene["width"] * scale), _stu_round(scene["height"] * scale)
+    _stu_need(width <= 8192 and height <= 8192 and width * height <= 16777216, "出力は各辺8192px・合計16MP以下にしてください")
+    return {"width": width, "height": height}
+
+
+def studio_png_payload(data: Any) -> dict[str, Any]:
+    """The Base64 forms of PNG bytes for hand-off (standard alphabet, padded, no line breaks): plain and as a data URI."""
+    raw = bytes(data)
+    _stu_need(8 <= len(raw) <= 32 * 1024 * 1024 and raw[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]), "32MiB以下のPNGが必要です")
+    text = base64.b64encode(raw).decode("ascii")
+    return {"base64": text, "dataUri": "data:image/png;base64," + text, "mimeType": "image/png", "bytes": len(raw)}
+
+
+def studio_validate(scene: Any) -> dict[str, Any]:
+    """The scene if it is well formed (at most 100 layers and 4 MP), as a copy; otherwise a StudioError with core.js's text."""
+    width, height = _stu_get(scene, "width"), _stu_get(scene, "height")
+    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _stu_int(width) and _stu_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
+              and width * height <= 4194304 and _stu_color(scene.get("background")) and isinstance(scene.get("layers"), list) and len(scene["layers"]) <= 100,
+              "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
+    ids: set[str] = set()
+    image_bytes = 0
+    for layer in scene["layers"]:
+        _stu_need(isinstance(layer, dict) and isinstance(layer.get("id"), str) and _stu_len(layer["id"]) <= 100 and layer["id"] not in ids and layer.get("kind") in STUDIO_KINDS,
+                  "レイヤーのIDまたは種類が不正です")
+        ids.add(layer["id"])
+        kind = layer["kind"]
+        for field in ("x", "y"):
+            _stu_need(_stu_num(_stu_get(layer, field), -8192, 8192), "位置が不正です")
+        for field in ("w", "h"):
+            _stu_need(_stu_num(_stu_get(layer, field), 1, 8192), "サイズが不正です")
+        _stu_need(_stu_num(_stu_get(layer, "rotation"), -360, 360) and _stu_num(_stu_get(layer, "opacity"), 0, 1), "角度または不透明度が不正です")
+        _stu_need(not _stu_defined(layer, "mono") or type(layer["mono"]) is bool, "単色設定が不正です")
+        _stu_need(not layer.get("mono") or _stu_color(layer.get("fill")), "単色の色が不正です")
+        if kind == "text":
+            _stu_need(not _stu_defined(layer, "wrap") or type(layer["wrap"]) is bool, "折り返しの指定が不正です")
+            _stu_need(not _stu_defined(layer, "bold") or type(layer["bold"]) is bool, "太字の指定が不正です")
+            _stu_need(not _stu_defined(layer, "font") or layer["font"] in ("sans", "mono"), "フォント設定が不正です")
+            _stu_need(isinstance(layer.get("text"), str) and _stu_len(layer["text"]) <= 2000 and _stu_num(layer.get("fontSize"), 4, 512) and _stu_color(layer.get("fill")), "テキストが不正です")
+        elif kind == "image":
+            src = layer.get("src")
+            _stu_need(isinstance(src, str) and _stu_len(src) <= 12000000 and _STU_PNG_URI.fullmatch(src) is not None, "画像は埋め込みPNGが必要です")
+            image_bytes += len(src)
+            _stu_need(image_bytes <= 20000000, "シーンの画像合計は20MB以下にしてください")
+            _stu_need(_stu_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _stu_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
+            _stu_need(not _stu_defined(layer, "sampling") or layer["sampling"] in ("pixelated", "smooth"), "補間方式が不正です")
+        elif kind == "heatmap":
+            studio_matrix({"z": layer.get("z"), "x": layer.get("xlabels"), "y": layer.get("ylabels"), "zmin": layer.get("low"), "zmax": layer.get("high")})
+            studio_heat_color(layer.get("low", _STU_UNDEFINED), layer.get("low", _STU_UNDEFINED), layer.get("high", _STU_UNDEFINED), layer.get("levels", 0))
+        else:
+            _stu_need(_stu_color(layer.get("fill")) and _stu_color(layer.get("stroke")) and _stu_num(layer.get("strokeWidth"), 0, 64), "図形の色または線幅が不正です")
+        if kind == "arrow":
+            head = layer["headSize"] if "headSize" in layer else 28
+            placement = layer["headPlacement"] if "headPlacement" in layer else "tip"
+            studio_arrow_geometry(layer["w"], layer["h"], head, placement)
+            _stu_need(not _stu_defined(layer, "headStyle") or layer["headStyle"] in ("triangle", "beginner"), "矢羽根の形が不正です")
+        if kind == "clock":
+            _stu_need(_stu_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _stu_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
+    return studio_clone(scene)
+
+
+def studio_mosaic_rgba(data: Any, width: Any, height: Any, cell: Any, levels: Any = 256) -> bytes:
+    """Area means of the original's RGBA blocks (``cell`` pixels square, the partial blocks at the right and bottom kept): RGB weighted by alpha so hidden colors of transparent pixels do
+    not tint opaque ones, then each channel cut into ``levels`` steps. Run it on the ORIGINAL each time: a mosaic of a mosaic does not give the detail back."""
+    raw = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    _stu_need(_stu_int(width) and _stu_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
+              and _stu_int(cell) and 1 <= cell <= 512 and _stu_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
+    width, height, cell, levels = int(width), int(height), int(cell), int(levels)
+    out = bytearray(len(raw))
+    steps = levels - 1
+    for y in range(0, height, cell):
+        end_y = min(height, y + cell)
+        for x in range(0, width, cell):
+            end_x = min(width, x + cell)
+            sums, alpha = [0, 0, 0], 0
+            for j in range(y, end_y):
+                base = (j * width + x) * 4
+                for i in range(end_x - x):
+                    n = base + i * 4
+                    a = raw[n + 3]
+                    alpha += a
+                    sums[0] += raw[n] * a
+                    sums[1] += raw[n + 1] * a
+                    sums[2] += raw[n + 2] * a
+            count = (end_x - x) * (end_y - y)
+            rgba = [_stu_round(_stu_round((_stu_round(s / alpha) if alpha else 0) / 255 * steps) / steps * 255) for s in sums] + [_stu_round(alpha / count)]
+            pixel = bytes(rgba)
+            for j in range(y, end_y):
+                base = (j * width + x) * 4
+                out[base:base + (end_x - x) * 4] = pixel * (end_x - x)
+    return bytes(out)
+
+
+# Wrapping text: the segments of a line. Unicode word and grapheme rules (UAX #29) for Latin, Hangul and similar scripts; each Han or Hiragana character stands alone and Katakana
+# runs together, where Intl.Segmenter("ja") uses a dictionary. The ASCII and Latin results are ICU's (checked against Node on random strings).
+_STU_WSPACE = "             　"
+_STU_MIDLETTER = ":··՟״‧︓﹕："
+_STU_MIDNUM = ",;;։،؍߸⁄︐︔﹐﹔，；"
+_STU_MIDNUMLET = ".‘’․﹒＇．'"
+_STU_NEWLINE = "\n\r\x0b\x0c\x85\u2028\u2029"
+_STU_KATAKANA = ((0x30A1, 0x30FA), (0x30FC, 0x30FF), (0x31F0, 0x31FF), (0x32D0, 0x32FE), (0x3300, 0x3357), (0xFF66, 0xFF9D))
+_STU_HAN_HIRAGANA = ((0x2E80, 0x2FDF), (0x3005, 0x3007), (0x3021, 0x3029), (0x3038, 0x303B), (0x3041, 0x3096), (0x309D, 0x309F), (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF),
+                     (0x1B001, 0x1B11F), (0x20000, 0x2FA1F))
+# Extended_Pictographic as ICU 78 (Unicode 17) draws it, read from Intl.Segmenter: a cluster goes on after an emoji and a joiner exactly for these code points (reserved ones included)
+_STU_PICTOGRAPHIC = ((0xA9, 0xA9), (0xAE, 0xAE), (0x203C, 0x203C), (0x2049, 0x2049), (0x2122, 0x2122), (0x2139, 0x2139), (0x2194, 0x2199), (0x21A9, 0x21AA),
+                     (0x231A, 0x231B), (0x2328, 0x2328), (0x23CF, 0x23CF), (0x23E9, 0x23F3), (0x23F8, 0x23FA), (0x24C2, 0x24C2), (0x25AA, 0x25AB), (0x25B6, 0x25B6),
+                     (0x25C0, 0x25C0), (0x25FB, 0x25FE), (0x2600, 0x2604), (0x260E, 0x260E), (0x2611, 0x2611), (0x2614, 0x2615), (0x2618, 0x2618), (0x261D, 0x261D),
+                     (0x2620, 0x2620), (0x2622, 0x2623), (0x2626, 0x2626), (0x262A, 0x262A), (0x262E, 0x262F), (0x2638, 0x263A), (0x2640, 0x2640), (0x2642, 0x2642),
+                     (0x2648, 0x2653), (0x265F, 0x2660), (0x2663, 0x2663), (0x2665, 0x2666), (0x2668, 0x2668), (0x267B, 0x267B), (0x267E, 0x267F), (0x2692, 0x2697),
+                     (0x2699, 0x2699), (0x269B, 0x269C), (0x26A0, 0x26A1), (0x26A7, 0x26A7), (0x26AA, 0x26AB), (0x26B0, 0x26B1), (0x26BD, 0x26BE), (0x26C4, 0x26C5),
+                     (0x26C8, 0x26C8), (0x26CE, 0x26CF), (0x26D1, 0x26D1), (0x26D3, 0x26D4), (0x26E9, 0x26EA), (0x26F0, 0x26F5), (0x26F7, 0x26FA), (0x26FD, 0x26FD),
+                     (0x2702, 0x2702), (0x2705, 0x2705), (0x2708, 0x270D), (0x270F, 0x270F), (0x2712, 0x2712), (0x2714, 0x2714), (0x2716, 0x2716), (0x271D, 0x271D),
+                     (0x2721, 0x2721), (0x2728, 0x2728), (0x2733, 0x2734), (0x2744, 0x2744), (0x2747, 0x2747), (0x274C, 0x274C), (0x274E, 0x274E), (0x2753, 0x2755),
+                     (0x2757, 0x2757), (0x2763, 0x2764), (0x2795, 0x2797), (0x27A1, 0x27A1), (0x27B0, 0x27B0), (0x27BF, 0x27BF), (0x2934, 0x2935), (0x2B05, 0x2B07),
+                     (0x2B1B, 0x2B1C), (0x2B50, 0x2B50), (0x2B55, 0x2B55), (0x3030, 0x3030), (0x303D, 0x303D), (0x3297, 0x3297), (0x3299, 0x3299), (0x1F004, 0x1F004),
+                     (0x1F02C, 0x1F02F), (0x1F094, 0x1F09F), (0x1F0AF, 0x1F0B0), (0x1F0C0, 0x1F0C0), (0x1F0CF, 0x1F0D0), (0x1F0F6, 0x1F0FF), (0x1F170, 0x1F171), (0x1F17E, 0x1F17F),
+                     (0x1F18E, 0x1F18E), (0x1F191, 0x1F19A), (0x1F1AE, 0x1F1E5), (0x1F201, 0x1F20F), (0x1F21A, 0x1F21A), (0x1F22F, 0x1F22F), (0x1F232, 0x1F23A), (0x1F23C, 0x1F23F),
+                     (0x1F249, 0x1F25F), (0x1F266, 0x1F321), (0x1F324, 0x1F393), (0x1F396, 0x1F397), (0x1F399, 0x1F39B), (0x1F39E, 0x1F3F0), (0x1F3F3, 0x1F3F5), (0x1F3F7, 0x1F3FA),
+                     (0x1F400, 0x1F4FD), (0x1F4FF, 0x1F53D), (0x1F549, 0x1F54E), (0x1F550, 0x1F567), (0x1F56F, 0x1F570), (0x1F573, 0x1F57A), (0x1F587, 0x1F587), (0x1F58A, 0x1F58D),
+                     (0x1F590, 0x1F590), (0x1F595, 0x1F596), (0x1F5A4, 0x1F5A5), (0x1F5A8, 0x1F5A8), (0x1F5B1, 0x1F5B2), (0x1F5BC, 0x1F5BC), (0x1F5C2, 0x1F5C4), (0x1F5D1, 0x1F5D3),
+                     (0x1F5DC, 0x1F5DE), (0x1F5E1, 0x1F5E1), (0x1F5E3, 0x1F5E3), (0x1F5E8, 0x1F5E8), (0x1F5EF, 0x1F5EF), (0x1F5F3, 0x1F5F3), (0x1F5FA, 0x1F64F), (0x1F680, 0x1F6C5),
+                     (0x1F6CB, 0x1F6D2), (0x1F6D5, 0x1F6E5), (0x1F6E9, 0x1F6E9), (0x1F6EB, 0x1F6F0), (0x1F6F3, 0x1F6FF), (0x1F7DA, 0x1F7FF), (0x1F80C, 0x1F80F), (0x1F848, 0x1F84F),
+                     (0x1F85A, 0x1F85F), (0x1F888, 0x1F88F), (0x1F8AE, 0x1F8AF), (0x1F8BC, 0x1F8BF), (0x1F8C2, 0x1F8CF), (0x1F8D9, 0x1F8FF), (0x1F90C, 0x1F93A), (0x1F93C, 0x1F945),
+                     (0x1F947, 0x1F9FF), (0x1FA58, 0x1FA5F), (0x1FA6E, 0x1FAFF), (0x1FC00, 0x1FFFD))
+
+
+def _stu_in(cp: int, ranges: Any) -> bool:
+    return any(low <= cp <= high for low, high in ranges)
+
+
+# Where ICU 78 (Unicode 17, Intl.Segmenter in Node 22) puts a code point in another word class than the general rules below: read off its behaviour, one probe string per code point
+_STU_WORD_OVERRIDES: tuple[tuple[str, Any], ...] = (
+    ("AHLetter", ((0xB8, 0xB8), (0x2C2, 0x2C5), (0x2D2, 0x2D7), (0x2DE, 0x2DF), (0x2E5, 0x2EB), (0x2ED, 0x2ED), (0x2EF, 0x2FF),
+      (0x55A, 0x55C), (0x55E, 0x55E), (0x58A, 0x58A), (0x5F3, 0x5F3), (0x600, 0x605), (0x66B, 0x66B), (0x6DD, 0x6DD),
+      (0x70F, 0x70F), (0x890, 0x891), (0x8E2, 0x8E2), (0x109E, 0x109F), (0x19DA, 0x19DA), (0x19DE, 0x19DF), (0x1AA0, 0x1AA6),
+      (0x1AA8, 0x1AAD), (0x24B6, 0x24E9), (0xA708, 0xA716), (0xA720, 0xA721), (0xA789, 0xA78A), (0xAA77, 0xAA79), (0xAADE, 0xAADF),
+      (0xAB5B, 0xAB5B), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x1173A, 0x1173B), (0x1173F, 0x1173F), (0x1F130, 0x1F149), (0x1F150, 0x1F169),
+      (0x1F170, 0x1F189),)),
+    ("Other", ((0xFE10, 0xFE10), (0xFE14, 0xFE14), (0x1AFF0, 0x1AFF3), (0x1AFF5, 0x1AFFB), (0x1AFFD, 0x1AFFE),)),
+    ("Katakana", ((0x3031, 0x3035),)),
+    ("MidNum", ((0x66C, 0x66C),)),
+    ("Extend", ((0xFF9E, 0xFF9F),)),
+)
+
+
+def _stu_word_class(ch: str) -> str:
+    cp = ord(ch)
+    if ch in _STU_NEWLINE:
+        return "NL"
+    if cp == 0x200D:
+        return "ZWJ"
+    for kind, ranges in _STU_WORD_OVERRIDES:
+        if _stu_in(cp, ranges):
+            return kind
+    category = unicodedata.category(ch)
+    if category in ("Mn", "Me", "Mc") or (category == "Cf" and cp != 0x200B) or 0x1F3FB <= cp <= 0x1F3FF:
+        return "Extend"
+    if ch in _STU_WSPACE:
+        return "Space"
+    if 0x1F1E6 <= cp <= 0x1F1FF:
+        return "RI"
+    if _stu_in(cp, _STU_KATAKANA):
+        return "Katakana"
+    if _stu_in(cp, _STU_HAN_HIRAGANA):
+        return "Other"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "Hangul"
+    if cp == 0x22:
+        return "DQ"
+    if category == "Lo" and (0x5D0 <= cp <= 0x5EA or 0x5EF <= cp <= 0x5F2 or 0xFB1D <= cp <= 0xFB4F):
+        return "HL"
+    if category in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nl"):
+        return "AHLetter"
+    if category == "Nd":
+        return "Numeric"
+    if category == "Pc" or cp == 0x202F:
+        return "ExtendNumLet"
+    if ch in _STU_MIDLETTER:
+        return "MidLetter"
+    if ch in _STU_MIDNUM:
+        return "MidNum"
+    if ch in _STU_MIDNUMLET:
+        return "MidNumLetQ"
+    return "Other"
+
+
+def studio_words(text: str) -> list[str]:
+    """Word and space segments of one line of text, in order (they join back to the line)."""
+    clusters: list[list[Any]] = []
+    for ch in text:
+        kind = _stu_word_class(ch)
+        if ch == "\n" and clusters and clusters[-1][0] == "\r":
+            clusters[-1][0] += ch
+            continue
+        if kind in ("Extend", "ZWJ") and clusters and clusters[-1][1] != "NL":
+            clusters[-1][0] += ch
+            clusters[-1][2] = kind == "ZWJ"
+        else:
+            clusters.append([ch, "Other" if kind in ("Extend", "ZWJ") else kind, kind == "ZWJ"])
+    segments: list[str] = []
+    current = ""
+    letter = ("AHLetter", "HL")
+    for i, (chunk, b, _) in enumerate(clusters):
+        if i == 0:
+            current = chunk
+            continue
+        a = clusters[i - 1][1]
+        before = clusters[i - 2][1] if i >= 2 else None
+        after = clusters[i + 1][1] if i + 1 < len(clusters) else None
+        glue = False
+        if a == "NL" or b == "NL":
+            glue = False
+        elif clusters[i - 1][2] and _stu_in(ord(chunk[0]), _STU_PICTOGRAPHIC):
+            glue = True
+        elif a == "Space" and b == "Space" and len(clusters[i - 1][0]) == 1:
+            glue = True
+        elif a in letter and b in letter:
+            glue = True
+        elif a in letter and b in ("MidLetter", "MidNumLetQ") and after in letter:
+            glue = True
+        elif before in letter and a in ("MidLetter", "MidNumLetQ") and b in letter:
+            glue = True
+        elif a == "HL" and b == "MidNumLetQ" and chunk[0] == "'":
+            glue = True
+        elif a == "HL" and b == "DQ" and after == "HL":
+            glue = True
+        elif before == "HL" and a == "DQ" and b == "HL":
+            glue = True
+        elif a == "Numeric" and b == "Numeric":
+            glue = True
+        elif (a in letter and b == "Numeric") or (a == "Numeric" and b in letter):
+            glue = True
+        elif a == "Numeric" and b in ("MidNum", "MidNumLetQ") and after == "Numeric":
+            glue = True
+        elif before == "Numeric" and a in ("MidNum", "MidNumLetQ") and b == "Numeric":
+            glue = True
+        elif a == "Katakana" and b == "Katakana":
+            glue = True
+        elif a == "Hangul" and b == "Hangul" and len(clusters[i - 1][0]) == 1:
+            glue = True
+        elif a in (*letter, "Numeric", "Katakana", "ExtendNumLet") and b == "ExtendNumLet":
+            glue = True
+        elif a == "ExtendNumLet" and b in (*letter, "Numeric", "Katakana"):
+            glue = True
+        elif a == "RI" and b == "RI":
+            run, j = 0, i - 1
+            while j >= 0 and clusters[j][1] == "RI":
+                run += 1
+                j -= 1
+            glue = run % 2 == 1
+        if glue:
+            current += chunk
+        else:
+            segments.append(current)
+            current = chunk
+    if clusters:
+        segments.append(current)
+    return segments
+
+
+def _stu_hangul(cp: int) -> str:
+    if 0x1100 <= cp <= 0x115F or 0xA960 <= cp <= 0xA97C:
+        return "L"
+    if 0x1160 <= cp <= 0x11A7 or 0xD7B0 <= cp <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= cp <= 0x11FF or 0xD7CB <= cp <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "LV" if (cp - 0xAC00) % 28 == 0 else "LVT"
+    return ""
+
+
+# The same for grapheme clusters: Mc marks that do not extend, Prepend characters (they join to what follows), halfwidth voiced marks
+_STU_GRAPHEME_OVERRIDES: tuple[tuple[str, Any], ...] = (
+    ("Extend", ((0xE33, 0xE33), (0xEB3, 0xEB3), (0xFF9E, 0xFF9F),)),
+    ("Prepend", ((0x600, 0x605), (0x6DD, 0x6DD), (0x70F, 0x70F), (0x890, 0x891), (0x8E2, 0x8E2), (0xD4E, 0xD4E), (0x110BD, 0x110BD),
+      (0x110CD, 0x110CD), (0x111C2, 0x111C3), (0x1193F, 0x1193F), (0x11941, 0x11941), (0x11A84, 0x11A89), (0x11D46, 0x11D46), (0x11F02, 0x11F02),)),
+    ("Other", ((0x102B, 0x102C), (0x1038, 0x1038), (0x1062, 0x1064), (0x1067, 0x106D), (0x1083, 0x1083), (0x1087, 0x108C), (0x108F, 0x108F),
+      (0x109A, 0x109C), (0x1A61, 0x1A61), (0x1A63, 0x1A64), (0xAA7B, 0xAA7B), (0xAA7D, 0xAA7D), (0x11720, 0x11721),)),
+)
+
+
+def _stu_grapheme_kind(ch: str) -> str:
+    """Extend (joins to what comes before), SpacingMark (the same), Prepend (joins to what follows) or Other."""
+    cp = ord(ch)
+    for kind, ranges in _STU_GRAPHEME_OVERRIDES:
+        if _stu_in(cp, ranges):
+            return kind
+    category = unicodedata.category(ch)
+    if category in ("Mn", "Me", "Mc") or cp in (0x200C, 0x200D) or 0x1F3FB <= cp <= 0x1F3FF or 0xE0020 <= cp <= 0xE007F:
+        return "Extend"
+    return "Other"
+
+
+def _stu_control(ch: str, kind: str | None = None) -> bool:
+    """A Control character for grapheme clusters: Cc, line and paragraph separators, and format characters that are not joiners, tags or Prepend; nothing joins to it or after it."""
+    category = unicodedata.category(ch)
+    return category in ("Cc", "Zl", "Zp") or (category == "Cf" and (kind or _stu_grapheme_kind(ch)) == "Other")
+
+
+def studio_graphemes(text: str) -> list[str]:
+    """User-perceived characters of ``text``: a letter with its combining marks, a Hangul syllable, an emoji with its modifiers, joiners and tag characters, a flag (a pair of regional
+    indicators), CR LF."""
+    out: list[str] = []
+    ri_run = 0
+    for ch in text:
+        cp = ord(ch)
+        if ch == "\n" and out and out[-1] == "\r":
+            out[-1] += ch
+            ri_run = 0
+            continue
+        kind = _stu_grapheme_kind(ch)
+        if out and not _stu_control(ch, kind) and not _stu_control(out[-1][-1]):
+            last = out[-1]
+            last_cp = ord(last[-1])
+            joined = kind in ("Extend", "SpacingMark") or _stu_grapheme_kind(last[-1]) == "Prepend"
+            if not joined and last_cp == 0x200D and _stu_in(cp, _STU_PICTOGRAPHIC) and _stu_in(ord(last[0]), _STU_PICTOGRAPHIC):
+                joined = True
+            if not joined and 0x1F1E6 <= cp <= 0x1F1FF and ri_run % 2 == 1:
+                joined = True
+            if not joined:
+                a, b = _stu_hangul(last_cp), _stu_hangul(cp)
+                joined = bool(a and b) and ((a == "L" and b in ("L", "V", "LV", "LVT")) or (a in ("LV", "V") and b in ("V", "T")) or (a in ("LVT", "T") and b == "T"))
+            if joined:
+                out[-1] = last + ch
+                ri_run = ri_run + 1 if 0x1F1E6 <= cp <= 0x1F1FF else 0
+                continue
+        out.append(ch)
+        ri_run = ri_run + 1 if 0x1F1E6 <= cp <= 0x1F1FF else 0
+    return out
+
+
+def studio_text_font(layer: dict[str, Any]) -> str:
+    if layer.get("font") == "mono":
+        return ("'MS Gothic', " if layer.get("wrap") else "") + "ui-monospace, 'Noto Sans Mono', monospace"
+    return "Meiryo, 'Noto Sans', 'Noto Color Emoji', sans-serif"
+
+
+def studio_measure(text: str, layer: dict[str, Any]) -> float:
+    """A text's width without a browser: 0.65 em for printable ASCII, 1 em for anything else (what core.js assumes when it has no canvas)."""
+    total = 0
+    for ch in text:
+        total = total + (0.65 if " " <= ch <= "~" else 1)
+    return total * layer["fontSize"]
+
+
+def studio_text_layout(layer: dict[str, Any], measure: Any = None) -> list[list[str]]:
+    """The lines of a text layer, one list per paragraph. Without ``wrap`` a paragraph is one line; with it, words fill a line up to the layer's width, a long word is cut between
+    characters, and spaces at a break are dropped."""
+    measure = measure or (lambda text: studio_measure(text, layer))
+    paragraphs = layer["text"].replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[list[str]] = []
+    for paragraph in paragraphs:
+        if not layer.get("wrap") or not paragraph:
+            result.append([paragraph])
+            continue
+        lines: list[str] = []
+        line = ""
+
+        def flush() -> None:
+            nonlocal line
+            lines.append(line.rstrip(" \t"))
+            line = ""
+        for token in studio_words(paragraph):
+            blank = token.strip(" \t") == "" and token != ""
+            if not line and lines and blank:
+                continue
+            if measure(line + token) <= layer["w"]:
+                line += token
+                continue
+            if line:
+                flush()
+            if lines and blank:
+                continue
+            if measure(token) <= layer["w"]:
+                line = token
+                continue
+            for glyph in studio_graphemes(token):
+                if line and measure(line + glyph) > layer["w"]:
+                    flush()
+                line += glyph
+        if line or not lines:
+            lines.append(line)
+        result.append(lines)
+    return result
+
+
+def _stu_truthy(value: Any) -> bool:
+    """JavaScript truthiness of a JSON value (an empty list or object is true)."""
+    return not (value is None or value is False or value == 0 and not isinstance(value, (list, dict)) or value == "")
+
+
+def _stu_layer_id(layer_id: str) -> str:
+    return "-".join(f"{ord(c):x}" for c in layer_id)
+
+
+def studio_layer_svg(layer: dict[str, Any], image_source: Any = None) -> str:
+    """One layer as SVG: a group at the layer's place, angle and opacity."""
+    n = js_number
+    body = ""
+    kind, w, h = layer["kind"], layer["w"], layer["h"]
+    if kind in ("rect", "ellipse", "triangle"):
+        attrs = f'fill="{layer["fill"]}" stroke="{layer["stroke"]}" stroke-width="{n(layer["strokeWidth"])}"'
+        if kind == "rect":
+            body = f'<rect width="{n(w)}" height="{n(h)}" {attrs}/>'
+        elif kind == "ellipse":
+            body = f'<ellipse cx="{n(w / 2)}" cy="{n(h / 2)}" rx="{n(w / 2)}" ry="{n(h / 2)}" {attrs}/>'
+        else:
+            body = f'<polygon points="{n(w / 2)},0 {n(w)},{n(h)} 0,{n(h)}" {attrs}/>'
+    elif kind == "text":
+        lines = [line for paragraph in studio_text_layout(layer) for line in paragraph]
+        body = (f'<text xml:space="preserve" fill="{layer["fill"]}" font-family="{studio_text_font(layer)}" font-size="{n(layer["fontSize"])}" font-weight="{"700" if layer.get("bold") else "400"}" '
+                'dominant-baseline="text-before-edge">'
+                + "".join(f'<tspan x="0" y="{n(i * layer["fontSize"] * 1.3)}">{studio_escape(line)}</tspan>' for i, line in enumerate(lines)) + "</text>")
+    elif kind == "image":
+        source = image_source(layer) if image_source else layer["src"]
+        body = f'<image href="{studio_escape(source)}" width="{n(w)}" height="{n(h)}" preserveAspectRatio="none" image-rendering="{"auto" if layer.get("sampling") == "smooth" else "pixelated"}"/>'
+    elif kind == "arrow":
+        g = studio_arrow_geometry(w, h, layer.get("headSize", 28), layer.get("headPlacement", "tip"))
+        line = g["line"]
+        body = f'<line x1="{n(line[0])}" y1="{n(line[1])}" x2="{n(line[2])}" y2="{n(line[3])}" stroke="{layer["stroke"]}" stroke-width="{n(layer["strokeWidth"])}"/>'
+        if layer.get("headStyle") == "beginner":
+            size = min(layer.get("headSize", 28), w, h)
+            x, y = g["points"][0][0] - size, h / 2 - size / 2
+            mask = "head-" + _stu_layer_id(layer["id"])
+            body += (f'<svg x="{n(x)}" y="{n(y)}" width="{n(size)}" height="{n(size)}" viewBox="0 0 100 100"><defs><mask id="{mask}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" '
+                     'width="100" height="100"><text x="50" y="50" text-anchor="middle" dominant-baseline="central" font-family="\'Noto Color Emoji\', \'Segoe UI Emoji\', \'Apple Color Emoji\', sans-serif" '
+                     f'font-size="90" transform="rotate(-90 50 50)">🔰</text></mask></defs><rect width="100" height="100" fill="#000000" mask="url(#{mask})"/></svg>')
+        else:
+            body += f'<polygon points="{" ".join(",".join(n(c) for c in p) for p in g["points"])}" fill="{layer["stroke"]}"/>'
+    elif kind == "clock":
+        cx, cy = w / 2, h / 2
+        r = max(0.1, min(w, h) / 2 - layer["strokeWidth"])
+        ink = layer["stroke"]
+
+        def point(angle: float, k: float) -> list[float]:
+            return [cx + studio_sin(angle) * r * k, cy - studio_cos(angle) * r * k]
+
+        def line_of(p: list[float], q: list[float], width: float) -> str:
+            return f'<line x1="{n(p[0])}" y1="{n(p[1])}" x2="{n(q[0])}" y2="{n(q[1])}" stroke="{ink}" stroke-width="{n(width)}"/>'
+        body = f'<circle cx="{n(cx)}" cy="{n(cy)}" r="{n(r)}" fill="{layer["fill"]}" stroke="{ink}" stroke-width="{n(layer["strokeWidth"])}"/>'
+        for i in range(12):
+            body += line_of(point(i * math.pi / 6, 0.85), point(i * math.pi / 6, 0.96), layer["strokeWidth"])
+        body += (line_of([cx, cy], point(((layer["hour"] % 12) + layer["minute"] / 60) * math.pi / 6, 0.52), layer["strokeWidth"] * 1.5)
+                 + line_of([cx, cy], point(layer["minute"] * math.pi / 30, 0.76), layer["strokeWidth"]))
+    elif kind == "heatmap":
+        left, top, right, bottom = 90, 28, 24, 56
+        cw = max(1, w - left - right) / len(layer["z"][0])
+        ch = max(1, h - top - bottom) / len(layer["z"])
+        for y, row in enumerate(layer["z"]):
+            for x, v in enumerate(row):
+                title = f'{js_string(layer["ylabels"][y])} / {js_string(layer["xlabels"][x])}: {"欠測" if v is None else js_string(v)}'
+                body += (f'<rect x="{n(left + x * cw)}" y="{n(top + y * ch)}" width="{n(cw)}" height="{n(ch)}" fill="{studio_heat_color(v, layer["low"], layer["high"], layer.get("levels", 0))}">'
+                         f'<title>{studio_escape(title)}</title></rect>')
+                if _stu_truthy(layer.get("labels")) and cw >= 35 and ch >= 24 and v is not None:
+                    body += (f'<text x="{n(left + (x + 0.5) * cw)}" y="{n(top + (y + 0.5) * ch)}" text-anchor="middle" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12" '
+                             f'fill="#111827" stroke="#FFFFFF" stroke-width="2" paint-order="stroke">{studio_escape(v)}</text>')
+            body += (f'<text x="{n(left - 10)}" y="{n(top + (y + 0.5) * ch)}" text-anchor="end" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12">'
+                     f'{studio_escape(layer["ylabels"][y])}</text>')
+        for x in range(len(layer["z"][0])):
+            body += f'<text x="{n(left + (x + 0.5) * cw)}" y="{n(h - bottom + 20)}" text-anchor="middle" font-family="Meiryo,sans-serif" font-size="12">{studio_escape(layer["xlabels"][x])}</text>'
+        steps = f'{n(layer["levels"])}段階' if layer.get("levels") else "連続色"
+        body += (f'<text x="{n(left)}" y="{n(h - 5)}" font-family="Meiryo,sans-serif" font-size="12">{studio_escape(layer["low"])} → {studio_escape(layer["high"])} ・ {steps} ・ 欠測は透明</text>')
+    if layer.get("mono") and kind in ("text", "image"):
+        mask = "ink-" + _stu_layer_id(layer["id"])
+        body = (f'<defs><mask id="{mask}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="{n(w)}" height="{n(h)}">{body}</mask></defs>'
+                f'<rect width="{n(w)}" height="{n(h)}" fill="{layer["fill"]}" mask="url(#{mask})"/>')
+    return (f'<g data-layer="{studio_escape(layer["id"])}" transform="translate({n(layer["x"])} {n(layer["y"])}) rotate({n(layer["rotation"])} {n(w / 2)} {n(h / 2)})" '
+            f'opacity="{n(layer["opacity"])}">{body}</g>')
+
+
+def studio_svg(scene: Any, image_source: Any = None, scale: Any = 1) -> str:
+    """The whole scene as one SVG, drawn at ``scale`` times its size; every output (SVG, PNG, Base64) comes from this one function."""
+    studio_validate(scene)
+    size = studio_output_size(scene, scale)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size["width"]}" height="{size["height"]}" viewBox="0 0 {js_number(scene["width"])} {js_number(scene["height"])}">'
+            f'<rect width="{js_number(scene["width"])}" height="{js_number(scene["height"])}" fill="{scene["background"]}"/>'
+            + "".join(studio_layer_svg(layer, image_source) for layer in scene["layers"]) + "</svg>")
+
+
+class StudioHistory:
+    """Up to 40 states of a scene and where you are in them; a new edit drops the states you had undone, an edit that changes nothing is not recorded."""
+
+    def __init__(self, scene: Any) -> None:
+        self.items = [studio_validate(scene)]
+        self.index = 0
+
+    @property
+    def current(self) -> dict[str, Any]:
+        return studio_clone(self.items[self.index])
+
+    def commit(self, scene: Any) -> None:
+        following = studio_validate(scene)
+        if js_json(following) == js_json(self.items[self.index]):
+            return
+        self.items = self.items[:self.index + 1] + [following]
+        if len(self.items) > 40:
+            self.items.pop(0)
+        self.index = len(self.items) - 1
+
+    def undo(self) -> dict[str, Any]:
+        self.index = max(0, self.index - 1)
+        return self.current
+
+    def redo(self) -> dict[str, Any]:
+        self.index = min(len(self.items) - 1, self.index + 1)
+        return self.current
+
+
+def _studio_workspace_size(text: str) -> int:
+    size = len(text.encode("utf-8", "replace"))
+    _stu_need(size <= STUDIO_WORKSPACE_MAX_BYTES, "作業履歴は32MiB以下にしてください。履歴を整理して再保存できます")
+    return size
+
+
+def studio_workspace_text(history: StudioHistory) -> str:
+    """The whole history (every state with its images) and the position in it as one JSON text of at most 32 MiB."""
+    _stu_need(len(history.items) >= 1 and len(history.items) <= 40 and isinstance(history.index, int) and 0 <= history.index < len(history.items), "作業履歴の形式が不正です")
+    head = '{"schema":' + js_json(STUDIO_WORKSPACE_SCHEMA) + ',"items":['
+    tail = "],\"index\":" + js_number(history.index) + "}"
+    total = _studio_workspace_size(head) + _studio_workspace_size(tail)
+    parts = [head]
+    for i, item in enumerate(history.items):
+        part = ("," if i else "") + js_json(studio_validate(item))
+        total += _studio_workspace_size(part)
+        _stu_need(total <= STUDIO_WORKSPACE_MAX_BYTES, "作業履歴は32MiB以下にしてください。履歴を整理して再保存できます")
+        parts.append(part)
+    parts.append(tail)
+    return "".join(parts)
+
+
+def studio_workspace_history(text: Any) -> StudioHistory:
+    """The history written by ``studio_workspace_text``; every state is validated, and any damage refuses the whole file."""
+    _stu_need(isinstance(text, str), "作業履歴の形式が不正です")
+    _studio_workspace_size(text)
+    record = studio_parse(text)
+    _stu_need(isinstance(record, dict) and record.get("schema") == STUDIO_WORKSPACE_SCHEMA and isinstance(record.get("items"), list) and 1 <= len(record["items"]) <= 40
+              and _stu_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
+    states = [studio_validate(item) for item in record["items"]]
+    history = StudioHistory(states[0])
+    history.items = states
+    history.index = int(record["index"])
+    return history
+
+
+STUDIO_FILL, STUDIO_STROKE, STUDIO_BACKGROUND = "#18a7a1", "#183c42", "#F8F7F2"
+
+
+def studio_blank() -> dict[str, Any]:
+    """An empty 1280 x 720 scene."""
+    return {"schema": STUDIO_SCHEMA, "width": 1280, "height": 720, "background": STUDIO_BACKGROUND, "layers": []}
+
+
+def studio_base_layer(kind: str, layer_id: str, x: Any = 80, y: Any = 80, w: Any = 180, h: Any = 120) -> dict[str, Any]:
+    return {"id": layer_id, "kind": kind, "name": kind, "x": x, "y": y, "w": w, "h": h, "rotation": 0, "opacity": 1}
+
+
+def studio_text_layer(text: str, layer_id: str, x: Any, y: Any, fill: str = STUDIO_FILL, font: str = "sans", mono: bool = True, wrap: bool = False) -> dict[str, Any]:
+    """A text stamp sized to its text (48 px, at most 700 wide), as the studio places it."""
+    size = 48
+    lines = text.split("\n")
+    layer = studio_base_layer("text", layer_id, x, y, min(700, max(120, max(len(s) for s in lines) * size)), max(70, len(lines) * size * 1.3))
+    layer.update({"name": "文字 / " + text[:12], "text": text, "fill": fill, "fontSize": size, "font": font, "mono": mono, "wrap": wrap})
+    return layer
+
+
+def studio_place(tool: str, layer_id: str, x: Any, y: Any, *, fill: str = STUDIO_FILL, stroke: str = STUDIO_STROKE, outline: bool = False, text: str = "", font: str = "sans",
+                 arrow_style: str = "beginner", arrow_placement: str = "tip", clock_time: str = "10:10", mono: bool = True, wrap: bool = False) -> dict[str, Any]:
+    """The layer a click puts on the canvas for a tool: ``rect``, ``ellipse``, ``triangle``, ``text`` (or ``stamp``), ``arrow`` or ``clock``."""
+    if tool in ("text", "stamp"):
+        return studio_text_layer(text, layer_id, x, y, fill, font, mono, wrap)
+    if tool == "arrow":
+        layer = studio_base_layer("arrow", layer_id, x, y, 200, 80)
+        layer.update({"name": "直線＋矢羽根", "fill": fill, "stroke": stroke, "strokeWidth": 4, "headSize": 28, "headPlacement": arrow_placement, "headStyle": arrow_style})
+        return layer
+    if tool == "clock":
+        hour, minute = (int(part) for part in clock_time.split(":"))
+        layer = studio_base_layer("clock", layer_id, x, y, 160, 160)
+        layer.update({"name": "時計 " + clock_time, "hour": hour, "minute": minute, "fill": fill, "stroke": stroke, "strokeWidth": 3})
+        return layer
+    if tool not in ("rect", "ellipse", "triangle"):
+        raise StudioError("道具が不正です")
+    layer = studio_base_layer(tool, layer_id, x, y)
+    layer.update({"name": {"rect": "四角", "ellipse": "丸", "triangle": "三角"}[tool], "fill": "none" if outline else fill, "stroke": stroke, "strokeWidth": 3})
+    return layer
+
+
+def studio_matrix_layer(source: Any, layer_id: str, scene_width: Any = 1280, scene_height: Any = 720) -> dict[str, Any]:
+    """A heatmap layer for a numeric matrix or a Plotly heatmap figure; the figure itself stays in ``source``."""
+    layer = studio_base_layer("heatmap", layer_id, 80, 100, min(1050, scene_width - 100), min(480, scene_height - 120))
+    layer.update({"name": "ヒートマップ", **studio_matrix(source), "source": studio_clone(source)})
+    return layer
+
+
+def studio_image_layer(src: str, pixel_width: int, pixel_height: int, layer_id: str, scene_width: Any = 1280, name: str = "取り込み画像") -> dict[str, Any]:
+    """A photo layer for an embedded PNG: 65% of the scene wide at most 700, keeping the photo's proportions, kept exactly (no mosaic) until told otherwise."""
+    w = min(700, scene_width * 0.65)
+    layer = studio_base_layer("image", layer_id, 80, 90, w, w * pixel_height / pixel_width)
+    layer.update({"name": name, "src": src, "cell": 1, "levels": 256, "sampling": "pixelated", "mono": False})
+    return layer
+
+
+def studio_demo_scene() -> dict[str, Any]:
+    """The example of stamps and a heatmap (the numbers are invented for the picture)."""
+    scene = studio_blank()
+    text = lambda layer_id, name, value, x, y, w, h, size, fill: {**studio_base_layer("text", layer_id, x, y, w, h), "name": name, "text": value, "fill": fill, "fontSize": size}
+    scene["layers"] = [
+        text("title", "タイトル", "小さな部品から、大きな表現へ。", 64, 40, 900, 60, 38, "#163B3B"),
+        text("subtitle", "サブタイトル", "STAMP / COLOR / MATRIX     —     Ironmate Image Studio", 68, 105, 900, 40, 17, "#56766D"),
+        {**studio_base_layer("rect", "card", 68, 178, 1144, 430), "name": "白いカード", "fill": "#FFFFFF", "stroke": "#D6DFD2", "strokeWidth": 1},
+        {**studio_base_layer("heatmap", "matrix", 90, 220, 680, 350), "name": "色の行列",
+         **studio_matrix({"z": [[2, 3, 4, 6, 8, 9, 10], [1, 3, 5, 7, 9, None, 12], [2, 4, 6, 8, 10, 12, 14], [0, 2, 5, 8, 11, 14, 16]], "x": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], "y": ["A", "B", "C", "D"]})},
+        {**studio_base_layer("triangle", "triangle", 890, 264, 170, 150), "name": "三角のスタンプ", "fill": "none", "stroke": "#EFBE4C", "strokeWidth": 7},
+        text("emoji", "絵文字スタンプ", "🌱", 910, 294, 140, 90, 70, "#163B3B"),
+        text("custom", "カスタム文字", "色を置く。\nかたちが生まれる。", 840, 445, 320, 100, 25, "#163B3B"),
+        text("footer", "フッター", "01  COMPOSE                         02  EXPLORE COLOR                         03  EXPORT", 70, 646, 1100, 35, 14, "#71887C"),
+    ]
+    return scene
+
+
+def studio_stamp_demo_scene() -> dict[str, Any]:
+    """The example of a clock, an arrow with a head in the middle, a face and emoji, all kept as shapes and text."""
+    scene = studio_blank()
+    mono = lambda layer_id, value, x, y, w, h, size, fill: {**studio_base_layer("text", layer_id, x, y, w, h), "id": layer_id, "name": value, "text": value, "fontSize": size, "fill": fill, "mono": True}
+    scene["layers"] = [
+        mono("title", "STAMP LAB / 色を変えて、重ねる。", 60, 45, 1160, 70, 38, "#163B3B"),
+        {**studio_base_layer("rect", "card", 60, 150, 1160, 420), "name": "カード", "fill": "#FFFFFF", "stroke": "#D6DFD2", "strokeWidth": 1},
+        {**studio_base_layer("clock", "clock", 100, 210, 230, 230), "name": "10:10の時計", "hour": 10, "minute": 10, "fill": "#F8F7F2", "stroke": "#087D79", "strokeWidth": 4},
+        {**studio_base_layer("arrow", "arrow", 390, 260, 230, 80), "name": "直線＋中央の矢羽根", "headSize": 40, "headPlacement": "middle", "headStyle": "beginner", "fill": "#EFBE4C", "stroke": "#D59C22",
+         "strokeWidth": 6},
+        mono("face", "(・∀・)", 710, 225, 450, 105, 68, "#D05B78"),
+        mono("emoji", "🌱", 750, 365, 160, 130, 100, "#087D79"),
+        mono("emoji2", "❤️", 990, 365, 180, 130, 100, "#D05B78"),
+        mono("footer", "CLOCK     →     LINE + TRIANGLE     →     TEXT / EMOJI / KAOMOJI", 65, 635, 1150, 50, 18, "#56766D"),
+    ]
+    return scene
+
+
+def studio_heatmap_scene(source: Any) -> dict[str, Any]:
+    """An editable 1280 x 720 scene holding one heatmap layer for a matrix (``image_studio.py --heatmap``); the input is kept in ``source`` and never rewritten."""
+    layer = {"id": "heatmap", "kind": "heatmap", "name": "Heatmap", "x": 80, "y": 90, "w": 1120, "h": 520, "rotation": 0, "opacity": 1, **studio_matrix(source)}
+    return {"schema": STUDIO_SCHEMA, "width": 1280, "height": 720, "background": "#FFFFFF", "layers": [layer], "source": source}
+
+
+def studio_png_decode(data: bytes) -> tuple[int, int, bytes]:
+    """Width, height and RGBA bytes of a PNG: 8 bits a sample, not interlaced (what a browser writes and what the studio embeds); anything else is refused."""
+    if data[:8] != bytes([137, 80, 78, 71, 13, 10, 26, 10]):
+        raise StudioError("PNGではありません")
+    pos, header, palette, trns, idat = 8, None, b"", b"", []
+    while pos + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + length]
+        if len(chunk) != length or pos + 12 + length > len(data) or zlib.crc32(kind + chunk) != struct.unpack(">I", data[pos + 8 + length:pos + 12 + length])[0]:
+            raise StudioError("PNGが壊れています")
+        pos += 12 + length
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"PLTE":
+            palette = chunk
+        elif kind == b"tRNS":
+            trns = chunk
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            break
+    if header is None or not idat:
+        raise StudioError("PNGが壊れています")
+    width, height, depth, color, _compression, _filter, interlace = header
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color)
+    if channels is None or depth != 8 or interlace != 0 or not 1 <= width * height <= 4194304:
+        raise StudioError("8ビット・非インターレースの4MP以下のPNGに対応しています")
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error as error:
+        raise StudioError("PNGが壊れています") from error
+    stride = width * channels
+    if len(raw) != height * (stride + 1):
+        raise StudioError("PNGが壊れています")
+    rows: list[bytearray] = []
+    previous = bytearray(stride)
+    for y in range(height):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        if kind == 1:
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 255
+        elif kind == 2:
+            for i in range(stride):
+                line[i] = (line[i] + previous[i]) & 255
+        elif kind == 3:
+            for i in range(stride):
+                line[i] = (line[i] + (((line[i - channels] if i >= channels else 0) + previous[i]) >> 1)) & 255
+        elif kind == 4:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = previous[i]
+                c = previous[i - channels] if i >= channels else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        elif kind != 0:
+            raise StudioError("PNGが壊れています")
+        rows.append(line)
+        previous = line
+    out = bytearray(width * height * 4)
+    for y, line in enumerate(rows):
+        for x in range(width):
+            o = (y * width + x) * 4
+            if color == 6:
+                out[o:o + 4] = line[x * 4:x * 4 + 4]
+            elif color == 2:
+                out[o:o + 4] = bytes(line[x * 3:x * 3 + 3]) + b"\xff"
+            elif color == 0:
+                out[o:o + 4] = bytes((line[x],) * 3) + b"\xff"
+            elif color == 4:
+                out[o:o + 4] = bytes((line[x * 2],) * 3) + bytes((line[x * 2 + 1],))
+            else:
+                index = line[x]
+                out[o:o + 4] = palette[index * 3:index * 3 + 3] + bytes((trns[index] if index < len(trns) else 255,))
+    return width, height, bytes(out)
+
+
+def studio_png_encode(width: int, height: int, rgba: bytes) -> bytes:
+    """RGBA bytes as a PNG (8 bits, no interlace, no filter)."""
+    if len(rgba) != width * height * 4:
+        raise StudioError("PNGの大きさが合いません")
+    stride = width * 4
+    raw = b"".join(b"\x00" + rgba[y * stride:(y + 1) * stride] for y in range(height))
+    chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    return bytes([137, 80, 78, 71, 13, 10, 26, 10]) + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def studio_image_source(scene: dict[str, Any]) -> Any:
+    """For ``studio_svg``: each image layer's PNG after its own mosaic (cell and levels), made from the embedded original; layers that keep every pixel pass their image through."""
+    cache: dict[tuple[str, Any, Any], str] = {}
+
+    def source(layer: dict[str, Any]) -> str:
+        if layer["cell"] == 1 and layer["levels"] == 256:
+            return layer["src"]
+        key = (layer["src"], layer["cell"], layer["levels"])
+        if key not in cache:
+            width, height, rgba = studio_png_decode(base64.b64decode(layer["src"].split(",", 1)[1]))
+            cache[key] = "data:image/png;base64," + base64.b64encode(studio_png_encode(width, height, studio_mosaic_rgba(rgba, width, height, layer["cell"], layer["levels"]))).decode("ascii")
+        return cache[key]
+    return source
+
+
+def studio_render(scene: Any, scale: Any = 1) -> str:
+    """The SVG of a scene as the CLI makes it: validated, images mosaicked as their layers ask."""
+    checked = studio_validate(scene)
+    return studio_svg(checked, studio_image_source(checked), scale)
+
+
+def _studio_write(path: Path | None, text: str, force: bool) -> None:
+    if path is None:
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        return
+    if path.exists() and not force:
+        raise StudioError("出力ファイルが既にあります。置き換えるには --force を付けてください")
+    path.write_text(text, encoding="utf-8")
+
+
+def _studio_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """``--studio-render`` (SVG or the checked scene as JSON), ``--studio-heatmap`` (a matrix into an editable scene), ``--studio-base64`` (PNG bytes as Base64 for hand-off). Exit 2 on a bad input."""
+    try:
+        if args.studio_render:
+            text = args.studio_render.read_text(encoding="utf-8")
+            _stu_need(len(text.encode("utf-8")) <= 20_000_000, "JSONは20MB以下にしてください")
+            scene = studio_parse(text)
+            out = js_json(studio_validate(scene), 2) if args.format == "json" else studio_render(scene, args.scale)
+            _studio_write(args.output, out, args.force)
+        elif args.studio_heatmap:
+            text = args.studio_heatmap.read_text(encoding="utf-8")
+            _stu_need(len(text.encode("utf-8")) <= 2_000_000, "行列JSONは2MB以下にしてください")
+            _studio_write(args.output, js_json(studio_heatmap_scene(studio_parse(text)), 2), args.force)
+        else:
+            payload = studio_png_payload(args.studio_base64.read_bytes())
+            _studio_write(args.output, payload["dataUri"] if args.data_uri else payload["base64"], args.force)
+    except (StudioError, ValueError, OSError, UnicodeError, ArithmeticError) as error:
+        print(f"invalid studio input: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+# --- Image studio page: the Ironmate editor, in the page (memory only) ---------------------------------------------------------------------
+# The scene, its checks, the SVG and the history are the functions above; ``imagestudio.js`` is their twin (Ironmate's own studio/core.js has the same behaviour) with the editor on top:
+# tools, layers, an inspector, PNG/SVG/Base64/JSON export and the workspace history. Nothing is sent or saved by the page itself.
+
+STUDIO_EMOJI = ("❤️", "😊", "🌱", "📊", "✨", "📌", "🔰")
+STUDIO_KAOMOJI = ("(・∀・)", "(｡•̀ᴗ-)✧", "٩(๑❛ᴗ❛๑)۶")
+STUDIO_TOOLS = (("select", "↖ Select"), ("rect", "▭ Rectangle"), ("ellipse", "◯ Ellipse"), ("triangle", "△ Triangle"), ("text", "T Text"), ("stamp", "✦ Stamp"), ("arrow", "→ Arrow"), ("clock", "◷ Clock"))
+
+_CSS["imagestudio.css"] = ("@layer components{.ui-imagestudio h3{margin:24px 0 8px}.ui-imagestudio label{display:block;margin:8px 0}.ui-imagestudio textarea{width:100%;box-sizing:border-box;font-family:var(--ui-font-mono,monospace)}"
+                           ".ui-imagestudio .ui-input{max-width:100%;box-sizing:border-box}.ui-is-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}.ui-imagestudio[data-error] .ui-is-status{color:var(--ui-danger)}"
+                           ".ui-is-board{position:relative;width:100%;max-width:1280px;overflow:hidden;line-height:0;border:thin solid var(--ui-border);touch-action:pan-y;"
+                           "background:conic-gradient(#fff 25%,#d8d8d8 0 50%,#fff 0 75%,#d8d8d8 0) 0 0/16px 16px}.ui-is-board[data-capture]{touch-action:none}"
+                           ".ui-is-board svg{display:block;width:100%;height:auto}.ui-is-board:focus-visible{outline:medium solid var(--ui-accent);outline-offset:8px}"
+                           ".ui-is-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-is-bar legend{padding:0 0 8px}"
+                           ".ui-is-bar label,.ui-is-bar .ui-input{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;min-width:0;max-width:100%}.ui-is-bar .ui-input{width:auto}"
+                           ".ui-is-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:0 16px}.ui-is-grid input[type=number]{width:100%}"
+                           ".ui-is-layers{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-is-layers button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
+                           ".ui-imagestudio input[type=color]{width:48px;height:40px;padding:0}.ui-is-history{margin:8px 0;padding-left:24px}.ui-is-history li{margin:8px 0}"
+                           ".ui-is-file{max-width:100%;min-width:0}.ui-imagestudio details{margin:8px 0}.ui-imagestudio details summary{cursor:pointer}}")
+
+
+def imagestudio_html() -> str:
+    """The image studio as semantic HTML: a canvas, tools, style, layers, an inspector, ways to add images and matrices, canvas size, export and the history. ``data-is`` names every control for the script."""
+    number = lambda name, label, **attrs: (f'<label>{label}<input class="ui-input" type="number" data-is="{name}" disabled'
+                                           + "".join(f' {k}="{v}"' for k, v in attrs.items()) + "></label>")
+    button = lambda name, label, disabled=False: f'<button class="ui-button" type="button" data-is="{name}"{" disabled" if disabled else ""}>{label}</button>'
+    tools = "".join(f'<label><input type="radio" name="is-tool" value="{value}"{" checked" if value == "select" else ""}> {escape(label)}</label>' for value, label in STUDIO_TOOLS)
+    stamps = "".join(f'<button class="ui-button" type="button" data-stamp="{escape(s, quote=True)}">{escape(s)}</button>' for s in (*STUDIO_EMOJI, *STUDIO_KAOMOJI))
+    return ('<section class="ui-panel ui-imagestudio" id="imagestudio" data-ui-imagestudio><h2>Image studio</h2>'
+            '<p class="ui-muted">Layer shapes, text, photos and heatmaps. The scene stays in this page.</p>'
+            '<p class="ui-is-status" role="status" aria-live="polite" data-is="status">Starting.</p>'
+            '<div class="ui-is-board" data-is="board" tabindex="0" role="group" aria-label="Canvas: press to place or select, drag to move, arrow keys nudge"></div>'
+            f'<div class="ui-is-bar">{button("undo", "Undo", True)}{button("redo", "Redo", True)}{button("blank", "New canvas")}<output data-is="size">1280 × 720</output></div>'
+            '<h3 id="is-tools-title">Tools</h3>'
+            f'<fieldset class="ui-is-bar"><legend>Press the canvas to place</legend>{tools}</fieldset>'
+            f'<div class="ui-is-layers">{stamps}</div><p class="ui-muted" data-is="stampnote">Pick a stamp, then press the canvas.</p>'
+            '<label>Text or custom stamp<textarea class="ui-input" data-is="text" rows="2" spellcheck="false">Hello</textarea></label>'
+            '<div class="ui-is-bar"><label>Fill <input type="color" data-is="fill" value="#18a7a1"></label><label>Line <input type="color" data-is="stroke" value="#183c42"></label>'
+            '<label><input type="checkbox" data-is="outline"> Outline only</label><label>Clock time <input class="ui-input" type="time" data-is="clock" value="10:10"></label></div>'
+            '<h3>Layers</h3><div class="ui-is-layers" data-is="layers"></div>'
+            f'<div class="ui-is-bar">{button("duplicate", "Duplicate", True)}{button("delete", "Delete", True)}{button("front", "Forward", True)}{button("back", "Backward", True)}'
+            f'{button("custom", "Use as stamp", True)}</div>'
+            '<h3 data-is="selection">Select a layer</h3><div class="ui-is-grid">'
+            + number("x", "X") + number("y", "Y") + number("w", "Width", min="1") + number("h", "Height", min="1")
+            + number("rotation", "Rotation", min="-360", max="360") + number("opacity", "Opacity", min="0", max="1", step="0.05") + number("fontsize", "Font size", min="4", max="512") + '</div>'
+            '<div class="ui-is-bar"><label>Font <select class="ui-input" data-is="fontfamily" disabled><option value="sans">Standard</option><option value="mono">Monospace (ASCII art)</option></select></label>'
+            '<label><input type="checkbox" data-is="mono" disabled> Draw text and images in one colour</label>'
+            '<label>Arrow head <select class="ui-input" data-is="arrowstyle" disabled><option value="beginner">🔰 in black</option><option value="triangle">Triangle</option></select></label>'
+            '<label>Head place <select class="ui-input" data-is="arrowplacement" disabled><option value="tip">Tip</option><option value="middle">Middle</option></select></label>'
+            '<label>Image scaling <select class="ui-input" data-is="sampling" disabled><option value="pixelated">Keep the dots</option><option value="smooth">Smooth</option></select></label></div>'
+            '<div class="ui-is-grid"><label>Mosaic cell <output data-is="cellout">1 px</output><input type="range" data-is="cell" min="1" max="128" value="1" disabled></label>'
+            '<label>Colour levels <output data-is="levelsout">256</output><input type="range" data-is="levels" min="2" max="256" value="256" disabled></label></div>'
+            f'<div class="ui-is-bar"><label><input type="checkbox" data-is="labels" checked disabled> Number labels</label>{button("continuous", "Heatmap in continuous colour", True)}{button("apply", "Apply text and colours", True)}</div>'
+            '<p class="ui-muted">Images are recomputed from the kept original; a mosaic never invents lost detail.</p>'
+            '<h3>Add</h3><div class="ui-is-bar"><label>Photo or image <input class="ui-is-file" type="file" accept="image/png,image/jpeg,image/webp" data-is="file"></label>'
+            f'{button("paste", "Paste an image")}</div>'
+            '<label>PNG, JPEG or WebP as Base64 or a data URI<textarea class="ui-input" data-is="b64in" rows="2" spellcheck="false"></textarea></label>'
+            f'<div class="ui-is-bar">{button("b64import", "Add the Base64 image")}</div>'
+            '<label>Numbers (rows, or a Plotly heatmap)<textarea class="ui-input" data-is="matrix" rows="2" spellcheck="false">[[0,1,2,3],[3,2,1,0],[1,null,2,3]]</textarea></label>'
+            f'<div class="ui-is-bar">{button("heatmap", "Add a heatmap")}<label>Matrix file <input class="ui-is-file" type="file" accept=".json,application/json" data-is="matrixfile"></label></div>'
+            '<h3>Canvas</h3><div class="ui-is-bar">' + button("demo", "Example: stamps and a heatmap") + button("stampdemo", "Example: clock, arrow, face") + '</div>'
+            '<div class="ui-is-bar"><label>Background <input type="color" data-is="background" value="#f8f7f2"></label><label><input type="checkbox" data-is="transparent"> Transparent</label>'
+            '<label>Width <input class="ui-input" type="number" data-is="width" min="64" max="4096" value="1280"></label><label>Height <input class="ui-input" type="number" data-is="height" min="64" max="4096" value="720"></label>'
+            f'{button("resize", "Apply size")}</div>'
+            '<h3 id="is-export-title">Export</h3><div class="ui-is-bar"><label>Scale <select class="ui-input" data-is="scale"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>'
+            f'{button("svg", "Save SVG")}{button("png", "Save PNG")}{button("base64", "PNG as Base64")}</div>'
+            '<details data-is="b64panel"><summary>Base64 for hand-off</summary><p class="ui-muted">The PNG as standard Base64. The image and the scene are not sent anywhere.</p>'
+            '<label>Form <select class="ui-input" data-is="b64mode"><option value="dataUri">PNG data URI</option><option value="base64">Base64 only</option></select></label>'
+            '<textarea class="ui-input" data-is="b64text" rows="6" readonly aria-label="Base64 image"></textarea><p class="ui-muted" role="status" data-is="b64status"></p>'
+            f'<div class="ui-is-bar">{button("b64copy", "Copy")}{button("b64save", "Save as text")}</div></details>'
+            '<h3>Scene and history</h3><div class="ui-is-bar">' + button("jsonsave", "Save the scene as JSON")
+            + '<label>Open a scene <input class="ui-is-file" type="file" accept=".json,application/json" data-is="jsonopen"></label></div>'
+            '<div class="ui-is-bar">' + button("wssave", "Save the history") + '<label>Open a history <input class="ui-is-file" type="file" accept=".json,application/json" data-is="wsopen"></label></div>'
+            '<details><summary>History (up to 40 states)</summary><ol class="ui-is-history" data-is="history" aria-label="History"></ol>' + button("trim", "Keep only the current state")
+            + '<p class="ui-muted">A history file can hold your images. Check it before you share it.</p></details></section>')
+
+
+def imagestudio_document(*, theme: str = "modern") -> str:
+    """A single-file page for the image studio."""
+    return render_document(trusted_html='<main class="ui-page">' + imagestudio_html() + "</main>" + module_script(_JS["imagestudio.js"]), title="Image studio", theme=theme, css=bundled_css())
+
+
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
 # Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
 # lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
@@ -10582,6 +11774,508 @@ if(typeof document!=="undefined")bindPhoto();
 """
 
 
+def _studio_js_constants() -> str:
+    """The constants ``imagestudio.js`` shares with the Python above, written from them so the two cannot drift."""
+    return (f"export const SCHEMA={json.dumps(STUDIO_SCHEMA)},WORKSPACE_SCHEMA={json.dumps(STUDIO_WORKSPACE_SCHEMA)},WORKSPACE_MAX_BYTES={STUDIO_WORKSPACE_MAX_BYTES},PALETTE={json.dumps(list(STUDIO_PALETTE))};\n"
+            f"export const FILL={json.dumps(STUDIO_FILL)},STROKE={json.dumps(STUDIO_STROKE)},BACKGROUND={json.dumps(STUDIO_BACKGROUND)};\n"
+            f"const WSPACE={json.dumps(_STU_WSPACE)},MIDLETTER={json.dumps(_STU_MIDLETTER)},MIDNUM={json.dumps(_STU_MIDNUM)},MIDNUMLET={json.dumps(_STU_MIDNUMLET)},NEWLINE={json.dumps(_STU_NEWLINE)};\n"
+            f"const KATAKANA={json.dumps(_STU_KATAKANA)},HAN_HIRAGANA={json.dumps(_STU_HAN_HIRAGANA)},PICTOGRAPHIC={json.dumps(_STU_PICTOGRAPHIC)};\n"
+            f"const WORD_OVERRIDES={json.dumps(_STU_WORD_OVERRIDES)},GRAPHEME_OVERRIDES={json.dumps(_STU_GRAPHEME_OVERRIDES)};\n")
+
+
+
+
+_JS["imagestudio.js"] = "/* web-ui imagestudio: the Ironmate image studio in the page (memory only). Scene checks, SVG, history, workspace files and the layers a click places are the functions of web_ui.py (studio_*) and give the same text; the editor on top is the page's. Python is the reference; this must agree. Differences: text is measured with the installed fonts here (a fixed 0.65 em / 1 em estimate in Python), words and graphemes follow the same rules as Python (Latin, Hangul, kana and Han; the Japanese dictionary of Intl.Segmenter is not used, so every engine gives the same lines), and the clock hands use fdlibm's sin and cos written out here and in Python (V8's of Node 22), not the engine's Math.sin and Math.cos, which differ in the last bit between engines and versions. */\n" + _CLIPBOARD_JS + _studio_js_constants() + r"""export class StudioError extends Error{}
+const fail=message=>{throw new StudioError(message)};
+export const clone=x=>JSON.parse(JSON.stringify(x));
+export const escape=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&apos;"})[c]);
+const num=(v,lo,hi)=>typeof v==="number"&&Number.isFinite(v)&&v>=lo&&v<=hi,color=c=>typeof c==="string"&&/^(#[0-9a-f]{6}|none)$/i.test(c);
+export function heatColor(v,lo,hi,levels=0){
+ if(v===null)return"none";
+ if(![v,lo,hi].every(Number.isFinite)||lo>hi||!Number.isInteger(levels)||(levels!==0&&(levels<2||levels>256)))fail("色の範囲または段階数が不正です");
+ let t=hi===lo?0.5:Math.max(0,Math.min(1,(v-lo)/(hi-lo)));if(levels)t=Math.round(t*(levels-1))/(levels-1);
+ const p=t*4,i=Math.min(3,Math.floor(p)),a=PALETTE[i].match(/\w\w/g).map(x=>parseInt(x,16)),b=PALETTE[i+1].match(/\w\w/g).map(x=>parseInt(x,16));
+ return"#"+a.map((x,j)=>Math.round(x+(b[j]-x)*(p-i)).toString(16).padStart(2,"0")).join("").toUpperCase()}
+const safe=v=>Number.isFinite(v)&&!(Number.isInteger(v)&&!Number.isSafeInteger(v));
+export function matrix(source){
+ let t;
+ if(Array.isArray(source))t={z:source};
+ else if(Array.isArray(source?.data)){const traces=source.data.filter(t=>t.type==="heatmap");if(traces.length!==1)fail("heatmapトレースは1つにしてください");t=traces[0]}
+ else t=source;
+ const z=t?.z,cols=z?.[0]?.length;
+ if(!Array.isArray(z)||!cols||z.length*cols>4096||z.some(r=>!Array.isArray(r)||r.length!==cols))fail("1〜4096セルの長方形の数値行列が必要です");
+ const values=z.flat().filter(v=>v!==null);
+ if(values.some(v=>!safe(v)))fail("有限の数値またはnullを指定してください（巨大な整数は非対応）");
+ const low=t.zmin??(values.length?Math.min(...values):0),high=t.zmax??(values.length?Math.max(...values):1);
+ if([low,high].some(v=>!safe(v)))fail("色の範囲には有限の安全な数値を指定してください");
+ heatColor(low,low,high);
+ const xlabels=t.x??Array.from({length:cols},(_,i)=>i),ylabels=t.y??Array.from({length:z.length},(_,i)=>i);
+ if(!Array.isArray(xlabels)||!Array.isArray(ylabels)||xlabels.length!==cols||ylabels.length!==z.length)fail("軸ラベルの数が一致しません");
+ return{z:clone(z),xlabels:clone(xlabels),ylabels:clone(ylabels),low,high,levels:0,labels:true}}
+const KINDS=["rect","ellipse","triangle","text","image","heatmap","arrow","clock"];
+export function validate(scene){
+ if(scene?.schema!==SCHEMA||!Number.isInteger(scene.width)||!Number.isInteger(scene.height)||!num(scene.width,64,4096)||!num(scene.height,64,4096)||scene.width*scene.height>4194304||!color(scene.background)||!Array.isArray(scene.layers)||scene.layers.length>100)
+  fail("シーンの形式・サイズが不正です（最大100レイヤー、4MP）");
+ const ids=new Set();let imageBytes=0;
+ for(const l of scene.layers){
+  if(!l||typeof l.id!=="string"||l.id.length>100||ids.has(l.id)||!KINDS.includes(l.kind))fail("レイヤーのIDまたは種類が不正です");
+  ids.add(l.id);
+  for(const f of["x","y"])if(!num(l[f],-8192,8192))fail("位置が不正です");
+  for(const f of["w","h"])if(!num(l[f],1,8192))fail("サイズが不正です");
+  if(!num(l.rotation,-360,360)||!num(l.opacity,0,1))fail("角度または不透明度が不正です");
+  if(l.mono!==undefined&&typeof l.mono!=="boolean")fail("単色設定が不正です");
+  if(l.mono&&!color(l.fill))fail("単色の色が不正です");
+  if(l.kind==="text"){
+   if(l.wrap!==undefined&&typeof l.wrap!=="boolean")fail("折り返しの指定が不正です");
+   if(l.bold!==undefined&&typeof l.bold!=="boolean")fail("太字の指定が不正です");
+   if(l.font!==undefined&&!["sans","mono"].includes(l.font))fail("フォント設定が不正です");
+   if(typeof l.text!=="string"||l.text.length>2000||!num(l.fontSize,4,512)||!color(l.fill))fail("テキストが不正です")}
+  else if(l.kind==="image"){
+   if(typeof l.src!=="string"||l.src.length>12000000||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(l.src))fail("画像は埋め込みPNGが必要です");
+   imageBytes+=l.src.length;if(imageBytes>20000000)fail("シーンの画像合計は20MB以下にしてください");
+   if(!Number.isInteger(l.cell)||!num(l.cell,1,512)||!Number.isInteger(l.levels)||!num(l.levels,2,256))fail("モザイク設定が不正です");
+   if(l.sampling!==undefined&&!["pixelated","smooth"].includes(l.sampling))fail("補間方式が不正です")}
+  else if(l.kind==="heatmap"){matrix({z:l.z,x:l.xlabels,y:l.ylabels,zmin:l.low,zmax:l.high});heatColor(l.low,l.low,l.high,l.levels)}
+  else if(!color(l.fill)||!color(l.stroke)||!num(l.strokeWidth,0,64))fail("図形の色または線幅が不正です");
+  if(l.kind==="arrow"){arrowGeometry(l.w,l.h,l.headSize,l.headPlacement);if(l.headStyle!==undefined&&!["triangle","beginner"].includes(l.headStyle))fail("矢羽根の形が不正です")}
+  if(l.kind==="clock"&&(!Number.isInteger(l.hour)||!num(l.hour,0,23)||!Number.isInteger(l.minute)||!num(l.minute,0,59)))fail("時計の時刻が不正です")}
+ return clone(scene)}
+export function mosaicRGBA(data,width,height,cell,levels=256){
+ if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width*height>4194304||data.length!==width*height*4||!Number.isInteger(cell)||cell<1||cell>512||!Number.isInteger(levels)||levels<2||levels>256)fail("モザイク入力が不正です");
+ const out=new Uint8ClampedArray(data.length);
+ for(let y=0;y<height;y+=cell)for(let x=0;x<width;x+=cell){
+  const endX=Math.min(width,x+cell),endY=Math.min(height,y+cell),sums=[0,0,0];let alpha=0,count=0;
+  for(let j=y;j<endY;j++)for(let i=x;i<endX;i++){const n=(j*width+i)*4,a=data[n+3];alpha+=a;count++;for(let c=0;c<3;c++)sums[c]+=data[n+c]*a}
+  const rgba=sums.map(s=>Math.round(Math.round(((alpha?Math.round(s/alpha):0)/255)*(levels-1))/(levels-1)*255));rgba.push(Math.round(alpha/count));
+  for(let j=y;j<endY;j++)for(let i=x;i<endX;i++)out.set(rgba,(j*width+i)*4)}
+ return out}
+export function arrowGeometry(w,h,head=28,placement="tip"){
+ if(!num(w,1,8192)||!num(h,1,8192)||!num(head,1,512)||!["tip","middle"].includes(placement))fail("矢印の寸法が不正です");
+ const size=Math.min(head,w,h),cx=placement==="middle"?w/2:w-size/2;
+ return{line:[0,h/2,w,h/2],points:[[cx+size/2,h/2],[cx-size/2,h/2+size/2],[cx-size/2,h/2-size/2]]}}
+export function outputSize(scene,scale=1){
+ if(!num(scale,0.25,8))fail("出力倍率は0.25〜8です");
+ const width=Math.round(scene.width*scale),height=Math.round(scene.height*scale);
+ if(width>8192||height>8192||width*height>16777216)fail("出力は各辺8192px・合計16MP以下にしてください");
+ return{width,height}}
+export function pngPayload(bytes){
+ const a=Uint8Array.from(bytes),signature=[137,80,78,71,13,10,26,10];
+ if(a.length<8||a.length>32*1024*1024||signature.some((v,i)=>a[i]!==v))fail("32MiB以下のPNGが必要です");
+ let binary="";for(let i=0;i<a.length;i+=8192)binary+=String.fromCharCode(...a.subarray(i,i+8192));
+ const base64=btoa(binary);return{base64,dataUri:"data:image/png;base64,"+base64,mimeType:"image/png",bytes:a.length}}
+export const textFont=l=>l.font==="mono"?`${l.wrap?"'MS Gothic', ":""}ui-monospace, 'Noto Sans Mono', monospace`:"Meiryo, 'Noto Sans', 'Noto Color Emoji', sans-serif";
+// Text width: the installed font's own metrics once the page asks for them (useCanvasMetrics), otherwise the fixed estimate Python uses (0.65 em printable ASCII, 1 em the rest).
+let canvasContext=null;
+export function useCanvasMetrics(on){canvasContext=on?document.createElement("canvas").getContext("2d"):null;return canvasContext!==null}
+export function measureText(text,l){
+ if(canvasContext){canvasContext.font=`${l.bold?700:400} ${l.fontSize}px ${textFont(l)}`;return canvasContext.measureText(text).width}
+ return Array.from(text).reduce((n,c)=>n+(/^[\x20-\x7e]$/.test(c)?0.65:1),0)*l.fontSize}
+const inRanges=(cp,ranges)=>ranges.some(([low,high])=>low<=cp&&cp<=high),cpOf=ch=>ch.codePointAt(0),count=text=>Array.from(text).length;
+function wordClass(ch){
+ const cp=cpOf(ch);
+ if(NEWLINE.includes(ch))return"NL";
+ if(cp===0x200D)return"ZWJ";
+ for(const[kind,ranges]of WORD_OVERRIDES)if(inRanges(cp,ranges))return kind;
+ if(/[\p{Mn}\p{Me}\p{Mc}]/u.test(ch)||(/\p{Cf}/u.test(ch)&&cp!==0x200B)||(cp>=0x1F3FB&&cp<=0x1F3FF))return"Extend";
+ if(WSPACE.includes(ch))return"Space";
+ if(cp>=0x1F1E6&&cp<=0x1F1FF)return"RI";
+ if(inRanges(cp,KATAKANA))return"Katakana";
+ if(inRanges(cp,HAN_HIRAGANA))return"Other";
+ if(cp>=0xAC00&&cp<=0xD7A3)return"Hangul";
+ if(cp===0x22)return"DQ";
+ if(/\p{Lo}/u.test(ch)&&((cp>=0x5D0&&cp<=0x5EA)||(cp>=0x5EF&&cp<=0x5F2)||(cp>=0xFB1D&&cp<=0xFB4F)))return"HL";
+ if(/[\p{Lu}\p{Ll}\p{Lt}\p{Lm}\p{Lo}\p{Nl}]/u.test(ch))return"AHLetter";
+ if(/\p{Nd}/u.test(ch))return"Numeric";
+ if(/\p{Pc}/u.test(ch)||cp===0x202F)return"ExtendNumLet";
+ if(MIDLETTER.includes(ch))return"MidLetter";
+ if(MIDNUM.includes(ch))return"MidNum";
+ if(MIDNUMLET.includes(ch))return"MidNumLetQ";
+ return"Other"}
+// Word and space segments of one line (Python: studio_words): Unicode word rules for Latin, Hangul and similar scripts, each Han or Hiragana character alone, Katakana runs together. The same in every engine.
+export function words(text){
+ const clusters=[];
+ for(const ch of text){
+  const kind=wordClass(ch),last=clusters[clusters.length-1];
+  if(ch==="\n"&&last&&last[0]==="\r"){last[0]+=ch;continue}
+  if((kind==="Extend"||kind==="ZWJ")&&last&&last[1]!=="NL"){last[0]+=ch;last[2]=kind==="ZWJ"}
+  else clusters.push([ch,kind==="Extend"||kind==="ZWJ"?"Other":kind,kind==="ZWJ"])}
+ const segments=[],letter=["AHLetter","HL"];let current="";
+ clusters.forEach(([chunk,b],i)=>{
+  if(i===0){current=chunk;return}
+  const a=clusters[i-1][1],before=i>=2?clusters[i-2][1]:null,after=i+1<clusters.length?clusters[i+1][1]:null;let glue=false;
+  if(a==="NL"||b==="NL")glue=false;
+  else if(clusters[i-1][2]&&inRanges(cpOf(chunk),PICTOGRAPHIC))glue=true;
+  else if(a==="Space"&&b==="Space"&&count(clusters[i-1][0])===1)glue=true;
+  else if(letter.includes(a)&&letter.includes(b))glue=true;
+  else if(letter.includes(a)&&(b==="MidLetter"||b==="MidNumLetQ")&&letter.includes(after))glue=true;
+  else if(letter.includes(before)&&(a==="MidLetter"||a==="MidNumLetQ")&&letter.includes(b))glue=true;
+  else if(a==="HL"&&b==="MidNumLetQ"&&chunk[0]==="'")glue=true;
+  else if(a==="HL"&&b==="DQ"&&after==="HL")glue=true;
+  else if(before==="HL"&&a==="DQ"&&b==="HL")glue=true;
+  else if(a==="Numeric"&&b==="Numeric")glue=true;
+  else if((letter.includes(a)&&b==="Numeric")||(a==="Numeric"&&letter.includes(b)))glue=true;
+  else if(a==="Numeric"&&(b==="MidNum"||b==="MidNumLetQ")&&after==="Numeric")glue=true;
+  else if(before==="Numeric"&&(a==="MidNum"||a==="MidNumLetQ")&&b==="Numeric")glue=true;
+  else if(a==="Katakana"&&b==="Katakana")glue=true;
+  else if(a==="Hangul"&&b==="Hangul"&&count(clusters[i-1][0])===1)glue=true;
+  else if([...letter,"Numeric","Katakana","ExtendNumLet"].includes(a)&&b==="ExtendNumLet")glue=true;
+  else if(a==="ExtendNumLet"&&[...letter,"Numeric","Katakana"].includes(b))glue=true;
+  else if(a==="RI"&&b==="RI"){let run=0,j=i-1;while(j>=0&&clusters[j][1]==="RI"){run++;j--}glue=run%2===1}
+  if(glue)current+=chunk;else{segments.push(current);current=chunk}});
+ if(clusters.length)segments.push(current);
+ return segments}
+function graphemeKind(ch){
+ const cp=cpOf(ch);
+ for(const[kind,ranges]of GRAPHEME_OVERRIDES)if(inRanges(cp,ranges))return kind;
+ return/[\p{Mn}\p{Me}\p{Mc}]/u.test(ch)||cp===0x200C||cp===0x200D||(cp>=0x1F3FB&&cp<=0x1F3FF)||(cp>=0xE0020&&cp<=0xE007F)?"Extend":"Other"}
+const isControl=(ch,kind=graphemeKind(ch))=>/[\p{Cc}\p{Zl}\p{Zp}]/u.test(ch)||(/\p{Cf}/u.test(ch)&&kind==="Other");
+function hangulClass(cp){
+ if((cp>=0x1100&&cp<=0x115F)||(cp>=0xA960&&cp<=0xA97C))return"L";
+ if((cp>=0x1160&&cp<=0x11A7)||(cp>=0xD7B0&&cp<=0xD7C6))return"V";
+ if((cp>=0x11A8&&cp<=0x11FF)||(cp>=0xD7CB&&cp<=0xD7FB))return"T";
+ if(cp>=0xAC00&&cp<=0xD7A3)return(cp-0xAC00)%28===0?"LV":"LVT";
+ return""}
+// User-perceived characters (Python: studio_graphemes): a letter with its marks, a Hangul syllable, an emoji with modifiers and joiners, a flag.
+export function graphemes(text){
+ const out=[];let riRun=0;
+ for(const ch of text){
+  if(ch==="\n"&&out.length&&out[out.length-1]==="\r"){out[out.length-1]+=ch;riRun=0;continue}
+  const cp=cpOf(ch),kind=graphemeKind(ch),isRI=cp>=0x1F1E6&&cp<=0x1F1FF;
+  const lastChars=out.length?Array.from(out[out.length-1]):[],lastCh=lastChars[lastChars.length-1];
+  if(out.length&&!isControl(ch,kind)&&!isControl(lastCh)){
+   const lastCp=cpOf(lastCh);let joined=kind==="Extend"||kind==="SpacingMark"||graphemeKind(lastCh)==="Prepend";
+   if(!joined&&lastCp===0x200D&&inRanges(cp,PICTOGRAPHIC)&&inRanges(cpOf(lastChars[0]),PICTOGRAPHIC))joined=true;
+   if(!joined&&isRI&&riRun%2===1)joined=true;
+   if(!joined){const a=hangulClass(lastCp),b=hangulClass(cp);joined=!!(a&&b)&&((a==="L"&&["L","V","LV","LVT"].includes(b))||(["LV","V"].includes(a)&&["V","T"].includes(b))||(["LVT","T"].includes(a)&&b==="T"))}
+   if(joined){out[out.length-1]+=ch;riRun=isRI?riRun+1:0;continue}}
+  out.push(ch);riRun=isRI?riRun+1:0}
+ return out}
+export function textLayout(l,measure=text=>measureText(text,l)){
+ return l.text.replace(/\r\n?/g,"\n").split("\n").map(paragraph=>{
+  if(!l.wrap||!paragraph)return[paragraph];
+  const lines=[];let line="";const flush=()=>{lines.push(line.replace(/[ \t]+$/,""));line=""};
+  for(const token of words(paragraph)){
+   if(!line&&lines.length&&/^[ \t]+$/.test(token))continue;
+   if(measure(line+token)<=l.w){line+=token;continue}
+   if(line)flush();
+   if(lines.length&&/^[ \t]+$/.test(token))continue;
+   if(measure(token)<=l.w){line=token;continue}
+   for(const glyph of graphemes(token)){if(line&&measure(line+glyph)>l.w)flush();line+=glyph}}
+  if(line||!lines.length)lines.push(line);
+  return lines})}
+// fdlibm's sin and cos with plain arithmetic (Python: studio_sin, studio_cos), for |x| up to 8: the hands of a clock are drawn with these in every engine, so the SVG text is the same everywhere.
+const F64=new DataView(new ArrayBuffer(8)),SIN=[-1.66666666666666324348e-01,8.33333333332248946124e-03,-1.98412698298579493134e-04,2.75573137070700676789e-06,-2.50507602534068634195e-08,1.58969099521155010221e-10],
+ COS=[4.16666666666666019037e-02,-1.38888888888741095749e-03,2.48015872894767294178e-05,-2.75573143513906633035e-07,2.08757232129817482790e-09,-1.13596475577881948265e-11],
+ PIO2=[6.36619772367581382433e-01,1.57079632673412561417e+00,6.07710050650619224932e-11,6.07710050630396597660e-11,2.02226624879595063154e-21,2.02226624871116645580e-21,8.47842766036889956997e-32],
+ NPIO2_HW=[0x3FF921FB,0x400921FB,0x4012D97C,0x401921FB,0x401F6A7A,0x4022D97C,0x4025FDBB,0x402921FB];
+const high=x=>{F64.setFloat64(0,x);return F64.getUint32(0)};
+function ksin(x,y,iy){const z=x*x,v=z*x,s=SIN,r=s[1]+z*(s[2]+z*(s[3]+z*(s[4]+z*s[5])));return iy===0?x+v*(s[0]+z*r):x-((z*(0.5*y-v*r)-y)-v*s[0])}
+function kcos(x,y){
+ const ix=high(x)&0x7fffffff;if(ix<0x3e400000&&Math.trunc(x)===0)return 1;
+ const c=COS,z=x*x,r=z*(c[0]+z*(c[1]+z*(c[2]+z*(c[3]+z*(c[4]+z*c[5])))));
+ if(ix<0x3FD33333)return 1-(0.5*z-(z*r-x*y));
+ let qx;if(ix>0x3fe90000)qx=0.28125;else{F64.setUint32(0,ix-0x00200000);F64.setUint32(4,0);qx=F64.getFloat64(0)}
+ return(1-qx)-((0.5*z-qx)-(z*r-x*y))}
+function reduce(x){
+ const hx=high(x),ix=hx&0x7fffffff,[inv,p1,p1t,p2,p2t,p3,p3t]=PIO2;
+ if(ix<0x4002d97c){
+  if(hx<0x80000000){let z=x-p1;if(ix!==0x3ff921fb){const y0=z-p1t;return[1,y0,(z-y0)-p1t]}z-=p2;const y0=z-p2t;return[1,y0,(z-y0)-p2t]}
+  let z=x+p1;if(ix!==0x3ff921fb){const y0=z+p1t;return[-1,y0,(z-y0)+p1t]}z+=p2;const y0=z+p2t;return[-1,y0,(z-y0)+p2t]}
+ if(!(Math.abs(x)<=8))fail("角度が大きすぎます");
+ let t=Math.abs(x);const n=Math.trunc(t*inv+0.5),fn=n;let r=t-fn*p1,w=fn*p1t,y0=r-w;
+ if(!(n<32&&ix!==NPIO2_HW[n-1])){
+  const j=ix>>>20;let i=j-((high(y0)>>>20)&0x7ff);
+  if(i>16){t=r;w=fn*p2;r=t-w;w=fn*p2t-((t-r)-w);y0=r-w;i=j-((high(y0)>>>20)&0x7ff);if(i>49){t=r;w=fn*p3;r=t-w;w=fn*p3t-((t-r)-w);y0=r-w}}}
+ const y1=(r-y0)-w;
+ return hx>=0x80000000?[-n,-y0,-y1]:[n,y0,y1]}
+export function sin(x){
+ if((high(x)&0x7fffffff)<=0x3fe921fb)return ksin(x,0,0);
+ const[n,y0,y1]=reduce(x),k=n&3;return k===0?ksin(y0,y1,1):k===1?kcos(y0,y1):k===2?-ksin(y0,y1,1):-kcos(y0,y1)}
+export function cos(x){
+ if((high(x)&0x7fffffff)<=0x3fe921fb)return kcos(x,0);
+ const[n,y0,y1]=reduce(x),k=n&3;return k===0?kcos(y0,y1):k===1?-ksin(y0,y1,1):k===2?-kcos(y0,y1):ksin(y0,y1,1)}
+const hexId=id=>Array.from(id).map(c=>c.codePointAt(0).toString(16)).join("-");
+export function layerSVG(l,imageSource=x=>x.src){
+ let body="";
+ if(["rect","ellipse","triangle"].includes(l.kind)){
+  const attrs=`fill="${l.fill}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"`;
+  if(l.kind==="rect")body=`<rect width="${l.w}" height="${l.h}" ${attrs}/>`;
+  if(l.kind==="ellipse")body=`<ellipse cx="${l.w/2}" cy="${l.h/2}" rx="${l.w/2}" ry="${l.h/2}" ${attrs}/>`;
+  if(l.kind==="triangle")body=`<polygon points="${l.w/2},0 ${l.w},${l.h} 0,${l.h}" ${attrs}/>`}
+ else if(l.kind==="text"){
+  body=`<text xml:space="preserve" fill="${l.fill}" font-family="${textFont(l)}" font-size="${l.fontSize}" font-weight="${l.bold?"700":"400"}" dominant-baseline="text-before-edge">`+textLayout(l).flat().map((line,i)=>`<tspan x="0" y="${i*l.fontSize*1.3}">${escape(line)}</tspan>`).join("")+"</text>"}
+ else if(l.kind==="image")body=`<image href="${escape(imageSource(l))}" width="${l.w}" height="${l.h}" preserveAspectRatio="none" image-rendering="${l.sampling==="smooth"?"auto":"pixelated"}"/>`;
+ else if(l.kind==="arrow"){
+  const g=arrowGeometry(l.w,l.h,l.headSize,l.headPlacement);
+  body=`<line x1="${g.line[0]}" y1="${g.line[1]}" x2="${g.line[2]}" y2="${g.line[3]}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"/>`;
+  if(l.headStyle==="beginner"){
+   const size=Math.min(l.headSize??28,l.w,l.h),x=g.points[0][0]-size,y=l.h/2-size/2,id="head-"+hexId(l.id);
+   body+=`<svg x="${x}" y="${y}" width="${size}" height="${size}" viewBox="0 0 100 100"><defs><mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><text x="50" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif" font-size="90" transform="rotate(-90 50 50)">🔰</text></mask></defs><rect width="100" height="100" fill="#000000" mask="url(#${id})"/></svg>`}
+  else body+=`<polygon points="${g.points.map(p=>p.join(",")).join(" ")}" fill="${l.stroke}"/>`}
+ else if(l.kind==="clock"){
+  const cx=l.w/2,cy=l.h/2,r=Math.max(0.1,Math.min(l.w,l.h)/2-l.strokeWidth),ink=l.stroke;
+  const point=(a,k)=>[cx+sin(a)*r*k,cy-cos(a)*r*k];
+  const line=(p,q,width)=>`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${ink}" stroke-width="${width}"/>`;
+  body=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${l.fill}" stroke="${ink}" stroke-width="${l.strokeWidth}"/>`;
+  for(let i=0;i<12;i++)body+=line(point(i*Math.PI/6,0.85),point(i*Math.PI/6,0.96),l.strokeWidth);
+  body+=line([cx,cy],point(((l.hour%12)+l.minute/60)*Math.PI/6,0.52),l.strokeWidth*1.5)+line([cx,cy],point(l.minute*Math.PI/30,0.76),l.strokeWidth)}
+ else if(l.kind==="heatmap"){
+  const left=90,top=28,right=24,bottom=56,cw=Math.max(1,l.w-left-right)/l.z[0].length,ch=Math.max(1,l.h-top-bottom)/l.z.length;
+  for(let y=0;y<l.z.length;y++){
+   for(let x=0;x<l.z[y].length;x++){
+    const v=l.z[y][x],title=`${l.ylabels[y]} / ${l.xlabels[x]}: ${v===null?"欠測":v}`;
+    body+=`<rect x="${left+x*cw}" y="${top+y*ch}" width="${cw}" height="${ch}" fill="${heatColor(v,l.low,l.high,l.levels)}"><title>${escape(title)}</title></rect>`;
+    if(l.labels&&cw>=35&&ch>=24&&v!==null)body+=`<text x="${left+(x+0.5)*cw}" y="${top+(y+0.5)*ch}" text-anchor="middle" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12" fill="#111827" stroke="#FFFFFF" stroke-width="2" paint-order="stroke">${escape(v)}</text>`}
+   body+=`<text x="${left-10}" y="${top+(y+0.5)*ch}" text-anchor="end" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12">${escape(l.ylabels[y])}</text>`}
+  for(let x=0;x<l.z[0].length;x++)body+=`<text x="${left+(x+0.5)*cw}" y="${l.h-bottom+20}" text-anchor="middle" font-family="Meiryo,sans-serif" font-size="12">${escape(l.xlabels[x])}</text>`;
+  body+=`<text x="${left}" y="${l.h-5}" font-family="Meiryo,sans-serif" font-size="12">${escape(l.low)} → ${escape(l.high)} ・ ${l.levels?l.levels+"段階":"連続色"} ・ 欠測は透明</text>`}
+ if(l.mono&&["text","image"].includes(l.kind)){
+  const id="ink-"+hexId(l.id);
+  body=`<defs><mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="${l.w}" height="${l.h}">${body}</mask></defs><rect width="${l.w}" height="${l.h}" fill="${l.fill}" mask="url(#${id})"/>`}
+ return`<g data-layer="${escape(l.id)}" transform="translate(${l.x} ${l.y}) rotate(${l.rotation} ${l.w/2} ${l.h/2})" opacity="${l.opacity}">${body}</g>`}
+export function svg(scene,imageSource,scale=1){
+ validate(scene);const size=outputSize(scene,scale);
+ return`<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}" viewBox="0 0 ${scene.width} ${scene.height}"><rect width="${scene.width}" height="${scene.height}" fill="${scene.background}"/>${scene.layers.map(l=>layerSVG(l,imageSource)).join("")}</svg>`}
+export class History{
+ constructor(scene){this.items=[validate(scene)];this.index=0}
+ get current(){return clone(this.items[this.index])}
+ commit(scene){const next=validate(scene);if(JSON.stringify(next)===JSON.stringify(this.items[this.index]))return;this.items=this.items.slice(0,this.index+1);this.items.push(next);if(this.items.length>40)this.items.shift();this.index=this.items.length-1}
+ undo(){this.index=Math.max(0,this.index-1);return this.current}
+ redo(){this.index=Math.min(this.items.length-1,this.index+1);return this.current}}
+function workspaceShape(record){
+ if(record?.schema!==WORKSPACE_SCHEMA||!Array.isArray(record.items)||record.items.length<1||record.items.length>40||!Number.isInteger(record.index)||record.index<0||record.index>=record.items.length)fail("作業履歴の形式が不正です")}
+function workspaceSize(text){const bytes=new TextEncoder().encode(text).length;if(bytes>WORKSPACE_MAX_BYTES)fail("作業履歴は32MiB以下にしてください。履歴を整理して再保存できます");return bytes}
+export function workspaceText(history){
+ const record={schema:WORKSPACE_SCHEMA,items:history.items,index:history.index};workspaceShape(record);
+ const parts=['{"schema":'+JSON.stringify(WORKSPACE_SCHEMA)+',"items":['],tail='],"index":'+record.index+'}';
+ let bytes=workspaceSize(parts[0])+workspaceSize(tail);
+ for(let i=0;i<record.items.length;i++){const part=(i?",":"")+JSON.stringify(validate(record.items[i]));bytes+=workspaceSize(part);if(bytes>WORKSPACE_MAX_BYTES)fail("作業履歴は32MiB以下にしてください。履歴を整理して再保存できます");parts.push(part)}
+ parts.push(tail);return parts.join("")}
+export function workspaceHistory(text){
+ if(typeof text!=="string")fail("作業履歴の形式が不正です");
+ workspaceSize(text);const record=JSON.parse(text);workspaceShape(record);
+ const states=record.items.map(validate),next=new History(states[0]);next.items=states;next.index=record.index;return next}
+// What the page puts on the canvas (Python: studio_blank, studio_place, ...).
+export const blank=()=>({schema:SCHEMA,width:1280,height:720,background:BACKGROUND,layers:[]});
+export const baseLayer=(kind,id,x=80,y=80,w=180,h=120)=>({id,kind,name:kind,x,y,w,h,rotation:0,opacity:1});
+export function textLayer(text,id,x,y,fill=FILL,font="sans",mono=true,wrap=false){
+ const size=48,lines=text.split("\n");
+ return{...baseLayer("text",id,x,y,Math.min(700,Math.max(120,Math.max(...lines.map(s=>Array.from(s).length))*size)),Math.max(70,lines.length*size*1.3)),name:"文字 / "+Array.from(text).slice(0,12).join(""),text,fill,fontSize:size,font,mono,wrap}}
+export function place(tool,id,x,y,{fill=FILL,stroke=STROKE,outline=false,text="",font="sans",arrowStyle="beginner",arrowPlacement="tip",clockTime="10:10",mono=true,wrap=false}={}){
+ if(tool==="text"||tool==="stamp")return textLayer(text,id,x,y,fill,font,mono,wrap);
+ if(tool==="arrow")return{...baseLayer("arrow",id,x,y,200,80),name:"直線＋矢羽根",fill,stroke,strokeWidth:4,headSize:28,headPlacement:arrowPlacement,headStyle:arrowStyle};
+ if(tool==="clock"){const[hour,minute]=clockTime.split(":").map(Number);return{...baseLayer("clock",id,x,y,160,160),name:"時計 "+clockTime,hour,minute,fill,stroke,strokeWidth:3}}
+ if(!["rect","ellipse","triangle"].includes(tool))fail("道具が不正です");
+ return{...baseLayer(tool,id,x,y),name:{rect:"四角",ellipse:"丸",triangle:"三角"}[tool],fill:outline?"none":fill,stroke,strokeWidth:3}}
+export const matrixLayer=(source,id,sceneWidth=1280,sceneHeight=720)=>({...baseLayer("heatmap",id,80,100,Math.min(1050,sceneWidth-100),Math.min(480,sceneHeight-120)),name:"ヒートマップ",...matrix(source),source:clone(source)});
+export function imageLayer(src,pixelWidth,pixelHeight,id,sceneWidth=1280,name="取り込み画像"){
+ const w=Math.min(700,sceneWidth*0.65);
+ return{...baseLayer("image",id,80,90,w,w*pixelHeight/pixelWidth),name,src,cell:1,levels:256,sampling:"pixelated",mono:false}}
+export function demoScene(){
+ const scene=blank(),text=(id,name,value,x,y,w,h,size,fill)=>({...baseLayer("text",id,x,y,w,h),name,text:value,fill,fontSize:size});
+ scene.layers=[text("title","タイトル","小さな部品から、大きな表現へ。",64,40,900,60,38,"#163B3B"),text("subtitle","サブタイトル","STAMP / COLOR / MATRIX     —     Ironmate Image Studio",68,105,900,40,17,"#56766D"),
+  {...baseLayer("rect","card",68,178,1144,430),name:"白いカード",fill:"#FFFFFF",stroke:"#D6DFD2",strokeWidth:1},
+  {...baseLayer("heatmap","matrix",90,220,680,350),name:"色の行列",...matrix({z:[[2,3,4,6,8,9,10],[1,3,5,7,9,null,12],[2,4,6,8,10,12,14],[0,2,5,8,11,14,16]],x:["MON","TUE","WED","THU","FRI","SAT","SUN"],y:["A","B","C","D"]})},
+  {...baseLayer("triangle","triangle",890,264,170,150),name:"三角のスタンプ",fill:"none",stroke:"#EFBE4C",strokeWidth:7},
+  text("emoji","絵文字スタンプ","🌱",910,294,140,90,70,"#163B3B"),text("custom","カスタム文字","色を置く。\nかたちが生まれる。",840,445,320,100,25,"#163B3B"),
+  text("footer","フッター","01  COMPOSE                         02  EXPLORE COLOR                         03  EXPORT",70,646,1100,35,14,"#71887C")];
+ return scene}
+export function stampDemoScene(){
+ const scene=blank(),mono=(id,value,x,y,w,h,size,fill)=>({...baseLayer("text",id,x,y,w,h),id,name:value,text:value,fontSize:size,fill,mono:true});
+ scene.layers=[mono("title","STAMP LAB / 色を変えて、重ねる。",60,45,1160,70,38,"#163B3B"),{...baseLayer("rect","card",60,150,1160,420),name:"カード",fill:"#FFFFFF",stroke:"#D6DFD2",strokeWidth:1},
+  {...baseLayer("clock","clock",100,210,230,230),name:"10:10の時計",hour:10,minute:10,fill:"#F8F7F2",stroke:"#087D79",strokeWidth:4},
+  {...baseLayer("arrow","arrow",390,260,230,80),name:"直線＋中央の矢羽根",headSize:40,headPlacement:"middle",headStyle:"beginner",fill:"#EFBE4C",stroke:"#D59C22",strokeWidth:6},
+  mono("face","(・∀・)",710,225,450,105,68,"#D05B78"),mono("emoji","🌱",750,365,160,130,100,"#087D79"),mono("emoji2","❤️",990,365,180,130,100,"#D05B78"),
+  mono("footer","CLOCK     →     LINE + TRIANGLE     →     TEXT / EMOJI / KAOMOJI",65,635,1150,50,18,"#56766D")];
+ return scene}
+export const heatmapScene=source=>({schema:SCHEMA,width:1280,height:720,background:"#FFFFFF",layers:[{id:"heatmap",kind:"heatmap",name:"Heatmap",x:80,y:90,w:1120,h:520,rotation:0,opacity:1,...matrix(source)}],source});
+const download=(name,data,type)=>{const url=URL.createObjectURL(data instanceof Blob?data:new Blob([data],{type})),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)};
+const bytesOf=b64=>Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+function mount(root){
+ const el={};for(const n of root.querySelectorAll("[data-is]"))el[n.dataset.is]=n;
+ const radios=[...root.querySelectorAll('input[name="is-tool"]')];
+ let scene=demoScene(),history=new History(scene),tool="select",selected=null,template=null,serial=0,drag=null,paint=0,paints=0,dirty=false;
+ const images=new Map(),processed=new Map();
+ const uid=()=>`layer-${Date.now()}-${++serial}`,copy=x=>clone(x),current=()=>scene.layers.find(l=>l.id===selected);
+ const say=(text,bad=false)=>{el.status.textContent=text;root.dataset.error=bad?"1":""};
+ const guarded=fn=>async(...a)=>{try{await fn(...a)}catch(e){say(e.message||String(e),true)}};
+ const decoded=src=>{if(!images.has(src))images.set(src,new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>img.naturalWidth*img.naturalHeight>4194304?reject(new Error("画像は4MP以下にしてください")):resolve(img);img.onerror=()=>reject(new Error("画像を読み込めません"));img.src=src}));return images.get(src)};
+ async function prepare(doc){
+  const sources=new Map();
+  for(const l of doc.layers.filter(l=>l.kind==="image")){
+   const key=l.src+":"+l.cell+":"+l.levels;
+   if(processed.has(key)){sources.set(key,processed.get(key));continue}
+   if(l.cell===1&&l.levels===256){processed.set(key,l.src);sources.set(key,l.src);continue}
+   const img=await decoded(l.src),canvas=document.createElement("canvas");canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+   const ctx=canvas.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
+   const data=ctx.getImageData(0,0,canvas.width,canvas.height);data.data.set(mosaicRGBA(data.data,canvas.width,canvas.height,l.cell,l.levels));ctx.putImageData(data,0,0);
+   processed.set(key,canvas.toDataURL("image/png"));sources.set(key,processed.get(key));
+   if(processed.size>16)processed.delete(processed.keys().next().value)}
+  return l=>sources.get(l.src+":"+l.cell+":"+l.levels)||l.src}
+ const selectionSVG=l=>`<g class="selection" transform="translate(${l.x} ${l.y}) rotate(${l.rotation} ${l.w/2} ${l.h/2})"><rect width="${l.w}" height="${l.h}" fill="none" stroke="#126fef" stroke-width="2" stroke-dasharray="8 5"/><rect class="handle" data-handle="resize" x="${l.w-9}" y="${l.h-9}" width="18" height="18" rx="3" fill="#126fef" stroke="white" stroke-width="2"/></g>`;
+ const field=(node,value)=>{node.value=value??""};
+ function inspect(){
+  const l=current(),kind=l?.kind;
+  el.selection.textContent=l?(l.name||l.kind):"Select a layer";
+  for(const f of["x","y","w","h","rotation","opacity"]){el[f].disabled=!l;field(el[f],l?.[f])}
+  el.mono.disabled=!["text","image"].includes(kind);el.mono.checked=l?.mono??false;
+  el.sampling.disabled=kind!=="image";el.sampling.value=l?.sampling??"pixelated";
+  el.arrowplacement.disabled=kind!=="arrow";el.arrowplacement.value=l?.headPlacement??"tip";
+  el.arrowstyle.disabled=kind!=="arrow";el.arrowstyle.value=kind==="arrow"?(l.headStyle??"triangle"):"beginner";
+  if(kind==="clock")el.clock.value=String(l.hour).padStart(2,"0")+":"+String(l.minute).padStart(2,"0");
+  el.fontfamily.disabled=kind!=="text";el.fontfamily.value=l?.font??"sans";el.fontsize.disabled=kind!=="text";el.fontsize.value=l?.fontSize??48;
+  el.cell.disabled=kind!=="image";el.cell.value=l?.cell??1;el.cellout.textContent=`${l?.cell??1} px`;
+  el.levels.disabled=!["image","heatmap"].includes(kind);el.levels.value=l?.levels||256;el.levelsout.textContent=kind==="heatmap"&&!l.levels?"continuous":(l?.levels??256);
+  el.labels.disabled=kind!=="heatmap";el.labels.checked=l?.labels??true;el.continuous.disabled=kind!=="heatmap";
+  for(const n of["delete","duplicate","front","back","custom","apply"])el[n].disabled=!l;
+  el.undo.disabled=history.index===0;el.redo.disabled=history.index===history.items.length-1;
+  el.size.textContent=`${scene.width} × ${scene.height}`;el.width.value=scene.width;el.height.value=scene.height;el.transparent.checked=scene.background==="none";
+  if(scene.background!=="none")el.background.value=scene.background;
+  el.history.replaceChildren(...history.items.map((state,index)=>{const li=document.createElement("li"),b=document.createElement("button");b.type="button";b.className="ui-button";
+   b.textContent=(index===history.index?"● ":"○ ")+"State "+(index+1)+" · "+state.layers.length+" layers";b.setAttribute("aria-current",index===history.index?"step":"false");
+   b.onclick=()=>{history.index=index;scene=history.current;selected=null;dirty=true;render().catch(report)};li.append(b);return li}));
+  el.layers.replaceChildren(...[...scene.layers].reverse().map(layer=>{const b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=layer.name||layer.kind;b.dataset.layerId=layer.id;
+   b.setAttribute("aria-pressed",String(layer.id===selected));b.onclick=()=>{selected=layer.id;if(layer.kind==="text")el.text.value=layer.text;render().catch(report)};return b}));
+  root.dataset.layers=String(scene.layers.length);root.dataset.selected=selected??"";root.dataset.tool=tool;
+  el.board.toggleAttribute("data-capture",tool!=="select"||selected!==null)}
+ async function render(){
+  const n=++paint,doc=copy(scene),imageSource=await prepare(doc);
+  if(n!==paint)return;
+  let out=svg(doc,imageSource);const l=doc.layers.find(l=>l.id===selected);
+  if(l)out=out.replace(/<\/svg>$/,selectionSVG(l)+"</svg>");
+  el.board.innerHTML=out;el.board.style.aspectRatio=`${doc.width} / ${doc.height}`;inspect();root.dataset.painted=String(++paints)}
+ const report=e=>say(e.message||String(e),true);
+ function change(fn){const next=copy(scene);fn(next);validate(next);history.commit(next);scene=next;dirty=true;if(!current())selected=null;render().catch(report)}
+ function add(layer){if(scene.layers.length>=100)throw new StudioError("レイヤーは100件までです");selected=layer.id;change(doc=>doc.layers.push(layer));say(`Added ${layer.name||layer.kind}`)}
+ function setTool(value){tool=value;for(const r of radios)r.checked=r.value===value;root.dataset.tool=value;el.board.toggleAttribute("data-capture",tool!=="select"||selected!==null)}
+ const options=()=>({fill:el.fill.value,stroke:el.stroke.value,outline:el.outline.checked,text:el.text.value,font:el.fontfamily.value,arrowStyle:el.arrowstyle.value,arrowPlacement:el.arrowplacement.value,clockTime:el.clock.value||"10:10"});
+ function put(x,y){
+  if(tool==="stamp"&&template){const l=copy(template);l.id=uid();l.x=x-l.w/2;l.y=y-l.h/2;add(l)}
+  else add(place(tool,uid(),x,y,options()))}
+ const point=e=>new DOMPoint(e.clientX,e.clientY).matrixTransform(el.board.querySelector("svg").getScreenCTM().inverse());
+ el.board.addEventListener("pointerdown",guarded(async e=>{
+  if(e.button!==0)return;
+  const p=point(e),handle=e.target.closest("[data-handle]"),node=e.target.closest("[data-layer]");
+  if(tool!=="select"){put(p.x,p.y);return}
+  if(!handle)selected=node?.dataset.layer??null;
+  const l=current();
+  if(l){drag={point:p,layer:copy(l),resize:!!handle,changed:false};try{el.board.setPointerCapture(e.pointerId)}catch{}}
+  await render()}));
+ el.board.addEventListener("pointermove",e=>{
+  if(!drag)return;
+  const p=point(e),dx=p.x-drag.point.x,dy=p.y-drag.point.y,l=current();if(!l)return;const old=drag.layer;
+  if(drag.resize){
+   const a=old.rotation*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
+   l.w=Math.max(8,Math.min(8192,old.w+c*dx+s*dy));l.h=Math.max(8,Math.min(8192,old.h-s*dx+c*dy));
+   const dw=l.w-old.w,dh=l.h-old.h;l.x=old.x+(c-1)*dw/2-s*dh/2;l.y=old.y+s*dw/2+(c-1)*dh/2;
+   if(l.kind==="text")l.fontSize=Math.max(4,Math.min(512,old.fontSize*Math.min(l.w/old.w,l.h/old.h)))}
+  else{l.x=Math.max(-8192,Math.min(8192,old.x+dx));l.y=Math.max(-8192,Math.min(8192,old.y+dy))}
+  drag.changed=drag.changed||Math.abs(dx)+Math.abs(dy)>1;render().catch(report)});
+ function finishDrag(){
+  if(drag?.changed){try{history.commit(scene);dirty=true;say("Moved or resized")}catch(e){Object.assign(current(),drag.layer);say(e.message,true)}}
+  drag=null;inspect()}
+ el.board.addEventListener("pointerup",finishDrag);
+ el.board.addEventListener("pointercancel",()=>{if(drag){Object.assign(current(),drag.layer);drag=null;render().catch(report)}});
+ el.board.addEventListener("keydown",guarded(async e=>{
+  const l=current(),step=e.shiftKey?1:8,move={ArrowLeft:["x",-step],ArrowRight:["x",step],ArrowUp:["y",-step],ArrowDown:["y",step]}[e.key];
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();(e.shiftKey?el.redo:el.undo).click();return}
+  if(!l)return;
+  if(move){e.preventDefault();change(doc=>{const d=doc.layers.find(x=>x.id===selected);d[move[0]]=Math.max(-8192,Math.min(8192,d[move[0]]+move[1]))})}
+  else if(e.key==="Delete"||e.key==="Backspace"){e.preventDefault();el.delete.click()}
+  else if(e.key==="Escape"){selected=null;await render()}}));
+ for(const r of radios)r.onchange=()=>{if(r.checked){setTool(r.value);inspect()}};
+ const stamp=text=>{el.text.value=text;if(text==="🔰")el.fill.value="#000000";template=null;setTool("stamp");el.stampnote.textContent=`Press the canvas to place ${text}`;inspect()};
+ for(const b of root.querySelectorAll("[data-stamp]"))b.onclick=()=>stamp(b.dataset.stamp);
+ el.text.oninput=()=>{template=null};
+ el.custom.onclick=()=>{const l=current();if(l){template=copy(l);setTool("stamp");el.stampnote.textContent=`Press the canvas to place “${l.name||l.kind}” again`;inspect()}};
+ const go=(next,msg)=>{scene=next;selected=null;dirty=true;say(msg);return render()},load=(next,msg)=>{history.commit(next);return go(next,msg)};
+ el.undo.onclick=()=>go(history.undo(),"Undone").catch(report);
+ el.redo.onclick=()=>go(history.redo(),"Redone").catch(report);
+ el.duplicate.onclick=guarded(()=>{const l=copy(current());l.id=uid();l.x+=24;l.y+=24;add(l)});
+ el.delete.onclick=()=>{if(selected)change(doc=>{doc.layers=doc.layers.filter(l=>l.id!==selected)})};
+ for(const[name,delta]of[["front",1],["back",-1]])el[name].onclick=()=>change(doc=>{const i=doc.layers.findIndex(l=>l.id===selected),j=Math.max(0,Math.min(doc.layers.length-1,i+delta));if(i>=0)[doc.layers[i],doc.layers[j]]=[doc.layers[j],doc.layers[i]]});
+ const patch=values=>change(doc=>Object.assign(doc.layers.find(l=>l.id===selected),values));
+ for(const f of["x","y","w","h","rotation","opacity"])el[f].onchange=guarded(()=>{if(current())patch({[f]:Number(el[f].value)})});
+ el.fontsize.onchange=guarded(()=>{if(current()?.kind==="text")patch({fontSize:Number(el.fontsize.value)})});
+ el.apply.onclick=guarded(()=>{
+  const l=current();if(!l)return;
+  if(l.kind==="text")patch({text:el.text.value,font:el.fontfamily.value,fill:el.fill.value,mono:el.mono.checked});
+  else if(l.kind==="image")patch({fill:el.fill.value,mono:el.mono.checked});
+  else if(["rect","ellipse","triangle","arrow","clock"].includes(l.kind))patch({fill:el.outline.checked?"none":el.fill.value,stroke:el.stroke.value})});
+ el.fontfamily.onchange=()=>{if(current()?.kind==="text")patch({font:el.fontfamily.value})};
+ el.mono.onchange=()=>{if(["text","image"].includes(current()?.kind))patch({mono:el.mono.checked,fill:el.fill.value})};
+ el.sampling.onchange=()=>{if(current()?.kind==="image")patch({sampling:el.sampling.value})};
+ el.arrowstyle.onchange=()=>{if(current()?.kind==="arrow")patch({headStyle:el.arrowstyle.value})};
+ el.arrowplacement.onchange=()=>{if(current()?.kind==="arrow")patch({headPlacement:el.arrowplacement.value})};
+ el.clock.onchange=guarded(()=>{if(current()?.kind==="clock"){const[hour,minute]=el.clock.value.split(":").map(Number);patch({hour,minute})}});
+ for(const f of["cell","levels"])el[f].onchange=guarded(()=>{if(current())patch({[f]:Number(el[f].value)})});
+ el.labels.onchange=()=>{if(current()?.kind==="heatmap")patch({labels:el.labels.checked})};
+ el.continuous.onclick=()=>{if(current()?.kind==="heatmap")patch({levels:0})};
+ el.background.onchange=()=>change(doc=>{doc.background=el.background.value});
+ el.transparent.onchange=()=>change(doc=>{doc.background=el.transparent.checked?"none":el.background.value});
+ el.resize.onclick=guarded(()=>change(doc=>{doc.width=Number(el.width.value);doc.height=Number(el.height.value)}));
+ el.blank.onclick=()=>{change(doc=>{doc.layers=[]});selected=null;say("New canvas (Undo brings the old one back)")};
+ el.demo.onclick=guarded(()=>load(demoScene(),"Stamps and a heatmap; the numbers are invented for the picture"));
+ el.stampdemo.onclick=guarded(()=>load(stampDemoScene(),"A clock, an arrow, a face and emoji: shapes and text kept as they are"));
+ const pngBlob=async(scale=Number(el.scale.value))=>{
+  const doc=copy(scene),imageSource=await prepare(doc),size=outputSize(doc,scale),url=URL.createObjectURL(new Blob([svg(doc,imageSource,scale)],{type:"image/svg+xml"}));
+  try{const img=new Image();await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new StudioError("SVGの画像化に失敗しました"));img.src=url});
+   const canvas=document.createElement("canvas");canvas.width=size.width;canvas.height=size.height;canvas.getContext("2d").drawImage(img,0,0);
+   return await new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new StudioError("PNG出力に失敗しました")),"image/png"))}
+  finally{URL.revokeObjectURL(url)}};
+ el.svg.onclick=guarded(async()=>{const doc=copy(scene);download("ironmate-image.svg",svg(doc,await prepare(doc),Number(el.scale.value)),"image/svg+xml");say("Saved the SVG")});
+ el.png.onclick=guarded(async()=>{download("ironmate-image.png",await pngBlob(),"image/png");say("Saved the PNG")});
+ let payload=null;const showB64=()=>{if(payload)el.b64text.value=payload[el.b64mode.value]};
+ el.base64.onclick=guarded(async()=>{payload=pngPayload(new Uint8Array(await(await pngBlob()).arrayBuffer()));showB64();el.b64status.textContent=`PNG ${payload.bytes.toLocaleString("en-US")} bytes · 32 MiB or less`;el.b64panel.open=true;say("PNG as Base64 is below")});
+ el.b64mode.onchange=showB64;
+ el.b64copy.onclick=async()=>{try{await navigator.clipboard.writeText(el.b64text.value);el.b64status.textContent="Copied."}catch{el.b64text.focus();el.b64text.select();el.b64status.textContent="Could not copy by itself: the text is selected, copy it by hand."}};
+ el.b64save.onclick=()=>download("ironmate-image.base64.txt",el.b64text.value,"text/plain");
+ el.jsonsave.onclick=guarded(()=>{download("ironmate-scene.json",JSON.stringify(validate(scene),null,2),"application/json");dirty=false;say("Saved the scene as JSON")});
+ el.jsonopen.onchange=guarded(async()=>{
+  const file=el.jsonopen.files[0];if(!file)return;
+  try{if(file.size>20000000)throw new StudioError("JSONは20MB以下にしてください");
+   const next=validate(JSON.parse(await file.text()));await prepare(next);history.commit(next);scene=next;selected=null;dirty=false;await render();say("Opened the JSON (Undo goes back to your last edit)")}
+  finally{el.jsonopen.value=""}});
+ el.wssave.onclick=guarded(()=>{download("ironmate-workspace.json",workspaceText(history),"application/json");say("Saved the history")});
+ el.wsopen.onchange=guarded(async()=>{
+  const file=el.wsopen.files?.[0];if(!file)return;
+  try{if(file.size>WORKSPACE_MAX_BYTES)throw new StudioError("作業履歴は32MiB以下にしてください");
+   const next=workspaceHistory(await file.text());
+   for(const src of new Set(next.items.flatMap(state=>state.layers.filter(l=>l.kind==="image").map(l=>l.src))))await decoded(src);
+   history=next;scene=next.current;selected=null;dirty=true;await render();say("Restored the history")}
+  finally{el.wsopen.value=""}});
+ el.trim.onclick=guarded(async()=>{if(!window.confirm("Keep only the current state and drop the older history?"))return;history=new History(scene);dirty=true;await render();say("Kept the current state only")});
+ async function importBytes(bytes,declared,name="取り込み画像"){
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>MAX_IMAGE)throw new StudioError("画像は32MiB以下にしてください");
+  const mime=sniffImageMime(bytes);
+  if(!mime||(declared&&declared.toLowerCase()!==mime))throw new StudioError("画像形式またはMIME宣言が実データと一致しません");
+  const url=URL.createObjectURL(new Blob([bytes],{type:mime}));
+  try{const img=await decoded(url),cv=document.createElement("canvas");cv.width=img.naturalWidth;cv.height=img.naturalHeight;cv.getContext("2d").drawImage(img,0,0);
+   add(imageLayer(cv.toDataURL("image/png"),img.naturalWidth,img.naturalHeight,uid(),scene.width,name));setTool("select");say(mime+" added")}
+  finally{URL.revokeObjectURL(url);images.delete(url)}}
+ el.file.onchange=guarded(async()=>{const file=el.file.files?.[0];if(!file)return;try{if(file.size>MAX_IMAGE)throw new StudioError("画像は32MiB以下にしてください");await importBytes(new Uint8Array(await file.arrayBuffer()),file.type||null,file.name)}finally{el.file.value=""}});
+ el.b64import.onclick=guarded(async()=>{const r=decodeImageText(el.b64in.value);if(!r.ok)throw new StudioError("Not a PNG, JPEG or WebP image in Base64 ("+r.category+")");await importBytes(bytesOf(r.data),r.mime,"Base64画像")});
+ el.paste.onclick=guarded(async()=>{
+  const r=await clipboardPick(navigator.clipboard,(data,mime)=>importBytes(data,mime,"クリップボード画像"));
+  if(!r.ok)throw new StudioError(CLIPBOARD_MESSAGES[r.code]||r.code)});
+ const addMatrix=source=>{add(matrixLayer(source,uid(),scene.width,scene.height));setTool("select")};
+ el.heatmap.onclick=guarded(()=>addMatrix(JSON.parse(el.matrix.value)));
+ el.matrixfile.onchange=guarded(async()=>{const file=el.matrixfile.files[0];if(!file)return;try{if(file.size>2000000)throw new StudioError("行列JSONは2MB以下にしてください");addMatrix(JSON.parse(await file.text()))}finally{el.matrixfile.value=""}});
+ window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue=""}});
+ history=new History(scene);
+ root.dataset.metrics=useCanvasMetrics(true)?"canvas":"estimate";
+ api.app={get scene(){return copy(scene)},get selected(){return selected},get history(){return history},get dirty(){return dirty},pngBlob,
+  async replaceScene(value){const next=validate(value);await prepare(next);scene=next;history=new History(next);selected=null;dirty=true;await render()},
+  patchSelected(values){if(!current())throw new StudioError("先にレイヤーを選択してください");patch(values)},
+  imageSource:async value=>prepare(validate(value)),setTool};
+ render().then(()=>{root.dataset.ready="1";say("Ready.")},report)}
+const rootNode=document.querySelector("[data-ui-imagestudio]");
+const api={SCHEMA,WORKSPACE_SCHEMA,WORKSPACE_MAX_BYTES,PALETTE,FILL,STROKE,BACKGROUND,StudioError,clone,escape,heatColor,matrix,validate,mosaicRGBA,arrowGeometry,outputSize,pngPayload,textFont,useCanvasMetrics,measureText,words,graphemes,sin,cos,textLayout,layerSVG,svg,History,workspaceText,workspaceHistory,blank,baseLayer,textLayer,place,matrixLayer,imageLayer,demoScene,stampDemoScene,heatmapScene};
+globalThis.webUiImageStudio=api;
+if(rootNode)mount(rootNode);
+"""
+
+
 def _example_cards() -> str:
     return ('<section class="ui-grid"><article class="ui-card"><h2>Components</h2><p>Tokens, panels, cards, tags, controls and output surfaces.</p>'
             '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
@@ -10596,7 +12290,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
             '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
             '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article>'
-            '<article class="ui-card"><h2>792 patterns</h2><p><a href="./patterns.html">The flutter_navigation_basic catalogue and the processing behind it: filter, sort, page, validate, convert, workflow</a>.</p></article></section>')
+            '<article class="ui-card"><h2>792 patterns</h2><p><a href="./patterns.html">The flutter_navigation_basic catalogue and the processing behind it: filter, sort, page, validate, convert, workflow</a>.</p></article>'
+            '<article class="ui-card"><h2>Image studio</h2><p><a href="./image-studio.html">Layer shapes, text, photos and heatmaps; export SVG, PNG or Base64; keep the history</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -10634,6 +12329,7 @@ def example_pages() -> dict[str, str]:
         "examples/test-report.html": report_document(),
         "examples/mcp-lab.html": mcp_document(),
         "examples/patterns.html": patterns_document(),
+        "examples/image-studio.html": imagestudio_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -11123,8 +12819,19 @@ def main(argv: list[str] | None = None) -> int:
     reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
     reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
     reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
+    studio = parser.add_argument_group("image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
+    studio.add_argument("--studio-render", type=Path, metavar="FILE", help="check an ironmate-image-studio/1 scene and print it as SVG (or --format json); exit 2 on an invalid scene")
+    studio.add_argument("--studio-heatmap", type=Path, metavar="FILE", help="turn a matrix JSON (rows, or a Plotly heatmap) into an editable scene and print it")
+    studio.add_argument("--studio-base64", type=Path, metavar="FILE", help="print a PNG file as Base64 for hand-off (--data-uri for a data URI); a non-PNG is exit 2")
+    studio.add_argument("--format", choices=("svg", "json"), default="svg", help="with --studio-render: SVG (default) or the checked scene as JSON")
+    studio.add_argument("--scale", type=float, default=1, metavar="N", help="with --studio-render: output scale 0.25 to 8 (default 1)")
+    studio.add_argument("--data-uri", action="store_true", help="with --studio-base64: print data:image/png;base64,... instead of the bare Base64")
+    studio.add_argument("-o", "--output", type=Path, metavar="FILE", help="with the --studio-* options: write here instead of stdout (refuses to overwrite)")
+    studio.add_argument("--force", action="store_true", help="with --output: replace an existing file")
     parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.studio_render or args.studio_heatmap or args.studio_base64:
+        return _studio_main(parser, args)
     if args.junit or args.flutter_events or args.run_tests or args.expect_exit:
         return _reports_main(parser, args)
     if args.command:

@@ -124,7 +124,7 @@ values, and the same code in `shelf.js` and `photo.js` equals Python on them, on
 temporary clipboard (`session_clip_save`, from Flutter's `SessionTextClipboard` and its Dart tests): 30 entries, 100,000 UTF-16 units each (an emoji counts 2), a repeat moves
 to the top. It lives in the page, so a reload empties it and, with no storage, it does not follow you to another page (Flutter kept it while you navigated). The photo studio's
 `Paste photo` uses the same reading order, and `Copy as Base64` hands the exported PNG back as `data:image/png;base64,...` or plain Base64, which the shelf reads back byte for
-byte (`png_base64_text`). Ironmate's image studio (layers, text, JSON scenes, SVG, CLI) is a separate editor and is not absorbed.
+byte (`png_base64_text`). The Image studio below takes in Ironmate's image editor: it reads photos the same way, and what it exports comes back to the shelf unchanged.
 
 Playground (`examples/playground.html`): the Counter Playground, its hold-to-repeat button and the Irony generator, from flutter_navigation_basic's `counter_playground`,
 `hold_repeating_button` and `irony_generator`. `counter_apply(state, action, value)` is the controller as a pure function (clamped to -100..100, steps 1, 5 and 10, a history of the
@@ -193,6 +193,26 @@ answer 700 seeded requests each; every cap is tried at its edge in both language
 and `urlsplit`, and so does TF-IDF (the min-heap runs in the page); the page shows what Python answers to their examples. Limits of a page: JSON cannot tell `1` from `1.0` (an integral number
 is an int), integers beyond 2^53 are not exact, and the catalogue search lower-cases where Python case-folds. Not absorbed: the Flutter-native patterns (136-137, 151-175, 183-184) and the Dart
 UI of every pattern. BTK adapters: `web-ui-patterns`, `web-ui-pattern-run`.
+
+Image studio (`examples/image-studio.html`): Ironmate's image studio (`studio/core.js`, `studio.js`, `image_studio.py`, `docs/image-studio.md`) with Python first. A scene (`ironmate-image-studio/1`: rect, ellipse,
+triangle, text, image, heatmap, arrow and clock layers, at most 100 layers and 4 MP, 64 to 4096 px a side) is checked by `studio_validate` (the originals' refusal text, in Japanese, kept word for word), drawn to SVG by
+`studio_svg` (the one function the page, its exports and the command line all draw with), and kept in `StudioHistory` (40 states; an edit that changes nothing is not recorded) and in a workspace file
+(`studio_workspace_text`, `ironmate-studio-workspace/1`, every state with its images, at most 32 MiB of UTF-8). Around them: the five-stop heat colour with optional levels, `studio_matrix` (a numeric matrix or a Plotly
+heatmap trace into heatmap data: row 0 on top, `null` kept as a gap), the alpha-weighted mosaic (`studio_mosaic_rgba`, always recomputed from the kept original, never from a mosaic), arrow geometry, output size
+(0.25 to 8 times, at most 8192 px a side and 16 MP), the PNG payload for Base64 hand-off, and a small PNG reader and writer (`studio_png_decode`: 8 bits, not interlaced, every filter and colour type) so the command line
+can mosaic photo layers. `studio_place`, `studio_text_layer`, `studio_matrix_layer`, `studio_image_layer`, `studio_demo_scene` and `studio_stamp_demo_scene` are what a click or a button puts on the canvas. Command line:
+`python3 web_ui.py --studio-render FILE [--format svg|json] [--scale N]`, `--studio-heatmap FILE` (a matrix into an editable scene) and `--studio-base64 FILE [--data-uri]`, each with `-o FILE` (never replaces a file
+without `--force`); a bad input is exit 2 with a message. The golden values are Ironmate's own `core.js` run by Node, never this code: 1,772 results (`tests/fixtures/studio_golden.json`, taken at Ironmate 3b7c07d) cover every
+function on seeded scenes and on the cases of Ironmate's own tests (`test_image_studio.py`, `studio_workspace.test.cjs`), each limit at its edge, each rule of the text breaker, both of its demos (ids aside) and 471
+sines and cosines; during development the Python port was also run against `core.js` itself on random scenes (5 x 2,500 per function) with no difference. `imagestudio.js` gives the same answers in the page: Chromium
+checks the recorded values, 250 random scenes (SVG text compared to Python's), 400 damaged scenes (same refusal text), the layers a click places (key order too), random histories, workspace text, mosaics and every limit,
+and then the editor itself: each tool places its layer where the canvas was pressed, a layer is selected, moved and resized by pointer and arrow keys, the inspector refuses what the scene refuses, a photo is added, kept
+exactly and mosaicked from the original (pixels equal to Python's), Base64 and clipboard images, PNG, SVG, Base64, JSON and workspace files are written and read back, and the page fits a 320 px phone. Deliberate
+differences from the originals: wrapped text breaks at the same places in every browser and in Python, so the Japanese dictionary of `Intl.Segmenter` is not used (a Han or Hiragana character stands alone, Katakana runs
+together; Latin, Hangul, emoji and the rest follow ICU, checked against it on every assigned code point and on 120,000 random strings); text is measured with the installed fonts in the page and with a fixed width estimate
+(0.65 em for printable ASCII, 1 em otherwise) in Python and the command line; the clock's hands use fdlibm's sine and cosine written out in both languages, so the SVG text does not depend on the engine; a text stamp's
+name takes twelve characters, not twelve UTF-16 units; JSON is read as JavaScript reads it (every number a double). Not absorbed: the slides and PPTX tools, the pixel-art tools and Ironmate's own shelf dialog (the clipboard
+shelf is `examples/clipboard-shelf.html`). BTK adapters: `web-ui-image-studio`, `web-ui-image-stamp`.
 
 curl import: `parse_curl(text)` reads a curl command (the editor's subset: `-X -H -d --data-urlencode -u -G -I -A -e --url`, quoting, line continuations,
 full-width characters) into method, URL, headers, query, body mode and form fields, with credentials marked `sensitive`; `mask_curl` shows them

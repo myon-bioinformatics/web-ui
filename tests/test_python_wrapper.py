@@ -3,9 +3,11 @@ import os
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2055,7 +2057,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-image-stamp", "web-ui-image-studio", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -4316,6 +4318,683 @@ class PatternTests(unittest.TestCase):
             report = self.go("select", {"operation": "deduplicate_report", "values": values})["values"][0]
             self.assertEqual((report["input_count"], report["unique_count"]), (len(values), len(unique)))
             self.assertEqual(typed(self.go("select", {"operation": "distinct", "values": unique})["values"]), typed(unique), "distinct is idempotent")
+
+
+STUDIO_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "studio_golden.json").read_text(encoding="utf-8"))
+
+
+def studio_norm(value):
+    """JavaScript cannot tell 1 from 1.0, so integral floats compare as integers."""
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else value
+    if isinstance(value, (list, tuple)):
+        return [studio_norm(v) for v in value]
+    if isinstance(value, dict):
+        return {k: studio_norm(v) for k, v in value.items()}
+    return value
+
+
+def studio_canon(value):
+    return json.dumps(studio_norm(value), sort_keys=True, ensure_ascii=False)
+
+
+def studio_call(fn, arg):
+    """The Python reference for each function recorded from Ironmate's studio/core.js."""
+    if fn == "jsnum":
+        return web_ui.js_number(arg)
+    if fn == "jsjson":
+        return web_ui.js_json(arg)
+    if fn == "heatColor":
+        return web_ui.studio_heat_color(*arg)
+    if fn == "matrix":
+        return web_ui.studio_matrix(arg)
+    if fn == "validate":
+        return web_ui.studio_validate(arg)
+    if fn == "mosaic":
+        return list(web_ui.studio_mosaic_rgba(bytes(arg[0]), *arg[1:]))
+    if fn == "arrow":
+        return web_ui.studio_arrow_geometry(*arg)
+    if fn == "outputSize":
+        return web_ui.studio_output_size(*arg)
+    if fn == "pngPayload":
+        return web_ui.studio_png_payload(bytes(arg))
+    if fn == "textLayout":
+        return web_ui.studio_text_layout(arg)
+    if fn == "layerSVG":
+        return web_ui.studio_layer_svg(arg)
+    if fn == "svg":
+        return web_ui.studio_svg(arg[0], None, arg[1])
+    if fn == "words":
+        return web_ui.studio_words(arg)
+    if fn == "graphemes":
+        return web_ui.studio_graphemes(arg)
+    if fn == "sincos":
+        return [web_ui.studio_sin(arg), web_ui.studio_cos(arg)]
+    if fn in ("demo", "stampDemo"):
+        scene = web_ui.studio_demo_scene() if fn == "demo" else web_ui.studio_stamp_demo_scene()
+        for i, layer in enumerate(scene["layers"]):
+            layer["id"] = f"L{i}"
+        return scene
+    if fn == "history":
+        history = None
+        states = []
+        for op, scene in arg:
+            if op == "new":
+                history = web_ui.StudioHistory(scene)
+            elif op == "commit":
+                history.commit(scene)
+            elif op == "undo":
+                history.undo()
+            else:
+                history.redo()
+            states.append([history.index, len(history.items)])
+        return {"states": states, "items": history.items, "workspace": web_ui.studio_workspace_text(history)}
+    raise AssertionError(fn)
+
+
+class ImageStudioTests(unittest.TestCase):
+    """The Ironmate image studio. The golden values are Ironmate's studio/core.js own outputs (recorded by Node, never produced by this code)."""
+
+    def blank(self, **patch):
+        return {"schema": web_ui.STUDIO_SCHEMA, "width": 64, "height": 64, "background": "none", "layers": [], **patch}
+
+    def history(self):
+        history = web_ui.StudioHistory(self.blank())
+        following = history.current
+        following["background"] = "#123456"
+        history.commit(following)
+        history.undo()
+        return history
+
+    def run_cli(self, *argv, stdin=None):
+        done = subprocess.run([sys.executable, str(Path(web_ui.__file__)), *map(str, argv)], input=stdin, capture_output=True, timeout=60)
+        return done.returncode, done.stdout, done.stderr.decode("utf-8")
+
+    # --- the originals' own outputs -------------------------------------------------------------------------------------------------------------
+    def test_every_recorded_core_js_output_is_reproduced_exactly(self):
+        counts = {}
+        for case in STUDIO_GOLDEN["cases"]:
+            fn, arg = case["fn"], case["arg"]
+            counts[fn] = counts.get(fn, 0) + 1
+            with self.subTest(fn=fn, n=counts[fn]):
+                if "error" in case:
+                    with self.assertRaises(web_ui.StudioError) as caught:
+                        studio_call(fn, arg)
+                    self.assertEqual(str(caught.exception), case["error"])
+                else:
+                    got, expect = studio_call(fn, arg), case["ok"]
+                    self.assertEqual(got if isinstance(expect, str) else studio_canon(got), expect if isinstance(expect, str) else studio_canon(expect))
+        self.assertGreaterEqual(len(counts), 15, "every function core.js has is covered")
+        self.assertGreaterEqual(len(STUDIO_GOLDEN["cases"]), 500)
+
+    # --- Ironmate's tests/test_image_studio.py -------------------------------------------------------------------------------------------------
+    def test_heatmap_keeps_values_gaps_labels_and_source(self):
+        source = {"data": [{"type": "heatmap", "z": [[-2.123456789012345, None, 4], [0, 1, 2]], "x": [2024, 2025, 2026], "y": ["中日", "巨人"], "zmin": -4, "zmax": 8}], "layout": {"title": {"text": "source"}}}
+        scene = web_ui.studio_heatmap_scene(source)
+        layer = scene["layers"][0]
+        self.assertEqual((layer["z"], layer["xlabels"], layer["ylabels"], layer["low"], layer["high"]), ([[-2.123456789012345, None, 4], [0, 1, 2]], [2024, 2025, 2026], ["中日", "巨人"], -4, 8))
+        self.assertIs(scene["source"], source)
+        self.assertIsNone(layer["z"][0][1])
+        self.assertEqual(web_ui.studio_validate(scene), scene, "a scene made from a matrix is already valid")
+
+    def test_unsafe_or_empty_matrices_are_refused(self):
+        for source in ([[True]], [[float("inf")]], [[2 ** 53]], [[1e100]], [[2 ** 1024]], [[1], [1, 2]], [], {"data": []}):
+            with self.subTest(source=repr(source)[:30]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_heatmap_scene(source)
+
+    def test_transparent_rgb_does_not_pollute_a_block_average(self):
+        # one opaque red pixel and one fully transparent blue pixel average to half-transparent red, not purple
+        got = web_ui.studio_mosaic_rgba(bytes([255, 0, 0, 255, 0, 0, 255, 0]), 2, 1, 2, 256)
+        self.assertEqual(list(got), [255, 0, 0, 128] * 2)
+
+    def test_svg_escapes_text_and_keeps_gaps_visible(self):
+        scene = web_ui.studio_heatmap_scene([[1, None, 2]])
+        scene["layers"].append({"id": "text", "kind": "text", "name": "custom", "x": 10, "y": 20, "w": 500, "h": 100, "opacity": 0.5, "rotation": 30, "fontSize": 40, "fill": "#112233", "text": "<script>alert(1)</script> & 🌱\n次へ"})
+        svg = web_ui.studio_svg(scene)
+        self.assertNotIn("<script>", svg)
+        self.assertIn("&lt;script&gt;", svg)
+        self.assertIn("欠測", svg)
+        self.assertIn("🌱", svg)
+
+    def test_history_saves_a_copy_undoes_and_branches(self):
+        scene = web_ui.studio_heatmap_scene([[1, None, 2]])
+        history = web_ui.StudioHistory(scene)
+        edit = history.current
+        edit["layers"][0]["levels"] = 4
+        history.commit(edit)
+        edit["layers"][0]["z"][0][0] = 999
+        self.assertEqual(history.current["layers"][0]["z"][0][0], 1, "an edit after the commit does not reach the history")
+        self.assertEqual(history.undo(), scene)
+        history.redo()
+        history.undo()
+        branch = history.current
+        branch["layers"].pop()
+        history.commit(branch)
+        self.assertEqual(len(history.redo()["layers"]), 0, "a new edit after undo drops the redo branch")
+        self.assertEqual(len(history.items), 2)
+        history.commit(history.current)
+        self.assertEqual(len(history.items), 2, "an edit that changes nothing is not recorded")
+
+    def test_forty_states_at_most(self):
+        history = web_ui.StudioHistory(self.blank())
+        for i in range(60):
+            scene = history.current
+            scene["width"] = 64 + i + 1
+            history.commit(scene)
+        self.assertEqual((len(history.items), history.index, history.items[0]["width"], history.items[-1]["width"]), (40, 39, 64 + 21 + 0, 64 + 60))
+
+    def test_untrusted_scenes_with_outside_images_or_bad_geometry_are_refused(self):
+        scene = web_ui.studio_heatmap_scene([[1]])
+        nan = web_ui.studio_clone(scene)
+        nan["layers"][0]["rotation"] = float("nan")
+        outside = web_ui.studio_clone(scene)
+        outside["layers"][0] = {**outside["layers"][0], "kind": "image", "src": "https://example.com/a.png", "cell": 1, "levels": 256}
+        twin = web_ui.studio_clone(scene)
+        twin["layers"].append(web_ui.studio_clone(twin["layers"][0]))
+        for bad in (nan, outside, twin):
+            with self.assertRaises(web_ui.StudioError):
+                web_ui.studio_svg(bad)
+
+    # --- Ironmate's tests/studio_workspace.test.cjs ---------------------------------------------------------------------------------------------
+    def test_workspace_restores_index_redo_branch_unicode_and_is_detached(self):
+        history = self.history()
+        history.items[1]["source"] = {"note": "🌱日本語"}
+        text = web_ui.studio_workspace_text(history)
+        restored = web_ui.studio_workspace_history(text)
+        self.assertEqual(restored.index, 0)
+        self.assertEqual(restored.current, history.current)
+        self.assertEqual(restored.redo(), history.items[1])
+        restored.items[1]["source"]["note"] = "changed"
+        self.assertEqual(history.items[1]["source"]["note"], "🌱日本語")
+        self.assertIn("🌱日本語", text, "Unicode is written as it is")
+
+    def test_workspace_validates_index_schema_count_and_every_scene(self):
+        record = json.loads(web_ui.studio_workspace_text(self.history()))
+        for patch in ({"schema": "wrong"}, {"index": -1}, {"index": 2}, {"index": 0.5}, {"items": []}, {"items": [self.blank()] * 41}, {"items": [self.blank(), self.blank(width=-1)]}, {"items": "x"}, {"index": True}):
+            with self.subTest(patch=str(patch)[:40]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_workspace_history(json.dumps({**record, **patch}))
+        history = web_ui.StudioHistory(self.blank())
+        history.index = 1
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_workspace_text(history)
+        for bad in (None, 5, b"{}", "", "[]", "{", "null"):
+            with self.subTest(bad=repr(bad)), self.assertRaises((web_ui.StudioError, ValueError)):
+                web_ui.studio_workspace_history(bad)
+
+    def test_workspace_limit_is_32_mib_of_utf8_inclusive(self):
+        text = web_ui.studio_workspace_text(self.history())
+        limit = web_ui.STUDIO_WORKSPACE_MAX_BYTES
+        exact = text + " " * (limit - len(text.encode("utf-8")))
+        self.assertEqual(len(exact.encode("utf-8")), limit)
+        self.assertEqual(web_ui.studio_workspace_history(exact).current, self.blank())
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_history(exact + " ")
+        # below 32M characters yet above 32 MiB as UTF-8
+        large = json.loads(text)
+        large["items"][0]["source"] = "🌱" * 8_388_608
+        multibyte = json.dumps(large, ensure_ascii=False)
+        self.assertLess(len(multibyte), limit)
+        self.assertGreater(len(multibyte.encode("utf-8")), limit)
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_history(multibyte)
+
+    def test_writer_refuses_repeated_images_over_budget_and_accepts_a_trimmed_history(self):
+        scene = self.blank()
+        scene["layers"].append({"id": "img", "kind": "image", "x": 0, "y": 0, "w": 64, "h": 64, "rotation": 0, "opacity": 1, "src": "data:image/png;base64," + "A" * 8_000_000, "cell": 1, "levels": 256})
+        history = web_ui.StudioHistory(scene)
+        history.items = [scene] * 5
+        history.index = 2
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_text(history)
+        self.assertEqual(len(history.items), 5, "a refused save does not touch the history")
+        trimmed = web_ui.StudioHistory(history.current)
+        self.assertEqual(web_ui.studio_workspace_history(web_ui.studio_workspace_text(trimmed)).current, history.current)
+
+    # --- the scene and its parts ---------------------------------------------------------------------------------------------------------------
+    def test_refusal_messages_are_the_originals_japanese_text(self):
+        cases = [(self.blank(schema="x"), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）"), (self.blank(width=0), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")]
+        for scene, message in cases:
+            with self.assertRaises(web_ui.StudioError) as caught:
+                web_ui.studio_validate(scene)
+            self.assertEqual(str(caught.exception), message)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_validate(self.blank(layers=[web_ui.studio_base_layer("rect", "a")] * 101))
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_validate(self.blank(width=4096, height=4096))
+        self.assertEqual(web_ui.studio_validate(self.blank(width=2048, height=2048))["width"], 2048)
+
+    def test_a_click_places_every_tool_where_it_was_pressed(self):
+        for tool in ("rect", "ellipse", "triangle", "text", "stamp", "arrow", "clock"):
+            layer = web_ui.studio_place(tool, "a", 123.5, 45, text="x")
+            self.assertEqual((layer["x"], layer["y"]), (123.5, 45), tool)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_place("star", "a", 0, 0)
+
+    def test_the_two_demo_scenes_are_valid_and_drawn(self):
+        for scene in (web_ui.studio_demo_scene(), web_ui.studio_stamp_demo_scene(), web_ui.studio_blank()):
+            self.assertEqual(web_ui.studio_validate(scene), scene)
+            svg = web_ui.studio_svg(scene)
+            self.assertTrue(svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"'))
+            ET.fromstring(svg)
+        kinds = {layer["kind"] for layer in web_ui.studio_demo_scene()["layers"]} | {layer["kind"] for layer in web_ui.studio_stamp_demo_scene()["layers"]}
+        self.assertGreaterEqual(len(kinds), 4)
+
+    def test_every_layer_kind_is_drawn_as_well_formed_svg(self):
+        scene = self.blank(width=400, height=300, background="#FFFFFF")
+        scene["layers"] = [web_ui.studio_place(tool, tool, 40 + 8 * i, 40 + 8 * i) for i, tool in enumerate(("rect", "ellipse", "triangle", "arrow", "clock"))]
+        scene["layers"].append(web_ui.studio_text_layer("Hello, 世界 🌱", "t", 20, 200))
+        scene["layers"].append(web_ui.studio_matrix_layer([[1, 2], [3, None]], "h", 400, 300))
+        document = ET.fromstring(web_ui.studio_svg(scene))
+        self.assertEqual(document.get("width"), "400")
+        ids = [g.get("data-layer") for g in document.iter("{http://www.w3.org/2000/svg}g") if g.get("data-layer")]
+        self.assertEqual(ids, ["rect", "ellipse", "triangle", "arrow", "clock", "t", "h"])
+
+    def test_scale_and_output_size(self):
+        self.assertEqual(web_ui.studio_output_size(self.blank(width=333, height=720), 2), {"width": 666, "height": 1440})
+        for scale in (0.2, 9, "x", 0):
+            with self.assertRaises(web_ui.StudioError):
+                web_ui.studio_output_size(self.blank(), scale)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_output_size(self.blank(width=4096, height=4096), 8)
+        svg = web_ui.studio_svg(self.blank(width=100, height=64), None, 4)
+        self.assertIn('width="400" height="256" viewBox="0 0 100 64"', svg)
+
+    def test_text_wraps_by_words_and_by_characters_for_long_words(self):
+        layer = {**web_ui.studio_text_layer("a very long line of ordinary words that should wrap into several lines", "t", 0, 0, wrap=True), "w": 120, "fontSize": 16}
+        paragraphs = web_ui.studio_text_layout(layer)
+        self.assertEqual(len(paragraphs), 1)
+        lines = paragraphs[0]
+        self.assertGreater(len(lines), 2)
+        self.assertEqual("".join(lines).replace(" ", ""), layer["text"].replace(" ", ""))
+        self.assertTrue(all(web_ui.studio_measure(line, layer) <= layer["w"] for line in lines))
+        glued = web_ui.studio_text_layout({**layer, "text": "x" * 40, "w": 100})[0]
+        self.assertTrue(all(web_ui.studio_measure(line, layer) <= 100 for line in glued) and "".join(glued) == "x" * 40)
+        self.assertEqual(web_ui.studio_words("Hello, world! can't stop 3.14"), ["Hello", ",", " ", "world", "!", " ", "can't", " ", "stop", " ", "3.14"])
+        self.assertEqual(web_ui.studio_graphemes("é🇯🇵👨‍👩‍👧x"), ["é", "🇯🇵", "👨‍👩‍👧", "x"])
+
+    def test_clock_hands_use_the_fdlibm_sin_and_cos_of_node(self):
+        # Node 22's Math.sin and Math.cos; glibc gives -0.5984721441039565 for sin(-2.5), one bit away, and other engines and versions differ in the last bit too
+        for x, sin, cos in ((0.5, 0.479425538604203, 0.8775825618903728), (1, 0.8414709848078965, 0.5403023058681398), (-2.5, -0.5984721441039564, -0.8011436155469337),
+                            (7.9, 0.998941341839772, -0.04600212563953695), (0.5235987755982988, 0.49999999999999994, 0.8660254037844387),
+                            (1.0471975511965976, 0.8660254037844386, 0.5000000000000001), (5.497787143782139, -0.707106781186547, 0.707106781186548),
+                            (0.1, 0.09983341664682815, 0.9950041652780257), (2.356194490192345, 0.7071067811865476, -0.7071067811865475)):
+            self.assertEqual((web_ui.studio_sin(x), web_ui.studio_cos(x)), (sin, cos), x)
+        for x in (0, math.pi / 2, math.pi, -math.pi, 2 * math.pi, 6.9):
+            self.assertAlmostEqual(web_ui.studio_sin(x), math.sin(x), places=12)
+            self.assertAlmostEqual(web_ui.studio_cos(x), math.cos(x), places=12)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_sin(12345.6789)
+
+    def test_studio_json_is_read_the_way_json_parse_reads_it(self):
+        self.assertEqual(web_ui.studio_parse("[9007199254740993, 9007199254740995, 1e2, -0, 1.5]"), [9007199254740992, 9007199254740996.0, 100.0, 0, 1.5])
+        self.assertEqual(web_ui.js_number(web_ui.studio_parse("9007199254740995")), "9007199254740996")
+        for text in ("1" + "0" * 400, "1e999", "NaN", "Infinity", "-Infinity", "[" * 100000):
+            with self.subTest(text=text[:12]), self.assertRaises(ValueError):
+                web_ui.studio_parse(text)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_heatmap_scene([[2 ** 1024]])
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.json"
+            big.write_text('[[1' + '0' * 400 + ']]', encoding="utf-8")
+            self.assertEqual(self.run_cli("--studio-heatmap", big)[0], 2)
+            self.assertEqual(self.run_cli("--studio-render", big)[0], 2)
+
+    def test_javascript_number_and_json_text(self):
+        self.assertEqual([web_ui.js_number(x) for x in (1.0, 0.1 + 0.2, 1e21, 1e-7, 123456789.123456789, -0.0, 100, 2 ** 53)], ["1", "0.30000000000000004", "1e+21", "1e-7", "123456789.12345679", "0", "100", "9007199254740992"])
+        self.assertEqual(web_ui.js_json({"b": 1, "2": 2, "1": 3, "a": [1.0, None, True, "é\n\""]}), '{"1":3,"2":2,"b":1,"a":[1,null,true,"é\\n\\""]}')
+        self.assertEqual(web_ui.js_json({"a": [1, {"b": 2}], "c": []}, 2), '{\n  "a": [\n    1,\n    {\n      "b": 2\n    }\n  ],\n  "c": []\n}')
+
+    # --- images --------------------------------------------------------------------------------------------------------------------------------
+    def test_png_codec_round_trips_and_refuses_what_it_cannot_read(self):
+        rng = random.Random(7)
+        rgba = bytes(rng.randrange(256) for _ in range(5 * 3 * 4))
+        data = web_ui.studio_png_encode(5, 3, rgba)
+        self.assertEqual(web_ui.studio_png_decode(data), (5, 3, rgba))
+        self.assertEqual(web_ui.studio_png_payload(data)["mimeType"], "image/png")
+        broken = bytearray(data)
+        broken[-20] ^= 1
+        for bad in (b"GIF89a", bytes(broken), data[:30], b"\x89PNG\r\n\x1a\n"):
+            with self.subTest(bad=bad[:12]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_png_decode(bad)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_png_encode(2, 2, b"\0" * 5)
+
+    def test_png_filters_and_colour_types_that_browsers_write_are_read(self):
+        def png(width, height, color, rows, palette=b"", trns=b""):
+            chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+            out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color, 0, 0, 0))
+            out += (chunk(b"PLTE", palette) if palette else b"") + (chunk(b"tRNS", trns) if trns else b"")
+            return out + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b"")
+        # RGB, grey, grey+alpha and palette, each with the filter a browser might choose
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 2, [b"\x00" + bytes([1, 2, 3, 4, 5, 6])]))[2], bytes([1, 2, 3, 255, 4, 5, 6, 255]))
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 0, [b"\x00" + bytes([9, 200])]))[2], bytes([9, 9, 9, 255, 200, 200, 200, 255]))
+        self.assertEqual(web_ui.studio_png_decode(png(1, 1, 4, [b"\x00" + bytes([7, 128])]))[2], bytes([7, 7, 7, 128]))
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 3, [b"\x00" + bytes([1, 0])], palette=bytes([10, 20, 30, 40, 50, 60]), trns=bytes([255, 100])))[2], bytes([40, 50, 60, 100, 10, 20, 30, 255]))
+        sub = web_ui.studio_png_decode(png(3, 1, 0, [b"\x01" + bytes([10, 5, 5])]))[2]
+        self.assertEqual(sub, bytes([10, 10, 10, 255, 15, 15, 15, 255, 20, 20, 20, 255]))
+        up = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x02" + bytes([1, 2])]))[2]
+        self.assertEqual(up[8:], bytes([11, 11, 11, 255, 22, 22, 22, 255]))
+        average = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x03" + bytes([4, 4])]))[2]
+        self.assertEqual(average[8:], bytes([9, 9, 9, 255, 18, 18, 18, 255]))
+        paeth = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x04" + bytes([1, 1])]))[2]
+        self.assertEqual(paeth[8:], bytes([11, 11, 11, 255, 21, 21, 21, 255]))
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_png_decode(png(1, 1, 0, [b"\x09" + bytes([0])]))
+
+    def png_file(self, width, height, color, rows, depth=8, interlace=0, palette=b"", trns=b"", crc_ok=True, iend=True, idat=True):
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) if crc_ok else 0)
+        out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace))
+        out += (chunk(b"PLTE", palette) if palette else b"") + (chunk(b"tRNS", trns) if trns else b"")
+        out += chunk(b"IDAT", zlib.compress(b"".join(rows))) if idat else b""
+        return out + (chunk(b"IEND", b"") if iend else b"")
+
+    def filtered(self, kind, raw, previous, bpp):
+        """One scanline written with PNG filter ``kind`` (the encoder side, written here on its own)."""
+        out = bytearray()
+        for i, value in enumerate(raw):
+            a = raw[i - bpp] if i >= bpp else 0
+            b = previous[i]
+            c = previous[i - bpp] if i >= bpp else 0
+            if kind == 0:
+                predictor = 0
+            elif kind == 1:
+                predictor = a
+            elif kind == 2:
+                predictor = b
+            elif kind == 3:
+                predictor = (a + b) // 2
+            else:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                predictor = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            out.append((value - predictor) & 255)
+        return bytes([kind]) + bytes(out)
+
+    def test_every_colour_type_and_filter_is_read_as_an_independent_encoder_and_pillow_read_it(self):
+        import io
+        from PIL import Image
+        rng = random.Random(404)
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+        palette = bytes(rng.randrange(256) for _ in range(3 * 6))
+        trns = bytes([255, 0, 128])
+        for color, bpp in channels.items():
+            for kind in range(5):
+                for width, height in ((1, 1), (2, 3), (5, 4), (9, 2), (3, 7)):
+                    samples = [bytes(rng.randrange(6) if color == 3 else rng.randrange(256) for _ in range(width * bpp)) for _ in range(height)]
+                    rows, previous = [], bytes(width * bpp)
+                    for row in samples:
+                        rows.append(self.filtered(kind, row, previous, bpp))
+                        previous = row
+                    data = self.png_file(width, height, color, rows, palette=palette if color == 3 else b"", trns=trns if color == 3 else b"")
+                    got_width, got_height, rgba = web_ui.studio_png_decode(data)
+                    self.assertEqual((got_width, got_height), (width, height))
+                    with Image.open(io.BytesIO(data)) as image:
+                        image.load()
+                        self.assertEqual(rgba, image.convert("RGBA").tobytes(), (color, kind, width, height))
+        # all five filters on the rows of one image, each row its own
+        rows, previous = [], bytes(12)
+        for kind in range(5):
+            row = bytes(rng.randrange(256) for _ in range(12))
+            rows.append(self.filtered(kind, row, previous, 4))
+            previous = row
+        data = self.png_file(3, 5, 6, rows)
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            self.assertEqual(web_ui.studio_png_decode(data)[2], image.convert("RGBA").tobytes())
+
+    def test_a_png_the_studio_cannot_use_is_refused_with_its_reason(self):
+        zeros = lambda w, h, c=4: [b"\x00" + bytes(w * c)] * h
+        ok = self.png_file(2, 2, 6, zeros(2, 2))
+        self.assertEqual(web_ui.studio_png_decode(ok)[:2], (2, 2))
+        unsupported = "8ビット・非インターレースの4MP以下のPNGに対応しています"
+        broken = "PNGが壊れています"
+        cases = [(self.png_file(2, 2, 6, zeros(2, 2), depth=16), unsupported), (self.png_file(2, 2, 6, zeros(2, 2), interlace=1), unsupported), (self.png_file(2, 2, 1, zeros(2, 2)), unsupported),
+                 (self.png_file(2, 2, 5, zeros(2, 2)), unsupported), (self.png_file(2048, 2049, 6, zeros(1, 1)), unsupported), (self.png_file(0, 2, 6, []), unsupported),
+                 (self.png_file(2, 2, 6, zeros(2, 2), crc_ok=False), broken), (self.png_file(2, 2, 6, zeros(2, 2), idat=False), broken), (self.png_file(2, 2, 6, zeros(2, 3)), broken),
+                 (self.png_file(2, 2, 6, zeros(2, 1)), broken), (self.png_file(2, 2, 6, [b"\x09" + bytes(8)] * 2), broken), (ok[:-3], broken), (ok[:20], broken), (b"\x89PNG\r\n\x1a\n", broken),
+                 (b"GIF89a" + bytes(40), "PNGではありません")]
+        for data, message in cases:
+            with self.assertRaises(web_ui.StudioError) as caught:
+                web_ui.studio_png_decode(data)
+            self.assertEqual(str(caught.exception), message)
+        self.assertEqual(web_ui.studio_png_decode(self.png_file(2048, 2048, 0, [b"\x00" + bytes(2048)] * 2048))[:2], (2048, 2048), "4 MP exactly is fine")
+        self.assertEqual(web_ui.studio_png_decode(self.png_file(2, 2, 6, zeros(2, 2), iend=False))[:2], (2, 2), "a file that stops after its image data is still read")
+        trailing = ok + b"junk"
+        self.assertEqual(web_ui.studio_png_decode(trailing)[:2], (2, 2))
+
+    def test_every_limit_is_exact(self):
+        def refused(call, message=None):
+            with self.assertRaises(web_ui.StudioError) as caught:
+                call()
+            if message:
+                self.assertEqual(str(caught.exception), message)
+        # the PNG hand-off: 32 MiB exactly, one byte over, the signature, eight bytes at least
+        signature = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+        limit = 32 * 1024 * 1024
+        self.assertEqual(web_ui.studio_png_payload(signature + bytes(limit - 8))["bytes"], limit)
+        refused(lambda: web_ui.studio_png_payload(signature + bytes(limit - 7)), "32MiB以下のPNGが必要です")
+        self.assertEqual(web_ui.studio_png_payload(signature)["bytes"], 8)
+        refused(lambda: web_ui.studio_png_payload(signature[:7]))
+        refused(lambda: web_ui.studio_png_payload(b"x" * 20))
+        # numbers in a matrix: 2**53 - 1 is the largest safe whole number
+        self.assertEqual(web_ui.studio_matrix([[2 ** 53 - 1, -(2 ** 53 - 1)]])["high"], 2 ** 53 - 1)
+        for bad in (2 ** 53, -(2 ** 53), float(2 ** 53), 2.0 ** 60, 2 ** 54):
+            refused(lambda: web_ui.studio_matrix([[bad]]))
+        refused(lambda: web_ui.studio_matrix({"z": [[1]], "zmin": 2 ** 53}), "色の範囲には有限の安全な数値を指定してください")
+        self.assertEqual(web_ui.studio_matrix([[None, None]])["low"], 0)
+        self.assertEqual(web_ui.studio_matrix([[None, None]])["high"], 1)
+        # sizes of a scene: 64 to 4096 a side, 4 MP, 100 layers, ids of 100 UTF-16 units
+        for width, height, ok in ((64, 64, True), (63, 64, False), (64, 63, False), (4096, 1024, True), (4096, 1025, False), (4097, 64, False), (2048, 2048, True), (2049, 2048, False)):
+            scene = self.blank(width=width, height=height)
+            if ok:
+                self.assertEqual(web_ui.studio_validate(scene)["width"], width)
+            else:
+                refused(lambda: web_ui.studio_validate(scene), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
+        layer = lambda i: web_ui.studio_base_layer("rect", f"r{i}") | {"fill": "none", "stroke": "none", "strokeWidth": 0}
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(i) for i in range(100)]))["layers"]), 100)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(i) for i in range(101)])))
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "x" * 100}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "x" * 101}])), "レイヤーのIDまたは種類が不正です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "😀" * 50}]))["layers"]), 1, "100 UTF-16 units")
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "😀" * 51}])))
+        for field, low, high in (("x", -8192, 8192), ("y", -8192, 8192), ("w", 1, 8192), ("h", 1, 8192), ("rotation", -360, 360), ("opacity", 0, 1), ("strokeWidth", 0, 64)):
+            for value, ok in ((low, True), (high, True), (low - 1, False), (high + 1, False)):
+                call = lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {field: value}]))
+                self.assertEqual(call()["layers"][0][field], value) if ok else refused(call)
+        # text: 2000 UTF-16 units, 4 to 512 px
+        text = web_ui.studio_text_layer("a", "t", 0, 0)
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[text | {"text": "a" * 2000}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[text | {"text": "a" * 2001}])), "テキストが不正です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[text | {"text": "😀" * 1000}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[text | {"text": "😀" * 1001}])))
+        for size, ok in ((4, True), (512, True), (3.9, False), (512.1, False)):
+            call = lambda: web_ui.studio_validate(self.blank(layers=[text | {"fontSize": size}]))
+            self.assertEqual(call()["layers"][0]["fontSize"], size) if ok else refused(call, "テキストが不正です")
+        # images: a PNG data URI of at most 12,000,000 characters, 20,000,000 in all; a mosaic cell 1..512 and 2..256 levels
+        image = lambda n, i=0: web_ui.studio_image_layer("data:image/png;base64," + "A" * (n - 22), 1, 1, f"i{i}") | {"w": 1, "h": 1}
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(12000000)]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(12000001)])), "画像は埋め込みPNGが必要です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(10000000, 0), image(10000000, 1)]))["layers"]), 2)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(10000000, 0), image(10000001, 1)])), "シーンの画像合計は20MB以下にしてください")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(100, 0), image(100, 1)]))["layers"]), 2, "the total starts from zero")
+        for field, low, high in (("cell", 1, 512), ("levels", 2, 256)):
+            for value, ok in ((low, True), (high, True), (low - 1, False), (high + 1, False), (low + 0.5, False)):
+                call = lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {field: value}]))
+                self.assertEqual(call()["layers"][0][field], value) if ok else refused(call, "モザイク設定が不正です")
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {"cell": 0, "levels": 256}])))
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {"cell": 1, "levels": 1}])))
+        # a workspace holds 1 to 40 states
+        for count, ok in ((1, True), (40, True), (41, False), (0, False)):
+            record = json.dumps({"schema": web_ui.STUDIO_WORKSPACE_SCHEMA, "items": [self.blank()] * count, "index": 0})
+            self.assertEqual(len(web_ui.studio_workspace_history(record).items), count) if ok else refused(lambda: web_ui.studio_workspace_history(record), "作業履歴の形式が不正です")
+        history = web_ui.StudioHistory(self.blank())
+        history.items = [self.blank()] * 40
+        self.assertEqual(len(json.loads(web_ui.studio_workspace_text(history))["items"]), 40)
+        history.items = [self.blank()] * 41
+        refused(lambda: web_ui.studio_workspace_text(history), "作業履歴の形式が不正です")
+        # the mosaic's own checks
+        for args in ((b"\0" * 4, 1, 1, 0), (b"\0" * 4, 1, 1, 513), (b"\0" * 4, 1, 1, 1, 1), (b"\0" * 4, 1, 1, 1, 257), (b"\0" * 4, 0, 1, 1), (b"\0" * 4, 1, 0, 1), (b"\0" * 3, 1, 1, 1), (b"\0" * 4, 1.5, 1, 1)):
+            refused(lambda: web_ui.studio_mosaic_rgba(*args), "モザイク入力が不正です")
+        self.assertEqual(len(web_ui.studio_mosaic_rgba(b"\0" * 4, 1, 1, 512, 2)), 4)
+        self.assertEqual(len(web_ui.studio_mosaic_rgba(b"\0" * 4 * 4, 2, 2, 1, 256)), 16)
+
+    def test_defaults_text_boxes_and_json_text(self):
+        arrow = web_ui.studio_place("arrow", "a", 1, 2)
+        self.assertEqual((arrow["headStyle"], arrow["headPlacement"], arrow["fill"], arrow["stroke"], arrow["headSize"], arrow["strokeWidth"]), ("beginner", "tip", web_ui.STUDIO_FILL, web_ui.STUDIO_STROKE, 28, 4))
+        clock = web_ui.studio_place("clock", "c", 1, 2)
+        self.assertEqual((clock["hour"], clock["minute"], clock["name"], clock["w"], clock["h"]), (10, 10, "時計 10:10", 160, 160))
+        text = web_ui.studio_place("text", "t", 1, 2)
+        self.assertEqual((text["mono"], text["wrap"], text["font"], text["text"]), (True, False, "sans", ""))
+        rect = web_ui.studio_place("rect", "r", 1, 2)
+        self.assertEqual((rect["fill"], rect["w"], rect["h"], rect["outline"] if "outline" in rect else None), (web_ui.STUDIO_FILL, 180, 120, None))
+        # a text stamp is as wide as its longest line (48 px a character, 120 to 700) and as high as its lines (62.4 px each, 70 at least)
+        for value, w, h in (("", 120, 70), ("ab", 120, 70), ("abc", 144, 70), ("a" * 14, 672, 70), ("a" * 15, 700, 70), ("a\nbcde", 192, 2 * 48 * 1.3), ("ab\nc\nd", 120, 3 * 48 * 1.3), ("😀😀😀", 144, 70)):
+            layer = web_ui.studio_text_layer(value, "t", 0, 0)
+            self.assertEqual((layer["w"], layer["h"]), (w, h), value)
+        self.assertEqual(web_ui.studio_text_layer("123456789012345", "t", 0, 0)["name"], "文字 / 123456789012")
+        self.assertEqual(web_ui.studio_text_layer("😀" * 14, "t", 0, 0)["name"], "文字 / " + "😀" * 12, "a name takes twelve characters, not twelve UTF-16 units")
+        self.assertEqual(web_ui.js_json({"é": "日本", "k": "\u2028"}), '{"é":"日本","k":"\u2028"}'.replace("\\u2028", "\u2028"))
+        self.assertEqual(web_ui.js_json({"b": 1, "a": {"2": 1, "1": 2, "x": 3}}), '{"b":1,"a":{"1":2,"2":1,"x":3}}')
+        self.assertEqual(web_ui.js_json([float("nan"), float("inf")]), "[null,null]")
+
+    def test_an_image_layer_is_mosaicked_from_its_embedded_original(self):
+        rgba = bytes([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255])
+        src = "data:image/png;base64," + base64.b64encode(web_ui.studio_png_encode(2, 2, rgba)).decode("ascii")
+        scene = self.blank(width=64, height=64, layers=[web_ui.studio_image_layer(src, 2, 2, "img", 64)])
+        plain = web_ui.studio_render(scene)
+        self.assertIn(src, plain, "a layer that keeps every pixel passes its image through")
+        scene["layers"][0]["cell"] = 2
+        mosaic = web_ui.studio_render(scene)
+        self.assertNotIn(src, mosaic)
+        one = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", mosaic).group(1)
+        width, height, pixels = web_ui.studio_png_decode(base64.b64decode(one))
+        self.assertEqual((width, height), (2, 2))
+        self.assertEqual(pixels, bytes(web_ui.studio_mosaic_rgba(rgba, 2, 2, 2, 256)))
+        self.assertEqual(len(set(pixels[i:i + 4] for i in range(0, 16, 4))), 1)
+
+    # --- the command line ----------------------------------------------------------------------------------------------------------------------
+    def test_cli_renders_svg_json_heatmap_and_base64(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            scene = tmp / "scene.json"
+            scene.write_text(web_ui.js_json(web_ui.studio_demo_scene(), 2), encoding="utf-8")
+            code, out, err = self.run_cli("--studio-render", scene)
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(out.decode("utf-8"), web_ui.studio_render(web_ui.studio_demo_scene()) + "\n")
+            code, out, _ = self.run_cli("--studio-render", scene, "--scale", "2")
+            self.assertIn('width="2560" height="1440"', out.decode("utf-8"))
+            code, out, _ = self.run_cli("--studio-render", scene, "--format", "json")
+            self.assertEqual(json.loads(out), web_ui.studio_validate(web_ui.studio_demo_scene()))
+            matrix = tmp / "matrix.json"
+            matrix.write_text("[[1,null,3]]", encoding="utf-8")
+            result = tmp / "scene-out.json"
+            code, out, err = self.run_cli("--studio-heatmap", matrix, "-o", result)
+            self.assertEqual((code, out), (0, b""))
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["layers"][0]["z"], [[1, None, 3]])
+            old = result.read_bytes()
+            code, _, err = self.run_cli("--studio-heatmap", matrix, "-o", result)
+            self.assertEqual(code, 2)
+            self.assertIn("--force", err)
+            self.assertEqual(result.read_bytes(), old, "an existing file is never replaced without --force")
+            matrix.write_text("[[2,3]]", encoding="utf-8")
+            self.assertEqual(self.run_cli("--studio-heatmap", matrix, "-o", result, "--force")[0], 0)
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["layers"][0]["z"], [[2, 3]])
+            png = tmp / "a.png"
+            png.write_bytes(web_ui.studio_png_encode(1, 1, bytes([1, 2, 3, 4])))
+            code, out, _ = self.run_cli("--studio-base64", png)
+            self.assertEqual(base64.b64decode(out.strip()), png.read_bytes())
+            code, out, _ = self.run_cli("--studio-base64", png, "--data-uri")
+            self.assertTrue(out.startswith(b"data:image/png;base64,"))
+
+    def test_cli_bad_input_is_exit_2_with_a_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bad = tmp / "bad.json"
+            for text in ("{", "[1]", '{"schema":"ironmate-image-studio/1"}', "﻿", "nan"):
+                bad.write_text(text, encoding="utf-8")
+                for option in ("--studio-render", "--studio-heatmap"):
+                    with self.subTest(text=text, option=option):
+                        code, out, err = self.run_cli(option, bad)
+                        self.assertEqual((code, out), (2, b""))
+                        self.assertTrue(err.startswith("invalid studio input: "))
+            self.assertEqual(self.run_cli("--studio-render", tmp / "missing.json")[0], 2)
+            text = tmp / "t.png"
+            text.write_bytes(b"not a png")
+            code, _, err = self.run_cli("--studio-base64", text)
+            self.assertEqual(code, 2)
+            big = tmp / "big.json"
+            big.write_bytes(b" " * 20_000_001)
+            self.assertEqual(self.run_cli("--studio-render", big)[0], 2)
+
+    # --- the page ------------------------------------------------------------------------------------------------------------------------------
+    def test_the_page_is_one_self_contained_document_with_every_control_the_script_uses(self):
+        page = web_ui.imagestudio_document()
+        self.assertEqual(page.count('<script type="module">'), 1)
+        self.assertEqual(page.count('id="imagestudio"'), 1)
+        self.assertNotRegex(page, r"https?://(?!www\.w3\.org/2000/svg)")
+        html = web_ui.imagestudio_html()
+        names = re.findall(r'data-is="([a-z0-9]+)"', html)
+        self.assertEqual(len(names), len(set(names)), "every control has its own name")
+        source = web_ui._JS["imagestudio.js"]
+        used = set(re.findall(r"\bel\.([a-z0-9]+)\b", source)) | set(re.findall(r'"([a-z]+)"', " ".join(re.findall(r"for\((?:const|let) \w+ of ?\[([^\]]*)\]\)el\[", source))))
+        self.assertEqual(used - set(names), set(), "the script uses only controls the page has")
+        self.assertEqual(set(names) - used, set(), "every control is used by the script")
+        self.assertEqual(len(re.findall(r'name="is-tool"', html)), len(web_ui.STUDIO_TOOLS))
+        self.assertEqual(len(re.findall(r"data-stamp=", html)), len(web_ui.STUDIO_EMOJI) + len(web_ui.STUDIO_KAOMOJI))
+        self.assertIn("globalThis.webUiImageStudio=api", page)
+        self.assertIn(".ui-imagestudio", web_ui.bundled_css())
+        self.assertTrue(all(int(px) % 8 == 0 for px in re.findall(r"(\d+)px", web_ui._CSS["imagestudio.css"])), "pixel sizes are multiples of 8")
+        self.assertIn("examples/image-studio.html", web_ui.example_pages())
+        self.assertIn('href="./image-studio.html"', web_ui.example_pages()["examples/index.html"])
+        self.assertNotIn("</script", source.lower())
+        self.assertNotIn('"""', source)
+
+    def test_the_js_constants_are_the_python_values(self):
+        source = web_ui._JS["imagestudio.js"]
+        want = {"SCHEMA": web_ui.STUDIO_SCHEMA, "WORKSPACE_SCHEMA": web_ui.STUDIO_WORKSPACE_SCHEMA, "WORKSPACE_MAX_BYTES": web_ui.STUDIO_WORKSPACE_MAX_BYTES, "PALETTE": list(web_ui.STUDIO_PALETTE),
+                "FILL": web_ui.STUDIO_FILL, "STROKE": web_ui.STUDIO_STROKE, "BACKGROUND": web_ui.STUDIO_BACKGROUND, "WSPACE": web_ui._STU_WSPACE, "MIDLETTER": web_ui._STU_MIDLETTER,
+                "MIDNUM": web_ui._STU_MIDNUM, "MIDNUMLET": web_ui._STU_MIDNUMLET, "NEWLINE": web_ui._STU_NEWLINE, "KATAKANA": [list(r) for r in web_ui._STU_KATAKANA],
+                "HAN_HIRAGANA": [list(r) for r in web_ui._STU_HAN_HIRAGANA], "PICTOGRAPHIC": [list(r) for r in web_ui._STU_PICTOGRAPHIC], "WORD_OVERRIDES": [[k, [list(r) for r in rs]] for k, rs in web_ui._STU_WORD_OVERRIDES],
+                "GRAPHEME_OVERRIDES": [[k, [list(r) for r in rs]] for k, rs in web_ui._STU_GRAPHEME_OVERRIDES]}
+        text = web_ui._studio_js_constants()
+        self.assertIn(text, source, "the module starts from these lines")
+        found, decoder = {}, json.JSONDecoder()
+        for line in text.splitlines():
+            position = len(line) - len(line.removeprefix("export ").removeprefix("const "))
+            while True:
+                name = re.compile(r"([A-Z_]+)=").match(line, position)
+                value, position = decoder.raw_decode(line, name.end())
+                found[name.group(1)] = value
+                if line[position] == ";":
+                    break
+                position += 1
+        self.assertEqual(found, want)
+
+    def test_the_platform_adapters_check_the_page(self):
+        for name, fragment in (("web-ui-image-studio", None), ("web-ui-image-stamp", "is-tools-title")):
+            adapter = web_ui.btk_adapter(name)
+            self.assertEqual(adapter["url"], "http://127.0.0.1:8000/examples/image-studio.html" + ("" if fragment is None else "#" + fragment))
+            self.assertNotEqual(adapter["click"]["before"], adapter["click"]["after"])
+            self.assertTrue(all("imagestudio" in selector or selector.startswith("#is-") for selector in adapter["elements"]))
+            self.assertFalse(any(selector.startswith("select") or "[data-is=\"scale\"]" in selector for selector in adapter["elements"]), "a select is covered through its label")
+        self.assertEqual(len(web_ui.studio_demo_scene()["layers"]), int(web_ui.BTK_ADAPTERS["web-ui-image-studio"]["click"]["before"]))
+
+    def test_random_scenes_survive_validation_and_a_workspace_round_trip(self):
+        rng = random.Random(2026)
+        kinds = ("rect", "ellipse", "triangle", "arrow", "clock")
+        for _ in range(60):
+            scene = self.blank(width=rng.randint(64, 900), height=rng.randint(64, 700), background=rng.choice(["none", "#FFFFFF", "#18A7A1"]))
+            for i in range(rng.randint(0, 6)):
+                scene["layers"].append(web_ui.studio_place(rng.choice(kinds), f"L{i}", rng.randint(-50, 900), rng.randint(-50, 700), outline=rng.random() < 0.5))
+            history = web_ui.StudioHistory(scene)
+            checked = history.current
+            edit = web_ui.studio_clone(checked)
+            edit["layers"].append(web_ui.studio_text_layer(rng.choice(["a", "日本語", "x y z", "🌱"]), "text", rng.randint(0, 100), rng.randint(0, 100)))
+            history.commit(edit)
+            restored = web_ui.studio_workspace_history(web_ui.studio_workspace_text(history))
+            self.assertEqual((restored.index, restored.items), (history.index, history.items))
+            ET.fromstring(web_ui.studio_svg(restored.current))
 
 
 if __name__ == '__main__':
