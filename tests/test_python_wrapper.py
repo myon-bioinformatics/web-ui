@@ -13,6 +13,8 @@ from unittest import mock
 import json
 import math
 
+import hashlib
+import xml.etree.ElementTree as ET
 import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 
@@ -2053,7 +2055,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -2588,6 +2590,509 @@ class PlaygroundTests(unittest.TestCase):
         self.assertIn("examples/playground.html", web_ui.example_pages())
         self.assertIn("./playground.html", web_ui.example_pages()["examples/index.html"])
         self.assertEqual(json.loads(re.search(r'data-play="([^"]*)"', html).group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["status"], web_ui.COUNTER_STATUS)
+
+
+def flutter_case(tid, sid, name, result="success", **done):
+    return [{"type": "testStart", "test": {"id": tid, "suiteID": sid, "name": name}}, {"type": "testDone", "testID": tid, "result": result, **done}]
+
+
+def ndjson(events):
+    return "\n".join(json.dumps(e) for e in events)
+
+
+class ReportTests(unittest.TestCase):
+    """Test reports: the Python tests of flutter_navigation_basic's outcomes, flutter_machine_junit, validate_runner_junit, junit_history, multi_test_runner,
+    node_test_runner and expected_child_failure are the golden values (ported case by case)."""
+
+    SHA = "a" * 40
+
+    def parse(self, xml):
+        return ET.fromstring(xml)
+
+    # --- outcomes (python/tests/test_outcomes.py)
+    def test_a_known_skip_is_xfailed_and_a_plain_skip_is_skipped(self):
+        events = [
+            {"type": "testStart", "test": {"id": 1, "name": "loading suite", "metadata": {"skip": False, "skipReason": None}}},
+            {"type": "testDone", "testID": 1, "result": "success", "skipped": False, "hidden": True},
+            {"type": "testStart", "test": {"id": 2, "name": "works", "metadata": {"skip": False, "skipReason": None}}},
+            {"type": "testDone", "testID": 2, "result": "success", "skipped": False, "hidden": False},
+            {"type": "testStart", "test": {"id": 3, "name": "known gap", "metadata": {"skip": True, "skipReason": "known: pattern catalogue not on latest-stable"}}},
+            {"type": "testDone", "testID": 3, "result": "success", "skipped": True, "hidden": False},
+            {"type": "testStart", "test": {"id": 4, "name": "plain skip", "metadata": {"skip": True, "skipReason": "not in this env"}}},
+            {"type": "testDone", "testID": 4, "result": "success", "skipped": True, "hidden": False},
+            {"type": "testStart", "test": {"id": 5, "name": "x", "metadata": {"skip": True, "skipReason": "XFAIL: upper case counts too"}}},
+            {"type": "testDone", "testID": 5, "result": "success", "skipped": True},
+        ]
+        counts = web_ui.flutter_outcomes(ndjson(events))
+        self.assertEqual((counts["passed"], counts["xfailed"], counts["skipped"], counts["failed"]), (1, 2, 1, 0))
+        self.assertIn("xfailed=2", web_ui.counts_line(counts))
+
+    def test_bad_lines_count_as_errors_and_garbage_alone_is_not_ok(self):
+        lines = [json.dumps({"type": "testStart", "test": {"id": 1, "name": "works"}}), json.dumps({"type": "testDone", "testID": 1, "result": "success"}), "{not-json", "42", ""]
+        counts = web_ui.flutter_outcomes("\n".join(lines))
+        self.assertEqual((counts["passed"], counts["error"]), (1, 2))
+        self.assertFalse(web_ui.counts_summary(counts, source="flutter-json")["ok"])
+        garbage = web_ui.flutter_outcomes("truncated...\n{broken")
+        self.assertEqual(garbage, {"passed": 0, "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0, "error": 2})
+        self.assertFalse(web_ui.counts_summary(garbage, source="flutter-json")["ok"])
+        self.assertEqual(web_ui.flutter_outcomes('{"a": NaN}\n{"type": "testStart", "test": [1]}')["error"], 2, "JSON constants and a non-object test are errors")
+
+    def test_the_receipt_round_trips(self):
+        payload = web_ui.counts_summary({"passed": 1, "failed": 0, "skipped": 2, "xfailed": 1, "xpassed": 0, "error": 0}, source="pytest")
+        loaded = json.loads(json.dumps(payload))
+        self.assertEqual((loaded["ok"], loaded["counts"]["xfailed"], loaded["total"]), (True, 1, 4))
+
+    def test_nothing_passed_is_not_green_and_a_failed_load_is_an_error(self):
+        self.assertFalse(web_ui.counts_summary({}, source="x")["ok"])
+        self.assertFalse(web_ui.counts_summary({"skipped": 5}, source="x")["ok"])
+        self.assertTrue(web_ui.counts_summary({"passed": 1, "skipped": 5}, source="x")["ok"])
+        broken = ndjson([*flutter_case(1, 0, "loading test/broken_test.dart", result="error", hidden=False), {"type": "done", "success": False}])
+        self.assertEqual(web_ui.flutter_outcomes(broken)["error"], 1)
+        shown = ndjson([*flutter_case(1, 0, "loading test/ok_test.dart"), *flutter_case(2, 0, "real"), {"type": "done", "success": True}])
+        self.assertEqual(web_ui.flutter_outcomes(shown)["passed"], 1, "a successful, visible loading pseudo-test is not a test")
+        ids = ndjson([{"type": "testStart", "test": {"id": True, "name": "a", "metadata": {"skipReason": "known: x"}}}, {"type": "testDone", "testID": True, "result": "success", "skipped": True}])
+        self.assertEqual(web_ui.flutter_outcomes(ids)["skipped"], 1, "a boolean is never a test ID, so the start's skip reason is not linked to the completion")
+
+    # --- Flutter machine events to JUnit (python/tests/test_flutter_machine_junit.py)
+    def convert(self, events):
+        return web_ui.flutter_machine_junit(ndjson(events))
+
+    def test_per_case_failure_is_preserved(self):
+        events = [{"type": "testStart", "test": {"id": 1, "name": "passes"}}, {"type": "testDone", "testID": 1, "result": "success"},
+                  {"type": "testStart", "test": {"id": 2, "name": "fails"}}, {"type": "error", "testID": 2, "error": "expected true"},
+                  {"type": "testDone", "testID": 2, "result": "failure"}, {"type": "done", "success": False}]
+        done = self.convert(events)
+        self.assertEqual(done["tests"], 2)
+        cases = self.parse(done["xml"]).findall("testcase")
+        self.assertEqual([c.get("name") for c in cases], ["passes", "fails"])
+        self.assertIsNotNone(cases[1].find("failure"))
+        self.assertEqual(cases[1].find("failure").text, "expected true")
+
+    def test_skip_hidden_and_suite_identity_follow_the_protocol(self):
+        suite = lambda sid, path: {"type": "suite", "suite": {"id": sid, "path": path}}
+        events = [suite(0, "test/a_test.dart"), suite(1, "test/b_test.dart"), *flutter_case(1, 0, "loading test/a_test.dart", hidden=True), *flutter_case(2, 0, "same name"),
+                  *flutter_case(3, 1, "same name"), {"type": "testStart", "test": {"id": 4, "suiteID": 1, "name": "skip me", "metadata": {"skipReason": "known: gap"}}},
+                  {"type": "testDone", "testID": 4, "result": "success", "skipped": True}, {"type": "done", "success": True}]
+        cases = self.parse(self.convert(events)["xml"]).findall("testcase")
+        self.assertEqual([(c.get("classname"), c.get("name")) for c in cases], [("test/a_test.dart", "same name"), ("test/b_test.dart", "same name"), ("test/b_test.dart", "skip me")])
+        self.assertEqual(cases[2].find("skipped").get("message"), "known: gap")
+        self.assertTrue(all(c.find("skipped") is None for c in cases[:2]))
+
+    def test_a_failed_load_stays_visible(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": "test/broken_test.dart"}}, {"type": "testStart", "test": {"id": 1, "suiteID": 0, "name": "loading test/broken_test.dart"}},
+                  {"type": "error", "testID": 1, "error": "Compilation failed"}, {"type": "testDone", "testID": 1, "result": "error", "hidden": False}, {"type": "done", "success": False}]
+        cases = self.parse(self.convert(events)["xml"]).findall("testcase")
+        self.assertEqual(len(cases), 1)
+        self.assertIn("Compilation failed", cases[0].find("error").text)
+
+    def test_incomplete_or_inconsistent_events_are_rejected(self):
+        done = {"type": "done", "success": True}
+        bad = {
+            "only hidden": [*flutter_case(1, 0, "loading x", hidden=True), done],
+            "no done": [{"type": "testStart", "test": {"id": 1, "name": "x"}}, {"type": "testDone", "testID": 1, "result": "success"}],
+            "never completed": [{"type": "testStart", "test": {"id": 1, "name": "x"}}, done],
+            "bad result": [*flutter_case(1, 0, "x", result="weird"), done],
+            "duplicate id": [*flutter_case(1, 0, "x"), {"type": "testStart", "test": {"id": 1, "name": "y"}}, done],
+            "missing id": [{"type": "testStart", "test": {"name": "x"}}, done],
+            "boolean id": [{"type": "testStart", "test": {"id": True, "name": "x"}}, done],
+            "nameless": [*flutter_case(1, 0, ""), done],
+            "orphan error": [{"type": "error", "testID": 9, "error": "e"}, *flutter_case(1, 0, "x"), done],
+            "orphan completion": [{"type": "testDone", "testID": 9, "result": "success"}, *flutter_case(1, 0, "x"), done],
+            "repeated completion": [*flutter_case(1, 0, "x"), {"type": "testDone", "testID": 1, "result": "success"}, done],
+        }
+        for name, events in bad.items():
+            with self.assertRaises(ValueError, msg=name):
+                self.convert(events)
+        for text in ("{broken", "42", "[]", '{"a": NaN}'):
+            with self.assertRaises(ValueError, msg=text):
+                web_ui.flutter_machine_junit(text)
+
+    def test_the_converted_xml_is_exact_and_always_parses(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": 'test/<a>&"b".dart'}}, *flutter_case(1, 0, 'x < y & "z"\ttab'), {"type": "testStart", "test": {"id": 2, "suiteID": 0, "name": "bad"}},
+                  {"type": "error", "testID": 2, "error": "boom \x1b[31mred\x1b[0m < & >", "stackTrace": "line1\nline2"}, {"type": "testDone", "testID": 2, "result": "failure"},
+                  {"type": "testStart", "test": {"id": 3, "suiteID": 0, "name": "gap", "metadata": {"skipReason": 'xfail: "q"'}}},
+                  {"type": "testDone", "testID": 3, "result": "success", "skipped": True}, {"type": "testStart", "test": {"id": 4, "suiteID": 0, "name": "empty failure"}},
+                  {"type": "testDone", "testID": 4, "result": "error"}, {"type": "done", "success": False}]
+        xml = self.convert(events)["xml"]
+        self.assertEqual(xml, '<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="4">\n'
+                              '  <testcase name="x &lt; y &amp; &quot;z&quot;&#09;tab" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart" />\n'
+                              '  <testcase name="bad" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <failure message="Flutter test failure">boom �[31mred�[0m &lt; &amp; &gt;\nline1\nline2</failure>\n  </testcase>\n'
+                              '  <testcase name="gap" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <skipped message="xfail: &quot;q&quot;" />\n  </testcase>\n'
+                              '  <testcase name="empty failure" classname="test/&lt;a&gt;&amp;&quot;b&quot;.dart">\n    <error message="Flutter test error" />\n  </testcase>\n</testsuite>\n')
+        root = self.parse(xml)
+        self.assertEqual(root.findall("testcase")[0].get("name"), 'x < y & "z"\ttab')
+        report = web_ui.junit_report(xml)
+        self.assertEqual((report["counts"]["passed"], report["counts"]["failed"], report["counts"]["xfailed"], report["counts"]["error"]), (1, 1, 1, 1))
+
+    def test_a_realistic_stream_gives_the_same_counts_as_junit(self):
+        events = [{"type": "suite", "suite": {"id": 0, "path": "test/a_test.dart"}}, *flutter_case(1, 0, "loading test/a_test.dart", hidden=True), *flutter_case(2, 0, "ok"),
+                  *flutter_case(3, 0, "bad", result="failure"), *flutter_case(4, 0, "boom", result="error"),
+                  {"type": "testStart", "test": {"id": 5, "suiteID": 0, "name": "gap", "metadata": {"skipReason": "known: x"}}}, {"type": "testDone", "testID": 5, "result": "success", "skipped": True},
+                  {"type": "testStart", "test": {"id": 6, "suiteID": 0, "name": "skip", "metadata": {"skipReason": "later"}}}, {"type": "testDone", "testID": 6, "result": "success", "skipped": True},
+                  {"type": "done", "success": False}]
+        text = ndjson(events)
+        self.assertEqual(web_ui.flutter_outcomes(text), web_ui.junit_report(web_ui.flutter_machine_junit(text)["xml"])["counts"])
+        self.assertEqual(web_ui.flutter_outcomes(text), {"passed": 1, "failed": 1, "skipped": 1, "xfailed": 1, "xpassed": 0, "error": 1})
+
+    # --- JUnit validation and report (python/tests/test_validate_runner_junit.py, test_multi_test_runner.py, test_node_test_runner.py)
+    def test_native_junit_cases_are_counted(self):
+        xml = '<testsuite tests="3"><testcase name="pass"/><testcase name="fail"><failure message="oops"/></testcase><testcase name="skip"><skipped/></testcase></testsuite>'
+        self.assertEqual(web_ui.junit_inspect(xml), {"tests": 3, "failures": 1, "errors": 0, "skipped": 1})
+
+    def test_nested_suites_are_searched_at_any_depth(self):
+        xml = '<testsuite name="root"><testsuite name="group"><testcase name="inner"/></testsuite><testcase name="top"/></testsuite>'
+        self.assertEqual(web_ui.junit_inspect(xml)["tests"], 2)
+        self.assertEqual(web_ui.junit_inspect('<testsuites><testsuite><testsuite><testcase name="deep"/></testsuite></testsuite></testsuites>')["tests"], 1)
+
+    def test_invalid_reports_fail_closed(self):
+        for xml in ("<testsuite/>", "<testsuite><testcase/></testsuite>", "<testsuite><testcase name='x'></testsuite>", "<not-junit><testcase name='x'/></not-junit>", "", "   ", "<broken",
+                    '<testsuite xmlns="urn:x"><testcase name="a"/></testsuite>', '<!DOCTYPE testsuite [<!ENTITY a "b">]><testsuite><testcase name="&a;"/></testsuite>',
+                    '<!doctype x><testsuite><testcase name="a"/></testsuite>', '<testsuite><testcase name=""/></testsuite>', "<testsuites/>"):
+            with self.assertRaises(ValueError, msg=xml):
+                web_ui.junit_cases(xml)
+        with self.assertRaises(ValueError):
+            web_ui.junit_cases("<testsuite>" + '<testcase name="a"/>' * 60000 + "</testsuite>")
+        with self.assertRaises(ValueError):
+            web_ui.junit_cases(None)
+        self.assertEqual(len(web_ui.junit_cases("﻿" + '<testsuite><testcase name="a"/></testsuite>')), 1)
+        self.assertEqual(len(web_ui.junit_cases('<?xml version="1.0" encoding="UTF-8"?>\n<testsuite><testcase name="a"/></testsuite>')), 1)
+
+    def test_a_report_counts_outcomes_and_keeps_messages_out(self):
+        xml = ('<testsuites><testsuite><testcase classname="c" name="ok"/><testcase classname="c" name="bad"><failure message="SECRET_TOKEN">trace</failure></testcase>'
+               '<testcase classname="c" name="boom"><error>text only</error></testcase><testcase name="gap"><skipped message="Known: later"/></testcase>'
+               '<testcase name="xf"><skipped type="pytest.xfail" message="reason"/></testcase><testcase name="skip"><skipped/></testcase></testsuite></testsuites>')
+        report = web_ui.junit_report(xml)
+        self.assertEqual(report["counts"], {"passed": 1, "failed": 1, "skipped": 1, "xfailed": 2, "xpassed": 0, "error": 1})
+        self.assertEqual((report["total"], report["ok"], report["schema"]), (6, False, "junit-report/1"))
+        self.assertEqual([(f["name"], f["kind"]) for f in report["failures"]], [("bad", "failure"), ("boom", "error")])
+        self.assertEqual(report["failures"][0]["message_sha256"], hashlib.sha256(b"SECRET_TOKEN").hexdigest())
+        self.assertEqual(report["failures"][1]["message_sha256"], hashlib.sha256(b"text only").hexdigest())
+        self.assertNotIn("SECRET_TOKEN", json.dumps(report))
+        shown = web_ui.junit_report(xml, messages=True)
+        self.assertEqual([f["message"] for f in shown["failures"]], ["SECRET_TOKEN", "text only"])
+
+    def test_the_node_report_golden(self):
+        xml = '<testsuites><testcase name="ok"/><testcase name="bad"><failure message="boom">stack</failure></testcase><testcase name="skip"><skipped/></testcase></testsuites>'
+        report = web_ui.junit_report(xml, messages=True)
+        self.assertEqual((report["counts"]["passed"], report["counts"]["failed"], report["counts"]["skipped"], report["total"]), (1, 1, 1, 3))
+        self.assertEqual([(f["name"], f["message"]) for f in report["failures"]], [("bad", "boom")])
+        self.assertEqual([c["name"] for c in web_ui.junit_cases(xml)], ["ok", "bad", "skip"])
+
+    def test_a_message_longer_than_the_limit_is_cut_by_characters_not_bytes(self):
+        xml = f'<testsuite><testcase classname="{"é" * 300}" name="{"😀" * 300}"><failure message="{"x" * 3000}"/></testcase></testsuite>'
+        failure = web_ui.junit_report(xml, messages=True)["failures"][0]
+        self.assertEqual((len(failure["class"]), len(failure["name"]), len(failure["message"])), (200, 200, 2000))
+        self.assertEqual(failure["name"], "😀" * 200)
+
+    def test_text_after_a_comment_or_cdata_is_the_message(self):
+        xml = '<testsuite><testcase name="a"><failure>one<!-- c -->two<![CDATA[ <three> ]]><b/>ignored</failure></testcase></testsuite>'
+        self.assertEqual(web_ui.junit_cases(xml)[0]["message"], "onetwo <three>")
+
+    # --- failure history (python/tests/test_junit_history.py)
+    def sample(self, test="test_one", kind="failure", report="run-specific"):
+        return {"category": "test_failure", "context": {"repository": "myon-bioinformatics/flutter_navigation_basic", "report_id": report, "commit_sha": None},
+                "value": {"class": "test_oracle", "test": test, "kind": kind}}
+
+    def test_the_fingerprint_ignores_run_specific_context(self):
+        a = web_ui.junit_history_load(json.dumps(self.sample(report="first")) + "\n")
+        b = web_ui.junit_history_load(json.dumps(self.sample(report="second")) + "\n")
+        self.assertEqual(a[0]["fingerprint"], b[0]["fingerprint"])
+        self.assertTrue(a[0]["fingerprint"].startswith("junit-basic-v1:"))
+        token = json.dumps({"class": "test_oracle", "kind": "failure", "repository": "myon-bioinformatics/flutter_navigation_basic", "test": "test_one"}, separators=(",", ":"))
+        self.assertEqual(a[0]["fingerprint"], "junit-basic-v1:" + hashlib.sha256(token.encode()).hexdigest())
+
+    def test_new_recurring_and_resolved_with_counts(self):
+        rows = lambda name, count: web_ui.junit_history_load([self.sample(name)] * count)
+        report = web_ui.junit_history(rows("same", 2) + rows("new", 1), rows("old", 1) + rows("same", 1), commit_sha=self.SHA, run_id="42", previous_commit_sha="b" * 40, previous_run_id="41")
+        self.assertEqual(report["summary"], {"new": 1, "recurring": 1, "resolved": 1})
+        recurring = next(x for x in report["findings"] if x["status"] == "recurring")
+        self.assertEqual((recurring["previous_count"], recurring["current_count"]), (1, 2))
+        self.assertEqual([f["fingerprint"] for f in report["findings"]], sorted(f["fingerprint"] for f in report["findings"]))
+        self.assertEqual((report["schema"], report["fingerprint_scope"]), ("junit-history/1", "repository+class+test+kind (not root cause)"))
+
+    def test_an_error_and_a_failure_have_distinct_fingerprints(self):
+        found = web_ui.junit_history_load([self.sample(kind=k) for k in ("failure", "error")])
+        self.assertEqual(len({x["fingerprint"] for x in found}), 2)
+
+    def test_bad_history_input_is_an_error(self):
+        for kwargs in ({"commit_sha": "invalid", "run_id": "42"}, {"commit_sha": self.SHA, "run_id": "4x"}, {"commit_sha": self.SHA, "run_id": "42", "previous_commit_sha": "zz"},
+                       {"commit_sha": self.SHA, "run_id": "42", "previous_run_id": "-1"}, {"commit_sha": self.SHA + "\n", "run_id": "42"}):
+            with self.assertRaises(ValueError, msg=kwargs):
+                web_ui.junit_history([], [], **kwargs)
+        for records in ([{"category": "test_failure", "context": {}, "value": {}}], [{"category": "test_failure", "context": [], "value": {}}],
+                        [{"category": "test_failure", "context": {"repository": "a/b"}, "value": {"class": "", "test": "t", "kind": "failure"}}], '{"category": "test_failure"}\n{broken'):
+            with self.assertRaises(ValueError, msg=records):
+                web_ui.junit_history_load(records)
+        self.assertEqual(web_ui.junit_history_load([{"category": "other"}, 5, None]), [])
+
+    def test_identities_come_straight_from_a_report_without_parameters_or_messages(self):
+        xml = ('<testsuite><testcase classname="tests.test_a[py3]" name="test_x[1-2]"><failure message="m1"/></testcase><testcase classname="tests.test_a" name="test_x[3-4]"><error message="m2"/></testcase>'
+               '<testcase name="solo"><failure/></testcase><testcase name="fine"/></testsuite>')
+        got = web_ui.junit_failure_records(xml, "o/n")
+        self.assertEqual([r["value"] for r in got["records"]], [{"class": "tests.test_a", "test": "test_x", "kind": "failure"}, {"class": "tests.test_a", "test": "test_x", "kind": "error"},
+                                                                   {"class": "(none)", "test": "solo", "kind": "failure"}])
+        self.assertFalse(got["truncated"])
+        self.assertNotIn("m1", json.dumps(got))
+        many = '<testsuite>' + "".join(f'<testcase name="t{i}"><failure/></testcase>' for i in range(7)) + "</testsuite>"
+        self.assertEqual((len(web_ui.junit_failure_records(many, "o/n", max_cases=5)["records"]), web_ui.junit_failure_records(many, "o/n", max_cases=5)["truncated"]), (5, True))
+        self.assertFalse(web_ui.junit_failure_records(many, "o/n", max_cases=7)["truncated"])
+        for repo in ("", "no-slash", "a/b/c", "a/ b", None):
+            with self.assertRaises(ValueError, msg=repo):
+                web_ui.junit_failure_records(xml, repo)
+
+    def test_two_reports_diff_into_new_recurring_and_resolved(self):
+        suite = lambda *names: "<testsuite>" + "".join(f'<testcase classname="c" name="{n}"><failure/></testcase>' for n in names) + '<testcase name="fine"/></testsuite>'
+        diff = web_ui.junit_diff(suite("same", "new", "same[2]"), suite("same", "gone"))
+        self.assertEqual(diff["summary"], {"new": 1, "recurring": 1, "resolved": 1})
+        recurring = next(f for f in diff["findings"] if f["status"] == "recurring")
+        self.assertEqual((recurring["current_count"], recurring["previous_count"]), (2, 1), "a parameterized failure shares its identity")
+        self.assertEqual(diff["schema"], "junit-diff/1")
+
+    # --- ledger and attempt records (multi_test_runner)
+    def test_the_failure_ledger_accumulates_without_raw_text_and_rejects_corruption(self):
+        failure = {"kind": "failure", "message_sha256": "a" * 64}
+        attempts = [{"failures": [failure]}]
+        once = web_ui.failure_ledger_update(None, "node", attempts)
+        twice = web_ui.failure_ledger_update(once, "node", attempts)
+        self.assertEqual((once["schema"], next(iter(once["patterns"].values()))["occurrences"], next(iter(twice["patterns"].values()))["occurrences"]), ("failure-patterns/1", 1, 2))
+        self.assertEqual(next(iter(once["patterns"].values()))["occurrences"], 1, "the input ledger is not changed")
+        for broken in ({"schema": "x", "patterns": {}}, {"schema": "failure-patterns/1", "patterns": []}, [], "text"):
+            with self.assertRaises(ValueError, msg=broken):
+                web_ui.failure_ledger_update(broken, "node", attempts)
+        many = [{"failures": [{"kind": "failure", "message_sha256": f"{i:064x}"} for i in range(501)]}]
+        with self.assertRaises(ValueError):
+            web_ui.failure_ledger_update(None, "node", many)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "patterns.json"
+            web_ui.failure_ledger_file(path, "node", attempts)
+            web_ui.failure_ledger_file(path, "node", attempts)
+            self.assertEqual(next(iter(json.loads(path.read_text())["patterns"].values()))["occurrences"], 2)
+            path.write_text("{broken")
+            with self.assertRaises(ValueError):
+                web_ui.failure_ledger_file(path, "node", attempts)
+            self.assertEqual(path.read_text(), "{broken")
+
+    def test_attempt_records_say_when_a_retry_recovered(self):
+        first, second = {"exit_code": 1}, {"exit_code": 0}
+        self.assertEqual({k: web_ui.attempt_history("deno", ["a.ts"], [first, second])[k] for k in ("initial_failed", "flaky_recovered")}, {"initial_failed": True, "flaky_recovered": True})
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [first, first])["flaky_recovered"])
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [second])["initial_failed"])
+        self.assertFalse(web_ui.attempt_history("deno", ["a.ts"], [first])["flaky_recovered"])
+
+    # --- allowlisted runners (python/tests/test_multi_test_runner.py, test_node_test_runner.py)
+    def test_runner_commands_are_allowlisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "e2e").mkdir()
+            for file in ("e2e/test.spec.ts", "test.ts", "test_pw.py"):
+                (root / file).write_text("test")
+            report = root / "report.xml"
+            deno, cwd, env = web_ui.runner_command("deno", root=root, files=["test.ts"], report=report)
+            self.assertEqual((deno[:3], cwd, env), (["deno", "test", "--junit-path"], root.resolve(), {}))
+            node, cwd, env = web_ui.runner_command("playwright-node", root=root, files=["e2e/test.spec.ts"], report=report)
+            self.assertEqual((node[:4], cwd, env["PLAYWRIGHT_JUNIT_OUTPUT_FILE"]), (["npx", "--no-install", "playwright", "test"], root.resolve() / "e2e", str(report.resolve())))
+            self.assertEqual(node[-1], "test.spec.ts")
+            py, _, _ = web_ui.runner_command("playwright-python", root=root, files=["test_pw.py"], report=report)
+            self.assertEqual(py[:3], [sys.executable, "-m", "pytest"])
+            for files in ([], ["../escape.py"], ["not-found.ts"]):
+                with self.assertRaises(ValueError, msg=files):
+                    web_ui.runner_command("deno", root=root, files=files, report=report)
+            (root.parent / "outside.spec.ts").write_text("test")
+            for runner, files in (("playwright-node", ["test.ts"]), ("make", ["test.ts"]), ("deno", ["../outside.spec.ts"])):
+                with self.assertRaises(ValueError, msg=runner):
+                    web_ui.runner_command(runner, root=root, files=files, report=report)
+            (root.parent / "outside.spec.ts").unlink()
+
+    def suite(self, tmp, invoke, **kwargs):
+        (tmp / "test_pw.py").write_text("test")
+        return web_ui.run_test_suite("playwright-python", root=tmp, files=["test_pw.py"], report=kwargs.pop("report", tmp / "r.xml"), history=kwargs.pop("history", tmp / "history.json"),
+                                     invoke=invoke, **kwargs)
+
+    def test_a_retry_keeps_the_first_failure_and_hashes_the_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            calls = []
+            def invoke(cmd, **kwargs):
+                calls.append(cmd)
+                output = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--junitxml=")))
+                if len(calls) == 1:
+                    output.write_text('<testsuites><testsuite><testcase name="bad"><failure message="SECRET_TOKEN"/></testcase></testsuite></testsuites>')
+                    return mock.Mock(returncode=1)
+                output.write_text('<testsuites><testsuite><testcase name="ok"/></testsuite></testsuites>')
+                return mock.Mock(returncode=0)
+            self.assertEqual(self.suite(tmp, invoke, retry_failed=True), 1)
+            data = json.loads((tmp / "history.json").read_text())
+            self.assertEqual((len(calls), len(data["attempts"]), data["initial_failed"], data["flaky_recovered"]), (2, 2, True, True))
+            self.assertNotIn("SECRET_TOKEN", (tmp / "history.json").read_text())
+            self.assertEqual(data["attempts"][0]["failures"][0]["message_sha256"], hashlib.sha256(b"SECRET_TOKEN").hexdigest())
+
+    def test_missing_or_all_skipped_junit_fails_closed(self):
+        for xml in (None, '<testsuites><testsuite><testcase name="skip"><skipped/></testcase></testsuite></testsuites>'):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                def invoke(cmd, **kwargs):
+                    if xml:
+                        (tmp / "r.xml").write_text(xml)
+                    return mock.Mock(returncode=0)
+                self.assertEqual(self.suite(tmp, invoke), 1, xml)
+
+    def test_the_first_success_removes_a_previous_retry_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            retry = tmp / "r.retry.xml"
+            retry.write_text('<testsuites><testcase name="old-retry"/></testsuites>')
+            def invoke(cmd, **kwargs):
+                (tmp / "r.xml").write_text('<testsuites><testcase name="ok"/></testsuites>')
+                return mock.Mock(returncode=0)
+            self.assertEqual(self.suite(tmp, invoke, retry_failed=True), 0)
+            self.assertFalse(retry.exists())
+            self.assertEqual(len(json.loads((tmp / "history.json").read_text())["attempts"]), 1)
+
+    def test_a_stale_report_never_stands_in_and_a_missing_runner_is_127(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "r.xml").write_text('<testsuites><testcase name="stale"/></testsuites>')
+            def missing(cmd, **kwargs):
+                raise FileNotFoundError()
+            self.assertEqual(self.suite(tmp, missing), 127)
+            self.assertFalse((tmp / "r.xml").exists())
+            def slow(cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, 1)
+            self.assertEqual(self.suite(tmp, slow), 124)
+            with self.assertRaises(ValueError):
+                self.suite(tmp, missing, timeout=0)
+
+    def test_a_corrupt_ledger_does_not_mask_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            ledger = tmp / "ledger.json"
+            ledger.write_text("{broken")
+            def invoke(cmd, **kwargs):
+                (tmp / "r.xml").write_text('<testsuites><testcase name="bad"><failure message="expected"/></testcase></testsuites>')
+                return mock.Mock(returncode=1)
+            with mock.patch("sys.stderr") as err:
+                self.assertEqual(self.suite(tmp, invoke, ledger=ledger), 1)
+            self.assertEqual(ledger.read_text(), "{broken")
+            self.assertIn("warning: failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
+
+    @unittest.skipUnless(shutil.which("node"), "Node unavailable")
+    def test_real_node_success_failure_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            js = tmp / "checks.test.mjs"
+            js.write_text("import test from 'node:test';\ntest('passes', () => {});\ntest('fails', () => {throw new Error('sentinel failure')});\n")
+            report, receipt = tmp / "node.xml", tmp / "summary.json"
+            with mock.patch("sys.stdout"):
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt), 1)
+                data = json.loads(receipt.read_text())
+                self.assertEqual((data["failed"], data["passed"]), (1, 1))
+                self.assertIn("sentinel failure", data["failures"][0]["message"])
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt, name_pattern="^passes$"), 0)
+                self.assertEqual(json.loads(receipt.read_text())["failed"], 0)
+                receipt.write_text('{"ok":true}')
+                self.assertNotEqual(web_ui.node_test_run(root=tmp, files=[js.name], report=report, receipt=receipt, name_pattern="^never-matches$"), 0)
+                self.assertFalse(receipt.exists())
+                for style in (js.name, "./" + js.name, str(js)):
+                    self.assertNotEqual(web_ui.node_test_run(root=tmp, files=[style], report=report, name_pattern="^never-matches$"), 0, style)
+
+    def test_node_runner_fails_closed_without_node_or_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report, receipt = tmp / "node.xml", tmp / "summary.json"
+            report.write_text('<testsuites><testcase name="stale"/></testsuites>')
+            receipt.write_text('{"ok":true}')
+            with mock.patch("sys.stderr"):
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=["x.test.mjs"], report=report, receipt=receipt, node="__node_does_not_exist__"), 127)
+                self.assertEqual((report.exists(), receipt.exists()), (False, False))
+                self.assertEqual(web_ui.node_test_run(root=tmp, files=[], report=report), 2)
+
+    # --- a child that is meant to fail (python/tests/test_expected_child_failure.py)
+    def child(self, expect, code, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "evidence"
+            status, receipt = web_ui.expected_child_failure([sys.executable, "-c", code], expect_exit=expect, output_dir=out, **kwargs)
+            return status, receipt, {n: (out / n).read_bytes() for n in ("stdout.bin", "stderr.bin")}, json.loads((out / "receipt.json").read_text())
+
+    def test_an_expected_failure_is_recorded_without_failing_the_outer_test(self):
+        status, receipt, streams, saved = self.child([7], "import sys; print('intentional stdout'); print('intentional stderr', file=sys.stderr); raise SystemExit(7)")
+        self.assertEqual((status, receipt["schema"], receipt["exit_code"], receipt["expected_exit_codes"], receipt["matched_expectation"], receipt["argument_count"]),
+                         (0, "expected-child-failure/1", 7, [7], True, 2))
+        self.assertEqual((streams["stdout.bin"], streams["stderr.bin"]), (b"intentional stdout\n", b"intentional stderr\n"))
+        self.assertEqual(saved, receipt)
+
+    def test_an_unexpected_result_fails_the_outer_contract(self):
+        status, receipt, _, _ = self.child([7], "raise SystemExit(3)")
+        self.assertEqual((status, receipt["exit_code"], receipt["matched_expectation"]), (1, 3, False))
+
+    def test_zero_cannot_be_an_expected_failure(self):
+        for expect in ([0], [], [7, 0]):
+            with self.assertRaises(ValueError, msg=expect):
+                web_ui.expected_child_failure([sys.executable, "-c", "pass"], expect_exit=expect, output_dir=Path(tempfile.gettempdir()) / "unused-evidence")
+        with self.assertRaises(ValueError):
+            web_ui.expected_child_failure([sys.executable], expect_exit=[7], output_dir=Path(tempfile.gettempdir()) / "unused-evidence", timeout=0)
+        with self.assertRaises(ValueError):
+            web_ui.expected_child_failure([], expect_exit=[7], output_dir=Path(tempfile.gettempdir()) / "unused-evidence")
+
+    def test_a_timeout_is_bounded_and_recorded(self):
+        status, receipt, _, _ = self.child([7], "import time; time.sleep(5)", timeout=0.2)
+        self.assertEqual((status, receipt["timed_out"], receipt["exit_code"], receipt["matched_expectation"]), (1, True, None, False))
+        self.assertGreater(receipt["stream_limit_bytes"], 0)
+
+    def test_large_output_is_truncated_and_marked(self):
+        status, receipt, streams, _ = self.child([7], "import sys; sys.stdout.write('x' * (2 * 1024 * 1024)); raise SystemExit(7)")
+        self.assertEqual((status, receipt["stdout_truncated"], receipt["stderr_truncated"], len(streams["stdout.bin"])), (0, True, False, receipt["stream_limit_bytes"]))
+
+    # --- what the page shows
+    def test_the_page_reads_either_kind_and_explains_what_it_could_not_do(self):
+        junit = '<testsuite><testcase name="a"/><testcase classname="c" name="b"><failure message="m"/></testcase></testsuite>'
+        read = web_ui.report_read(junit)
+        self.assertEqual((read["kind"], read["line"], read["ok"], len(read["failures"])), ("junit", "passed=1 failed=1 skipped=0 xfailed=0 xpassed=0 error=0 total=2 ok=false", False, 1))
+        stream = ndjson([{"type": "suite", "suite": {"id": 0, "path": "t.dart"}}, *flutter_case(1, 0, "ok"), *flutter_case(2, 0, "bad", result="failure"), {"type": "done", "success": False}])
+        flutter = web_ui.report_read(stream)
+        self.assertEqual((flutter["kind"], flutter["counts"]["failed"], flutter["failures"][0]["name"], flutter["junit"] is not None, flutter["convert_error"]), ("flutter", 1, "bad", True, None))
+        partial = web_ui.report_read(ndjson(flutter_case(1, 0, "ok")))
+        self.assertEqual((partial["junit"], partial["convert_error"], partial["failures"]), (None, "incomplete Flutter machine report", []))
+        self.assertIn("diff", web_ui.report_read(junit, junit))
+        self.assertNotIn("diff", web_ui.report_read(junit, "   "))
+        with self.assertRaises(ValueError):
+            web_ui.report_read(stream, junit)
+        for text in ("", "plain words", "[1]"):
+            with self.assertRaises(ValueError, msg=text):
+                web_ui.report_read(text)
+        self.assertEqual([web_ui.report_kind(t) for t in ("<a/>", "  \n<a/>", "﻿<a/>", "{}", " {", "x", "")], ["junit", "junit", "junit", "flutter", "flutter", None, None])
+
+    def test_the_command_line_reads_reports_and_converts_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            good, bad, older = tmp / "good.xml", tmp / "bad.xml", tmp / "older.xml"
+            good.write_text('<testsuite><testcase name="a"/></testsuite>')
+            bad.write_text('<testsuite><testcase name="a"/><testcase name="b"><failure message="m"/></testcase></testsuite>')
+            older.write_text('<testsuite><testcase name="a"/><testcase name="gone"><failure/></testcase></testsuite>')
+            run = lambda *args, **kw: subprocess.run([sys.executable, "-S", str(ROOT / "web_ui.py"), *args], capture_output=True, text=True, timeout=60, **kw)
+            ok = run("--junit", str(good))
+            self.assertEqual((ok.returncode, json.loads(ok.stdout)["ok"]), (0, True))
+            failing = run("--junit", str(bad), "--previous", str(older))
+            self.assertEqual(failing.returncode, 1)
+            self.assertEqual(json.loads(failing.stdout)["diff"]["summary"], {"new": 1, "recurring": 0, "resolved": 1})
+            both = run("--junit", str(good), str(bad))
+            self.assertEqual((both.returncode, len(both.stdout.strip().splitlines())), (1, 2))
+            invalid = run("--junit", str(tmp / "missing.xml"))
+            self.assertEqual(invalid.returncode, 2)
+            self.assertNotIn(str(tmp), invalid.stderr.replace("missing.xml", ""))
+            events = tmp / "events.jsonl"
+            events.write_text(ndjson([*flutter_case(1, 0, "ok"), {"type": "done", "success": True}]))
+            counts = run("--flutter-events", str(events), "--to", str(tmp / "out.xml"))
+            self.assertEqual(counts.returncode, 0, counts.stderr)
+            self.assertIn("passed=1", counts.stdout)
+            self.assertEqual(web_ui.junit_inspect((tmp / "out.xml").read_text())["tests"], 1)
+            events.write_text("{broken")
+            self.assertEqual(run("--flutter-events", str(events)).returncode, 1)
+            self.assertEqual(run("--flutter-events", str(events), "--to", str(tmp / "never.xml")).returncode, 2)
+            self.assertFalse((tmp / "never.xml").exists())
+            expected = run("--expect-exit", "7", "--output-dir", str(tmp / "evidence"), "--", sys.executable, "-c", "raise SystemExit(7)")
+            self.assertEqual(expected.returncode, 0, expected.stderr)
+            self.assertEqual(json.loads((tmp / "evidence" / "receipt.json").read_text())["matched_expectation"], True)
+            self.assertEqual(run("--expect-exit", "0", "--output-dir", str(tmp / "e2"), "--", sys.executable, "-c", "pass").returncode, 2)
 
 
 if __name__ == '__main__':

@@ -33,6 +33,7 @@ from typing import Any
 import urllib.error
 import urllib.request
 import zlib
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qsl, urlsplit
 
 THEMES = ("modern", "github-like")
@@ -4169,6 +4170,9 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     # The irony part is lower on the page: the probe wants every element inside the first screen, so this one opens at its heading (#irony-title).
     "web-ui-irony": {"page": "playground.html", "fragment": "irony-title", "elements": ["#irony-title", "#playground [data-irony-handle]", "#playground [data-irony-next]"],
                      "click": {"target": "#playground [data-irony-next]", "observe": "#playground [data-irony-arena]", "attribute": "data-spawn", "before": None, "after": ""}},
+    "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
+                           "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
+                                     "after": "Nothing to read: paste a report first."}},
     "web-ui-photo-studio": {"page": "photo-studio.html", "elements": ["#photo h2", "#photo [data-status]", "#photo label[for=\"photo-file\"]", "#photo [data-paste]", "#photo .ui-photo-help summary"],
                             "click": {"target": "#photo .ui-photo-help summary", "observe": "#photo .ui-photo-help", "attribute": "open", "before": None, "after": ""}},
 }
@@ -4879,6 +4883,642 @@ def playground_document(*, theme: str = "modern") -> str:
                            theme=theme, css=bundled_css())
 
 
+# --- Test reports: JUnit evidence, Flutter machine events, outcome tallies, failure history and the allowlisted runners -----------------
+# Absorbs flutter_navigation_basic's python/outcomes.py, flutter_machine_junit.py, validate_runner_junit.py, junit_history.py, failure_identity.py (the identity rule),
+# multi_test_runner.py, node_test_runner.py and expected_child_failure.py. Their Python tests (python/tests/test_outcomes.py, test_flutter_machine_junit.py,
+# test_validate_runner_junit.py, test_junit_history.py, test_multi_test_runner.py, test_node_test_runner.py, test_expected_child_failure.py) are the golden values;
+# vendor/xprobe.py's ``cases_from_junit`` supplies the identity rule (parameter suffix removed, first failure/error child, DTD and entities refused, 1 MB). Python is
+# the reference; ``report.js`` must agree on everything that needs no process or file.
+# Deliberate differences from the originals: (1) a failed, non-hidden "loading <file>" test counts as an ``error`` (the tally used to skip every loading test, so a
+# compile failure looked like zero tests); (2) ``ok`` also needs a passed test: nothing ran is not green; (3) a boolean is never an ID and only JSON ``true`` is a flag
+# (the page cannot tell ``1.0`` from ``1``, so the Python side does not either); (4) only strings are used as names, reasons and error text (``str(obj)`` differs
+# between languages); (5) messages never contain the input or the parser position; (6) characters XML 1.0 cannot carry are written as U+FFFD, so the converted report
+# always parses; (7) a ``skipped`` whose message starts with ``known:`` or ``xfail:`` (or whose type is ``pytest.xfail``) is counted as ``xfailed``; (8) a missing
+# class is written as ``(none)`` in a failure identity (the originals refused the whole report); (9) lines are split on \r\n, \r and \n only.
+OUTCOME_KEYS = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
+JUNIT_MAX_BYTES = 1_000_000
+JUNIT_MAX_IDENTITIES = 1000
+FLUTTER_RESULTS = ("success", "failure", "error")
+TEST_RUNNERS = ("deno", "playwright-node", "playwright-python")
+LEDGER_MAX_PATTERNS = 500
+CHILD_STREAM_LIMIT = 1024 * 1024
+_XML_BAD = re.compile("[^\t\n\r -\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def _is_int(value: Any) -> bool:
+    return type(value) is int
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError("JSON constants (NaN, Infinity) are not allowed")
+
+
+def _json_line(line: str) -> Any:
+    return json.loads(line, parse_constant=_reject_json_constant)
+
+
+def _text_lines(text: str) -> list[str]:
+    return re.split(r"\r\n|\r|\n", text)
+
+
+def _only_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _only_str(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def outcome_counts() -> dict[str, int]:
+    return {key: 0 for key in OUTCOME_KEYS}
+
+
+def counts_line(counts: dict[str, int]) -> str:
+    """``passed=2 failed=1 skipped=3 xfailed=1 xpassed=0 error=0``: pytest's mix on one line."""
+    return " ".join(f"{key}={counts.get(key, 0)}" for key in OUTCOME_KEYS)
+
+
+def counts_summary(counts: dict[str, int], *, source: str) -> dict[str, Any]:
+    """The tally as a receipt. ``ok`` needs no failure and no error and at least one passed test (nothing ran is not green)."""
+    clean = {key: int(counts.get(key, 0)) for key in OUTCOME_KEYS}
+    return {"source": source, "counts": clean, "total": sum(clean.values()), "ok": clean["failed"] == 0 and clean["error"] == 0 and clean["passed"] > 0}
+
+
+def flutter_outcomes(text: str) -> dict[str, int]:
+    """Tally Flutter / ``package:test`` JSON reporter events (one JSON object per line).
+
+    Flutter has success, failure, error and skip. There is no native xfail: a skip whose reason starts with ``known:`` or ``xfail:`` is counted as ``xfailed``, so a catalogue
+    can mark known gaps without failing CI. A line that is not JSON, or JSON that is not an object, counts as an ``error`` (a truncated file must not look like a green empty run).
+    Hidden tests are not counted, and neither is a successful "loading <file>" pseudo-test; a failed one is an ``error``.
+    """
+    counts, starts = outcome_counts(), {}
+    for raw in _text_lines(text):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = _json_line(line)
+        except (ValueError, RecursionError):
+            counts["error"] += 1
+            continue
+        if not isinstance(event, dict):
+            counts["error"] += 1
+            continue
+        kind = event.get("type")
+        if kind == "testStart":
+            test = event.get("test")
+            if test is not None and not isinstance(test, dict):
+                counts["error"] += 1
+            elif _is_int((test or {}).get("id")):
+                starts[test["id"]] = test
+        elif kind == "testDone":
+            if event.get("hidden") is True:
+                continue
+            tid = event.get("testID")
+            meta = starts.get(tid) if _is_int(tid) else None
+            result, skipped = event.get("result"), event.get("skipped") is True
+            if _only_str((meta or {}).get("name")).startswith("loading ") and result == "success":
+                continue
+            reason = _only_str(_only_dict((meta or {}).get("metadata")).get("skipReason")).lower()
+            if skipped or result == "skipped":
+                counts["xfailed" if reason.startswith(("known:", "xfail:")) else "skipped"] += 1
+            elif result == "success":
+                counts["passed"] += 1
+            elif result == "error":
+                counts["error"] += 1
+            else:
+                counts["failed"] += 1
+    return counts
+
+
+def _xml_clean(text: str) -> str:
+    return _XML_BAD.sub("\ufffd", text)
+
+
+def _xml_text(text: str) -> str:
+    return _xml_clean(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _xml_attr(text: str) -> str:
+    return _xml_text(text).replace('"', "&quot;").replace("\n", "&#10;").replace("\r", "&#13;").replace("\t", "&#09;")
+
+
+def flutter_machine_junit(text: str) -> dict[str, Any]:
+    """Convert Flutter machine JSON test events into per-case JUnit XML.
+
+    Follows the Dart test JSON reporter protocol: a skipped test reports ``result: "success"`` with ``skipped: true``; hidden pseudo-tests (a successful ``loading <file>``) are
+    dropped but a failed load stays visible, so a compile error is never lost; ``classname`` is the suite path, so the same test name in two files keeps two identities.
+    Anything incomplete (no ``done``, a test without a result, an orphan or repeated event, no visible test) is a ``ValueError``. Returns ``{"xml", "tests"}``.
+    """
+    suites: dict[int, str] = {}
+    tests: dict[int, dict[str, Any]] = {}
+    done = False
+    for raw in _text_lines(text):
+        if not raw.strip():
+            continue
+        try:
+            event = _json_line(raw)
+        except (ValueError, RecursionError):
+            raise ValueError("invalid JSON in a Flutter event") from None
+        if not isinstance(event, dict):
+            raise ValueError("invalid Flutter event")
+        kind = event.get("type")
+        if kind == "suite":
+            suite = _only_dict(event.get("suite"))
+            if _is_int(suite.get("id")):
+                suites[suite["id"]] = _only_str(suite.get("path")) or "flutter"
+        elif kind == "testStart":
+            test = _only_dict(event.get("test"))
+            identifier = test.get("id")
+            if not _is_int(identifier) or identifier in tests:
+                raise ValueError("duplicate or missing Flutter test ID")
+            suite_id = test.get("suiteID")
+            tests[identifier] = {"name": _only_str(test.get("name")), "suite": suites.get(suite_id, "flutter") if _is_int(suite_id) else "flutter",
+                                 "skip_reason": _only_str(_only_dict(test.get("metadata")).get("skipReason")),
+                                 "result": None, "skipped": False, "hidden": False, "errors": []}
+        elif kind == "error":
+            identifier = event.get("testID")
+            if not _is_int(identifier) or identifier not in tests:
+                raise ValueError("orphan Flutter error")
+            tests[identifier]["errors"].append("\n".join(_only_str(event.get(k)) for k in ("error", "stackTrace") if _only_str(event.get(k))))
+        elif kind == "testDone":
+            identifier = event.get("testID")
+            if not _is_int(identifier) or identifier not in tests or tests[identifier]["result"] is not None:
+                raise ValueError("orphan or duplicate Flutter completion")
+            item = tests[identifier]
+            item["result"], item["skipped"], item["hidden"] = event.get("result"), event.get("skipped") is True, event.get("hidden") is True
+        elif kind == "done":
+            done = True
+    if not done or any(not t["name"] or t["result"] not in FLUTTER_RESULTS for t in tests.values()):
+        raise ValueError("incomplete Flutter machine report")
+    visible = [t for _, t in sorted(tests.items()) if not t["hidden"]]
+    if not visible:
+        raise ValueError("Flutter machine report contains no visible tests")
+    rows = []
+    for item in visible:
+        head = f'<testcase name="{_xml_attr(item["name"])}" classname="{_xml_attr(item["suite"])}"'
+        if item["result"] in ("failure", "error"):
+            body = _xml_text("\n\n".join(item["errors"]))
+            tag = f'<{item["result"]} message="Flutter test {item["result"]}"'
+            rows.append(f"  {head}>\n    {tag}>{body}</{item['result']}>\n  </testcase>" if body else f"  {head}>\n    {tag} />\n  </testcase>")
+        elif item["skipped"]:
+            rows.append(f'  {head}>\n    <skipped message="{_xml_attr(item["skip_reason"])}" />\n  </testcase>')
+        else:
+            rows.append(f"  {head} />")
+    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="{len(visible)}">\n' + "\n".join(rows) + "\n</testsuite>\n"
+    return {"xml": xml, "tests": len(visible)}
+
+
+def _junit_root(text: str, *, max_bytes: int = JUNIT_MAX_BYTES):
+    if not isinstance(text, str):
+        raise ValueError("JUnit text must be a string")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    if len(text.encode("utf-8", "surrogatepass")) > max_bytes:
+        raise ValueError("JUnit exceeds the byte limit")
+    if re.search(r"<![ \t\n\r\f\v]*(?:DOCTYPE|ENTITY)", text, re.I | re.A):
+        raise ValueError("DTD and entity declarations are unsupported")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        raise ValueError("missing or malformed JUnit XML") from None
+    if root.tag not in ("testsuite", "testsuites"):
+        raise ValueError("not a JUnit testsuite")
+    return root
+
+
+def _first_text(element: Any) -> str:
+    return element.text or ""
+
+
+def junit_cases(text: str, *, max_bytes: int = JUNIT_MAX_BYTES) -> list[dict[str, Any]]:
+    """Every ``testcase`` at any depth (Node nests describe() blocks as child suites), failing closed: missing or malformed XML, a root that is not a testsuite, no testcase,
+    a testcase without a name, a DTD or entity declaration, or more than ``max_bytes`` is a ``ValueError``.
+
+    A case is ``failed`` (first failure/error child is ``failure``), ``error`` (it is ``error``), ``xfailed`` / ``skipped`` (a ``skipped`` child) or ``passed``.
+    """
+    root = _junit_root(text, max_bytes=max_bytes)
+    out = []
+    for case in root.iter("testcase"):
+        name = case.get("name") or ""
+        if not name:
+            raise ValueError("JUnit testcase without name")
+        problem = next((child for child in case if child.tag in ("failure", "error")), None)
+        skip = case.find("skipped")
+        if problem is not None:
+            outcome = "failed" if problem.tag == "failure" else "error"
+        elif skip is not None:
+            reason = (skip.get("message") or "")
+            outcome = "xfailed" if skip.get("type") == "pytest.xfail" or reason.lower().startswith(("known:", "xfail:")) else "skipped"
+        else:
+            outcome = "passed"
+        out.append({"name": name, "class": case.get("classname") or "", "outcome": outcome, "kind": problem.tag if problem is not None else None,
+                    "message": (problem.get("message") or _first_text(problem)).strip() if problem is not None else "",
+                    "failure": case.find("failure") is not None, "error": case.find("error") is not None, "skipped": skip is not None})
+    if not out:
+        raise ValueError("JUnit report contains no testcases")
+    return out
+
+
+def junit_inspect(text: str) -> dict[str, int]:
+    """The check made before a runner's report joins a shared collection (``validate_runner_junit.inspect``): cases with a failure, with an error, and skipped ones."""
+    cases = junit_cases(text)
+    return {"tests": len(cases), "failures": sum(c["failure"] for c in cases), "errors": sum(c["error"] for c in cases), "skipped": sum(c["skipped"] for c in cases)}
+
+
+def _clip(text: str, limit: int) -> str:
+    return text[:limit]
+
+
+def junit_report(text: str, *, messages: bool = False) -> dict[str, Any]:
+    """Outcome counts and the failing cases of a JUnit report. A failure carries the SHA-256 of its message, not the message (``messages=True`` adds the first 2,000 characters)."""
+    cases = junit_cases(text)
+    counts = outcome_counts()
+    for case in cases:
+        counts[case["outcome"]] += 1
+    failures = []
+    for case in cases:
+        if case["kind"] is None:
+            continue
+        item = {"class": _clip(case["class"], 200), "name": _clip(case["name"], 200), "kind": case["kind"],
+                "message_sha256": hashlib.sha256(case["message"].encode("utf-8")).hexdigest()}
+        if messages:
+            item["message"] = _clip(case["message"], 2000)
+        failures.append(item)
+    summary = counts_summary(counts, source="junit")
+    return {"schema": "junit-report/1", "total": len(cases), "counts": summary["counts"], "ok": summary["ok"], "failures": failures}
+
+
+def junit_failure_records(text: str, repository: str = "local/report", *, max_cases: int = JUNIT_MAX_IDENTITIES) -> dict[str, Any]:
+    """Failure identities in the compact corpus shape (``category``, ``context``, ``value``): class, test and kind of each failing case, parameter suffix (from ``[``) removed,
+    messages and logs omitted. Returns ``{"records", "truncated"}``; more than ``max_cases`` failures is truncated, not an error."""
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be owner/name")
+    records = []
+    for case in junit_cases(text):
+        if case["kind"] is None:
+            continue
+        if len(records) == max_cases:
+            return {"records": records, "truncated": True}
+        records.append({"category": "test_failure", "context": {"repository": repository},
+                        "value": {"class": case["class"].split("[", 1)[0] or "(none)", "test": case["name"].split("[", 1)[0], "kind": case["kind"]}})
+    return {"records": records, "truncated": False}
+
+
+def junit_history_load(records: Any) -> list[dict[str, Any]]:
+    """Fingerprint failure records (a list of dicts or the text of a JSONL file). Only ``test_failure`` records count. The fingerprint is a test-identity fingerprint
+    (repository, class, test, kind), not a root-cause fingerprint, and it ignores run-specific context."""
+    if isinstance(records, str):
+        rows = []
+        for number, line in enumerate(_text_lines(records), 1):
+            if line.strip():
+                try:
+                    rows.append((number, _json_line(line)))
+                except (ValueError, RecursionError):
+                    raise ValueError(f"invalid failure record at line {number}") from None
+    else:
+        rows = list(enumerate(records, 1))
+    result = []
+    for number, item in rows:
+        if not isinstance(item, dict) or item.get("category") != "test_failure":
+            continue
+        value, context = item.get("value"), item.get("context")
+        if not isinstance(value, dict) or not isinstance(context, dict):
+            raise ValueError(f"invalid failure record at line {number}")
+        identity = {"repository": context.get("repository"), "class": value.get("class"), "test": value.get("test"), "kind": value.get("kind")}
+        if not all(isinstance(v, str) and v for v in identity.values()):
+            raise ValueError(f"incomplete failure identity at line {number}")
+        token = json.dumps(identity, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        result.append({"fingerprint": "junit-basic-v1:" + hashlib.sha256(token).hexdigest(), "identity": identity})
+    return result
+
+
+def _history_findings(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def count(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            entry = grouped.setdefault(row["fingerprint"], {"identity": row["identity"], "count": 0})
+            entry["count"] += 1
+        return grouped
+    now, old = count(current), count(previous)
+    findings = []
+    for fingerprint in sorted(now.keys() | old.keys()):
+        a, b = now.get(fingerprint), old.get(fingerprint)
+        findings.append({"fingerprint": fingerprint, "identity": (a or b)["identity"], "status": "new" if b is None else "resolved" if a is None else "recurring",
+                         "current_count": a["count"] if a else 0, "previous_count": b["count"] if b else 0})
+    return findings
+
+
+def junit_history(current: list[dict[str, Any]], previous: list[dict[str, Any]], *, commit_sha: str, run_id: str, previous_commit_sha: str | None = None,
+                  previous_run_id: str | None = None) -> dict[str, Any]:
+    """Compare the failure identities of two consecutive CI runs: new, recurring or resolved, with how many times each occurred (``junit_history.compare``)."""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha):
+        raise ValueError("commit SHA must contain 40 hex characters")
+    if previous_commit_sha is not None and not re.fullmatch(r"[0-9a-fA-F]{40}", previous_commit_sha):
+        raise ValueError("previous commit SHA must contain 40 hex characters")
+    if not re.fullmatch(r"[0-9]+", run_id) or (previous_run_id is not None and not re.fullmatch(r"[0-9]+", previous_run_id)):
+        raise ValueError("run IDs must be decimal")
+    findings = _history_findings(current, previous)
+    return {"schema": "junit-history/1", "commit_sha": commit_sha, "run_id": run_id, "previous_commit_sha": previous_commit_sha, "previous_run_id": previous_run_id,
+            "fingerprint_scope": "repository+class+test+kind (not root cause)",
+            "summary": {s: sum(f["status"] == s for f in findings) for s in ("new", "recurring", "resolved")}, "findings": findings}
+
+
+def junit_diff(current_text: str, previous_text: str, repository: str = "local/report") -> dict[str, Any]:
+    """The same comparison straight from two JUnit reports (no commit or run ID needed)."""
+    load = lambda text: junit_history_load(junit_failure_records(text, repository)["records"])
+    findings = _history_findings(load(current_text), load(previous_text))
+    return {"schema": "junit-diff/1", "fingerprint_scope": "repository+class+test+kind (not root cause)",
+            "summary": {s: sum(f["status"] == s for f in findings) for s in ("new", "recurring", "resolved")}, "findings": findings}
+
+
+def attempt_history(runner: str, files: list[str], attempts: list[dict[str, Any]], scope: str = "same-selected-files") -> dict[str, Any]:
+    """What was run and what happened, with ``initial_failed`` and ``flaky_recovered`` (the first attempt failed and the one retry passed). A retry never masks the first failure."""
+    return {"schema": "test-attempts/1", "runner": runner, "files": files, "retry_scope": scope, "attempts": attempts,
+            "initial_failed": attempts[0]["exit_code"] != 0,
+            "flaky_recovered": len(attempts) == 2 and attempts[0]["exit_code"] != 0 and attempts[1]["exit_code"] == 0}
+
+
+def failure_ledger_update(ledger: dict[str, Any] | None, runner: str, attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Accumulate failure fingerprints across runs without keeping raw error text (a new ledger when ``ledger`` is None; the input is never changed)."""
+    if ledger is None:
+        data: dict[str, Any] = {"schema": "failure-patterns/1", "patterns": {}}
+    else:
+        if not isinstance(ledger, dict) or ledger.get("schema") != "failure-patterns/1" or not isinstance(ledger.get("patterns"), dict):
+            raise ValueError("invalid failure ledger schema")
+        data = {"schema": ledger["schema"], "patterns": {k: dict(v) for k, v in ledger["patterns"].items()}}
+    for attempt in attempts:
+        for failure in attempt["failures"]:
+            key = runner + ":" + failure["kind"] + ":" + failure["message_sha256"]
+            pattern = data["patterns"].setdefault(key, {"runner": runner, "kind": failure["kind"], "message_sha256": failure["message_sha256"], "occurrences": 0})
+            pattern["occurrences"] += 1
+    if len(data["patterns"]) > LEDGER_MAX_PATTERNS:
+        raise ValueError(f"failure ledger reached {LEDGER_MAX_PATTERNS} distinct patterns; archive it first")
+    return data
+
+
+def failure_ledger_file(path: Path, runner: str, attempts: list[dict[str, Any]]) -> None:
+    """``failure_ledger_update`` on a file: a corrupt existing file is refused (and left as it is); the write is atomic."""
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = None
+    if path.exists():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("invalid existing failure ledger; refusing overwrite") from exc
+        if not isinstance(current, dict):
+            raise ValueError("invalid failure ledger schema")
+    data = failure_ledger_update(current, runner, attempts)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp.replace(path)
+
+
+def runner_command(runner: str, *, root: Path, files: list[str], report: Path) -> tuple[list[str], Path, dict[str, str]]:
+    """The command, working directory and environment of an allowlisted runner (Deno, Playwright for Node, Playwright for Python): no shell, no arbitrary command, every
+    test file must exist inside the repository, and Node Playwright files must be under ``e2e``."""
+    if runner not in TEST_RUNNERS or not files:
+        raise ValueError("unsupported runner or empty file selection")
+    base = root.resolve()
+    paths = []
+    for file in files:
+        candidate = (base / file).resolve()
+        if not candidate.is_file() or not candidate.is_relative_to(base):
+            raise ValueError("test file must exist inside repository")
+        paths.append(str(candidate))
+    report = report.resolve()
+    if runner == "deno":
+        return ["deno", "test", "--junit-path", str(report), *paths], base, {}
+    if runner == "playwright-node":
+        e2e = base / "e2e"
+        if not all(Path(p).is_relative_to(e2e) for p in paths):
+            raise ValueError("Node Playwright test files must be under e2e")
+        return ["npx", "--no-install", "playwright", "test", "--reporter=junit", *[str(Path(p).relative_to(e2e)) for p in paths]], e2e, {"PLAYWRIGHT_JUNIT_OUTPUT_FILE": str(report)}
+    return [sys.executable, "-m", "pytest", "--junitxml=" + str(report), *paths], base, {}
+
+
+def junit_file_summary(path: Path) -> dict[str, Any]:
+    """A report file's tally in the shape the attempt records use (``failed`` counts failures and errors, ``skipped`` counts known gaps too); a missing file, a symlink or bad
+    XML is a ``ValueError``."""
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("missing or malformed JUnit evidence")
+    try:
+        report = junit_report(path.read_bytes().decode("utf-8"))
+    except UnicodeDecodeError:
+        raise ValueError("missing or malformed JUnit evidence") from None
+    counts = report["counts"]
+    return {"total": report["total"], "passed": counts["passed"], "failed": counts["failed"] + counts["error"], "skipped": counts["skipped"] + counts["xfailed"],
+            "failures": [{k: f[k] for k in ("name", "class", "message_sha256", "kind")} for f in report["failures"]]}
+
+
+def _retry_report(report: Path) -> Path:
+    return report.with_name(report.stem + ".retry" + report.suffix)
+
+
+def _ledger_best_effort(ledger: Path | None, runner: str, attempts: list[dict[str, Any]]) -> None:
+    """A secondary diagnostic write must never replace the test exit status."""
+    if ledger is None:
+        return
+    try:
+        failure_ledger_file(ledger, runner, attempts)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"warning: failure ledger update skipped: {exc}", file=sys.stderr)
+
+
+def run_test_suite(runner: str, *, root: Path, files: list[str], report: Path, history: Path, retry_failed: bool = False, timeout: int = 300,
+                   ledger: Path | None = None, invoke: Any = None) -> int:
+    """Run the selected files with an allowlisted runner, check the JUnit it wrote, optionally retry the same files once, and record every attempt.
+
+    A missing or empty report, or a run that executed nothing, fails closed; a stale report from an earlier run is removed first, so it cannot stand in for this one; a retry
+    that passes never hides the first failure (the exit status is the first attempt's); the ledger is best effort. ``invoke`` replaces ``subprocess.run`` in tests.
+    """
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    command, cwd, extra_env = runner_command(runner, root=root, files=files, report=report)
+    report, history = report.resolve(), history.resolve()
+    report.parent.mkdir(parents=True, exist_ok=True)
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.unlink(missing_ok=True)
+    report.unlink(missing_ok=True)
+    _retry_report(report).unlink(missing_ok=True)
+    invoke = invoke or subprocess.run
+    attempts = []
+    for number in (1, 2) if retry_failed else (1,):
+        output = report if number == 1 else _retry_report(report)
+        output.unlink(missing_ok=True)
+        this = [arg.replace(str(report), str(output)) for arg in command]
+        env = {**os.environ, **{k: v.replace(str(report), str(output)) for k, v in extra_env.items()}}
+        try:
+            code = invoke(this, cwd=cwd, env=env, timeout=timeout, check=False).returncode
+        except FileNotFoundError:
+            code = 127
+        except subprocess.TimeoutExpired:
+            code = 124
+        try:
+            result = junit_file_summary(output)
+        except ValueError as exc:
+            result = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "failures": [], "evidence_error": str(exc)}
+            code = code or 1
+        if code == 0 and (result["failed"] or result["passed"] == 0):
+            code = 1
+        attempts.append({"attempt": number, "exit_code": code, "junit": str(output), **result})
+        print(f'{runner}: attempt={number} exit={code} passed={result["passed"]} failed={result["failed"]}')
+        if code == 0:
+            break
+    history.write_text(json.dumps(attempt_history(runner, files, attempts), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _ledger_best_effort(ledger, runner, attempts)
+    return attempts[0]["exit_code"]
+
+
+def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path | None = None, name_pattern: str | None = None, timeout: int = 300,
+                  node: str = "node") -> int:
+    """Run Node's native test runner (spec output on the screen, JUnit in ``report``) and keep a small JSON receipt; the JUnit stays the canonical artifact.
+
+    Nothing stale is trusted (the report and receipt are removed first); a missing Node is 127, a timeout 124, a missing or empty report, all tests skipped, or a name filter
+    that selected nothing (only file-level cases) fails closed. Node owns the regex semantics of ``name_pattern``.
+    """
+    if not files:
+        print("node runner: no test files selected", file=sys.stderr)
+        return 2
+    report = report.resolve()
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.unlink(missing_ok=True)
+    if receipt is not None:
+        receipt.unlink(missing_ok=True)
+    command = [node, "--test", "--test-reporter=spec", "--test-reporter-destination=stdout", "--test-reporter=junit", f"--test-reporter-destination={report}"]
+    if name_pattern is not None:
+        command.extend(["--test-name-pattern", name_pattern])
+    command.extend(files)
+    try:
+        code = subprocess.run(command, cwd=root, timeout=timeout, check=False).returncode
+    except FileNotFoundError:
+        print("node runner: Node executable not found", file=sys.stderr)
+        return 127
+    except subprocess.TimeoutExpired:
+        print(f"node runner: timed out after {timeout}s", file=sys.stderr)
+        return 124
+    try:
+        cases = junit_cases(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        print(f"node runner: missing or invalid Node JUnit: {report}", file=sys.stderr)
+        return code if code != 0 else 1
+    summary = {"passed": 0, "failed": 0, "skipped": 0, "total": len(cases), "failures": [], "names": [c["name"] for c in cases]}
+    for case in cases:
+        if case["kind"] is not None:
+            summary["failed"] += 1
+            summary["failures"].append({"name": case["name"], "message": case["message"][:2000]})
+        elif case["outcome"] in ("skipped", "xfailed"):
+            summary["skipped"] += 1
+        else:
+            summary["passed"] += 1
+    if summary["passed"] + summary["failed"] == 0:
+        print("node runner: no executed tests (all skipped)", file=sys.stderr)
+        return code if code != 0 else 1
+    selected = {(root / name).resolve() for name in files}
+    if name_pattern is not None and all((root / name).resolve() in selected for name in summary["names"]):
+        print("node runner: no selected tests (only file-level JUnit cases)", file=sys.stderr)
+        return code if code != 0 else 1
+    summary.update({"runner": "node", "exit_code": code, "ok": code == 0 and summary["failed"] == 0, "junit": str(report)})
+    if receipt is not None:
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"node: passed={summary['passed']} failed={summary['failed']} skipped={summary['skipped']} exit={code}")
+    for failure in summary["failures"]:
+        print(f"FAIL {failure['name']}: {failure['message']}", file=sys.stderr)
+    return code if code != 0 else (1 if summary["failed"] else 0)
+
+
+def expected_child_failure(command: list[str], *, expect_exit: list[int], output_dir: Path, timeout: float = 30.0) -> tuple[int, dict[str, Any]]:
+    """Run a child command that is *meant* to fail and keep bounded evidence (stdout and stderr up to 1 MiB each, and a receipt). The outer exit status is 0 only when the child
+    exited with one of the expected nonzero codes in time; zero cannot be declared an expected failure. Returns ``(status, receipt)``."""
+    if not expect_exit or any(code == 0 for code in expect_exit):
+        raise ValueError("--expect-exit must be nonzero; this wrapper is for intentional failures")
+    if timeout <= 0:
+        raise ValueError("--timeout must be greater than zero")
+    if not command:
+        raise ValueError("child command is required")
+    bound = lambda data: (data[:CHILD_STREAM_LIMIT], len(data) > CHILD_STREAM_LIMIT)
+    out = output_dir.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    timed_out = False
+    try:
+        done = subprocess.run(command, capture_output=True, text=False, shell=False, timeout=timeout)
+        exit_code = done.returncode
+        stdout, stdout_cut = bound(done.stdout)
+        stderr, stderr_cut = bound(done.stderr)
+    except subprocess.TimeoutExpired as error:
+        timed_out, exit_code = True, None
+        stdout, stdout_cut = bound(error.stdout or b"")
+        stderr, stderr_cut = bound(error.stderr or b"")
+    (out / "stdout.bin").write_bytes(stdout)
+    (out / "stderr.bin").write_bytes(stderr)
+    matched = not timed_out and exit_code in expect_exit
+    receipt = {"schema": "expected-child-failure/1", "exit_code": exit_code, "expected_exit_codes": sorted(set(expect_exit)), "matched_expectation": matched,
+               "timed_out": timed_out, "timeout_seconds": timeout, "stdout_truncated": stdout_cut, "stderr_truncated": stderr_cut, "stream_limit_bytes": CHILD_STREAM_LIMIT,
+               "command_executable": Path(command[0]).name, "argument_count": len(command) - 1}
+    (out / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return (0 if matched else 1), receipt
+
+
+def report_kind(text: str) -> str | None:
+    """``junit`` for text that starts with ``<``, ``flutter`` for text that starts with ``{`` (one JSON event per line), otherwise None (after trimming, BOM first)."""
+    head = (text[1:] if text.startswith("\ufeff") else text).strip()[:1]
+    return "junit" if head == "<" else "flutter" if head == "{" else None
+
+
+def report_read(text: str, previous: str | None = None, *, messages: bool = False) -> dict[str, Any]:
+    """What the test report page shows for a pasted report: its kind, counts, the one-line summary, the failing cases and, for Flutter events, the same run as JUnit XML (or why
+    that was not possible); with a previous JUnit run, what is new, recurring or resolved."""
+    kind = report_kind(text)
+    if kind is None:
+        raise ValueError("Paste JUnit XML (it starts with <) or Flutter test events (JSON lines).")
+    out: dict[str, Any] = {"kind": kind, "junit": None, "convert_error": None}
+    if kind == "junit":
+        report = junit_report(text, messages=messages)
+        out.update(total=report["total"], counts=report["counts"], ok=report["ok"], failures=report["failures"])
+    else:
+        summary = counts_summary(flutter_outcomes(text), source="flutter-json")
+        out.update(total=summary["total"], counts=summary["counts"], ok=summary["ok"], failures=[])
+        try:
+            converted = flutter_machine_junit(text)
+            out.update(junit=converted["xml"], failures=junit_report(converted["xml"], messages=messages)["failures"])
+        except ValueError as error:
+            out["convert_error"] = str(error)
+    out["line"] = f"{counts_line(out['counts'])} total={out['total']} ok={'true' if out['ok'] else 'false'}"
+    if previous is not None and previous.strip():
+        if kind != "junit":
+            raise ValueError("Comparing with a previous run needs JUnit XML for both.")
+        out["diff"] = junit_diff(text, previous)
+    return out
+
+
+_CSS["report.css"] = ("@layer components{.ui-report h3{margin:24px 0 8px}.ui-report label{display:block;margin:8px 0 4px}.ui-report .ui-input{width:100%;box-sizing:border-box}.ui-report textarea{min-height:96px;"
+                      "font-family:var(--ui-font-mono,monospace)}.ui-report-line{margin:8px 0;font-weight:600;overflow-wrap:anywhere}.ui-report-check{display:inline-block!important;margin:0 0 0 8px!important}"
+                      ".ui-report table{border-collapse:collapse;width:100%}.ui-report th,.ui-report td{border:1px solid var(--ui-border);padding:4px 8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}"
+                      ".ui-report-status{margin:8px 0}.ui-report code{overflow-wrap:anywhere}.ui-report-more{margin:8px 0}}")
+
+
+def report_html() -> str:
+    """The test report tool as semantic HTML: paste or drop JUnit XML (or Flutter JSON events), optionally compare with the previous run; the page script fills in the rest."""
+    return ('<section class="ui-panel ui-report" id="report" data-ui-report><h2>Test report</h2>'
+            '<p class="ui-muted">Paste a JUnit XML report or Flutter test events (one JSON object per line), or choose a file. Read in this page; nothing is sent.</p>'
+            '<label for="report-input">Current run</label><textarea class="ui-input" id="report-input" data-report-input spellcheck="false" autocomplete="off" rows="4"></textarea>'
+            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
+            '<p><button class="ui-button" type="button" data-report-run>Read the report</button> <button class="ui-button" type="button" data-report-copy>Copy summary</button> '
+            '<button class="ui-button" type="button" data-report-convert hidden>Copy as JUnit XML</button> <label class="ui-report-check"><input type="checkbox" data-report-messages> Show failure messages</label></p>'
+            '<p class="ui-report-status ui-muted" role="status" aria-live="polite" data-report-status>Nothing read yet.</p>'
+            '<p class="ui-report-line" data-report-line></p>'
+            '<details class="ui-report-more"><summary>Compare with a previous run</summary><label for="report-previous">Previous run (JUnit XML): what is new, recurring or resolved</label>'
+            '<textarea class="ui-input" id="report-previous" data-report-previous spellcheck="false" autocomplete="off" rows="4"></textarea></details>'
+            '<div data-report-out></div></section>')
+
+
+def report_document(*, theme: str = "modern") -> str:
+    """A single-file page for the test report."""
+    return render_document(trusted_html='<main class="ui-page">' + report_html() + "</main>" + module_script(_JS["report.js"]), title="Test report", theme=theme, css=bundled_css())
+
+
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
 # Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
 # lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
@@ -4897,7 +5537,7 @@ _SHELF_URL = re.compile(r"https?://[^ \t\r\n\f\v<>\"]+", re.I | re.A)
 
 def _shelf_strip(text: str) -> str:
     """Strip one leading BOM, then Unicode whitespace (what ``str.strip`` and JavaScript's ``trim`` share, plus U+0085 and the file separators)."""
-    return (text[1:] if text.startswith("﻿") else text).strip(" \t\n\r\f\v\x1c\x1d\x1e\x1f\x85\xa0        "
+    return (text[1:] if text.startswith("\ufeff") else text).strip(" \t\n\r\f\v\x1c\x1d\x1e\x1f\x85\xa0        "
                                                                   "        　")
 
 
@@ -5745,9 +6385,152 @@ globalThis.webUiPlayground={COUNTER_MIN,COUNTER_MAX,COUNTER_STEPS,HOLD_DELAY,HOL
 if(typeof document!=="undefined")bindPlayground();
 """
 
+_TEXT_JS = r"""const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+export const pyStrip=s=>s.replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+"""
+_SHA_JS = r"""const SHA_K=new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+ 0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+ 0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+ 0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+export function sha256Bytes(input){const data=typeof input==="string"?new TextEncoder().encode(input):input,len=data.length,padded=new Uint8Array(((len+9+63)>>6)<<6);
+ padded.set(data);padded[len]=0x80;const view=new DataView(padded.buffer),bits=len*8;view.setUint32(padded.length-8,Math.floor(bits/4294967296));view.setUint32(padded.length-4,bits>>>0);
+ const H=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]),W=new Uint32Array(64),rotr=(x,n)=>(x>>>n)|(x<<(32-n));
+ for(let off=0;off<padded.length;off+=64){for(let i=0;i<16;i++)W[i]=view.getUint32(off+i*4);
+  for(let i=16;i<64;i++){const a=W[i-15],b=W[i-2],s0=rotr(a,7)^rotr(a,18)^(a>>>3),s1=rotr(b,17)^rotr(b,19)^(b>>>10);W[i]=(W[i-16]+s0+W[i-7]+s1)>>>0}
+  let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+  for(let i=0;i<64;i++){const S1=rotr(e,6)^rotr(e,11)^rotr(e,25),ch=(e&f)^(~e&g),t1=(h+S1+ch+SHA_K[i]+W[i])>>>0,S0=rotr(a,2)^rotr(a,13)^rotr(a,22),maj=(a&b)^(a&c)^(b&c),t2=(S0+maj)>>>0;
+   h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0}
+  H[0]+=a;H[1]+=b;H[2]+=c;H[3]+=d;H[4]+=e;H[5]+=f;H[6]+=g;H[7]+=h}
+ const out=new Uint8Array(32),o=new DataView(out.buffer);H.forEach((x,i)=>o.setUint32(i*4,x));return out}
+export const sha256Hex=input=>Array.from(sha256Bytes(input),x=>x.toString(16).padStart(2,"0")).join("");
+"""
+_JS["report.js"] = r"""/* web-ui report: read a JUnit XML report or Flutter test events in the page (nothing is sent). Python (web_ui.junit_report, flutter_outcomes, flutter_machine_junit, junit_history, report_read, ...) is the reference; this must agree. */
+""" + _TEXT_JS + _SHA_JS + r"""export const OUTCOME_KEYS=["passed","failed","skipped","xfailed","xpassed","error"],JUNIT_MAX_BYTES=1000000,JUNIT_MAX_IDENTITIES=1000,FLUTTER_RESULTS=["success","failure","error"];
+const isInt=v=>typeof v==="number"&&Number.isInteger(v),isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v),onlyDict=v=>isObj(v)?v:{},onlyStr=v=>typeof v==="string"?v:"";
+const textLines=t=>t.split(/\r\n|\r|\n/),clip=(s,n)=>Array.from(s).slice(0,n).join(""),has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k),get=(o,k)=>has(o,k)?o[k]:undefined;
+export const outcomeCounts=()=>Object.fromEntries(OUTCOME_KEYS.map(k=>[k,0]));
+export const countsLine=c=>OUTCOME_KEYS.map(k=>k+"="+(c[k]||0)).join(" ");
+export function countsSummary(counts,source){const clean=Object.fromEntries(OUTCOME_KEYS.map(k=>[k,Math.trunc(counts[k]||0)])),total=OUTCOME_KEYS.reduce((n,k)=>n+clean[k],0);
+ return{source,counts:clean,total,ok:clean.failed===0&&clean.error===0&&clean.passed>0}}
+export function flutterOutcomes(text){const counts=outcomeCounts(),starts=new Map();
+ for(const raw of textLines(text)){const line=pyStrip(raw);if(!line)continue;let event;try{event=JSON.parse(line)}catch(e){counts.error++;continue}
+  if(!isObj(event)){counts.error++;continue}const kind=get(event,"type");
+  if(kind==="testStart"){const test=get(event,"test");if(test!==undefined&&test!==null&&!isObj(test))counts.error++;else if(isInt(get(test||{},"id")))starts.set(test.id,test)}
+  else if(kind==="testDone"){if(get(event,"hidden")===true)continue;const tid=get(event,"testID"),meta=isInt(tid)?starts.get(tid):undefined,result=get(event,"result"),skipped=get(event,"skipped")===true;
+   if(onlyStr(get(meta||{},"name")).startsWith("loading ")&&result==="success")continue;
+   const reason=onlyStr(get(onlyDict(get(meta||{},"metadata")),"skipReason")).toLowerCase();
+   if(skipped||result==="skipped")counts[reason.startsWith("known:")||reason.startsWith("xfail:")?"xfailed":"skipped"]++;
+   else if(result==="success")counts.passed++;else if(result==="error")counts.error++;else counts.failed++}}
+ return counts}
+const XML_BAD=/[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/gu;
+const xmlClean=s=>s.replace(XML_BAD,"\ufffd"),xmlText=s=>xmlClean(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"),
+ xmlAttr=s=>xmlText(s).replace(/"/g,"&quot;").replace(/\n/g,"&#10;").replace(/\r/g,"&#13;").replace(/\t/g,"&#09;");
+export function flutterMachineJunit(text){const suites=new Map(),tests=new Map();let done=false;
+ for(const raw of textLines(text)){if(!pyStrip(raw))continue;let event;try{event=JSON.parse(raw)}catch(e){throw new Error("invalid JSON in a Flutter event")}
+  if(!isObj(event))throw new Error("invalid Flutter event");const kind=get(event,"type");
+  if(kind==="suite"){const suite=onlyDict(get(event,"suite"));if(isInt(get(suite,"id")))suites.set(suite.id,onlyStr(get(suite,"path"))||"flutter")}
+  else if(kind==="testStart"){const test=onlyDict(get(event,"test")),id=get(test,"id");if(!isInt(id)||tests.has(id))throw new Error("duplicate or missing Flutter test ID");
+   const sid=get(test,"suiteID");tests.set(id,{name:onlyStr(get(test,"name")),suite:isInt(sid)&&suites.has(sid)?suites.get(sid):"flutter",skip_reason:onlyStr(get(onlyDict(get(test,"metadata")),"skipReason")),result:null,skipped:false,hidden:false,errors:[]})}
+  else if(kind==="error"){const id=get(event,"testID");if(!isInt(id)||!tests.has(id))throw new Error("orphan Flutter error");
+   tests.get(id).errors.push(["error","stackTrace"].map(k=>onlyStr(get(event,k))).filter(s=>s).join("\n"))}
+  else if(kind==="testDone"){const id=get(event,"testID");if(!isInt(id)||!tests.has(id)||tests.get(id).result!==null)throw new Error("orphan or duplicate Flutter completion");
+   const item=tests.get(id);item.result=get(event,"result")??null;item.skipped=get(event,"skipped")===true;item.hidden=get(event,"hidden")===true}
+  else if(kind==="done")done=true}
+ if(!done||[...tests.values()].some(t=>!t.name||!FLUTTER_RESULTS.includes(t.result)))throw new Error("incomplete Flutter machine report");
+ const visible=[...tests.entries()].sort((a,b)=>a[0]-b[0]).map(e=>e[1]).filter(t=>!t.hidden);if(!visible.length)throw new Error("Flutter machine report contains no visible tests");
+ const rows=visible.map(item=>{const head='<testcase name="'+xmlAttr(item.name)+'" classname="'+xmlAttr(item.suite)+'"';
+  if(item.result==="failure"||item.result==="error"){const body=xmlText(item.errors.join("\n\n")),tag='<'+item.result+' message="Flutter test '+item.result+'"';
+   return body?"  "+head+">\n    "+tag+">"+body+"</"+item.result+">\n  </testcase>":"  "+head+">\n    "+tag+" />\n  </testcase>"}
+  return item.skipped?"  "+head+'>\n    <skipped message="'+xmlAttr(item.skip_reason)+'" />\n  </testcase>':"  "+head+" />"});
+ return{xml:'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="flutter" tests="'+visible.length+'">\n'+rows.join("\n")+"\n</testsuite>\n",tests:visible.length}}
+const tagOf=el=>el.namespaceURI?"{"+el.namespaceURI+"}"+el.localName:el.localName;
+function leadingText(el){let s="";for(const n of el.childNodes){if(n.nodeType===1)break;if(n.nodeType===3||n.nodeType===4)s+=n.data}return s}
+function junitRoot(text,maxBytes=JUNIT_MAX_BYTES){if(typeof text!=="string")throw new Error("JUnit text must be a string");if(text.startsWith("\ufeff"))text=text.slice(1);
+ if(new TextEncoder().encode(text).length>maxBytes)throw new Error("JUnit exceeds the byte limit");
+ if(/<![ \t\n\r\f\v]*(?:DOCTYPE|ENTITY)/i.test(text))throw new Error("DTD and entity declarations are unsupported");
+ const doc=new DOMParser().parseFromString(text,"application/xml");if(doc.getElementsByTagNameNS("*","parsererror").length||!doc.documentElement)throw new Error("missing or malformed JUnit XML");
+ const root=doc.documentElement;if(tagOf(root)!=="testsuite"&&tagOf(root)!=="testsuites")throw new Error("not a JUnit testsuite");return root}
+export function junitCases(text,maxBytes=JUNIT_MAX_BYTES){const root=junitRoot(text,maxBytes),out=[];
+ for(const el of root.getElementsByTagNameNS("*","testcase")){if(el.namespaceURI)continue;const name=el.getAttribute("name")||"";if(!name)throw new Error("JUnit testcase without name");
+  const kids=[...el.children],problem=kids.find(c=>tagOf(c)==="failure"||tagOf(c)==="error")||null,skip=kids.find(c=>tagOf(c)==="skipped")||null;let outcome;
+  if(problem)outcome=tagOf(problem)==="failure"?"failed":"error";
+  else if(skip){const reason=skip.getAttribute("message")||"";outcome=skip.getAttribute("type")==="pytest.xfail"||reason.toLowerCase().startsWith("known:")||reason.toLowerCase().startsWith("xfail:")?"xfailed":"skipped"}else outcome="passed";
+  out.push({name,class:el.getAttribute("classname")||"",outcome,kind:problem?tagOf(problem):null,message:problem?pyStrip(problem.getAttribute("message")||leadingText(problem)):"",
+   failure:kids.some(c=>tagOf(c)==="failure"),error:kids.some(c=>tagOf(c)==="error"),skipped:!!skip})}
+ if(!out.length)throw new Error("JUnit report contains no testcases");return out}
+export function junitInspect(text){const cases=junitCases(text);return{tests:cases.length,failures:cases.filter(c=>c.failure).length,errors:cases.filter(c=>c.error).length,skipped:cases.filter(c=>c.skipped).length}}
+export function junitReport(text,messages=false){const cases=junitCases(text),counts=outcomeCounts();for(const c of cases)counts[c.outcome]++;
+ const failures=cases.filter(c=>c.kind!==null).map(c=>{const item={class:clip(c.class,200),name:clip(c.name,200),kind:c.kind,message_sha256:sha256Hex(c.message)};if(messages)item.message=clip(c.message,2000);return item}),summary=countsSummary(counts,"junit");
+ return{schema:"junit-report/1",total:cases.length,counts:summary.counts,ok:summary.ok,failures}}
+export function junitFailureRecords(text,repository="local/report",maxCases=JUNIT_MAX_IDENTITIES){
+ if(typeof repository!=="string"||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("repository must be owner/name");const records=[];
+ for(const c of junitCases(text)){if(c.kind===null)continue;if(records.length===maxCases)return{records,truncated:true};
+  records.push({category:"test_failure",context:{repository},value:{class:c.class.split("[",1)[0]||"(none)",test:c.name.split("[",1)[0],kind:c.kind}})}
+ return{records,truncated:false}}
+export function junitHistoryLoad(records){let rows;
+ if(typeof records==="string"){rows=[];textLines(records).forEach((line,i)=>{if(pyStrip(line)){try{rows.push([i+1,JSON.parse(line)])}catch(e){throw new Error("invalid failure record at line "+(i+1))}}})}else rows=records.map((r,i)=>[i+1,r]);
+ const result=[];for(const[number,item]of rows){if(!isObj(item)||get(item,"category")!=="test_failure")continue;const value=get(item,"value"),context=get(item,"context");
+  if(!isObj(value)||!isObj(context))throw new Error("invalid failure record at line "+number);
+  const identity={repository:get(context,"repository"),class:get(value,"class"),test:get(value,"test"),kind:get(value,"kind")};
+  if(!Object.values(identity).every(v=>typeof v==="string"&&v))throw new Error("incomplete failure identity at line "+number);
+  const token='{"class":'+JSON.stringify(identity.class)+',"kind":'+JSON.stringify(identity.kind)+',"repository":'+JSON.stringify(identity.repository)+',"test":'+JSON.stringify(identity.test)+"}";
+  result.push({fingerprint:"junit-basic-v1:"+sha256Hex(token),identity})}
+ return result}
+function historyFindings(current,previous){const count=rows=>{const g=new Map();for(const r of rows){if(!g.has(r.fingerprint))g.set(r.fingerprint,{identity:r.identity,count:0});g.get(r.fingerprint).count++}return g},now=count(current),old=count(previous);
+ return[...new Set([...now.keys(),...old.keys()])].sort().map(f=>{const a=now.get(f),b=old.get(f);return{fingerprint:f,identity:(a||b).identity,status:!b?"new":!a?"resolved":"recurring",current_count:a?a.count:0,previous_count:b?b.count:0}})}
+const summaryOf=findings=>Object.fromEntries(["new","recurring","resolved"].map(s=>[s,findings.filter(f=>f.status===s).length]));
+export function junitHistory(current,previous,o){const{commit_sha,run_id,previous_commit_sha=null,previous_run_id=null}=o;
+ if(!/^[0-9a-fA-F]{40}$/.test(commit_sha))throw new Error("commit SHA must contain 40 hex characters");
+ if(previous_commit_sha!==null&&!/^[0-9a-fA-F]{40}$/.test(previous_commit_sha))throw new Error("previous commit SHA must contain 40 hex characters");
+ if(!/^[0-9]+$/.test(run_id)||(previous_run_id!==null&&!/^[0-9]+$/.test(previous_run_id)))throw new Error("run IDs must be decimal");
+ const findings=historyFindings(current,previous);return{schema:"junit-history/1",commit_sha,run_id,previous_commit_sha,previous_run_id,fingerprint_scope:"repository+class+test+kind (not root cause)",summary:summaryOf(findings),findings}}
+export function junitDiff(currentText,previousText,repository="local/report"){const load=t=>junitHistoryLoad(junitFailureRecords(t,repository).records),findings=historyFindings(load(currentText),load(previousText));
+ return{schema:"junit-diff/1",fingerprint_scope:"repository+class+test+kind (not root cause)",summary:summaryOf(findings),findings}}
+export function attemptHistory(runner,files,attempts,scope="same-selected-files"){return{schema:"test-attempts/1",runner,files,retry_scope:scope,attempts,initial_failed:attempts[0].exit_code!==0,
+ flaky_recovered:attempts.length===2&&attempts[0].exit_code!==0&&attempts[1].exit_code===0}}
+export function failureLedgerUpdate(ledger,runner,attempts){let data;
+ if(ledger===null||ledger===undefined)data={schema:"failure-patterns/1",patterns:{}};else{if(!isObj(ledger)||ledger.schema!=="failure-patterns/1"||!isObj(ledger.patterns))throw new Error("invalid failure ledger schema");
+  data={schema:ledger.schema,patterns:Object.fromEntries(Object.entries(ledger.patterns).map(([k,v])=>[k,{...v}]))}}
+ for(const attempt of attempts)for(const f of attempt.failures){const key=runner+":"+f.kind+":"+f.message_sha256;
+  if(!has(data.patterns,key))data.patterns[key]={runner,kind:f.kind,message_sha256:f.message_sha256,occurrences:0};data.patterns[key].occurrences++}
+ if(Object.keys(data.patterns).length>500)throw new Error("failure ledger reached 500 distinct patterns; archive it first");return data}
+export function reportKind(text){const head=pyStrip(text.startsWith("\ufeff")?text.slice(1):text).slice(0,1);return head==="<"?"junit":head==="{"?"flutter":null}
+export function reportRead(text,previous=null,messages=false){const kind=reportKind(text);if(kind===null)throw new Error("Paste JUnit XML (it starts with <) or Flutter test events (JSON lines).");
+ const out={kind,junit:null,convert_error:null};
+ if(kind==="junit"){const r=junitReport(text,messages);Object.assign(out,{total:r.total,counts:r.counts,ok:r.ok,failures:r.failures})}
+ else{const s=countsSummary(flutterOutcomes(text),"flutter-json");Object.assign(out,{total:s.total,counts:s.counts,ok:s.ok,failures:[]});
+  try{const c=flutterMachineJunit(text);out.junit=c.xml;out.failures=junitReport(c.xml,messages).failures}catch(e){out.convert_error=e.message}}
+ out.line=countsLine(out.counts)+" total="+out.total+" ok="+(out.ok?"true":"false");
+ if(previous!==null&&pyStrip(previous)){if(kind!=="junit")throw new Error("Comparing with a previous run needs JUnit XML for both.");out.diff=junitDiff(text,previous)}
+ return out}
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+export function bindReport(root=document){return[...root.querySelectorAll("[data-ui-report]")].map(box=>{
+ const $=s=>box.querySelector(s),input=$("[data-report-input]"),previous=$("[data-report-previous]"),file=$("[data-report-file]"),messages=$("[data-report-messages]"),status=$("[data-report-status]"),line=$("[data-report-line]"),out=$("[data-report-out]"),convert=$("[data-report-convert]");
+ let last=null;
+ const clear=()=>{line.textContent="";out.replaceChildren();convert.hidden=true;last=null};
+ const run=()=>{clear();if(!pyStrip(input.value)){status.textContent="Nothing to read: paste a report first.";box.dataset.reportState="empty";return}
+  let r;try{r=reportRead(input.value,pyStrip(previous.value)?previous.value:null,messages.checked)}catch(e){status.textContent=e.message;box.dataset.reportState="error";return}
+  last=r;line.textContent=r.line;status.textContent=(r.kind==="junit"?"Read a JUnit report":"Read Flutter test events")+(r.ok?": no failures.":": "+(r.counts.failed+r.counts.error)+" failing.");box.dataset.reportState=r.ok?"ok":"failing";
+  if(r.failures.length){const rows=r.failures.map(f=>el("tr",{},el("td",{text:f.class}),el("td",{text:f.name}),el("td",{text:f.kind}),el("td",{},el("code",{text:messages.checked&&f.message!==undefined?f.message:f.message_sha256.slice(0,16)}))));
+   out.append(el("h3",{text:"Failing cases"}),el("table",{},el("thead",{},el("tr",{},...["Class","Test","Kind",messages.checked?"Message":"Message SHA-256 (first 16)"].map(t=>el("th",{text:t})))),el("tbody",{},...rows)))}
+  if(r.diff){const s=r.diff.summary;out.append(el("h3",{text:"Compared with the previous run"}),el("p",{text:"new="+s.new+" recurring="+s.recurring+" resolved="+s.resolved}));
+   if(r.diff.findings.length)out.append(el("ul",{},...r.diff.findings.map(f=>el("li",{text:f.status+": "+f.identity.class+" · "+f.identity.test+" ("+f.identity.kind+") ×"+f.current_count+" now, ×"+f.previous_count+" before"}))))}
+  if(r.convert_error)out.append(el("p",{class:"ui-muted",text:"Not converted to JUnit: "+r.convert_error+"."}));convert.hidden=!r.junit};
+ const copy=async text=>{try{await navigator.clipboard.writeText(text);status.textContent="Copied."}catch(e){status.textContent="Copying was refused; select the text and copy it yourself."}};
+ const summaryText=()=>{if(!last)return"";const lines=[last.line];for(const f of last.failures)lines.push("- "+f.class+" · "+f.name+" ("+f.kind+") "+(f.message!==undefined?f.message:f.message_sha256));if(last.diff)lines.push("new="+last.diff.summary.new+" recurring="+last.diff.summary.recurring+" resolved="+last.diff.summary.resolved);return lines.join("\n")};
+ $("[data-report-run]").addEventListener("click",run);$("[data-report-copy]").addEventListener("click",()=>{if(!last)run();if(last)copy(summaryText())});convert.addEventListener("click",()=>{if(last&&last.junit)copy(last.junit)});
+ const load=async f=>{if(!f)return;if(f.size>JUNIT_MAX_BYTES){status.textContent="That file is over 1 MB.";return}input.value=await f.text();run()};
+ file.addEventListener("change",()=>load(file.files[0]));
+ input.addEventListener("dragover",e=>e.preventDefault());input.addEventListener("drop",e=>{e.preventDefault();load(e.dataTransfer&&e.dataTransfer.files[0])});
+ messages.addEventListener("change",()=>{if(last)run()});box.dataset.report_ready="";return box})}
+globalThis.webUiReport={sha256Hex,sha256Bytes,pyStrip,outcomeCounts,countsLine,countsSummary,flutterOutcomes,flutterMachineJunit,junitCases,junitInspect,junitReport,junitFailureRecords,junitHistoryLoad,junitHistory,junitDiff,
+ attemptHistory,failureLedgerUpdate,reportKind,reportRead,bindReport};
+if(typeof document!=="undefined")bindReport();
+"""
+
+
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
-const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
-export const strip=s=>(s.startsWith("﻿")?s.slice(1):s).replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+""" + _TEXT_JS + r"""export const strip=s=>pyStrip(s.startsWith("\ufeff")?s.slice(1):s);
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
 export const shelfMaxChars=n=>4*Math.floor((n+2)/3);
 export function sniffImageMime(b){return b.length>=8&&b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47&&b[4]===0x0d&&b[5]===0x0a&&b[6]===0x1a&&b[7]===0x0a?"image/png":b.length>=3&&b[0]===0xff&&b[1]===0xd8&&b[2]===0xff?"image/jpeg":
@@ -6411,7 +7194,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article>'
             '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
             '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
-            '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
+            '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -6446,6 +7230,7 @@ def example_pages() -> dict[str, str]:
         "examples/composition-studio.html": studio_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
         "examples/playground.html": playground_document(),
+        "examples/test-report.html": report_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -6819,6 +7604,71 @@ def write_site(directory: str | Path) -> list[str]:
     return written + write_js(directory) + write_examples(directory)
 
 
+def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """The command-line side of the test reports: exit 0 when everything passed, 1 when a test failed or the events were not ok, 2 when the input was invalid."""
+    out = lambda value: sys.stdout.write(json.dumps(value, ensure_ascii=False) + "\n")
+    if args.junit:
+        if args.previous and len(args.junit) != 1:
+            parser.error("--previous needs exactly one --junit file")
+        status = 0
+        for path in args.junit:
+            try:
+                if not path.is_file() or path.is_symlink():
+                    raise ValueError("JUnit report is missing or not a regular file")
+                text = path.read_bytes().decode("utf-8")
+                report = junit_report(text)
+                if args.previous:
+                    previous = args.previous
+                    if not previous.is_file() or previous.is_symlink():
+                        raise ValueError("previous JUnit report is missing or not a regular file")
+                    report["diff"] = junit_diff(text, previous.read_bytes().decode("utf-8"))
+            except (OSError, ValueError) as error:
+                print(f"invalid JUnit: {error}", file=sys.stderr)
+                return 2
+            out(report)
+            status = max(status, 0 if report["ok"] else 1)
+        return status
+    if args.flutter_events:
+        try:
+            text = args.flutter_events.read_text(encoding="utf-8")
+            if args.to:
+                converted = flutter_machine_junit(text)
+                args.to.parent.mkdir(parents=True, exist_ok=True)
+                args.to.write_text(converted["xml"], encoding="utf-8")
+        except (OSError, ValueError) as error:
+            print(f"invalid Flutter events: {error}", file=sys.stderr)
+            return 2
+        summary = counts_summary(flutter_outcomes(text), source="flutter-json")
+        print(counts_line(summary["counts"]))
+        print(f"total={summary['total']} ok={'true' if summary['ok'] else 'false'}" + (f" converted={converted['tests']}" if args.to else ""))
+        return 0 if summary["ok"] else 1
+    if args.run_tests:
+        if not args.test_file:
+            print("external runner requires --test-file", file=sys.stderr)
+            return 2
+        root = Path.cwd()
+        try:
+            if args.run_tests == "node":
+                return node_test_run(root=root, files=args.test_file, report=args.report, receipt=args.receipt, name_pattern=args.name_pattern, timeout=int(args.timeout))
+            return run_test_suite(args.run_tests, root=root, files=args.test_file, report=args.report, history=args.history, ledger=args.ledger, retry_failed=args.retry_failed,
+                                  timeout=int(args.timeout))
+        except (ValueError, OSError) as error:
+            print(f"external runner: {error}", file=sys.stderr)
+            return 2
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command or not args.output_dir:
+        parser.error("--expect-exit needs --output-dir and a command after --")
+    try:
+        status, receipt = expected_child_failure(command, expect_exit=args.expect_exit, output_dir=args.output_dir, timeout=args.timeout)
+    except ValueError as error:
+        print(f"--expect-exit: {error}", file=sys.stderr)
+        return 2
+    out(receipt)
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--title", default="web-ui")
@@ -6853,7 +7703,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     parser.add_argument("--sri", type=Path, metavar="FILE",
                         help="print the sha384 SRI and SHA-256 hex of FILE (for pinning a new asset) and exit")
+    reports = parser.add_argument_group("test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
+    reports.add_argument("--junit", nargs="+", type=Path, metavar="FILE", help="read JUnit XML reports (fail closed) and print one JSON report per file; exit 1 if a test failed, 2 if a report is invalid")
+    reports.add_argument("--previous", type=Path, metavar="FILE", help="with --junit and one file: also say what is new, recurring or resolved against this earlier JUnit report")
+    reports.add_argument("--flutter-events", type=Path, metavar="FILE", help="read Flutter machine JSON events: print the outcome counts (exit 1 unless ok); with --to also write the JUnit XML")
+    reports.add_argument("--to", type=Path, metavar="FILE", help="with --flutter-events: write the converted JUnit XML here (an incomplete event stream is exit 2)")
+    reports.add_argument("--run-tests", choices=(*TEST_RUNNERS, "node"), metavar="RUNNER", help=f"run test files with an allowlisted runner ({', '.join(TEST_RUNNERS)}, node) and check its JUnit")
+    reports.add_argument("--test-file", action="append", default=[], metavar="FILE", help="with --run-tests: a test file inside the repository (repeat for more)")
+    reports.add_argument("--report", type=Path, default=Path("build/test-results/report.xml"), metavar="FILE", help="with --run-tests: where the runner writes its JUnit")
+    reports.add_argument("--history", type=Path, default=Path("build/test-results/attempts.json"), metavar="FILE", help="with --run-tests (not node): the attempt record")
+    reports.add_argument("--receipt", type=Path, metavar="FILE", help="with --run-tests node: the JSON receipt")
+    reports.add_argument("--ledger", type=Path, metavar="FILE", help="with --run-tests: accumulate failure fingerprints here (best effort)")
+    reports.add_argument("--retry-failed", action="store_true", help="with --run-tests: run the same files once more after a failure (the first failure is never masked)")
+    reports.add_argument("--name-pattern", metavar="REGEX", help="with --run-tests node: Node's --test-name-pattern")
+    reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
+    reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
+    reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
+    parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.junit or args.flutter_events or args.run_tests or args.expect_exit:
+        return _reports_main(parser, args)
+    if args.command:
+        parser.error("unexpected arguments: " + " ".join(args.command))
     if args.sri:
         try:
             raw = args.sri.read_bytes()

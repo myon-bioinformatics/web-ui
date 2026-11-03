@@ -2549,6 +2549,10 @@ def web_ui_module():
     return web_ui
 
 
+def flutter_case(tid, sid, name, result='success', **done):
+    return [{'type': 'testStart', 'test': {'id': tid, 'suiteID': sid, 'name': name}}, {'type': 'testDone', 'testID': tid, 'result': result, **done}]
+
+
 
 class PlaygroundBrowserTests(unittest.TestCase):
     """The playground in a real browser: the counter, the hold-to-repeat button and the irony card equal Python's rules, and the page behaves like the Dart widgets did."""
@@ -2787,6 +2791,321 @@ class PlaygroundBrowserTests(unittest.TestCase):
             seen.append(self.card_state(page)['index'])
         self.assertEqual(seen, sequence)
         self.assertTrue(all(a != b for a, b in zip(seen, seen[1:])))
+
+
+class ReportBrowserTests(unittest.TestCase):
+    """The test report in a real browser: SHA-256, the Flutter tally and conversion, JUnit reading and the failure history equal Python's on seeded fuzz, and the page works."""
+
+    def setUp(self):
+        from web_ui import report_document
+        self.server, self.origin = WorldBrowserTests.serve({'report.html': report_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/report.html')
+        return page
+
+    @staticmethod
+    def attempt(fn, *args, **kwargs):
+        try:
+            return {'ok': fn(*args, **kwargs)}
+        except ValueError as error:
+            return {'error': str(error)}
+
+    JS_TRY = "const tryit = fn => { try { return {ok: fn()} } catch (e) { return {error: e.message} } };"
+
+    def test_sha256_equals_hashlib(self):
+        import hashlib
+        rng = random.Random(256)
+        page = self.page()
+        strings = ['', 'abc', 'a' * 55, 'a' * 56, 'a' * 57, 'a' * 63, 'a' * 64, 'a' * 65, 'a' * 119, 'a' * 120, 'é' * 100, '😀' * 70, 'The quick brown fox jumps over the lazy dog', 'x' * 70000]
+        strings += [''.join(rng.choice('abcXYZ 0123é😀\n<>&"') for _ in range(rng.randint(0, 400))) for _ in range(300)]
+        got = page.evaluate("s => s.map(x => webUiReport.sha256Hex(x))", strings)
+        self.assertEqual(got, [hashlib.sha256(s.encode()).hexdigest() for s in strings])
+        raw = [bytes(rng.randrange(256) for _ in range(n)) for n in (0, 1, 55, 56, 64, 200, 1000)]
+        self.assertEqual(page.evaluate("b => b.map(x => webUiReport.sha256Hex(Uint8Array.from(x)))", [list(b) for b in raw]), [hashlib.sha256(b).hexdigest() for b in raw])
+
+    def flutter_streams(self, rng):
+        names = ['ok', 'works', 'loading test/a_test.dart', 'x < y & "z"', 'ünï 😀', 'known gap', 'multi\nline', 'cr\rname', 'tab\tname', '']
+        reasons = [None, 'known: gap', 'XFAIL: later', 'not in this env', '', 5, 'Known:x']
+        streams = []
+        for index in range(900):
+            noisy = index % 3 == 0
+            events, next_id = [], 1
+            for _ in range(rng.randint(0, 9)):
+                kind = rng.random()
+                tid = next_id
+                next_id += 1
+                if kind < 0.1:
+                    events.append({'type': 'suite', 'suite': {'id': rng.randint(0, 2), 'path': rng.choice(['test/a_test.dart', 'test/b_test.dart', '', None, 3])}})
+                    continue
+                start = {'type': 'testStart', 'test': {'id': tid if not noisy or rng.random() > 0.05 else rng.choice([True, 'x', 1.5, None]), 'name': rng.choice(names if noisy else names[:-1]), 'suiteID': rng.randint(0, 2)}}
+                if rng.random() < 0.5:
+                    start['test']['metadata'] = {'skipReason': rng.choice(reasons)}
+                events.append(start)
+                if rng.random() < 0.25:
+                    events.append({'type': 'error', 'testID': tid, 'error': rng.choice(['expected true', 'bad \x1b[31m red', 'a < b & c', 5, None, '']), 'stackTrace': rng.choice(['at x\nat y', '', None, 7])})
+                if not noisy or rng.random() < 0.93:
+                    done = {'type': 'testDone', 'testID': tid, 'result': rng.choice(['success', 'success', 'success', 'failure', 'error'] + (['skipped', 'weird', None] if noisy else []))}
+                    for flag in ('skipped', 'hidden'):
+                        if rng.random() < 0.3:
+                            done[flag] = rng.choice([True, False] + ([1, 'yes', None] if noisy else []))
+                    events.append(done)
+            if not noisy or rng.random() < 0.85:
+                events.append({'type': 'done', 'success': rng.random() < 0.5})
+            if noisy and rng.random() < 0.3:
+                events.insert(rng.randrange(len(events) + 1), rng.choice([{'type': 'testDone', 'testID': 99, 'result': 'success'}, {'type': 'error', 'testID': 99, 'error': 'e'}, 42, 'text', [1], None]))
+            if rng.random() < 0.3:     # ids need not arrive in order: shuffle them consistently
+                ids = list(range(1, next_id))
+                shuffled = ids[:]
+                rng.shuffle(shuffled)
+                mapping = dict(zip(ids, shuffled))
+                for e in events:
+                    if isinstance(e, dict):
+                        if type(e.get('testID')) is int:
+                            e['testID'] = mapping.get(e['testID'], e['testID'])
+                        if isinstance(e.get('test'), dict) and type(e['test'].get('id')) is int:
+                            e['test']['id'] = mapping.get(e['test']['id'], e['test']['id'])
+            lines = [json.dumps(e) for e in events]
+            if noisy and rng.random() < 0.4:
+                lines.insert(rng.randrange(len(lines) + 1), rng.choice(['{broken', '', '   ', 'NaN', '{"type": NaN}', '[]', 'null', '"s"', '{"type":"testDone","testID":1,"result":"success"} trailing']))
+            sep = rng.choice(['\n', '\n', '\r\n', '\r'])
+            streams.append(sep.join(lines))
+        streams += ['', '\n\n', '{"type":"done"}', '﻿{"type":"done"}', json.dumps({'type': 'testStart', 'test': {'id': 1, 'name': 'a b'}}) + '\n' + json.dumps({'type': 'testDone', 'testID': 1, 'result': 'success'}) + '\n{"type":"done"}']
+        return streams
+
+    def test_the_flutter_tally_and_the_conversion_equal_python(self):
+        w = web_ui_module()
+        rng = random.Random(20261103)
+        streams = self.flutter_streams(rng)
+        page = self.page()
+        got = page.evaluate(self.JS_TRY + "streams => streams.map(s => [webUiReport.flutterOutcomes(s), tryit(() => webUiReport.flutterMachineJunit(s)), tryit(() => webUiReport.reportRead(s))])", streams)
+        converted = 0
+        for text, (counts, junit, read) in zip(streams, got):
+            self.assertEqual(counts, w.flutter_outcomes(text), text)
+            self.assertEqual(junit, self.attempt(w.flutter_machine_junit, text), text)
+            self.assertEqual(read, self.attempt(w.report_read, text), text)
+            converted += 'ok' in junit
+        self.assertGreater(converted, 300, 'the fuzz must reach the conversion often enough')
+        self.assertGreater(len(streams) - converted, 150, 'and the error branches too')
+
+    def junit_documents(self, rng):
+        from html import escape
+        texts = ['', 'boom', 'a < b & c', 'tab\there', 'line\nbreak\r\nCRLF', 'ünï', '😀 emoji', '  spaced  ', 'known: x', 'XFAIL: y', 'Known: z', 'pytest', '[1-2]', 'x' * 230, 'q"uote\'s', ' nbsp　']
+        def attr(name, value):
+            return f' {name}="{escape(value, quote=True)}"'
+        def body(value):
+            if rng.random() < 0.2 and ']]>' not in value:
+                return f'<![CDATA[{value}]]>'
+            return escape(value, quote=False)
+        def case():
+            parts = ['<testcase']
+            if rng.random() > 0.04:
+                parts.append(attr('name', rng.choice(['test_a', 'test_b[1-2]', 'b', '😀' * 3, 'x < y', 'name\twith tab', 'n' * 250])))
+            if rng.random() > 0.2:
+                parts.append(attr('classname', rng.choice(['tests.A', 'tests.A[py3]', 'c', '', 'é' * 3, 'z' * 210])))
+            if rng.random() < 0.1:
+                parts.append(' time="0.1"')
+            kids = []
+            for _ in range(rng.choice([0, 0, 1, 1, 1, 2, 3])):
+                tag = rng.choice(['failure', 'error', 'skipped', 'system-out', 'properties', 'failure', 'skipped'])
+                a = ''
+                if rng.random() < 0.6:
+                    a += attr('message', rng.choice(texts))
+                if tag == 'skipped' and rng.random() < 0.3:
+                    a += attr('type', rng.choice(['pytest.xfail', 'pytest.skip', '']))
+                if tag == 'failure' and rng.random() < 0.3:
+                    a += attr('type', 'AssertionError')
+                inner = ''
+                if rng.random() < 0.5:
+                    inner = body(rng.choice(texts))
+                    if rng.random() < 0.2:
+                        inner = '<!-- note -->' + inner + '<b>child</b>tail'
+                kids.append(f'<{tag}{a}>{inner}</{tag}>' if inner or rng.random() < 0.5 else f'<{tag}{a}/>')
+            return ''.join(parts) + ('>' + ''.join(kids) + '</testcase>' if kids else '/>')
+        def suite(depth):
+            inner = ''.join(case() if rng.random() < 0.7 or depth > 2 else suite(depth + 1) for _ in range(rng.randint(0, 5)))
+            return f'<testsuite name="s{depth}" tests="3">{inner}</testsuite>'
+        docs = []
+        for _ in range(500):
+            root = rng.choice(['suite', 'suites', 'suites', 'suite'])
+            doc = suite(0) if root == 'suite' else '<testsuites>' + ''.join(suite(1) for _ in range(rng.randint(0, 3))) + '</testsuites>'
+            if rng.random() < 0.2:
+                doc = '<?xml version="1.0" encoding="UTF-8"?>\n' + doc
+            if rng.random() < 0.05:
+                doc = '﻿' + doc
+            docs.append(doc)
+        broken = []
+        for doc in docs[:250]:
+            kind = rng.random()
+            if kind < 0.4:
+                broken.append(doc[:rng.randrange(1, len(doc))])
+            elif kind < 0.7:
+                i = rng.randrange(len(doc))
+                broken.append(doc[:i] + rng.choice(['<', '&', '>', '"', '\x01', '&#1;', '&bogus;', ']]>']) + doc[i + 1:])
+            else:
+                broken.append(doc.replace('testsuite', rng.choice(['TestSuite', 'x:testsuite', 'testsuite xmlns="urn:a"']), 1))
+        fixed = [
+            '<testsuite><testcase name="a"/></testsuite>', '<testsuite><testcase name="a"><failure/></testcase></testsuite>', '<testsuites/>', '<testsuite/>', '', ' ', '<a/>',
+            '<testsuite xmlns="urn:x"><testcase name="a"/></testsuite>', '<testsuite xmlns:x="urn:x"><x:testcase name="a"/><testcase name="b"/></testsuite>',
+            '<x:testsuite xmlns:x="urn:x"><testcase name="a"/></x:testsuite>', '<x:testsuite><testcase name="a"/></x:testsuite>',
+            '<!DOCTYPE testsuite [<!ENTITY a "b">]><testsuite><testcase name="&a;"/></testsuite>', '<!doctype x><testsuite><testcase name="a"/></testsuite>', '<!DOCTYPEx><testsuite><testcase name="a"/></testsuite>',
+            '<testsuite><testcase name="a" name="b"/></testsuite>', '<testsuite><testcase name="&#65;&#x42;&lt;&amp;"/></testsuite>', '<testsuite><testcase name="a&nbsp;"/></testsuite>',
+            '<testsuite><testcase name="a"><failure message="m1">t1</failure><error message="m2">t2</error></testcase></testsuite>',
+            '<testsuite><testcase name="a"><error message="m2">t2</error><failure message="m1">t1</failure></testcase></testsuite>',
+            '<testsuite><testcase name="a"><failure>one<!-- c -->two<![CDATA[ <three> ]]><b/>ignored</failure></testcase></testsuite>',
+            '<testsuite><testcase name="a"><failure><b/>after child</failure></testcase></testsuite>',
+            '<testsuite>\n  <testcase name="a">\n    <failure>   </failure>\n  </testcase>\n</testsuite>',
+            '<testsuite><testcase name="a"/></testsuite><!-- trailing -->', '<testsuite><testcase name="a"/></testsuite>junk', '<testsuite><testcase name="a"/></testsuite><testsuite/>',
+            '\n<?xml version="1.0"?><testsuite><testcase name="a"/></testsuite>', '<?xml version="1.0" encoding="ISO-8859-1"?><testsuite><testcase name="é"/></testsuite>',
+            '<testsuite><testcase name="a"><skipped message=" known: padded"/></testcase></testsuite>', '<testsuite><testcase name="a"><skipped message="KNOWN: up"/></testcase></testsuite>',
+            '<testsuite><testcase name="KKnown"><skipped message="Known: kelvin"/></testcase></testsuite>',
+            '<testsuite><testcase classname="a" name="x"><failure message="' + 'é' * 2500 + '"/></testcase></testsuite>',
+            '<testsuite><testcase name="a"><failure message="&#xD;&#xA;&#x9;"/></testcase></testsuite>',
+            '<testsuite><testcase classname="' + '😀' * 250 + '" name="' + '😀' * 250 + '"><failure message="' + '😀' * 2100 + '"/></testcase></testsuite>',
+            '<testsuite><testcase name="a" pad="' + 'é' * 600_000 + '"/></testsuite>',                                  # 600,000 characters but over 1,000,000 bytes
+            '<testsuite><testcase name="a" pad="' + 'x' * (1_000_000 - len('<testsuite><testcase name="a" pad=""/></testsuite>')) + '"/></testsuite>',        # exactly 1,000,000 bytes
+            '<testsuite><testcase name="a" pad="' + 'x' * (1_000_001 - len('<testsuite><testcase name="a" pad=""/></testsuite>')) + '"/></testsuite>',        # one byte more
+        ]
+        return docs + broken + fixed
+
+    def test_junit_reading_equals_python(self):
+        w = web_ui_module()
+        rng = random.Random(20261103)
+        docs = self.junit_documents(rng)
+        page = self.page()
+        got = page.evaluate(self.JS_TRY + """docs => docs.map(d => [tryit(() => webUiReport.junitCases(d)), tryit(() => webUiReport.junitReport(d, true)), tryit(() => webUiReport.junitReport(d, false)),
+            tryit(() => webUiReport.junitInspect(d)), tryit(() => webUiReport.junitFailureRecords(d, 'o/n', 4)), tryit(() => webUiReport.reportRead(d, null, true))])""", docs)
+        parsed = 0
+        for doc, (cases, report_m, report, inspect, records, read) in zip(docs, got):
+            self.assertEqual(cases, self.attempt(w.junit_cases, doc), doc[:300])
+            self.assertEqual(report_m, self.attempt(w.junit_report, doc, messages=True), doc[:300])
+            self.assertEqual(report, self.attempt(w.junit_report, doc), doc[:300])
+            self.assertEqual(inspect, self.attempt(w.junit_inspect, doc), doc[:300])
+            self.assertEqual(records, self.attempt(w.junit_failure_records, doc, 'o/n', max_cases=4), doc[:300])
+            self.assertEqual(read, self.attempt(w.report_read, doc, messages=True), doc[:300])
+            parsed += 'ok' in cases
+        self.assertGreater(parsed, 250)
+        self.assertGreater(len(docs) - parsed, 100, 'the malformed and rejected documents are covered too')
+
+    def test_history_ledger_and_attempts_equal_python(self):
+        w = web_ui_module()
+        rng = random.Random(7)
+        page = self.page()
+        def rec(i):
+            return {'category': rng.choice(['test_failure'] * 5 + ['other']), 'context': {'repository': rng.choice(['o/n', 'a/b', 'o/n']), 'report_id': str(i)},
+                    'value': {'class': rng.choice(['c1', 'c2', 'é']), 'test': rng.choice(['t1', 't2', 'q"\\\n\t\x1f 😀']), 'kind': rng.choice(['failure', 'error'])}}
+        sets = [[rec(i) for i in range(rng.randint(0, 8))] for _ in range(200)]
+        bad = [[{'category': 'test_failure', 'context': {}, 'value': {}}], [{'category': 'test_failure', 'context': [], 'value': {}}], [5, None, {'category': 'other'}],
+               [{'category': 'test_failure', 'context': {'repository': 'a/b'}, 'value': {'class': '', 'test': 't', 'kind': 'failure'}}], [{'category': 'test_failure', 'context': {'repository': 'a/b'}, 'value': {'class': 'c', 'test': 't', 'kind': 3}}]]
+        jsonl = ['\n'.join(json.dumps(r) for r in s) for s in sets[:40]] + ['{broken', json.dumps(sets[1][0] if sets[1] else {}) + '\n\n   \n{x', '']
+        options = [dict(commit_sha='a' * 40, run_id='42'), dict(commit_sha='A' * 40, run_id='7', previous_commit_sha='b' * 40, previous_run_id='6'), dict(commit_sha='zz', run_id='1'), dict(commit_sha='a' * 40, run_id='x'),
+                   dict(commit_sha='a' * 40, run_id='1', previous_commit_sha='short'), dict(commit_sha='a' * 40, run_id='1', previous_run_id='-')]
+        got = page.evaluate(self.JS_TRY + """([sets, bad, jsonl, options]) => ({load: [...sets, ...bad].map(s => tryit(() => webUiReport.junitHistoryLoad(s))), jsonl: jsonl.map(s => tryit(() => webUiReport.junitHistoryLoad(s))),
+            compare: sets.slice(0, 120).map((s, i) => tryit(() => webUiReport.junitHistory(webUiReport.junitHistoryLoad(s), webUiReport.junitHistoryLoad(sets[(i * 7 + 1) % sets.length]), options[i % options.length])))})""",
+                           [sets, bad, jsonl, options])
+        for s, g in zip(sets + bad, got['load']):
+            self.assertEqual(g, self.attempt(w.junit_history_load, s))
+        for s, g in zip(jsonl, got['jsonl']):
+            self.assertEqual(g, self.attempt(w.junit_history_load, s))
+        for i, g in enumerate(got['compare']):
+            def compare():
+                return w.junit_history(w.junit_history_load(sets[i]), w.junit_history_load(sets[(i * 7 + 1) % len(sets)]), **options[i % len(options)])
+            self.assertEqual(g, self.attempt(compare))
+        self.assertGreaterEqual(sum('ok' in g for g in got['compare']), 40)
+        self.assertGreater(sum('error' in g for g in got['compare']), 20)
+        attempts = [[{'exit_code': a, 'failures': [{'kind': rng.choice(['failure', 'error']), 'message_sha256': rng.choice(['a' * 64, 'b' * 64, 'c' * 64])} for _ in range(rng.randint(0, 3))]} for a in rng.choice([[1], [0], [1, 0], [1, 1], [0, 0]])]
+                    for _ in range(80)]
+        ledgers = [None, {'schema': 'failure-patterns/1', 'patterns': {}}, {'schema': 'x', 'patterns': {}}, {'schema': 'failure-patterns/1', 'patterns': []}, [], {'schema': 'failure-patterns/1', 'patterns': {'node:failure:' + 'a' * 64: {'runner': 'node', 'kind': 'failure', 'message_sha256': 'a' * 64, 'occurrences': 3}}}]
+        got = page.evaluate(self.JS_TRY + """([attempts, ledgers]) => ({ledger: attempts.map((a, i) => tryit(() => webUiReport.failureLedgerUpdate(ledgers[i % ledgers.length], 'node', a))),
+            history: attempts.map(a => webUiReport.attemptHistory('deno', ['a.ts'], a))})""", [attempts, ledgers])
+        for i, (a, g) in enumerate(zip(attempts, got['ledger'])):
+            self.assertEqual(g, self.attempt(w.failure_ledger_update, ledgers[i % len(ledgers)], 'node', a))
+        for a, g in zip(attempts, got['history']):
+            self.assertEqual(g, w.attempt_history('deno', ['a.ts'], a))
+        many = [{'failures': [{'kind': 'failure', 'message_sha256': f'{i:064x}'} for i in range(501)]}]
+        self.assertEqual(page.evaluate(self.JS_TRY + "m => tryit(() => webUiReport.failureLedgerUpdate(null, 'node', m))", many), self.attempt(w.failure_ledger_update, None, 'node', many))
+
+    JUNIT = '<testsuite><testcase classname="tests.A" name="test_ok"/><testcase classname="tests.A" name="test_bad[1]"><failure message="SECRET_TOKEN">trace</failure></testcase><testcase name="gap"><skipped message="known: x"/></testcase></testsuite>'
+
+    def test_the_page_reads_a_junit_report_and_keeps_messages_hidden_until_asked(self):
+        import hashlib
+        page = self.page()
+        self.assertEqual(page.locator('[data-report-status]').inner_text(), 'Nothing read yet.')
+        page.locator('[data-report-run]').click()
+        self.assertEqual(page.locator('[data-report-status]').inner_text(), 'Nothing to read: paste a report first.')
+        page.locator('[data-report-input]').fill(self.JUNIT)
+        page.locator('[data-report-run]').click()
+        self.assertEqual(page.locator('[data-report-line]').inner_text(), 'passed=1 failed=1 skipped=0 xfailed=1 xpassed=0 error=0 total=3 ok=false')
+        self.assertEqual(page.locator('[data-report-out] tbody tr').count(), 1)
+        row = page.locator('[data-report-out] tbody tr').first.inner_text().split('\t')
+        self.assertEqual(row[:3], ['tests.A', 'test_bad[1]', 'failure'])
+        self.assertEqual(row[3], hashlib.sha256(b'SECRET_TOKEN').hexdigest()[:16])
+        self.assertNotIn('SECRET_TOKEN', page.locator('[data-ui-report]').inner_text())
+        self.assertEqual(page.locator('[data-ui-report]').get_attribute('data-report-state'), 'failing')
+        page.locator('[data-report-messages]').check()
+        self.assertIn('SECRET_TOKEN', page.locator('[data-report-out]').inner_text())
+        self.assertEqual(page.locator('[data-report-convert]').is_hidden(), True)
+
+    def test_the_page_compares_with_a_previous_run_and_reads_flutter_events(self):
+        page = self.page()
+        page.locator('.ui-report-more summary').click()
+        page.locator('[data-report-input]').fill(self.JUNIT)
+        page.locator('[data-report-previous]').fill('<testsuite><testcase classname="tests.A" name="test_bad"><failure/></testcase><testcase classname="tests.B" name="gone"><error/></testcase></testsuite>')
+        page.locator('[data-report-run]').click()
+        out = page.locator('[data-report-out]').inner_text()
+        self.assertIn('new=0 recurring=1 resolved=1', out)
+        self.assertIn('recurring: tests.A · test_bad (failure) ×1 now, ×1 before', out)
+        self.assertIn('resolved: tests.B · gone (error) ×0 now, ×1 before', out)
+        events = '\n'.join(json.dumps(e) for e in [{'type': 'suite', 'suite': {'id': 0, 'path': 't.dart'}}, *flutter_case(1, 0, 'ok'), *flutter_case(2, 0, 'bad', result='failure'), {'type': 'done', 'success': False}])
+        page.locator('[data-report-previous]').fill('')
+        page.locator('[data-report-input]').fill(events)
+        page.locator('[data-report-run]').click()
+        self.assertEqual(page.locator('[data-report-line]').inner_text(), 'passed=1 failed=1 skipped=0 xfailed=0 xpassed=0 error=0 total=2 ok=false')
+        self.assertTrue(page.locator('[data-report-convert]').is_visible())
+        self.assertIn('bad', page.locator('[data-report-out]').inner_text())
+        page.locator('[data-report-input]').fill('\n'.join(events.splitlines()[:3]))
+        page.locator('[data-report-run]').click()
+        self.assertIn('Not converted to JUnit: incomplete Flutter machine report', page.locator('[data-report-out]').inner_text())
+        self.assertTrue(page.locator('[data-report-convert]').is_hidden())
+
+    def test_the_page_refuses_what_it_cannot_read_and_says_why(self):
+        page = self.page()
+        for text, message in (('plain words', 'Paste JUnit XML'), ('<testsuite/>', 'JUnit report contains no testcases'), ('<!DOCTYPE a [<!ENTITY b "c">]><testsuite/>', 'DTD and entity declarations are unsupported'),
+                              ('<testsuite><testcase/></testsuite>', 'testcase without name'), ('<broken', 'malformed JUnit XML')):
+            page.locator('[data-report-input]').fill(text)
+            page.locator('[data-report-run]').click()
+            self.assertIn(message, page.locator('[data-report-status]').inner_text())
+            self.assertEqual(page.locator('[data-ui-report]').get_attribute('data-report-state'), 'error')
+            self.assertEqual(page.locator('[data-report-line]').inner_text(), '')
+        page.locator('.ui-report-more summary').click()
+        page.locator('[data-report-input]').fill('{"type":"done"}')
+        page.locator('[data-report-previous]').fill('<testsuite><testcase name="a"/></testsuite>')
+        page.locator('[data-report-run]').click()
+        self.assertIn('needs JUnit XML for both', page.locator('[data-report-status]').inner_text())
+
+    def test_a_file_can_be_chosen_and_an_oversized_one_is_refused(self):
+        page = self.page()
+        page.locator('[data-report-file]').set_input_files(files=[{'name': 'junit.xml', 'mimeType': 'application/xml', 'buffer': self.JUNIT.encode()}])
+        page.wait_for_function("() => document.querySelector('[data-report-line]').textContent.includes('total=3')")
+        self.assertEqual(page.locator('[data-report-input]').input_value(), self.JUNIT)
+        page.locator('[data-report-file]').set_input_files(files=[{'name': 'big.xml', 'mimeType': 'application/xml', 'buffer': b'<testsuite>' + b' ' * 1_100_000 + b'</testsuite>'}])
+        page.wait_for_function("() => document.querySelector('[data-report-status]').textContent === 'That file is over 1 MB.'")
+        self.assertEqual(page.locator('[data-report-input]').input_value(), self.JUNIT, 'a refused file leaves the text alone')
 
 
 if __name__ == '__main__':
