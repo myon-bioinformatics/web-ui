@@ -4865,7 +4865,7 @@ def playground_html() -> str:
     steps = "".join(f'<label><input type="radio" name="counter-step" value="{s}"{" checked" if s == 1 else ""}> Step {s}</label>' for s in COUNTER_STEPS)
     data = escape(json.dumps({"ironies": [{"text": t, "tone": tone} for t, tone in IRONIES], "status": COUNTER_STATUS}, ensure_ascii=False, separators=(",", ":")), quote=True)
     return (f'<section class="ui-panel ui-play" id="playground" data-ui-play data-play="{data}">'
-            '<h2>Counter Playground</h2><p class="ui-muted">A counter from -100 to 100 with a step of 1, 5 or 10, a history of the last eight values, and a damage or heal readout. '
+            '<h2>Counter Playground</h2><p class="ui-muted">Count -100 to 100; step 1, 5 or 10; eight recent values; damage or heal. '
             'Hold a button to keep stepping. Everything stays in this page.</p>'
             '<div data-counter><p>Current value</p><p class="ui-counter-value" data-counter-value aria-live="polite">0</p>'
             '<p class="ui-counter-orbs" data-counter-orbs aria-hidden="true"></p><p class="ui-counter-label" data-counter-label>Orbs ready…</p>'
@@ -5508,7 +5508,7 @@ _CSS["report.css"] = ("@layer components{.ui-report h3{margin:24px 0 8px}.ui-rep
 def report_html() -> str:
     """The test report tool as semantic HTML: paste or drop JUnit XML (or Flutter JSON events), optionally compare with the previous run; the page script fills in the rest."""
     return ('<section class="ui-panel ui-report" id="report" data-ui-report><h2>Test report</h2>'
-            '<p class="ui-muted">Paste a JUnit XML report or Flutter test events (one JSON object per line), or choose a file. Read in this page; nothing is sent.</p>'
+            '<p class="ui-muted">Paste or open JUnit XML or Flutter JSONL (one event per line). Nothing is sent.</p>'
             '<label for="report-input">Current run</label><textarea class="ui-input" id="report-input" data-report-input spellcheck="false" autocomplete="off" rows="4"></textarea>'
             '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
             '<p><button class="ui-button" type="button" data-report-run>Read the report</button> <button class="ui-button" type="button" data-report-copy>Copy summary</button> '
@@ -6249,7 +6249,7 @@ def mcp_html() -> str:
     buttons = "".join(f'<button class="ui-button" type="button" data-mcp-template="{key}">{escape(label)}</button> ' for key, label in templates)
     sample = escape(json.dumps(_MCP_SAMPLE_SERVER_DOC, indent=2), quote=False)
     return ('<section class="ui-panel ui-mcp" id="mcp" data-ui-mcp><h2>MCP lab</h2>'
-            '<p class="ui-muted">A small MCP server that lives in this page (nothing is sent anywhere): send it requests, run a demo, and try the helpers. It speaks the legacy 2025-03-26 '
+            '<p class="ui-muted">In-page MCP server; nothing is sent. Legacy 2025-03-26 '
             'protocol (initialize and Mcp-Session-Id) and the current 2026-07-28 one (server/discover and per-request _meta).</p>'
             '<p class="ui-muted" role="status" aria-live="polite" data-mcp-sessions></p>'
             '<h3>Send a request</h3><p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
