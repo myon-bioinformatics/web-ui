@@ -495,6 +495,8 @@ class WorldBrowserTests(unittest.TestCase):
     def test_board_line_stays_readable_on_a_phone(self):
         from web_ui import example_data
         spec = example_data('world')
+        spec['board']['items'].append({'text': 'emoji', 'gauge': {'from': '09:00', 'to': '18:00',
+                                      'cells': 20, 'glyphs': ['👩\u200d💻', 'ABCDEFGH']}})
         server, origin = self.serve({'index.html': world_document(spec)})
         try:
             with sync_playwright() as playwright:
@@ -504,6 +506,7 @@ class WorldBrowserTests(unittest.TestCase):
                         with self.subTest(width=width):
                             page = browser.new_page(viewport={'width': width, 'height': 700})
                             page.goto(origin + '/index.html')
+                            self.assertEqual(page.locator('.ui-board-gauge[data-todo=\"ABCDEFGH\"]').count(), 2)
                             track, board = page.locator('.ui-board-track').bounding_box(), page.locator('.ui-board').bounding_box()
                             self.assertGreater(track['width'], 200)                                 # the scrolling line is not squeezed away
                             self.assertLessEqual(track['x'] + track['width'], board['x'] + board['width'] + 1)
@@ -650,9 +653,9 @@ class WorldBrowserTests(unittest.TestCase):
                     self.assertEqual(halves[0], halves[1])
                     self.assertEqual(halves[0][:5], ['7😀', '6😀', '5😀', '4😀', '3😀'])
                     self.assertEqual(board.locator('.ui-board-note').count(), 10)
-                    self.assertEqual(int(board.get_attribute('data-chars')), base + 10)
+                    self.assertEqual(int(board.get_attribute('data-chars')), base + 40)
                     self.assertEqual(len(set(board.locator('.ui-board-note .ui-board-stamp').all_text_contents())), 1)   # each line carries its HH:MM stamp
-                    expect(board.locator('.ui-board-run')).to_have_css('animation-duration', f'{board_seconds(base + 10):g}s')
+                    expect(board.locator('.ui-board-run')).to_have_css('animation-duration', f'{board_seconds(base + 40):g}s')
                     page.reload()
                     self.assertEqual(page.locator('.ui-board-note').count(), 0)
                 finally:

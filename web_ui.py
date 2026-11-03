@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from typing import Any
 import urllib.error
 import urllib.request
@@ -2158,7 +2159,7 @@ def _world_hhmm(value: Any, label: str) -> int:
 
 def _gauge_glyph(value: Any) -> str:
     """One gauge cell: 1..8 visible characters (emoji sequences welcome); no spaces or control characters."""
-    if not isinstance(value, str) or not 1 <= len(value) <= 8 or any(c.isspace() or not (c.isprintable() or c == "‍") for c in value):
+    if not isinstance(value, str) or not 1 <= len(value) <= 8 or not any(unicodedata.category(c)[0] in "LNSP" and c not in "\u115f\u1160\u2800\u3164\uffa0" for c in value) or any(c.isspace() or not (c.isprintable() or c == "\u200d") for c in value):
         raise ValueError("a gauge glyph is 1..8 visible characters")
     return value
 
@@ -2166,7 +2167,7 @@ def _gauge_glyph(value: Any) -> str:
 def _world_gauge(gauge: Any) -> dict[str, Any]:
     """Checked, normalized gauge: ``{"from", "to", "cells", "glyphs": [elapsed, remaining]}``; ``glyphs`` may name a ``GAUGE_GLYPHS`` preset."""
     if not isinstance(gauge, dict) or set(gauge) - {"from", "to", "cells", "glyphs"}:
-        raise ValueError("a gauge has from, to, cells and glyphs")
+        raise ValueError("a gauge requires from and to; cells and glyphs are optional")
     start, end = _world_hhmm(gauge.get("from"), "from"), _world_hhmm(gauge.get("to"), "to")
     if start == end:
         raise ValueError("a gauge needs a window: from and to differ")
@@ -2329,7 +2330,15 @@ def _board_html(board: dict[str, Any] | None) -> str:
                      f'{escape(gauge_cells(0, g["cells"], g["glyphs"]))}</span> <span class="ui-board-pct">0%</span></span>')
         aria_hidden = ' aria-hidden="true"' if hidden else ""
         return f'<span class="ui-board-item"{aria_hidden}>{escape(entry["text"])}{extra}</span>'
-    chars = sum(len(e["text"]) + (10 if e["at"] else 0) + (2 * e["gauge"]["cells"] + 5 if e["gauge"] else 0) for e in board["items"])
+    def item_chars(entry: dict[str, Any]) -> int:
+        # Budget the longest cell combination and percentage, including separators.
+        gauge = entry["gauge"]
+        extra = 10 if entry["at"] else 0
+        if gauge:
+            extra += 1 + max(len(gauge_cells(n, gauge["cells"], gauge["glyphs"]))
+                             for n in range(gauge["cells"] + 1)) + len(" 100%")
+        return len(entry["text"]) + extra
+    chars = sum(item_chars(entry) for entry in board["items"])
     run = "".join(item(e, False) for e in board["items"]) + "".join(item(e, True) for e in board["items"])
     form = ('<form class="ui-board-post"><input class="ui-input" name="message" maxlength="60" placeholder="Leave a line" '
             'aria-label="Leave a line on the board" autocomplete="off"><button class="ui-button" type="submit">Post</button></form>'
@@ -2579,7 +2588,7 @@ if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isCon
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
 form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.message,text=cleanMessage(input.value);if(!text)return;input.value="";notes.unshift({text,at:clockNow().clock});notes.splice(5);run.replaceChildren();
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
-const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
+const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};

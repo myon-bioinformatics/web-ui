@@ -8,7 +8,7 @@ v=u.example_data('world');v['board']['shared_issue']='myon-bioinformatics/web-ui
 print(u.world_document(v))`],{encoding:'utf8'});
  const browser=await chromium.launch({headless:true});
  try{
- for(const width of [390,1280]){
+ for(const width of [320,390,1280]){
  const page=await browser.newPage({viewport:{width,height:844}});
  let calls=0,fail=false;const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.route('https://api.github.com/**',async route=>{

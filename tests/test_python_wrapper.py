@@ -462,6 +462,20 @@ class WorldTests(unittest.TestCase):
         self.assertNotIn("data-offset-label", web_ui.world_html(board({"text": "x"})))
 
     @unittest.skipUnless(_has_tzdata(), "needs the system tz database")
+    def test_gauge_unicode_visibility_and_scroll_budget(self):
+        for glyph in ("\u200d", "\ufe0f", "\u0301", "\u200d\ufe0f", "\u3164", "\uffa0"):
+            with self.subTest(glyph=repr(glyph)), self.assertRaises(ValueError):
+                web_ui._gauge_glyph(glyph)
+        for glyph in ("👩\u200d💻", "🇯🇵", "1️⃣", "ABCDEFGH"):
+            self.assertEqual(web_ui._gauge_glyph(glyph), glyph)
+        with self.assertRaisesRegex(ValueError, "requires from and to; cells and glyphs are optional"):
+            web_ui._world_gauge({"extra": 1})
+        gauge = web_ui._world_gauge({"from": "09:00", "to": "18:00", "cells": 3,
+                                     "glyphs": ["ABCDEFGH", "👩\u200d💻"]})
+        html = web_ui._board_html({"title": "test", "items": [{"text": "x", "at": None, "zone": None, "gauge": gauge}],
+                                   "post": False, "offset_label": False, "offset_minutes": None, "zones": []})
+        self.assertIn('data-chars="31"', html)  # text + space + longest cells + " 100%"
+
     def test_zone_table_follows_the_tz_database_and_known_transitions(self):
         import datetime as dt
         import zoneinfo
