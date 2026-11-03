@@ -3117,6 +3117,996 @@ def coordinates_document(*, theme: str = "modern") -> str:
                            theme=theme, css=bundled_css())
 
 
+# --- Photo studio: import rules, image format sniffing, EXIF orientation, frame and stamp geometry, undo history ------------------------------
+# Absorbs flutter_navigation_basic's lib/features/photo_studio (data/image_format_sniff.dart, data/photo_import_limits.dart, data/photo_media_ports.dart,
+# domain/*.dart, the geometry in presentation/photo_rect_canvas.dart and studio_canvas_capture.dart). Its Dart tests and test/fixtures/photo_studio/import_compat
+# are the golden values. Python is the reference; ``photo.js`` must agree. Deliberate differences: the pixel budget is checked from the file header before any
+# decode, EXIF orientation is neutralised in the bytes and applied by the page (so every engine draws the same upright pixels), numbers are plain finite
+# floats, and rounding is half up in both languages.
+
+PHOTO_MAX_BYTES = 32 * 1024 * 1024
+PHOTO_MAX_PIXELS = 40_000_000
+PHOTO_MAX_EDGE = 4096
+PHOTO_DOWNSCALE = 2 / 3
+PHOTO_MIN_SIZE = 0.04
+PHOTO_HISTORY_LIMIT = 20
+PHOTO_EXPORT_NAME = "photo-studio.png"
+PHOTO_HEIC_BRANDS = ("heic", "heif", "mif1", "msf1", "heix")
+PHOTO_LABELS = {"empty": "empty", "png": "PNG", "jpeg": "JPEG", "webp": "WebP", "gif": "GIF", "avif": "AVIF", "heic": "HEIC", "unknown": "unknown"}
+PHOTO_STAMPS = ("⭐", "❤️", "😊", "🔥", "📷", "🌸", "✨", "🍀")
+PHOTO_COLORS = (("Purple", "#7e57c2"), ("Red", "#e53935"), ("Green", "#43a047"), ("Blue", "#1e88e5"), ("Amber", "#fdd835"), ("White", "#ffffff"), ("Black", "#212121"))
+PHOTO_SHAPES = ("rectangle", "circle", "triangle")
+PHOTO_HANDLES = ("move", "topLeft", "topRight", "bottomLeft", "bottomRight", "left", "right", "top", "bottom")
+PHOTO_OUTCOMES = ("supported", "rejected:empty", "rejected:tooLargeBytes", "rejected:tooManyPixels", "rejected:heicConversionFailed", "rejected:undecodable",
+                  "unsupported_by_runtime", "not_verified")
+PHOTO_MESSAGES = {
+    "idle": "Select an image or paste here", "loading": "Loading image…", "success": "Image loaded", "cancelled": "No change.",
+    "superseded": "A newer import replaced this load.", "noClipboardImage": "Clipboard has no photo to paste.",
+    "clipboardUnavailable": "This browser did not allow clipboard image access. Use Import image, or paste again after allowing permission.",
+    "pickFailed": "Could not decode this image.", "decodeFailed": "Could not decode this image.",
+    "tooLarge": "That photo is too large. Choose a smaller image or screenshot.", "tooLargeBytes": "That photo is too large. Choose a smaller image or screenshot.",
+    "tooManyPixels": "That photo has too many pixels. Choose a smaller image or screenshot.",
+    "heicUnsupported": "This HEIC/HEIF photo cannot be decoded in this browser. Export it as JPEG or PNG first.",
+    "unsupportedFormat": "That image format could not be decoded."}
+_PHOTO_FAILURES = {"empty": "decodeFailed", "tooLargeBytes": "tooLargeBytes", "tooManyPixels": "tooManyPixels", "undecodable": "unsupportedFormat",
+                   "heicConversionFailed": "heicUnsupported"}
+
+
+def _photo_half_up(value: float) -> int:
+    floor = math.floor(value)
+    return floor + 1 if value - floor >= 0.5 else floor
+
+
+def _photo_clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
+def _photo_distance(dx: float, dy: float) -> float:
+    return math.sqrt(dx * dx + dy * dy)                    # Dart's Offset.distance; JavaScript's Math.hypot can differ in the last bit
+
+
+def photo_sniff(data: bytes) -> dict[str, Any]:
+    """The format hint from the magic bytes, without decoding or reading GPS: ``kind``, ``label``, ``brand`` (HEIC/AVIF ``ftyp``), ``progressive`` (JPEG),
+    ``orientation`` (JPEG EXIF 1-8 or ``None``), ``orientation_offset`` (where its two bytes sit in ``data``) and ``orientation_big_endian``."""
+    info: dict[str, Any] = {"kind": "unknown", "brand": None, "progressive": None, "orientation": None, "orientation_offset": None, "orientation_big_endian": None}
+    n = len(data)
+    if n == 0:
+        info["kind"] = "empty"
+    elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+        info["kind"] = "png"
+    elif n >= 3 and data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF:
+        info["kind"] = "jpeg"
+        info["progressive"] = _photo_jpeg_progressive(data)
+        found = _photo_jpeg_orientation(data)
+        if found:
+            info["orientation"], info["orientation_offset"], info["orientation_big_endian"] = found
+    elif n >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        info["kind"] = "webp"
+    elif n >= 6 and data[:4] == b"GIF8" and data[4] in (0x39, 0x37) and data[5] == 0x61:
+        info["kind"] = "gif"
+    else:
+        brand = _photo_ftyp_brand(data)
+        if brand in PHOTO_HEIC_BRANDS:
+            info["kind"], info["brand"] = "heic", brand
+        elif brand in ("avif", "avis"):
+            info["kind"], info["brand"] = "avif", brand
+    info["label"] = PHOTO_LABELS[info["kind"]]
+    return info
+
+
+def _photo_ftyp_brand(data: bytes) -> str | None:
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        return None
+    return "".join(chr(b) for b in data[8:12])             # one code unit per byte, like Dart's String.fromCharCodes
+
+
+def _photo_jpeg_progressive(data: bytes) -> bool:
+    i, n = 2, len(data)
+    while i + 3 < n:
+        if data[i] != 0xFF:
+            return False
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD9, 0xDA):
+            return False
+        if marker in (0xC2, 0xC6, 0xCA, 0xCE):
+            return True
+        if marker in (0xC0, 0xC1, 0xC3, 0xC9, 0xCB):
+            return False
+        if 0xD0 <= marker <= 0xD7 or marker in (0x00, 0x01):
+            i += 2
+            continue
+        length = (data[i + 2] << 8) | data[i + 3]
+        if length < 2:
+            return False
+        i += 2 + length
+    return False
+
+
+def _photo_jpeg_orientation(data: bytes) -> tuple[int, int, bool] | None:
+    i, n = 2, len(data)
+    while i + 8 < n:
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD9, 0xDA):
+            return None
+        length = (data[i + 2] << 8) | data[i + 3]
+        if marker == 0xE1:
+            if length < 8 or i + 2 + length > n:
+                return None
+            if length - 2 >= 6 and data[i + 4:i + 8] == b"Exif":                # an XMP APP1 may come first: keep scanning past it
+                return _photo_exif_orientation(data, i + 4, i + 2 + length)
+            i += 2 + length
+            continue
+        if 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        if length < 2:
+            return None
+        i += 2 + length
+    return None
+
+
+def _photo_exif_orientation(data: bytes, start: int, end: int) -> tuple[int, int, bool] | None:
+    segment = data[start:end]
+    if len(segment) < 14 or segment[:6] != b"Exif\x00\x00":
+        return None
+    tiff = segment[6:]
+    big = tiff[0] == 0x4D and tiff[1] == 0x4D
+    if not (big or (tiff[0] == 0x49 and tiff[1] == 0x49)):
+        return None
+
+    def u16(offset: int) -> int:
+        if offset + 1 >= len(tiff):
+            return -1
+        return (tiff[offset] << 8 | tiff[offset + 1]) if big else (tiff[offset] | tiff[offset + 1] << 8)
+
+    def u32(offset: int) -> int:
+        if offset + 3 >= len(tiff):
+            return -1
+        b = tiff[offset:offset + 4]
+        return int.from_bytes(b, "big" if big else "little")
+
+    ifd = u32(4)
+    if ifd < 0 or ifd + 2 > len(tiff):
+        return None
+    count = u16(ifd)
+    for entry_number in range(count):
+        entry = ifd + 2 + entry_number * 12
+        if entry + 12 > len(tiff):
+            return None
+        if u16(entry) != 0x0112:
+            continue
+        if u16(entry + 2) != 3 or u32(entry + 4) != 1:
+            return None
+        value = u16(entry + 8)
+        return (value, start + 6 + entry + 8, big) if 1 <= value <= 8 else None
+    return None
+
+
+def photo_neutralize_orientation(data: bytes) -> bytes:
+    """A copy of a JPEG with its EXIF Orientation set to 1, so no engine rotates it and the page applies the turn itself (anything else: ``data`` as is)."""
+    info = photo_sniff(data)
+    if info["orientation"] in (None, 1):
+        return bytes(data)
+    out = bytearray(data)
+    at = info["orientation_offset"]
+    out[at:at + 2] = b"\x00\x01" if info["orientation_big_endian"] else b"\x01\x00"
+    return bytes(out)
+
+
+def photo_header_size(data: bytes) -> tuple[int, int] | None:
+    """The width and height a PNG, GIF, JPEG or WebP file declares in its header (read without decoding), or ``None`` (also for HEIC/AVIF and damaged headers)."""
+    n = len(data)
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        if n >= 24 and data[12:16] == b"IHDR":
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        return None
+    if n >= 10 and data[:4] == b"GIF8" and data[4] in (0x39, 0x37) and data[5] == 0x61:
+        return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+    if n >= 3 and data[:3] == b"\xff\xd8\xff":
+        i = 2
+        while i + 3 < n:
+            if data[i] != 0xFF:
+                return None
+            marker = data[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0xD9, 0xDA):
+                return None
+            if 0xD0 <= marker <= 0xD7 or marker in (0x00, 0x01):
+                i += 2
+                continue
+            length = (data[i + 2] << 8) | data[i + 3]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if length < 8 or i + 9 > n:
+                    return None
+                return (data[i + 7] << 8) | data[i + 8], (data[i + 5] << 8) | data[i + 6]
+            if length < 2:
+                return None
+            i += 2 + length
+        return None
+    if n >= 16 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        chunk = data[12:16]
+        if chunk == b"VP8 " and n >= 30 and data[23:26] == b"\x9d\x01\x2a":
+            return (data[26] | data[27] << 8) & 0x3FFF, (data[28] | data[29] << 8) & 0x3FFF
+        if chunk == b"VP8L" and n >= 25 and data[20] == 0x2F:
+            bits = int.from_bytes(data[21:25], "little")
+            return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        if chunk == b"VP8X" and n >= 30:
+            return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+    return None
+
+
+_PHOTO_OPS = {2: ("flipX", 0, True, False), 3: ("rotate", 180, False, False), 4: ("flipY", 0, False, True), 5: ("transpose", 90, True, False),
+              6: ("rotate", 90, False, False), 7: ("transverse", -90, True, False), 8: ("rotate", -90, False, False)}
+
+
+def photo_orientation_op(orientation: int) -> dict[str, Any] | None:
+    """What EXIF Orientation 2-8 asks for (the Android table the Dart tests keep as evidence); 1 and anything else: ``None``."""
+    op = _PHOTO_OPS.get(orientation) if isinstance(orientation, int) and not isinstance(orientation, bool) else None
+    return None if op is None else {"op": op[0], "degrees": op[1], "flip_x": op[2], "flip_y": op[3]}
+
+
+def photo_oriented_size(width: int, height: int, orientation: int) -> tuple[int, int]:
+    """The upright size of a ``width`` x ``height`` picture with this EXIF Orientation (5-8 swap the sides)."""
+    return (height, width) if orientation in (5, 6, 7, 8) else (width, height)
+
+
+def photo_orientation_matrix(orientation: int, width: int, height: int) -> tuple[int, int, int, int, int, int]:
+    """The canvas ``setTransform(a, b, c, d, e, f)`` that draws a stored ``width`` x ``height`` picture upright for EXIF Orientation 1-8
+    (x' = a*x + c*y + e, y' = b*x + d*y + f); anything else is treated as 1."""
+    w, h = width, height
+    return {2: (-1, 0, 0, 1, w, 0), 3: (-1, 0, 0, -1, w, h), 4: (1, 0, 0, -1, 0, h), 5: (0, 1, 1, 0, 0, 0), 6: (0, 1, -1, 0, h, 0),
+            7: (0, -1, -1, 0, h, w), 8: (0, -1, 1, 0, 0, w)}.get(orientation, (1, 0, 0, 1, 0, 0))
+
+
+def photo_reject_bytes(length: int) -> str | None:
+    """``empty`` or ``tooLargeBytes`` for a raw file of this many bytes, else ``None``."""
+    return "empty" if length <= 0 else "tooLargeBytes" if length > PHOTO_MAX_BYTES else None
+
+
+def photo_reject_size(width: int, height: int) -> str | None:
+    """``undecodable`` for a side that is not positive, ``tooManyPixels`` above 40 megapixels, else ``None``."""
+    if width <= 0 or height <= 0:
+        return "undecodable"
+    return "tooManyPixels" if width * height > PHOTO_MAX_PIXELS else None
+
+
+def photo_document_size(width: int, height: int) -> tuple[int, int]:
+    """The size the studio keeps a ``width`` x ``height`` photo at: two thirds of each side, then the long side at most 4096 (what Flutter's web adapter does)."""
+    tw = min(max(_photo_half_up(width * PHOTO_DOWNSCALE), 1), width)
+    th = min(max(_photo_half_up(height * PHOTO_DOWNSCALE), 1), height)
+    long_edge = max(tw, th)
+    if long_edge > PHOTO_MAX_EDGE:
+        fit = PHOTO_MAX_EDGE / long_edge
+        tw = min(max(_photo_half_up(tw * fit), 1), width)
+        th = min(max(_photo_half_up(th * fit), 1), height)
+    return tw, th
+
+
+def photo_failure(rejection: str) -> dict[str, str]:
+    """A rejection (``empty``, ``tooLargeBytes``, ``tooManyPixels``, ``undecodable``, ``heicConversionFailed``) as its failure reason, outcome and message."""
+    reason = _PHOTO_FAILURES[rejection]
+    return {"rejection": rejection, "reason": reason, "outcome": "rejected:" + rejection, "message": PHOTO_MESSAGES[reason]}
+
+
+def photo_decide(data: bytes, decode: Any = None, declared_mime: str | None = None) -> dict[str, Any]:
+    """Whether ``data`` may become the studio photo, with Flutter's order of checks: a declared type that is not ``image/*``, then empty or over 32 MiB,
+    then the pixel budget from the header, then ``decode(data)`` (a ``(width, height)`` or ``None`` from the engine), then the budget on that size.
+    ``{"ok": True, "format", "width", "height", "document", "message"}`` or ``{"ok": False, ...photo_failure(...)}``."""
+    if declared_mime and not declared_mime.startswith("image/"):
+        return {"ok": False, **photo_failure("undecodable")}
+    rejection = photo_reject_bytes(len(data))
+    if rejection:
+        return {"ok": False, **photo_failure(rejection)}
+    info = photo_sniff(data)
+    header = photo_header_size(data)
+    if header and header[0] > 0 and header[1] > 0 and (rejection := photo_reject_size(*header)):
+        return {"ok": False, **photo_failure(rejection)}
+    size = decode(data) if decode else None
+    if size is None:
+        return {"ok": False, **photo_failure("heicConversionFailed" if info["kind"] == "heic" else "undecodable")}
+    width, height = size
+    if rejection := photo_reject_size(width, height):
+        return {"ok": False, **photo_failure(rejection)}
+    label = info["label"] if info["kind"] != "unknown" else (declared_mime.split("/")[-1].upper() if declared_mime else "IMAGE")
+    return {"ok": True, "outcome": "supported", "format": label, "width": width, "height": height, "document": photo_document_size(width, height),
+            "message": PHOTO_MESSAGES["success"], "meta": f"{label} · {width} × {height}"}
+
+
+def photo_png(width: int, height: int, rgba: bytes | None = None) -> bytes:
+    """A PNG built in memory (8-bit RGBA, filter 0): ``rgba`` is ``width * height * 4`` bytes, or all transparent black."""
+    rows = rgba if rgba is not None else bytes(width * height * 4)
+    if len(rows) != width * height * 4:
+        raise ValueError("rgba must hold width * height * 4 bytes")
+    raw = b"".join(b"\x00" + rows[y * width * 4:(y + 1) * width * 4] for y in range(height))
+    chunk = lambda kind, body: len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"\x08\x06\x00\x00\x00")
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+# Normalised rectangles are ``{"left", "top", "right", "bottom"}`` in 0..1 of the canvas.
+
+def photo_rect(left: float, top: float, right: float, bottom: float) -> dict[str, float]:
+    return {"left": left, "top": top, "right": right, "bottom": bottom}
+
+
+PHOTO_INITIAL_RECT = photo_rect(0.2, 0.2, 0.8, 0.8)
+
+
+def photo_rect_from_diagonal(x0: float, y0: float, x1: float, y1: float) -> dict[str, float]:
+    """The rectangle two opposite corners span, clamped to 0..1, for a drag in any direction (the minimum size is not enforced)."""
+    c = lambda v: _photo_clamp(v, 0.0, 1.0)
+    return photo_rect(c(min(x0, x1)), c(min(y0, y1)), c(max(x0, x1)), c(max(y0, y1)))
+
+
+def photo_rect_sanitized(rect: dict[str, float]) -> dict[str, float]:
+    """Clamped to 0..1, ordered, and at least 0.04 wide and high."""
+    l, t, r, b = (_photo_clamp(rect[k], 0.0, 1.0) for k in ("left", "top", "right", "bottom"))
+    if r < l:
+        l, r = r, l
+    if b < t:
+        t, b = b, t
+    if r - l < PHOTO_MIN_SIZE:
+        r = min(1.0, l + PHOTO_MIN_SIZE)
+        l = max(0.0, r - PHOTO_MIN_SIZE)
+    if b - t < PHOTO_MIN_SIZE:
+        b = min(1.0, t + PHOTO_MIN_SIZE)
+        t = max(0.0, b - PHOTO_MIN_SIZE)
+    return photo_rect(l, t, r, b)
+
+
+def photo_rect_translated(rect: dict[str, float], dx: float, dy: float) -> dict[str, float]:
+    """Moved by ``dx``, ``dy`` and kept inside the unit square."""
+    l, t, r, b = rect["left"] + dx, rect["top"] + dy, rect["right"] + dx, rect["bottom"] + dy
+    if l < 0:
+        r -= l
+        l = 0
+    if t < 0:
+        b -= t
+        t = 0
+    if r > 1:
+        l -= r - 1
+        r = 1
+    if b > 1:
+        t -= b - 1
+        b = 1
+    return photo_rect_sanitized(photo_rect(l, t, r, b))
+
+
+def photo_rect_resized(rect: dict[str, float], handle: str, dx: float, dy: float) -> dict[str, float]:
+    """Dragged by ``handle`` (``move``, a corner or an edge) by ``dx``, ``dy``."""
+    if handle == "move":
+        return photo_rect_translated(rect, dx, dy)
+    if handle not in PHOTO_HANDLES:
+        raise ValueError("unknown handle")
+    l, t, r, b = rect["left"], rect["top"], rect["right"], rect["bottom"]
+    if handle in ("topLeft", "bottomLeft", "left"):
+        l += dx
+    if handle in ("topRight", "bottomRight", "right"):
+        r += dx
+    if handle in ("topLeft", "topRight", "top"):
+        t += dy
+    if handle in ("bottomLeft", "bottomRight", "bottom"):
+        b += dy
+    return photo_rect_sanitized(photo_rect(l, t, r, b))
+
+
+def photo_rect_text(rect: dict[str, float]) -> str:
+    return "\n".join(f"{k}: {fixed(rect[k], 4)}" for k in ("left", "top", "right", "bottom"))
+
+
+def photo_rect_csv(rect: dict[str, float]) -> str:
+    return ", ".join(fixed(rect[k], 4) for k in ("left", "top", "right", "bottom"))
+
+
+def photo_midpoint(x0: float, y0: float, x1: float, y1: float) -> dict[str, float]:
+    return {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2}
+
+
+def photo_rect_edge_midpoints(rect: dict[str, float]) -> list[dict[str, float]]:
+    """The midpoints of the top, right, bottom and left edges."""
+    l, t, r, b = rect["left"], rect["top"], rect["right"], rect["bottom"]
+    return [photo_midpoint(l, t, r, t), photo_midpoint(r, t, r, b), photo_midpoint(l, b, r, b), photo_midpoint(l, t, l, b)]
+
+
+def photo_circle(rect: dict[str, float]) -> dict[str, float]:
+    """The circle inscribed in the box: centre and radius."""
+    return {"cx": (rect["left"] + rect["right"]) / 2, "cy": (rect["top"] + rect["bottom"]) / 2,
+            "radius": min(rect["right"] - rect["left"], rect["bottom"] - rect["top"]) / 2}
+
+
+def photo_triangle(rect: dict[str, float]) -> list[dict[str, float]]:
+    """The triangle with its apex at the top centre and its base on the bottom edge: apex, right, left."""
+    return [{"x": (rect["left"] + rect["right"]) / 2, "y": rect["top"]}, {"x": rect["right"], "y": rect["bottom"]}, {"x": rect["left"], "y": rect["bottom"]}]
+
+
+def photo_triangle_midpoints(rect: dict[str, float]) -> list[dict[str, float]]:
+    v = photo_triangle(rect)
+    return [photo_midpoint(v[0]["x"], v[0]["y"], v[1]["x"], v[1]["y"]), photo_midpoint(v[1]["x"], v[1]["y"], v[2]["x"], v[2]["y"]),
+            photo_midpoint(v[2]["x"], v[2]["y"], v[0]["x"], v[0]["y"])]
+
+
+def _photo_in_triangle(px: float, py: float, ax: float, ay: float, bx: float, by: float, cx: float, cy: float) -> bool:
+    v0x, v0y, v1x, v1y, v2x, v2y = cx - ax, cy - ay, bx - ax, by - ay, px - ax, py - ay
+    d00, d01, d02 = v0x * v0x + v0y * v0y, v0x * v1x + v0y * v1y, v0x * v2x + v0y * v2y
+    d11, d12 = v1x * v1x + v1y * v1y, v1x * v2x + v1y * v2y
+    denominator = d00 * d11 - d01 * d01
+    if abs(denominator) < 1e-12:
+        return False
+    u, v = (d11 * d02 - d01 * d12) / denominator, (d00 * d12 - d01 * d02) / denominator
+    return u >= 0 and v >= 0 and u + v <= 1
+
+
+def _photo_segment_distance(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+    abx, aby = bx - ax, by - ay
+    length2 = abx * abx + aby * aby
+    if length2 < 1e-12:
+        return _photo_distance(px - ax, py - ay)
+    t = _photo_clamp(((px - ax) * abx + (py - ay) * aby) / length2, 0.0, 1.0)
+    return _photo_distance(px - (ax + t * abx), py - (ay + t * aby))
+
+
+def photo_shape_contains(rect: dict[str, float], shape: str, x: float, y: float, slop: float = 0) -> bool:
+    """Whether the point is inside the shape drawn in ``rect``; ``slop`` widens the target. The empty corners of a circle or triangle do not count."""
+    if shape == "rectangle":
+        return rect["left"] - slop <= x <= rect["right"] + slop and rect["top"] - slop <= y <= rect["bottom"] + slop
+    if shape == "circle":
+        c = photo_circle(rect)
+        r = c["radius"] + slop
+        return (x - c["cx"]) * (x - c["cx"]) + (y - c["cy"]) * (y - c["cy"]) <= r * r
+    if shape == "triangle":
+        v = photo_triangle(rect)
+        if _photo_in_triangle(x, y, v[0]["x"], v[0]["y"], v[1]["x"], v[1]["y"], v[2]["x"], v[2]["y"]):
+            return True
+        if slop <= 0:
+            return False
+        return any(_photo_segment_distance(x, y, v[i]["x"], v[i]["y"], v[(i + 1) % 3]["x"], v[(i + 1) % 3]["y"]) <= slop for i in range(3))
+    raise ValueError("unknown shape")
+
+
+def photo_segment_intersection(ax: float, ay: float, bx: float, by: float, cx: float, cy: float, dx: float, dy: float) -> dict[str, float] | None:
+    """Where segment AB crosses segment CD, or ``None`` when they are parallel or miss."""
+    rx, ry, sx, sy = bx - ax, by - ay, dx - cx, dy - cy
+    denominator = rx * sy - ry * sx
+    if abs(denominator) < 1e-12:
+        return None
+    t = ((cx - ax) * sy - (cy - ay) * sx) / denominator
+    u = ((cx - ax) * ry - (cy - ay) * rx) / denominator
+    if t < 0 or t > 1 or u < 0 or u > 1:
+        return None
+    return {"x": ax + t * rx, "y": ay + t * ry}
+
+
+def photo_describe(rect: dict[str, float], shape: str) -> str:
+    """The geometry panel's text for a frame (midpoints and derived points to four decimals)."""
+    p = lambda point: f"{fixed(point['x'], 4)}, {fixed(point['y'], 4)}"
+    if shape == "rectangle":
+        m = photo_rect_edge_midpoints(rect)
+        return "\n".join(["shape: rectangle", photo_rect_text(rect), *(f"mid.{name}: {p(point)}" for name, point in zip(("top", "right", "bottom", "left"), m))])
+    if shape == "circle":
+        c = photo_circle(rect)
+        return f"shape: circle\ncx: {fixed(c['cx'], 4)}\ncy: {fixed(c['cy'], 4)}\nradius: {fixed(c['radius'], 4)}"
+    if shape == "triangle":
+        v, m = photo_triangle(rect), photo_triangle_midpoints(rect)
+        return "\n".join(["shape: triangle", f"apex: {p(v[0])}", f"right: {p(v[1])}", f"left: {p(v[2])}",
+                          f"mid.apexRight: {p(m[0])}", f"mid.base: {p(m[1])}", f"mid.apexLeft: {p(m[2])}"])
+    raise ValueError("unknown shape")
+
+
+PHOTO_HANDLE_SLOP = 18
+PHOTO_STAMP_MIN_HIT = 18
+
+
+def photo_hit_handle(rect: dict[str, float], width: float, height: float, x: float, y: float) -> str | None:
+    """Which handle of a frame the canvas point (x, y) in a ``width`` x ``height`` canvas grabs: a corner within 18, an edge strip, else ``move`` inside the
+    frame shrunk by 4, else ``None``."""
+    l, t, r, b = rect["left"] * width, rect["top"] * height, rect["right"] * width, rect["bottom"] * height
+    s = PHOTO_HANDLE_SLOP
+    for name, cx, cy in (("topLeft", l, t), ("topRight", r, t), ("bottomLeft", l, b), ("bottomRight", r, b)):
+        if _photo_distance(cx - x, cy - y) <= s:
+            return name
+    side, wide = max(0.0, (b - t) - s * 2), max(0.0, (r - l) - s * 2)
+    for name, left, top, w, h in (("left", l - s / 2, t + s, s, side), ("right", r - s / 2, t + s, s, side), ("top", l + s, t - s / 2, wide, s), ("bottom", l + s, b - s / 2, wide, s)):
+        if left <= x < left + w and top <= y < top + h:
+            return name
+    if l + 4 <= x < r - 4 and t + 4 <= y < b - 4:
+        return "move"
+    return None
+
+
+def photo_hit_frame(frames: list[dict[str, Any]], width: float, height: float, x: float, y: float) -> dict[str, Any] | None:
+    """The topmost frame (``{"id", "rect", "shape", ...}``) under the canvas point, shape-aware with a 4-pixel margin."""
+    if width <= 0 or height <= 0:
+        return None
+    slop = 4 / min(width, height)
+    for frame in reversed(frames):
+        if photo_shape_contains(frame["rect"], frame["shape"], x / width, y / height, slop):
+            return frame
+    return None
+
+
+def photo_hit_stamp(stamps: list[dict[str, Any]], width: float, height: float, x: float, y: float) -> dict[str, Any] | None:
+    """The topmost stamp whose centre is within ``max(18, 0.05 * shorter side * scale)`` pixels of the point."""
+    for stamp in reversed(stamps):
+        radius = max(float(PHOTO_STAMP_MIN_HIT), min(width, height) * 0.05 * stamp["scale"])
+        if _photo_distance(stamp["x"] * width - x, stamp["y"] * height - y) <= radius:
+            return stamp
+    return None
+
+
+def photo_export_size(width: float, height: float, ratio: float = 2) -> tuple[int, int]:
+    """The exported PNG's size for an on-screen canvas: each side times the pixel ratio, rounded, between 1 and 4096."""
+    return min(max(_photo_half_up(width * ratio), 1), PHOTO_MAX_EDGE), min(max(_photo_half_up(height * ratio), 1), PHOTO_MAX_EDGE)
+
+
+def photo_contain_rect(image_width: float, image_height: float, width: float, height: float) -> tuple[float, float, float, float]:
+    """Where a picture is drawn in a canvas to fit whole and centred: ``(x, y, w, h)``."""
+    if image_width / image_height > width / height:
+        w, h = width, width / (image_width / image_height)
+    else:
+        w, h = height * (image_width / image_height), height
+    return (width - w) / 2, (height - h) / 2, w, h
+
+
+def photo_stamp_px(width: float, height: float, scale: float) -> float:
+    """A stamp's font size in canvas pixels: a tenth of the shorter side times its scale kept between 0.4 and 3."""
+    return min(width, height) * 0.1 * _photo_clamp(scale, 0.4, 3.0)
+
+
+class PhotoHistory:
+    """Bounded undo and redo of whole studio states (JSON-like dicts compared by value), with gestures as one step. At most 20 undo steps."""
+
+    def __init__(self, limit: int = PHOTO_HISTORY_LIMIT):
+        self.limit, self._undo, self._redo, self._pending = limit, [], [], None
+
+    @property
+    def depth(self) -> int:
+        return len(self._undo)
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def states(self) -> list[Any]:
+        """Every state kept for undo and redo (the page keeps the photos these name)."""
+        return [*self._undo, *self._redo]
+
+    def begin_gesture(self, current: Any) -> None:
+        if self._pending is None:
+            self._pending = current
+
+    def end_gesture(self, current: Any) -> bool:
+        pending, self._pending = self._pending, None
+        if pending is None or pending == current:
+            return False
+        self._push(pending)
+        return True
+
+    def record_change(self, before: Any, after: Any) -> bool:
+        if before == after:
+            return False
+        self._push(before)
+        return True
+
+    def undo(self, current: Any) -> Any:
+        self._pending = None
+        if not self._undo:
+            return None
+        self._redo.append(current)
+        return self._undo.pop()
+
+    def redo(self, current: Any) -> Any:
+        self._pending = None
+        if not self._redo:
+            return None
+        self._undo.append(current)
+        if len(self._undo) > self.limit:
+            self._undo.pop(0)
+        return self._redo.pop()
+
+    def clear_pending(self) -> None:
+        self._pending = None
+
+    def clear(self) -> None:
+        self._pending, self._undo, self._redo = None, [], []
+
+    def _push(self, state: Any) -> None:
+        self._undo.append(state)
+        if len(self._undo) > self.limit:
+            self._undo.pop(0)
+        self._redo.clear()
+
+
+
+class PhotoStudio:
+    """The studio editor without drawing or DOM: frames and stamps on a canvas of ``width`` x ``height`` pixels, driven by pointer events, with undo.
+
+    ``state`` is ``{"image", "frames", "selected_frame", "draft_color", "draft_shape", "stamps", "selected_stamp", "stamp_scale"}`` (``image`` is whatever
+    identifies the photo; a frame is ``{"id", "rect", "shape", "color"}``, a stamp ``{"id", "emoji", "x", "y", "scale"}``); it is replaced, never changed in
+    place, so history can keep the old ones. This is flutter_navigation_basic's PhotoRectCanvas and the page's edit handlers as one state machine
+    (as there, the stamp-size slider changes the document without an undo step)."""
+
+    def __init__(self, width: float = 760, height: float = 280):
+        self.width, self.height = width, height
+        self.state: dict[str, Any] = {"image": None, "frames": [], "selected_frame": None, "draft_color": PHOTO_COLORS[0][1], "draft_shape": None,
+                                      "stamps": [], "selected_stamp": None, "stamp_scale": 1}
+        self.history = PhotoHistory()
+        self.pending_emoji: str | None = None
+        self._serial = 0
+        self._active: Any = None
+        self._reset_gesture()
+        self._tap_down: tuple[float, float] | None = None
+
+    def _reset_gesture(self) -> None:
+        self._create_origin = self._creating = self._live = self._editing = self._handle = self._dragging_stamp = None
+        self._gesture_stamps = self._last_spray = self._last = None
+        self._spraying = self._started = self._placed = self._dragging = False
+
+    def _set(self, **changes: Any) -> None:
+        self.state = {**self.state, **changes}
+
+    def _new_id(self, kind: str) -> str:
+        self._serial += 1
+        return f"{kind}-{self._serial}"
+
+    def _frame(self, frame_id: str | None) -> dict[str, Any] | None:
+        return next((f for f in self.state["frames"] if f["id"] == frame_id), None) if frame_id else None
+
+    # --- what the canvas tells its owner (the page's handlers)
+    def _frames_changed(self, frames: list[dict[str, Any]]) -> None:
+        selected = self.state["selected_frame"]
+        self._set(frames=frames, **({"selected_frame": None} if selected is not None and not any(f["id"] == selected for f in frames) else {}))
+
+    def _select_frame(self, frame_id: str | None) -> None:
+        self._set(selected_frame=frame_id)
+
+    def _stamps_changed(self, stamps: list[dict[str, Any]]) -> None:
+        known = {s["id"] for s in self.state["stamps"]}
+        added = [s for s in stamps if s["id"] not in known]
+        changes: dict[str, Any] = {"stamps": stamps}
+        if added:
+            changes.update(selected_stamp=added[-1]["id"], stamp_scale=added[-1]["scale"])
+        elif self.state["selected_stamp"] is not None:
+            match = [s for s in stamps if s["id"] == self.state["selected_stamp"]]
+            if match:
+                changes["stamp_scale"] = match[0]["scale"]
+        self._set(**changes)
+
+    def _select_stamp(self, stamp_id: str | None) -> None:
+        changes: dict[str, Any] = {"selected_stamp": stamp_id}
+        match = [s for s in self.state["stamps"] if s["id"] == stamp_id] if stamp_id is not None else []
+        if match:
+            changes["stamp_scale"] = match[0]["scale"]
+        self._set(**changes)
+
+    def _edit_start(self) -> None:
+        if not self._started:
+            self._started = True
+            self.history.begin_gesture(self.state)
+
+    # --- pointer events
+    def pointer_down(self, pointer: Any, x: float, y: float) -> None:
+        self._tap_down, self._placed, self._gesture_stamps = (x, y), False, list(self.state["stamps"])
+        self._spraying, self._last_spray, self._active, self._dragging = False, None, pointer, False
+
+    def pointer_move(self, pointer: Any, x: float, y: float) -> None:
+        if self._active is None or self._active != pointer:
+            return
+        if not self._dragging:
+            down = self._tap_down
+            if down is None or _photo_distance(x - down[0], y - down[1]) < 4:
+                return
+            self._dragging = True
+            self._pan_start(*down)
+        self._pan_update(x, y)
+
+    def pointer_up(self, pointer: Any) -> None:
+        if self._active is not None and pointer != self._active:
+            return
+        local, was_dragging = self._tap_down, self._dragging
+        self._active, self._dragging = None, False
+        if was_dragging:
+            self._finish()
+        elif local is not None and not self._placed:
+            self._tap(*local)
+            if self._started or self._dragging_stamp is not None:
+                self._finish()
+        self._tap_down = None
+
+    def pointer_cancel(self, pointer: Any) -> None:
+        if self._active is not None and pointer != self._active:
+            return
+        self._tap_down, self._active = None, None
+        if self._dragging or self._started or self._dragging_stamp is not None:
+            self._dragging = False
+            self._finish()
+        else:
+            self._gesture_stamps, self._spraying, self._last_spray, self._placed, self._dragging = None, False, None, False, False
+
+    def _place_pending(self, x: float, y: float, repeated: bool = False) -> None:
+        if not self.pending_emoji or (not repeated and self._placed):
+            return
+        self._edit_start()
+        if not repeated:
+            self._placed = True
+        stamp_id = self._new_id("stamp")
+        stamps = (self._gesture_stamps if self._gesture_stamps is not None else self.state["stamps"]) + [
+            {"id": stamp_id, "emoji": self.pending_emoji, "x": _photo_clamp(x / self.width, 0.0, 1.0), "y": _photo_clamp(y / self.height, 0.0, 1.0), "scale": 1}]
+        self._gesture_stamps = stamps
+        self._stamps_changed(stamps)
+        self._select_stamp(stamp_id)
+
+    def _tap(self, x: float, y: float) -> None:
+        stamp = photo_hit_stamp(self.state["stamps"], self.width, self.height, x, y)
+        if stamp:
+            self._select_stamp(stamp["id"])
+        elif self.pending_emoji and not self._placed:
+            self._place_pending(x, y)
+        else:
+            frame = photo_hit_frame(self.state["frames"], self.width, self.height, x, y)
+            self._select_frame(frame["id"] if frame else None)
+
+    def _pan_start(self, x: float, y: float) -> None:
+        w, h = self.width, self.height
+        stamp = photo_hit_stamp(self.state["stamps"], w, h, x, y)
+        if stamp:
+            self._edit_start()
+            self._dragging_stamp, self._handle, self._create_origin, self._creating, self._live = stamp["id"], None, None, None, None
+            self._select_stamp(stamp["id"])
+            self._last = (x, y)
+            return
+        if self.pending_emoji:
+            if not self._placed:
+                self._place_pending(x, y)
+            self._spraying, self._last_spray = True, (x, y)
+            self._dragging_stamp = self._handle = self._create_origin = self._creating = self._live = None
+            self._last = (x, y)
+            return
+        frame = photo_hit_frame(self.state["frames"], w, h, x, y)
+        if frame:
+            self._edit_start()
+            self._select_frame(frame["id"])
+            self._create_origin = self._creating = self._live = None
+            self._editing, self._handle, self._last = frame["id"], photo_hit_handle(frame["rect"], w, h, x, y) or "move", (x, y)
+            return
+        selected = self._frame(self.state["selected_frame"])
+        if selected:
+            handle = photo_hit_handle(selected["rect"], w, h, x, y)
+            if handle:
+                self._edit_start()
+                self._create_origin = self._creating = self._live = None
+                self._editing, self._handle, self._last = selected["id"], handle, (x, y)
+                return
+        if self.state["draft_shape"]:
+            self._edit_start()
+            nx, ny = _photo_clamp(x / w, 0.0, 1.0), _photo_clamp(y / h, 0.0, 1.0)
+            self._create_origin, self._handle = (nx, ny), None
+            self._creating = self._new_id("frame")
+            self._live = {"id": self._creating, "rect": photo_rect_from_diagonal(nx, ny, nx, ny), "shape": self.state["draft_shape"], "color": self.state["draft_color"]}
+            self._frames_changed([*self.state["frames"], self._live])
+            self._select_frame(self._creating)
+            self._last = (x, y)
+            return
+        self._select_frame(None)
+        self._handle = self._create_origin = self._creating = self._live = None
+        self._last = (x, y)
+
+    def _pan_update(self, x: float, y: float) -> None:
+        w, h = self.width, self.height
+        if w <= 0 or h <= 0:
+            return
+        if self._spraying and self.pending_emoji:
+            last = self._last_spray
+            if last is None or _photo_distance(x - last[0], y - last[1]) >= 28:
+                self._place_pending(x, y, repeated=True)
+                self._last_spray = (x, y)
+            return
+        if self._dragging_stamp is not None:
+            nx, ny = _photo_clamp(x / w, 0.0, 1.0), _photo_clamp(y / h, 0.0, 1.0)
+            self._stamps_changed([{**s, "x": nx, "y": ny} if s["id"] == self._dragging_stamp else s for s in self.state["stamps"]])
+            return
+        if self._create_origin is not None and self._creating is not None:
+            nx, ny = _photo_clamp(x / w, 0.0, 1.0), _photo_clamp(y / h, 0.0, 1.0)
+            live = self._live or {"id": self._creating, "rect": PHOTO_INITIAL_RECT, "shape": self.state["draft_shape"] or "rectangle", "color": self.state["draft_color"]}
+            self._live = {**live, "rect": photo_rect_from_diagonal(self._create_origin[0], self._create_origin[1], nx, ny)}
+            self._frames_changed([f for f in self.state["frames"] if f["id"] != self._creating] + [self._live])
+            return
+        editing = self._frame(self._editing) or self._frame(self.state["selected_frame"])
+        if self._handle is None or self._last is None or editing is None:
+            return
+        dx, dy = (x - self._last[0]) / w, (y - self._last[1]) / h
+        self._last = (x, y)
+        self._replace_frame({**editing, "rect": photo_rect_resized(editing["rect"], self._handle, dx, dy)})
+
+    def _replace_frame(self, updated: dict[str, Any]) -> None:
+        self._frames_changed([updated if f["id"] == updated["id"] else f for f in self.state["frames"]])
+
+    def _finish(self) -> None:
+        if self._creating is not None and self._live is not None:
+            self._frames_changed([f for f in self.state["frames"] if f["id"] != self._creating] + [{**self._live, "rect": photo_rect_sanitized(self._live["rect"])}])
+        had_edit = self._started
+        self._reset_gesture()
+        if had_edit:
+            self.history.end_gesture(self.state)
+
+    # --- the page's other edit actions: each is one undo step when it changes the document
+    def _change(self, **changes: Any) -> None:
+        before = self.state
+        self._set(**changes)
+        self.history.record_change(before, self.state)
+
+    def set_image(self, image: Any) -> None:
+        self._change(image=image)
+
+    def set_shape(self, shape: str | None) -> None:
+        if shape is not None and shape not in PHOTO_SHAPES:
+            raise ValueError("unknown shape")
+        if self.state["draft_shape"] == shape and (shape is None or self.pending_emoji is None):
+            return
+        if shape is not None:
+            self.pending_emoji = None
+        self._change(draft_shape=shape)
+
+    def set_color(self, color: str) -> None:
+        selected = self._frame(self.state["selected_frame"])
+        if self.state["draft_color"] == color and (selected is None or selected["color"] == color):
+            return
+        self._change(draft_color=color, frames=[{**f, "color": color} if f["id"] == self.state["selected_frame"] else f for f in self.state["frames"]])
+
+    def arm_stamp(self, text: str | None) -> None:
+        """Arm ``text`` for placing (arming the armed one disarms it); arming drops the frame tool."""
+        text = (text or "").strip() or None
+        if text is None:
+            return
+        self.pending_emoji = None if self.pending_emoji == text else text
+        if self.pending_emoji is not None and self.state["draft_shape"] is not None:
+            self._change(draft_shape=None)
+
+    def set_stamp_scale(self, scale: float) -> None:
+        scale = _photo_clamp(scale, 0.4, 3.0)
+        selected = self.state["selected_stamp"]
+        self._set(stamp_scale=scale, **({"stamps": [{**s, "scale": scale} if s["id"] == selected else s for s in self.state["stamps"]]} if selected is not None else {}))
+
+    def reset_selected_frame(self) -> None:
+        selected = self.state["selected_frame"]
+        if self._frame(selected):
+            self._change(frames=[{**f, "rect": dict(PHOTO_INITIAL_RECT)} if f["id"] == selected else f for f in self.state["frames"]])
+
+    def delete_selected_frame(self) -> None:
+        selected = self.state["selected_frame"]
+        if selected is not None:
+            self._change(frames=[f for f in self.state["frames"] if f["id"] != selected], selected_frame=None)
+
+    def nudge(self, dx: float, dy: float) -> None:
+        """Move the selected frame by ``dx``, ``dy`` (fractions of the canvas): one undo step (the keyboard's way to do what a drag does)."""
+        frame = self._frame(self.state["selected_frame"])
+        if frame:
+            self._change(frames=[{**frame, "rect": photo_rect_translated(frame["rect"], dx, dy)} if f["id"] == frame["id"] else f for f in self.state["frames"]])
+
+    def undo(self) -> bool:
+        snapshot = self.history.undo(self.state)
+        if snapshot is None:
+            return False
+        self.state = snapshot
+        if snapshot["draft_shape"] is not None:
+            self.pending_emoji = None
+        return True
+
+    def redo(self) -> bool:
+        snapshot = self.history.redo(self.state)
+        if snapshot is None:
+            return False
+        self.state = snapshot
+        if snapshot["draft_shape"] is not None:
+            self.pending_emoji = None
+        return True
+
+
+# What "Check this browser" decodes: tiny pictures, each a real file, as literals (a PNG built with zlib is not byte-stable across zlib builds, and a generated page must be).
+# Most are flutter_navigation_basic's import_compat fixtures, copied unchanged (see tests/fixtures/photo_import_cases.json); the 2 x 2 PNG is photo_png(2, 2, ...) and the
+# AVIF was made with Pillow for this page, because the fixture's AVIF is only a header.
+_PHOTO_PROBE_DATA = {
+ "png": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP4z8DwHwyBNBAwNAAAR0sIeRPxYNAAAAAASUVORK5CYII=",
+ "jpeg": "/9j//gAQTGF2YzYwLjMxLjEwMgD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABQAAEBAQEAAAAAAAAAAAAAAAAABwgGAQEBAQEAAAAAAAAAAAAAAAAABggHEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAIABAAwESAAISAAMSAP/aAAwDAQACEQMRAD8A4sSg7+AAAAAAKUJYYVAAAAAAEGG0x1YAAAAAAbFGABVAAAAAAD//2Q==",
+ "jpeg_exif_orientation_6": "/9j/4QAiRXhpZgAASUkqAAgAAAABABIBAwABAAAABgAAAAAAAAD//gAQTGF2YzYwLjMxLjEwMgD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABQAAEBAQEAAAAAAAAAAAAAAAAABwgGAQEBAQEAAAAAAAAAAAAAAAAABggHEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAIABAAwESAAISAAMSAP/aAAwDAQACEQMRAD8A4sSg7+AAAAAAKUJYYVAAAAAAEGG0x1YAAAAAAbFGABVAAAAAAD//2Q==",
+ "webp_lossy": "UklGRoIAAABXRUJQVlA4IHYAAABQBgCdASpAACAAPl0kjUWjoiEb9AA4BcSyAF2c4H8A/ADr9L1cR/CX9a+hV0C7S/rXnfYZlc/usKOFAAD+8UtI8Ke2U+JMqADr6gEMBX9RuhPomG0KLT/0TTbCl0eZGQ2Z4i+2j3+LaRJv+r4rtacAcZGAAAAA",
+ "webp_lossless": "UklGRjgAAABXRUJQVlA4TCwAAAAvP8AHAB8gEEjaH3qN+RcQFPk/2vwHXySASIDEk570pIlMjej/BByLvoJDXw==",
+ "webp_alpha": "UklGRjYAAABXRUJQVlA4TCkAAAAvB8AAEB8gEEjaH3oNAUGR/6PNv4Cg6LrlYjaRgkCAMGnSpI2I/kfELgA=",
+ "gif": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAEALAAAAAABAAEAAAIBRAA7",
+ "heic": "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAX1tZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MAAAAAREAAAQABAAAAAAGhAAEAAAAAAAAAYwAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAA/WlwcnAAAADdaXBjbwAAAHZodmNDAQNwAAAAAAAAAAAAHvAA/P34+AAADwMgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQCEAAQAqQgEBA3AAAAMAkAAAAwAAAwAeoCCBBZbq5Ka5uAhoMCAAAAMAIAAAAwAhIgABAAZEAcFzwIkAAAAUaXNwZQAAAAAAAABAAAAAQAAAAChjbGFwAAAAQAAAAAEAAAAgAAAAAQAAAAAAAAAC////4AAAAAIAAAATY29scm5jbHgAAQANAAaAAAAAEHBpeGkAAAAAAwgICAAAABhpcG1hAAAAAAAAAAEAAQWBAoMEBQAAAGttZGF0AAAAXygBr1j5E5Jf/841//lF8h7ByM+7/3QH8+3BLf4tTRXmYX7xhn64w/5IuhJ74fTz9+CxFd0dzjN9w2//kcWKjOncaAIv96SBBDuEQLmUsUYIAre12Xc9l0tF4HrCDd+A",
+ "avif": "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADrbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAAAAAAAOcGl0bQAAAAAAAQAAAB5pbG9jAAAAAEQAAAEAAQAAAAEAAAETAAAALgAAAChpaW5mAAAAAAABAAAAGmluZmUCAAAAAAEAAGF2MDFDb2xvcgAAAABqaXBycAAAAEtpcGNvAAAAFGlzcGUAAAAAAAAAEAAAAAgAAAAQcGl4aQAAAAADCAgIAAAADGF2MUOBAAwAAAAAE2NvbHJuY2x4AAEADQAGgAAAABdpcG1hAAAAAAAAAAEAAQQBAoMEAAAANm1kYXQSAAoIGAy/tEBDQaEyIBrHh4XhzDDDAoAAAOAgJZwnn85pHxi+mx2+nQE2llC5"
+}
+_PHOTO_PROBE_MIME = {"png": "image/png", "jpeg": "image/jpeg", "jpeg_exif_orientation_6": "image/jpeg", "webp_lossy": "image/webp", "webp_lossless": "image/webp",
+                     "webp_alpha": "image/webp", "gif": "image/gif", "avif": "image/avif", "heic": "image/heic"}
+
+
+def photo_probes() -> list[dict[str, str]]:
+    """The pictures the page tries to decode, as ``{"id", "mime", "data"}`` (Base64), in a fixed order."""
+    return [{"id": key, "mime": _PHOTO_PROBE_MIME[key], "data": _PHOTO_PROBE_DATA[key]} for key in _PHOTO_PROBE_MIME]
+
+
+def photo_evidence(user_agent: str = "", outcomes: dict[str, str] | None = None, features: dict[str, Any] | None = None, verified_at: str = "",
+                   exif_applied_by_engine: bool | None = None) -> dict[str, Any]:
+    """What the page measured about a browser, shaped like flutter_navigation_basic's ``evidence/*.json`` (schema 2). Only the browser-canvas loader is
+    measured; an outcome must come from the shared vocabulary."""
+    outcomes = outcomes or {}
+    for outcome in outcomes.values():
+        if outcome not in PHOTO_OUTCOMES:
+            raise ValueError(f"unknown outcome: {outcome!r}")
+    return {"schemaVersion": 2, "environmentId": "web_ui_photo_studio", "runtime": "browser", "userAgent": user_agent, "verifiedAt": verified_at,
+            "entryPoint": "loader_browser_canvas_adapter", "exifOrientationAppliedByEngine": exif_applied_by_engine,
+            "notes": "Measured by the web-ui Photo Studio page (Check this browser). Only loader_browser_canvas_adapter is measured; every other entry point stays "
+                     "not_verified. A browser emulation is not a device.",
+            "outcomes": {key: {"loader_browser_canvas_adapter": value} for key, value in outcomes.items()}, "features": features or {}}
+
+
+_CSS["photo.css"] = ("@layer components{.ui-photo h3{margin:24px 0 8px}.ui-photo-status{margin:8px 0 0;font-weight:600}.ui-photo-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;padding:0;border:0}"
+                     ".ui-photo-bar legend{padding:0 0 4px}.ui-photo-radio,.ui-photo-file{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}"
+                     ".ui-photo-choice label{display:inline-flex;align-items:center;gap:8px;padding:4px 16px;border:1px solid var(--ui-border);border-radius:var(--ui-radius);cursor:pointer}.ui-photo-bar label.ui-button{cursor:pointer}"
+                     ".ui-photo-radio:checked+label{background:var(--ui-accent);color:var(--ui-bg)}.ui-photo-radio:focus-visible+label,.ui-photo-file:focus-visible+label{outline:2px solid var(--ui-fg);outline-offset:2px}"
+                     ".ui-photo-dot{display:inline-block;width:16px;height:16px;border:1px solid var(--ui-fg);border-radius:50%;background:var(--dot)}"
+                     + "".join(f".ui-photo-c-{name.lower()}{{--dot:{value}}}" for name, value in PHOTO_COLORS) +
+                     ".ui-photo-stagewrap{margin:16px 0}.ui-photo-stage{display:block;max-width:100%;border:1px solid var(--ui-border);border-radius:var(--ui-radius);touch-action:none;"
+                     "-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:crosshair}.ui-photo-stage:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}"
+                     ".ui-photo-stamps{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.ui-photo-stamps .ui-input{flex:1 1 128px;min-width:0}"
+                     ".ui-photo [aria-pressed=\"true\"]{background:var(--ui-accent);color:var(--ui-bg)}.ui-photo pre{white-space:pre-wrap;overflow-wrap:anywhere}"
+                     ".ui-photo-live{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)}.ui-photo details{margin-top:24px}}") 
+
+
+def photo_html() -> str:
+    """The photo studio as semantic HTML: import, a canvas for frames and stamps, tools, history, geometry text, export and a check of what this browser can do."""
+    probes = escape(json.dumps(photo_probes(), separators=(",", ":")), quote=True)
+    choice = lambda name, value, label, checked=False, extra="": (
+        f'<span class="ui-photo-choice"><input class="ui-photo-radio" type="radio" id="photo-{name}-{value}" name="photo-{name}" value="{value}"{" checked" if checked else ""}>'
+        f'<label for="photo-{name}-{value}">{extra}{escape(label)}</label></span>')
+    shapes = choice("shape", "none", "None", True) + "".join(choice("shape", s, s.capitalize()) for s in PHOTO_SHAPES)
+    colors = "".join(choice("color", value, name, i == 0, f'<span class="ui-photo-dot ui-photo-c-{name.lower()}"></span>') for i, (name, value) in enumerate(PHOTO_COLORS))
+    stamps = "".join(f'<button class="ui-button" type="button" data-stamp="{escape(s, quote=True)}" aria-pressed="false" aria-label="Stamp {escape(s)}">{escape(s)}</button>' for s in PHOTO_STAMPS)
+    return (f'<section class="ui-panel ui-photo" id="photo" data-ui-photo data-probes="{probes}"><h2>Photo studio</h2>'
+            '<p class="ui-muted">Frames and marks on a photo. The photo stays in this page: nothing is saved or sent. Export is PNG only.</p>'
+            '<p class="ui-photo-status" role="status" aria-live="polite" data-status>Select an image or paste here</p><p class="ui-muted" data-meta></p>'
+            '<div class="ui-photo-bar"><input class="ui-photo-file" type="file" id="photo-file" accept="image/*" data-file><label class="ui-button" for="photo-file">Import image</label>'
+            '<button class="ui-button" type="button" data-paste>Paste photo</button><button class="ui-button" type="button" data-retry hidden>Retry</button>'
+            '<button class="ui-button" type="button" data-clear disabled>Clear photo</button></div>'
+            '<p class="ui-muted">You can also paste (Ctrl/Cmd+V) or drop an image anywhere on this panel.</p>'
+            '<div class="ui-photo-stagewrap"><canvas class="ui-photo-stage" data-stage width="760" height="280" tabindex="0" role="img" aria-label="Photo canvas"></canvas></div>'
+            '<p class="ui-muted">Choose a frame tool, then drag to make a frame. Drag inside a frame to move it; drag its corners or edges to resize. With the canvas focused: arrow keys move the '
+            'selected frame (Shift for bigger steps), Delete removes it, Ctrl/Cmd+Z undoes.</p>'
+            f'<fieldset class="ui-photo-bar"><legend>Frame tool</legend>{shapes}</fieldset><fieldset class="ui-photo-bar"><legend>Frame colour</legend>{colors}</fieldset>'
+            f'<h3>Stamps</h3><div class="ui-photo-stamps">{stamps}</div>'
+            '<div class="ui-photo-stamps"><label for="photo-custom">Custom stamp</label><input class="ui-input" id="photo-custom" data-custom maxlength="12" placeholder="Emoji or short text" autocomplete="off">'
+            '<button class="ui-button" type="button" data-arm aria-pressed="false">Arm stamp</button></div>'
+            '<div class="ui-photo-stamps"><label for="photo-scale">Stamp size</label><input type="range" id="photo-scale" data-scale min="0.4" max="3" step="0.1" value="1"> <output data-scale-out>1.0</output></div>'
+            '<div class="ui-photo-bar"><button class="ui-button" type="button" data-undo disabled>Undo</button><button class="ui-button" type="button" data-redo disabled>Redo</button>'
+            '<button class="ui-button" type="button" data-next>Select next frame</button><button class="ui-button" type="button" data-reset disabled>Reset selected frame</button>'
+            '<button class="ui-button" type="button" data-delete disabled>Delete frame</button></div>'
+            '<h3>Geometry</h3><pre class="ui-output" data-geometry>No frame selected.</pre>'
+            '<div class="ui-photo-bar"><button class="ui-button" type="button" data-copy-rect>Copy rectangle</button><button class="ui-button" type="button" data-copy-csv>Copy as CSV</button></div>'
+            '<div class="ui-photo-bar"><button class="ui-button" type="button" data-export>Save PNG</button><button class="ui-button" type="button" data-share hidden>Share PNG</button></div>'
+            '<p class="ui-photo-live" role="status" aria-live="polite" data-live></p>'
+            '<details><summary>This browser</summary><p class="ui-muted">Tries to decode a few tiny pictures and reports what this browser can do, as JSON in the same shape as the Flutter app\'s import evidence. '
+            'It measures this browser only; it is not a test of any other device.</p><button class="ui-button" type="button" data-check>Check this browser</button>'
+            '<pre class="ui-output" data-check-out></pre></details></section>')
+
+
+def photo_document(*, theme: str = "modern") -> str:
+    """A single-file page for the photo studio."""
+    return render_document(trusted_html='<main class="ui-page">' + photo_html() + "</main>" + module_script(_JS["photo.js"]), title="Photo studio", theme=theme, css=bundled_css())
+
+
 # --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
 # Absorbs flutter_navigation_basic's lib/features/composition_generator/domain (chord_theory.dart, metronome_timing.dart, note_sequence.dart,
 # song_seed_generator.dart) and lib/data/composer.dart. Its Dart tests are the golden values below. Python is the reference; ``composition.js`` must agree.
@@ -4397,6 +5387,312 @@ EXAMPLE_STUBS = {
 }
 
 
+_JS["photo.js"] = r"""/* web-ui photo: the photo studio in the page (memory only). Format hints, header sizes, EXIF orientation, import rules, frame and stamp geometry, undo history and the editing state machine.
+   The rules are Python's (web_ui.photo_sniff, photo_decide, PhotoStudio, ...); this must agree. Nothing is stored or sent. */
+const MAX_BYTES=32*1024*1024,MAX_PIXELS=40000000,MAX_EDGE=4096,DOWNSCALE=2/3,MIN_SIZE=0.04,HISTORY_LIMIT=20,HANDLE_SLOP=18,STAMP_MIN_HIT=18;
+export const EXPORT_NAME="photo-studio.png";
+export const LABELS={empty:"empty",png:"PNG",jpeg:"JPEG",webp:"WebP",gif:"GIF",avif:"AVIF",heic:"HEIC",unknown:"unknown"};
+const HEIC=["heic","heif","mif1","msf1","heix"];
+export const STAMPS=["⭐","❤️","😊","🔥","📷","🌸","✨","🍀"];
+export const COLORS=[["Purple","#7e57c2"],["Red","#e53935"],["Green","#43a047"],["Blue","#1e88e5"],["Amber","#fdd835"],["White","#ffffff"],["Black","#212121"]];
+export const SHAPES=["rectangle","circle","triangle"];
+export const HANDLES=["move","topLeft","topRight","bottomLeft","bottomRight","left","right","top","bottom"];
+export const OUTCOMES=["supported","rejected:empty","rejected:tooLargeBytes","rejected:tooManyPixels","rejected:heicConversionFailed","rejected:undecodable","unsupported_by_runtime","not_verified"];
+export const MESSAGES={idle:"Select an image or paste here",loading:"Loading image…",success:"Image loaded",cancelled:"No change.",superseded:"A newer import replaced this load.",
+ noClipboardImage:"Clipboard has no photo to paste.",clipboardUnavailable:"This browser did not allow clipboard image access. Use Import image, or paste again after allowing permission.",
+ pickFailed:"Could not decode this image.",decodeFailed:"Could not decode this image.",tooLarge:"That photo is too large. Choose a smaller image or screenshot.",
+ tooLargeBytes:"That photo is too large. Choose a smaller image or screenshot.",tooManyPixels:"That photo has too many pixels. Choose a smaller image or screenshot.",
+ heicUnsupported:"This HEIC/HEIF photo cannot be decoded in this browser. Export it as JPEG or PNG first.",unsupportedFormat:"That image format could not be decoded."};
+const FAILURES={empty:"decodeFailed",tooLargeBytes:"tooLargeBytes",tooManyPixels:"tooManyPixels",undecodable:"unsupportedFormat",heicConversionFailed:"heicUnsupported"};
+const halfUp=v=>{const f=Math.floor(v);return v-f>=0.5?f+1:f},clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),hi),dist=(dx,dy)=>Math.sqrt(dx*dx+dy*dy);
+export const fixed=(v,n)=>v.toFixed(n);
+const at=(b,i,s)=>{for(let k=0;k<s.length;k++)if(b[i+k]!==s.charCodeAt(k))return false;return true};
+const brandAt=b=>b.length<12||!at(b,4,"ftyp")?null:String.fromCharCode(b[8],b[9],b[10],b[11]);
+function jpegProgressive(b){let i=2;const n=b.length;while(i+3<n){if(b[i]!==0xFF)return false;const m=b[i+1];if(m===0xFF){i+=1;continue}
+ if(m===0xD9||m===0xDA)return false;if(m===0xC2||m===0xC6||m===0xCA||m===0xCE)return true;if(m===0xC0||m===0xC1||m===0xC3||m===0xC9||m===0xCB)return false;
+ if((m>=0xD0&&m<=0xD7)||m===0||m===1){i+=2;continue}const len=(b[i+2]<<8)|b[i+3];if(len<2)return false;i+=2+len}return false}
+function exifOrientation(b,start,end){const seg=b.subarray(start,end);if(seg.length<14||!at(seg,0,"Exif")||seg[4]!==0||seg[5]!==0)return null;const t=seg.subarray(6);
+ const big=t[0]===0x4D&&t[1]===0x4D;if(!(big||(t[0]===0x49&&t[1]===0x49)))return null;
+ const u16=o=>o+1>=t.length?-1:big?(t[o]<<8|t[o+1]):(t[o]|t[o+1]<<8),u32=o=>o+3>=t.length?-1:big?t[o]*16777216+(t[o+1]<<16|t[o+2]<<8|t[o+3]):t[o+3]*16777216+(t[o+2]<<16|t[o+1]<<8|t[o]);
+ const ifd=u32(4);if(ifd<0||ifd+2>t.length)return null;const count=u16(ifd);
+ for(let e=0;e<count;e++){const entry=ifd+2+e*12;if(entry+12>t.length)return null;if(u16(entry)!==0x0112)continue;if(u16(entry+2)!==3||u32(entry+4)!==1)return null;
+  const v=u16(entry+8);return v>=1&&v<=8?[v,start+6+entry+8,big]:null}return null}
+function jpegOrientation(b){let i=2;const n=b.length;while(i+8<n){if(b[i]!==0xFF)return null;const m=b[i+1];if(m===0xFF){i+=1;continue}if(m===0xD9||m===0xDA)return null;
+ const len=(b[i+2]<<8)|b[i+3];if(m===0xE1){if(len<8||i+2+len>n)return null;if(len-2>=6&&at(b,i+4,"Exif"))return exifOrientation(b,i+4,i+2+len);i+=2+len;continue}
+ if(m>=0xD0&&m<=0xD7){i+=2;continue}if(len<2)return null;i+=2+len}return null}
+export function sniff(b){const n=b.length,info={kind:"unknown",brand:null,progressive:null,orientation:null,orientation_offset:null,orientation_big_endian:null};
+ if(n===0)info.kind="empty";else if(n>=8&&b[0]===0x89&&at(b,1,"PNG")&&b[4]===13&&b[5]===10&&b[6]===26&&b[7]===10)info.kind="png";
+ else if(n>=3&&b[0]===0xFF&&b[1]===0xD8&&b[2]===0xFF){info.kind="jpeg";info.progressive=jpegProgressive(b);const f=jpegOrientation(b);if(f){info.orientation=f[0];info.orientation_offset=f[1];info.orientation_big_endian=f[2]}}
+ else if(n>=12&&at(b,0,"RIFF")&&at(b,8,"WEBP"))info.kind="webp";else if(n>=6&&at(b,0,"GIF8")&&(b[4]===0x39||b[4]===0x37)&&b[5]===0x61)info.kind="gif";
+ else{const brand=brandAt(b);if(HEIC.includes(brand)){info.kind="heic";info.brand=brand}else if(brand==="avif"||brand==="avis"){info.kind="avif";info.brand=brand}}
+ info.label=LABELS[info.kind];return info}
+export function neutralizeOrientation(b){const info=sniff(b),out=new Uint8Array(b);if(info.orientation===null||info.orientation===1)return out;
+ const o=info.orientation_offset;if(info.orientation_big_endian){out[o]=0;out[o+1]=1}else{out[o]=1;out[o+1]=0}return out}
+const be32=(b,i)=>b[i]*16777216+(b[i+1]<<16|b[i+2]<<8|b[i+3]),le16=(b,i)=>b[i]|b[i+1]<<8;
+export function headerSize(b){const n=b.length;
+ if(n>=8&&b[0]===0x89&&at(b,1,"PNG")&&b[4]===13&&b[5]===10&&b[6]===26&&b[7]===10)return n>=24&&at(b,12,"IHDR")?[be32(b,16),be32(b,20)]:null;
+ if(n>=10&&at(b,0,"GIF8")&&(b[4]===0x39||b[4]===0x37)&&b[5]===0x61)return[le16(b,6),le16(b,8)];
+ if(n>=3&&b[0]===0xFF&&b[1]===0xD8&&b[2]===0xFF){let i=2;while(i+3<n){if(b[i]!==0xFF)return null;const m=b[i+1];if(m===0xFF){i+=1;continue}if(m===0xD9||m===0xDA)return null;
+   if((m>=0xD0&&m<=0xD7)||m===0||m===1){i+=2;continue}const len=(b[i+2]<<8)|b[i+3];
+   if([0xC0,0xC1,0xC2,0xC3,0xC5,0xC6,0xC7,0xC9,0xCA,0xCB,0xCD,0xCE,0xCF].includes(m)){if(len<8||i+9>n)return null;return[(b[i+7]<<8)|b[i+8],(b[i+5]<<8)|b[i+6]]}
+   if(len<2)return null;i+=2+len}return null}
+ if(n>=16&&at(b,0,"RIFF")&&at(b,8,"WEBP")){if(at(b,12,"VP8 ")&&n>=30&&b[23]===0x9D&&b[24]===0x01&&b[25]===0x2A)return[le16(b,26)&0x3FFF,le16(b,28)&0x3FFF];
+  if(at(b,12,"VP8L")&&n>=25&&b[20]===0x2F){const bits=(b[21]|b[22]<<8|b[23]<<16)+b[24]*16777216;return[(bits&0x3FFF)+1,(Math.floor(bits/16384)&0x3FFF)+1]}
+  if(at(b,12,"VP8X")&&n>=30)return[(b[24]|b[25]<<8|b[26]<<16)+1,(b[27]|b[28]<<8|b[29]<<16)+1]}
+ return null}
+const OPS={2:["flipX",0,true,false],3:["rotate",180,false,false],4:["flipY",0,false,true],5:["transpose",90,true,false],6:["rotate",90,false,false],7:["transverse",-90,true,false],8:["rotate",-90,false,false]};
+export const orientationOp=o=>{const op=Number.isInteger(o)&&typeof o==="number"?OPS[o]:undefined;return op?{op:op[0],degrees:op[1],flip_x:op[2],flip_y:op[3]}:null};
+export const orientedSize=(w,h,o)=>o>=5&&o<=8?[h,w]:[w,h];
+export const orientationMatrix=(o,w,h)=>({2:[-1,0,0,1,w,0],3:[-1,0,0,-1,w,h],4:[1,0,0,-1,0,h],5:[0,1,1,0,0,0],6:[0,1,-1,0,h,0],7:[0,-1,-1,0,h,w],8:[0,-1,1,0,0,w]})[o]||[1,0,0,1,0,0];
+export const rejectBytes=n=>n<=0?"empty":n>MAX_BYTES?"tooLargeBytes":null;
+export const rejectSize=(w,h)=>w<=0||h<=0?"undecodable":w*h>MAX_PIXELS?"tooManyPixels":null;
+export function documentSize(w,h){let tw=Math.min(Math.max(halfUp(w*DOWNSCALE),1),w),th=Math.min(Math.max(halfUp(h*DOWNSCALE),1),h);const long=Math.max(tw,th);
+ if(long>MAX_EDGE){const fit=MAX_EDGE/long;tw=Math.min(Math.max(halfUp(tw*fit),1),w);th=Math.min(Math.max(halfUp(th*fit),1),h)}return[tw,th]}
+export const failure=r=>{const reason=FAILURES[r];return{rejection:r,reason,outcome:"rejected:"+r,message:MESSAGES[reason]}};
+export async function decide(data,decode,declared){const fail=r=>({ok:false,...failure(r)});
+ if(declared&&!declared.startsWith("image/"))return fail("undecodable");let r=rejectBytes(data.length);if(r)return fail(r);
+ const info=sniff(data),h=headerSize(data);if(h&&h[0]>0&&h[1]>0&&(r=rejectSize(h[0],h[1])))return fail(r);
+ const size=decode?await decode(data):null;if(!size)return fail(info.kind==="heic"?"heicConversionFailed":"undecodable");
+ const[width,height]=size;if(r=rejectSize(width,height))return fail(r);
+ const label=info.kind!=="unknown"?info.label:(declared?declared.split("/").pop().toUpperCase():"IMAGE");
+ return{ok:true,outcome:"supported",format:label,width,height,document:documentSize(width,height),message:MESSAGES.success,meta:label+" · "+width+" × "+height}}
+export const rect=(left,top,right,bottom)=>({left,top,right,bottom});
+export const INITIAL_RECT=rect(0.2,0.2,0.8,0.8);
+export const rectFromDiagonal=(x0,y0,x1,y1)=>{const c=v=>clamp(v,0,1);return rect(c(Math.min(x0,x1)),c(Math.min(y0,y1)),c(Math.max(x0,x1)),c(Math.max(y0,y1)))};
+export function rectSanitized(q){let l=clamp(q.left,0,1),t=clamp(q.top,0,1),r=clamp(q.right,0,1),b=clamp(q.bottom,0,1);
+ if(r<l)[l,r]=[r,l];if(b<t)[t,b]=[b,t];if(r-l<MIN_SIZE){r=Math.min(1,l+MIN_SIZE);l=Math.max(0,r-MIN_SIZE)}if(b-t<MIN_SIZE){b=Math.min(1,t+MIN_SIZE);t=Math.max(0,b-MIN_SIZE)}return rect(l,t,r,b)}
+export function rectTranslated(q,dx,dy){let l=q.left+dx,t=q.top+dy,r=q.right+dx,b=q.bottom+dy;if(l<0){r-=l;l=0}if(t<0){b-=t;t=0}if(r>1){l-=r-1;r=1}if(b>1){t-=b-1;b=1}return rectSanitized(rect(l,t,r,b))}
+export function rectResized(q,handle,dx,dy){if(handle==="move")return rectTranslated(q,dx,dy);if(!HANDLES.includes(handle))throw new Error("unknown handle");
+ let l=q.left,t=q.top,r=q.right,b=q.bottom;if(["topLeft","bottomLeft","left"].includes(handle))l+=dx;if(["topRight","bottomRight","right"].includes(handle))r+=dx;
+ if(["topLeft","topRight","top"].includes(handle))t+=dy;if(["bottomLeft","bottomRight","bottom"].includes(handle))b+=dy;return rectSanitized(rect(l,t,r,b))}
+export const rectText=q=>["left","top","right","bottom"].map(k=>k+": "+fixed(q[k],4)).join("\n");
+export const rectCsv=q=>["left","top","right","bottom"].map(k=>fixed(q[k],4)).join(", ");
+export const midpoint=(x0,y0,x1,y1)=>({x:(x0+x1)/2,y:(y0+y1)/2});
+export const rectEdgeMidpoints=q=>[midpoint(q.left,q.top,q.right,q.top),midpoint(q.right,q.top,q.right,q.bottom),midpoint(q.left,q.bottom,q.right,q.bottom),midpoint(q.left,q.top,q.left,q.bottom)];
+export const circle=q=>({cx:(q.left+q.right)/2,cy:(q.top+q.bottom)/2,radius:Math.min(q.right-q.left,q.bottom-q.top)/2});
+export const triangle=q=>[{x:(q.left+q.right)/2,y:q.top},{x:q.right,y:q.bottom},{x:q.left,y:q.bottom}];
+export const triangleMidpoints=q=>{const v=triangle(q);return[midpoint(v[0].x,v[0].y,v[1].x,v[1].y),midpoint(v[1].x,v[1].y,v[2].x,v[2].y),midpoint(v[2].x,v[2].y,v[0].x,v[0].y)]};
+function inTriangle(px,py,ax,ay,bx,by,cx,cy){const v0x=cx-ax,v0y=cy-ay,v1x=bx-ax,v1y=by-ay,v2x=px-ax,v2y=py-ay,d00=v0x*v0x+v0y*v0y,d01=v0x*v1x+v0y*v1y,d02=v0x*v2x+v0y*v2y,d11=v1x*v1x+v1y*v1y,d12=v1x*v2x+v1y*v2y;
+ const den=d00*d11-d01*d01;if(Math.abs(den)<1e-12)return false;const u=(d11*d02-d01*d12)/den,v=(d00*d12-d01*d02)/den;return u>=0&&v>=0&&u+v<=1}
+function segDistance(px,py,ax,ay,bx,by){const abx=bx-ax,aby=by-ay,l2=abx*abx+aby*aby;if(l2<1e-12)return dist(px-ax,py-ay);const t=clamp(((px-ax)*abx+(py-ay)*aby)/l2,0,1);return dist(px-(ax+t*abx),py-(ay+t*aby))}
+export function shapeContains(q,shape,x,y,slop=0){
+ if(shape==="rectangle")return q.left-slop<=x&&x<=q.right+slop&&q.top-slop<=y&&y<=q.bottom+slop;
+ if(shape==="circle"){const c=circle(q),r=c.radius+slop;return(x-c.cx)*(x-c.cx)+(y-c.cy)*(y-c.cy)<=r*r}
+ if(shape==="triangle"){const v=triangle(q);if(inTriangle(x,y,v[0].x,v[0].y,v[1].x,v[1].y,v[2].x,v[2].y))return true;if(slop<=0)return false;
+  return[0,1,2].some(i=>segDistance(x,y,v[i].x,v[i].y,v[(i+1)%3].x,v[(i+1)%3].y)<=slop)}
+ throw new Error("unknown shape")}
+export function segmentIntersection(ax,ay,bx,by,cx,cy,dx,dy){const rx=bx-ax,ry=by-ay,sx=dx-cx,sy=dy-cy,den=rx*sy-ry*sx;if(Math.abs(den)<1e-12)return null;
+ const t=((cx-ax)*sy-(cy-ay)*sx)/den,u=((cx-ax)*ry-(cy-ay)*rx)/den;if(t<0||t>1||u<0||u>1)return null;return{x:ax+t*rx,y:ay+t*ry}}
+export function describe(q,shape){const p=o=>fixed(o.x,4)+", "+fixed(o.y,4);
+ if(shape==="rectangle"){const m=rectEdgeMidpoints(q);return["shape: rectangle",rectText(q),...["top","right","bottom","left"].map((n,i)=>"mid."+n+": "+p(m[i]))].join("\n")}
+ if(shape==="circle"){const c=circle(q);return"shape: circle\ncx: "+fixed(c.cx,4)+"\ncy: "+fixed(c.cy,4)+"\nradius: "+fixed(c.radius,4)}
+ if(shape==="triangle"){const v=triangle(q),m=triangleMidpoints(q);return["shape: triangle","apex: "+p(v[0]),"right: "+p(v[1]),"left: "+p(v[2]),"mid.apexRight: "+p(m[0]),"mid.base: "+p(m[1]),"mid.apexLeft: "+p(m[2])].join("\n")}
+ throw new Error("unknown shape")}
+export function hitHandle(q,width,height,x,y){const l=q.left*width,t=q.top*height,r=q.right*width,b=q.bottom*height,s=HANDLE_SLOP;
+ for(const[name,cx,cy]of[["topLeft",l,t],["topRight",r,t],["bottomLeft",l,b],["bottomRight",r,b]])if(dist(cx-x,cy-y)<=s)return name;
+ const side=Math.max(0,(b-t)-s*2),wide=Math.max(0,(r-l)-s*2);
+ for(const[name,left,top,w,h]of[["left",l-s/2,t+s,s,side],["right",r-s/2,t+s,s,side],["top",l+s,t-s/2,wide,s],["bottom",l+s,b-s/2,wide,s]])if(left<=x&&x<left+w&&top<=y&&y<top+h)return name;
+ return l+4<=x&&x<r-4&&t+4<=y&&y<b-4?"move":null}
+export function hitFrame(frames,width,height,x,y){if(width<=0||height<=0)return null;const slop=4/Math.min(width,height);
+ for(let i=frames.length-1;i>=0;i--)if(shapeContains(frames[i].rect,frames[i].shape,x/width,y/height,slop))return frames[i];return null}
+export function hitStamp(stamps,width,height,x,y){for(let i=stamps.length-1;i>=0;i--){const s=stamps[i],radius=Math.max(STAMP_MIN_HIT,Math.min(width,height)*0.05*s.scale);
+  if(dist(s.x*width-x,s.y*height-y)<=radius)return s}return null}
+export const exportSize=(w,h,ratio=2)=>[Math.min(Math.max(halfUp(w*ratio),1),MAX_EDGE),Math.min(Math.max(halfUp(h*ratio),1),MAX_EDGE)];
+export function containRect(iw,ih,w,h){let dw,dh;if(iw/ih>w/h){dw=w;dh=w/(iw/ih)}else{dh=h;dw=h*(iw/ih)}return[(w-dw)/2,(h-dh)/2,dw,dh]}
+export const stampPx=(w,h,scale)=>Math.min(w,h)*0.1*clamp(scale,0.4,3);
+export const same=(a,b)=>{if(a===b)return true;if(typeof a!=="object"||typeof b!=="object"||a===null||b===null||Array.isArray(a)!==Array.isArray(b))return false;
+ const ka=Object.keys(a);if(ka.length!==Object.keys(b).length)return false;return ka.every(k=>Object.prototype.hasOwnProperty.call(b,k)&&same(a[k],b[k]))};
+export class PhotoHistory{constructor(limit=HISTORY_LIMIT){this.limit=limit;this._undo=[];this._redo=[];this._pending=null}
+ get depth(){return this._undo.length}get canUndo(){return this._undo.length>0}get canRedo(){return this._redo.length>0}states(){return[...this._undo,...this._redo]}
+ beginGesture(current){if(this._pending===null)this._pending=current}
+ endGesture(current){const p=this._pending;this._pending=null;if(p===null||same(p,current))return false;this._push(p);return true}
+ recordChange(before,after){if(same(before,after))return false;this._push(before);return true}
+ undo(current){this._pending=null;if(!this._undo.length)return null;this._redo.push(current);return this._undo.pop()}
+ redo(current){this._pending=null;if(!this._redo.length)return null;this._undo.push(current);if(this._undo.length>this.limit)this._undo.shift();return this._redo.pop()}
+ clearPending(){this._pending=null}clear(){this._pending=null;this._undo=[];this._redo=[]}
+ _push(s){this._undo.push(s);if(this._undo.length>this.limit)this._undo.shift();this._redo=[]}}
+export class PhotoStudio{constructor(width=760,height=280){this.width=width;this.height=height;
+  this.state={image:null,frames:[],selected_frame:null,draft_color:COLORS[0][1],draft_shape:null,stamps:[],selected_stamp:null,stamp_scale:1};
+  this.history=new PhotoHistory();this.pendingEmoji=null;this._serial=0;this._active=null;this._tapDown=null;this._resetGesture()}
+ _resetGesture(){this._createOrigin=this._creating=this._live=this._editing=this._handle=this._draggingStamp=null;this._gestureStamps=this._lastSpray=this._last=null;this._spraying=this._started=this._placed=this._dragging=false}
+ _set(changes){this.state={...this.state,...changes}}
+ _newId(kind){this._serial+=1;return kind+"-"+this._serial}
+ _frame(id){return id?(this.state.frames.find(f=>f.id===id)||null):null}
+ _framesChanged(frames){const sel=this.state.selected_frame;this._set({frames,...(sel!==null&&!frames.some(f=>f.id===sel)?{selected_frame:null}:{})})}
+ _selectFrame(id){this._set({selected_frame:id})}
+ _stampsChanged(stamps){const known=new Set(this.state.stamps.map(s=>s.id)),added=stamps.filter(s=>!known.has(s.id)),changes={stamps};
+  if(added.length){const last=added[added.length-1];changes.selected_stamp=last.id;changes.stamp_scale=last.scale}
+  else if(this.state.selected_stamp!==null){const m=stamps.filter(s=>s.id===this.state.selected_stamp);if(m.length)changes.stamp_scale=m[0].scale}this._set(changes)}
+ _selectStamp(id){const changes={selected_stamp:id},m=id!==null?this.state.stamps.filter(s=>s.id===id):[];if(m.length)changes.stamp_scale=m[0].scale;this._set(changes)}
+ _editStart(){if(!this._started){this._started=true;this.history.beginGesture(this.state)}}
+ pointerDown(pointer,x,y){this._tapDown=[x,y];this._placed=false;this._gestureStamps=[...this.state.stamps];this._spraying=false;this._lastSpray=null;this._active=pointer;this._dragging=false}
+ pointerMove(pointer,x,y){if(this._active===null||this._active!==pointer)return;
+  if(!this._dragging){const d=this._tapDown;if(d===null||dist(x-d[0],y-d[1])<4)return;this._dragging=true;this._panStart(d[0],d[1])}this._panUpdate(x,y)}
+ pointerUp(pointer){if(this._active!==null&&pointer!==this._active)return;const local=this._tapDown,was=this._dragging;this._active=null;this._dragging=false;
+  if(was)this._finish();else if(local!==null&&!this._placed){this._tap(local[0],local[1]);if(this._started||this._draggingStamp!==null)this._finish()}this._tapDown=null}
+ pointerCancel(pointer){if(this._active!==null&&pointer!==this._active)return;this._tapDown=null;this._active=null;
+  if(this._dragging||this._started||this._draggingStamp!==null){this._dragging=false;this._finish()}else{this._gestureStamps=null;this._spraying=false;this._lastSpray=null;this._placed=false;this._dragging=false}}
+ _placePending(x,y,repeated=false){if(!this.pendingEmoji||(!repeated&&this._placed))return;this._editStart();if(!repeated)this._placed=true;const id=this._newId("stamp");
+  const stamps=[...(this._gestureStamps!==null?this._gestureStamps:this.state.stamps),{id,emoji:this.pendingEmoji,x:clamp(x/this.width,0,1),y:clamp(y/this.height,0,1),scale:1}];
+  this._gestureStamps=stamps;this._stampsChanged(stamps);this._selectStamp(id)}
+ _tap(x,y){const stamp=hitStamp(this.state.stamps,this.width,this.height,x,y);if(stamp)this._selectStamp(stamp.id);
+  else if(this.pendingEmoji&&!this._placed)this._placePending(x,y);else{const f=hitFrame(this.state.frames,this.width,this.height,x,y);this._selectFrame(f?f.id:null)}}
+ _panStart(x,y){const w=this.width,h=this.height,stamp=hitStamp(this.state.stamps,w,h,x,y);
+  if(stamp){this._editStart();this._draggingStamp=stamp.id;this._handle=this._createOrigin=this._creating=this._live=null;this._selectStamp(stamp.id);this._last=[x,y];return}
+  if(this.pendingEmoji){if(!this._placed)this._placePending(x,y);this._spraying=true;this._lastSpray=[x,y];this._draggingStamp=this._handle=this._createOrigin=this._creating=this._live=null;this._last=[x,y];return}
+  const frame=hitFrame(this.state.frames,w,h,x,y);
+  if(frame){this._editStart();this._selectFrame(frame.id);this._createOrigin=this._creating=this._live=null;this._editing=frame.id;this._handle=hitHandle(frame.rect,w,h,x,y)||"move";this._last=[x,y];return}
+  const selected=this._frame(this.state.selected_frame);
+  if(selected){const handle=hitHandle(selected.rect,w,h,x,y);if(handle){this._editStart();this._createOrigin=this._creating=this._live=null;this._editing=selected.id;this._handle=handle;this._last=[x,y];return}}
+  if(this.state.draft_shape){this._editStart();const nx=clamp(x/w,0,1),ny=clamp(y/h,0,1);this._createOrigin=[nx,ny];this._handle=null;this._creating=this._newId("frame");
+   this._live={id:this._creating,rect:rectFromDiagonal(nx,ny,nx,ny),shape:this.state.draft_shape,color:this.state.draft_color};this._framesChanged([...this.state.frames,this._live]);this._selectFrame(this._creating);this._last=[x,y];return}
+  this._selectFrame(null);this._handle=this._createOrigin=this._creating=this._live=null;this._last=[x,y]}
+ _panUpdate(x,y){const w=this.width,h=this.height;if(w<=0||h<=0)return;
+  if(this._spraying&&this.pendingEmoji){const last=this._lastSpray;if(last===null||dist(x-last[0],y-last[1])>=28){this._placePending(x,y,true);this._lastSpray=[x,y]}return}
+  if(this._draggingStamp!==null){const nx=clamp(x/w,0,1),ny=clamp(y/h,0,1);this._stampsChanged(this.state.stamps.map(s=>s.id===this._draggingStamp?{...s,x:nx,y:ny}:s));return}
+  if(this._createOrigin!==null&&this._creating!==null){const nx=clamp(x/w,0,1),ny=clamp(y/h,0,1),live=this._live||{id:this._creating,rect:INITIAL_RECT,shape:this.state.draft_shape||"rectangle",color:this.state.draft_color};
+   this._live={...live,rect:rectFromDiagonal(this._createOrigin[0],this._createOrigin[1],nx,ny)};this._framesChanged([...this.state.frames.filter(f=>f.id!==this._creating),this._live]);return}
+  const editing=this._frame(this._editing)||this._frame(this.state.selected_frame);if(this._handle===null||this._last===null||editing===null)return;
+  const dx=(x-this._last[0])/w,dy=(y-this._last[1])/h;this._last=[x,y];this._replaceFrame({...editing,rect:rectResized(editing.rect,this._handle,dx,dy)})}
+ _replaceFrame(u){this._framesChanged(this.state.frames.map(f=>f.id===u.id?u:f))}
+ _finish(){if(this._creating!==null&&this._live!==null)this._framesChanged([...this.state.frames.filter(f=>f.id!==this._creating),{...this._live,rect:rectSanitized(this._live.rect)}]);
+  const had=this._started;this._resetGesture();if(had)this.history.endGesture(this.state)}
+ _change(changes){const before=this.state;this._set(changes);this.history.recordChange(before,this.state)}
+ setImage(image){this._change({image})}
+ setShape(shape){if(shape!==null&&!SHAPES.includes(shape))throw new Error("unknown shape");if(this.state.draft_shape===shape&&(shape===null||this.pendingEmoji===null))return;if(shape!==null)this.pendingEmoji=null;this._change({draft_shape:shape})}
+ setColor(color){const sel=this._frame(this.state.selected_frame);if(this.state.draft_color===color&&(sel===null||sel.color===color))return;
+  this._change({draft_color:color,frames:this.state.frames.map(f=>f.id===this.state.selected_frame?{...f,color}:f)})}
+ armStamp(text){text=(text||"").trim()||null;if(text===null)return;this.pendingEmoji=this.pendingEmoji===text?null:text;if(this.pendingEmoji!==null&&this.state.draft_shape!==null)this._change({draft_shape:null})}
+ setStampScale(scale){scale=clamp(scale,0.4,3);const sel=this.state.selected_stamp;this._set({stamp_scale:scale,...(sel!==null?{stamps:this.state.stamps.map(s=>s.id===sel?{...s,scale}:s)}:{})})}
+ resetSelectedFrame(){const sel=this.state.selected_frame;if(this._frame(sel))this._change({frames:this.state.frames.map(f=>f.id===sel?{...f,rect:{...INITIAL_RECT}}:f)})}
+ deleteSelectedFrame(){const sel=this.state.selected_frame;if(sel!==null)this._change({frames:this.state.frames.filter(f=>f.id!==sel),selected_frame:null})}
+ nudge(dx,dy){const frame=this._frame(this.state.selected_frame);if(frame)this._change({frames:this.state.frames.map(f=>f.id===frame.id?{...frame,rect:rectTranslated(frame.rect,dx,dy)}:f)})}
+ undo(){const s=this.history.undo(this.state);if(s===null)return false;this.state=s;if(s.draft_shape!==null)this.pendingEmoji=null;return true}
+ redo(){const s=this.history.redo(this.state);if(s===null)return false;this.state=s;if(s.draft_shape!==null)this.pendingEmoji=null;return true}}
+const MIME={png:"image/png",jpeg:"image/jpeg",webp:"image/webp",gif:"image/gif",avif:"image/avif",heic:"image/heic"};
+const fromB64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+/* Decode in the engine. The bytes go in with EXIF orientation set to 1 and the type the bytes show (not the one the file claims), so every engine returns the stored pixels and the page turns them. */
+export function loadImage(bytes,{raw=false}={}){const info=sniff(bytes),blob=new Blob([raw?bytes:neutralizeOrientation(bytes)],{type:MIME[info.kind]||"application/octet-stream"}),url=URL.createObjectURL(blob),image=new Image();
+ const release=()=>{image.onload=image.onerror=null;URL.revokeObjectURL(url)};
+ return new Promise((resolve,reject)=>{image.onerror=()=>{release();reject(new Error("decode failed"))};
+  image.onload=async()=>{try{if(image.decode)await image.decode()}catch(e){release();reject(new Error("decode failed"));return}
+   if(!(image.naturalWidth>0&&image.naturalHeight>0)){release();reject(new Error("decode failed"));return}resolve({image,width:image.naturalWidth,height:image.naturalHeight,release})};
+  image.src=url})}
+export function evidence({userAgent="",outcomes={},features={},verifiedAt="",exifAppliedByEngine=null}={}){
+ const out={};for(const id of Object.keys(outcomes))out[id]={loader_browser_canvas_adapter:outcomes[id]};
+ return{schemaVersion:2,environmentId:"web_ui_photo_studio",runtime:"browser",userAgent,verifiedAt,entryPoint:"loader_browser_canvas_adapter",exifOrientationAppliedByEngine:exifAppliedByEngine,
+  notes:"Measured by the web-ui Photo Studio page (Check this browser). Only loader_browser_canvas_adapter is measured; every other entry point stays not_verified. A browser emulation is not a device.",outcomes:out,features}}
+const FAMILY='"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+function frameShape(g,shape,x0,y0,x1,y1){g.beginPath();
+ if(shape==="rectangle")g.rect(x0,y0,x1-x0,y1-y0);else if(shape==="circle")g.arc((x0+x1)/2,(y0+y1)/2,Math.min(x1-x0,y1-y0)/2,0,Math.PI*2);
+ else{g.moveTo((x0+x1)/2,y0);g.lineTo(x1,y1);g.lineTo(x0,y1);g.closePath()}}
+/* One drawing for the screen and for the exported PNG: the photo fitted whole, then frames, then stamps. The screen adds the selection. */
+export function paint(g,W,H,state,doc,{selection=false}={}){g.fillStyle="#2a2a2a";g.fillRect(0,0,W,H);
+ if(doc){const[x,y,w,h]=containRect(doc.width,doc.height,W,H);g.imageSmoothingEnabled=true;g.imageSmoothingQuality="high";g.drawImage(doc.canvas,x,y,w,h)}
+ else if(selection){g.fillStyle="#3a3a3a";for(let y=0;y<H;y+=16)for(let x=((y/16)%2)*16;x<W;x+=32)g.fillRect(x,y,16,16)}
+ for(const f of state.frames){const r=f.rect,chosen=selection&&f.id===state.selected_frame;g.strokeStyle=f.color;g.lineWidth=selection?(chosen?2.5:2):3;g.lineJoin="round";frameShape(g,f.shape,r.left*W,r.top*H,r.right*W,r.bottom*H);g.stroke()}
+ for(const s of state.stamps){g.font=stampPx(W,H,s.scale)+"px "+FAMILY;g.textAlign="center";g.textBaseline="middle";g.fillStyle="#000";g.fillText(s.emoji,s.x*W,s.y*H)}
+ if(selection){const f=state.frames.find(q=>q.id===state.selected_frame);if(f){const r=f.rect,l=r.left*W,t=r.top*H,rr=r.right*W,b=r.bottom*H;g.save();g.setLineDash([5,4]);g.lineWidth=1;g.strokeStyle="#ffffff";g.strokeRect(l,t,rr-l,b-t);g.restore();
+   g.fillStyle="#ffffff";g.strokeStyle="#000000";g.lineWidth=1;for(const[x,y]of[[l,t],[rr,t],[l,b],[rr,b],[(l+rr)/2,t],[(l+rr)/2,b],[l,(t+b)/2],[rr,(t+b)/2]]){g.fillRect(x-5,y-5,10,10);g.strokeRect(x-5,y-5,10,10)}}
+  const st=state.stamps.find(q=>q.id===state.selected_stamp);if(st){g.save();g.setLineDash([4,3]);g.strokeStyle="#ffffff";g.lineWidth=1.5;g.beginPath();g.arc(st.x*W,st.y*H,Math.max(STAMP_MIN_HIT,Math.min(W,H)*0.05*st.scale),0,Math.PI*2);g.stroke();g.restore()}}}
+export function bindPhoto(root=document){return[...root.querySelectorAll("[data-ui-photo]")].map(box=>{
+ const $=s=>box.querySelector(s),$$=s=>[...box.querySelectorAll(s)],stage=$("[data-stage]"),g=stage.getContext("2d"),statusEl=$("[data-status]"),metaEl=$("[data-meta]"),liveEl=$("[data-live]"),
+  file=$("[data-file]"),retry=$("[data-retry]"),undoB=$("[data-undo]"),redoB=$("[data-redo]"),delB=$("[data-delete]"),resetB=$("[data-reset]"),clearB=$("[data-clear]"),scaleIn=$("[data-scale]"),scaleOut=$("[data-scale-out]"),
+  geo=$("[data-geometry]"),checkOut=$("[data-check-out]"),shareB=$("[data-share]"),custom=$("[data-custom]");
+ const studio=new PhotoStudio(),docs=new Map();let serial=0,generation=0,busy=false,lastSource=null;
+ const say=t=>{liveEl.textContent="";liveEl.textContent=t};
+ const setStatus=(phase,text,meta="")=>{busy=phase==="loading";statusEl.textContent=text;metaEl.textContent=meta;box.dataset.photoPhase=phase};
+ const doc=()=>docs.get(studio.state.image)||null;
+ function fit(){const wrap=stage.parentElement,W=Math.max(120,Math.floor(wrap.clientWidth||760)),d=doc(),maxH=Math.max(160,Math.min(640,Math.floor((window.innerHeight||800)*0.7)));
+  const H=d?Math.floor(clamp(W*d.height/d.width,120,maxH)):Math.floor(W*280/760);let ratio=Math.min(window.devicePixelRatio||1,3);while(W*H*ratio*ratio>16000000&&ratio>1)ratio-=0.5;
+  stage.style.width=W+"px";stage.style.height=H+"px";stage.width=Math.max(1,Math.round(W*ratio));stage.height=Math.max(1,Math.round(H*ratio));studio.width=W;studio.height=H;g.setTransform(stage.width/W,0,0,stage.height/H,0,0);return[W,H]}
+ function render(){paint(g,studio.width,studio.height,studio.state,doc(),{selection:true})}
+ function prune(){const keep=new Set([studio.state.image,...studio.history.states().map(s=>s.image)]);for(const id of[...docs.keys()])if(!keep.has(id))docs.delete(id)}
+ function sync(){const s=studio.state,sel=s.frames.find(f=>f.id===s.selected_frame)||null;
+  undoB.disabled=!studio.history.canUndo;redoB.disabled=!studio.history.canRedo;delB.disabled=resetB.disabled=!sel;clearB.disabled=!s.image;
+  for(const r of $$('input[name="photo-shape"]'))r.checked=r.value===(s.draft_shape||"none");for(const r of $$('input[name="photo-color"]'))r.checked=r.value===s.draft_color;
+  for(const b of $$("[data-stamp]"))b.setAttribute("aria-pressed",String(studio.pendingEmoji===b.dataset.stamp));$("[data-arm]").setAttribute("aria-pressed",String(studio.pendingEmoji!==null&&studio.pendingEmoji===custom.value.trim()));
+  scaleIn.value=String(s.stamp_scale);scaleOut.textContent=Number(s.stamp_scale).toFixed(1);
+  geo.textContent=sel?describe(sel.rect,sel.shape):"No frame selected.";box.dataset.rect=sel?rectCsv(sel.rect):"";
+  stage.setAttribute("aria-label","Photo canvas: "+s.frames.length+" frame"+(s.frames.length===1?"":"s")+", "+s.stamps.length+" stamp"+(s.stamps.length===1?"":"s")+(sel?", "+sel.shape+" selected":"")+(studio.pendingEmoji?", stamp "+studio.pendingEmoji+" armed":""));
+  box.dataset.frames=String(s.frames.length);box.dataset.stamps=String(s.stamps.length);box.dataset.depth=String(studio.history.depth);box.dataset.armed=studio.pendingEmoji||""}
+ const after=()=>{render();sync()};
+ function invalidate(mark=true){const was=busy;generation+=1;if(mark&&was)setStatus("superseded",MESSAGES.superseded)}
+ async function importBytes(bytes,declared,source){const mine=++generation;lastSource=source;box.dataset.source=source;retry.hidden=true;setStatus("loading",MESSAGES.loading);box.dataset.photoOutcome="";
+  let loaded=null;const result=await decide(bytes,async data=>{try{loaded=await loadImage(data);return[loaded.width,loaded.height]}catch(e){return null}},declared);
+  if(mine!==generation){if(loaded)loaded.release();return}
+  if(!result.ok){if(loaded)loaded.release();setStatus("failure",result.message);box.dataset.photoOutcome=result.outcome;retry.hidden=!(source==="pick"||source==="paste");after();return}
+  const info=sniff(bytes),o=info.orientation||1,[ow,oh]=orientedSize(result.width,result.height,o),[tw,th]=documentSize(ow,oh);
+  const canvas=document.createElement("canvas");canvas.width=tw;canvas.height=th;const c=canvas.getContext("2d"),m=orientationMatrix(o,result.width,result.height),sx=tw/ow,sy=th/oh;
+  c.imageSmoothingQuality="high";c.setTransform(m[0]*sx,m[1]*sy,m[2]*sx,m[3]*sy,m[4]*sx,m[5]*sy);c.drawImage(loaded.image,0,0);loaded.release();
+  const id=++serial;docs.set(id,{canvas,width:tw,height:th});studio.setImage(id);studio.history.clearPending();prune();fit();setStatus("success",MESSAGES.success,result.meta);
+  box.dataset.photoOutcome=result.outcome;box.dataset.photoSize=result.width+"x"+result.height;box.dataset.documentSize=tw+"x"+th;box.dataset.orientation=String(o);after()}
+ async function importFile(f,source){if(!f)return;if(f.size>MAX_BYTES){generation+=1;const r=failure("tooLargeBytes");setStatus("failure",r.message);box.dataset.photoOutcome=r.outcome;retry.hidden=!(source==="pick"||source==="paste");return}
+  setStatus("loading",MESSAGES.loading);let bytes;try{bytes=new Uint8Array(await f.arrayBuffer())}catch(e){const r=failure("undecodable");setStatus("failure",MESSAGES.decodeFailed);box.dataset.photoOutcome=r.outcome;return}
+  await importBytes(bytes,f.type||"",source)}
+ file.addEventListener("change",()=>{const f=file.files&&file.files[0];file.value="";importFile(f,"pick")});
+ file.addEventListener("cancel",()=>{if(!busy)setStatus("cancelled",MESSAGES.cancelled)});
+ retry.addEventListener("click",()=>{retry.hidden=true;if(lastSource==="paste")pasteButton();else file.click()});
+ const imageOf=items=>{for(const it of items||[])if(it.kind==="file"&&/^image\//.test(it.type))return it.getAsFile();return null};
+ document.addEventListener("paste",e=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;const cd=e.clipboardData;if(!cd)return;
+  const f=(cd.files&&[...cd.files].find(x=>/^image\//.test(x.type)))||imageOf(cd.items);if(!f){setStatus("failure",MESSAGES.noClipboardImage);box.dataset.photoOutcome="";return}e.preventDefault();importFile(f,"paste")});
+ async function pasteButton(){if(!(navigator.clipboard&&navigator.clipboard.read)){setStatus("failure",MESSAGES.clipboardUnavailable);retry.hidden=false;return}
+  try{const items=await navigator.clipboard.read();for(const item of items){const type=item.types.find(t=>/^image\//.test(t));if(type){const blob=await item.getType(type);await importFile(new File([blob],"clipboard",{type}),"paste");return}}
+   setStatus("failure",MESSAGES.noClipboardImage)}catch(e){setStatus("failure",MESSAGES.clipboardUnavailable);retry.hidden=false}}
+ $("[data-paste]").addEventListener("click",pasteButton);
+ box.addEventListener("dragover",e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files"))e.preventDefault()});
+ box.addEventListener("drop",e=>{const f=e.dataTransfer&&[...e.dataTransfer.files].find(x=>/^image\//.test(x.type)||x.type==="");if(f){e.preventDefault();importFile(f,"insert")}});
+ const pos=e=>{const r=stage.getBoundingClientRect();return[(e.clientX-r.left)*(studio.width/r.width),(e.clientY-r.top)*(studio.height/r.height)]};
+ stage.addEventListener("pointerdown",e=>{if(e.pointerType==="mouse"&&e.button!==0)return;try{stage.setPointerCapture(e.pointerId)}catch(x){}stage.focus({preventScroll:true});const[x,y]=pos(e);studio.pointerDown(e.pointerId,x,y);after();e.preventDefault()});
+ stage.addEventListener("pointermove",e=>{const[x,y]=pos(e);studio.pointerMove(e.pointerId,x,y);after()});
+ stage.addEventListener("pointerup",e=>{studio.pointerUp(e.pointerId);after()});
+ stage.addEventListener("pointercancel",e=>{studio.pointerCancel(e.pointerId);after()});
+ stage.addEventListener("contextmenu",e=>e.preventDefault());
+ stage.addEventListener("keydown",e=>{const mod=e.ctrlKey||e.metaKey,k=e.key;
+  if(mod&&(k==="z"||k==="Z")){e.preventDefault();if(e.shiftKey)redo();else undo();return}if(mod&&(k==="y"||k==="Y")){e.preventDefault();redo();return}
+  if(k==="Delete"||k==="Backspace"){if(studio.state.selected_frame!==null){e.preventDefault();studio.deleteSelectedFrame();after()}return}
+  const step=e.shiftKey?0.05:0.01,d={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]}[k];if(d&&studio.state.selected_frame!==null){e.preventDefault();studio.nudge(d[0],d[1]);after()}});
+ function undo(){invalidate();if(studio.undo()){prune();fit();say("Undid last change.");after()}}
+ function redo(){invalidate();if(studio.redo()){prune();fit();say("Redid last change.");after()}}
+ undoB.addEventListener("click",undo);redoB.addEventListener("click",redo);
+ delB.addEventListener("click",()=>{studio.deleteSelectedFrame();after()});resetB.addEventListener("click",()=>{studio.resetSelectedFrame();after()});
+ clearB.addEventListener("click",()=>{const was=busy;invalidate();studio.setImage(null);prune();fit();if(!was)setStatus("idle",MESSAGES.idle);say("Photo cleared; frames kept.");box.dataset.photoOutcome="";after()});
+ $("[data-next]").addEventListener("click",()=>{const fs=studio.state.frames;if(!fs.length)return;const i=fs.findIndex(f=>f.id===studio.state.selected_frame);studio._selectFrame(fs[(i+1)%fs.length].id);after()});
+ for(const r of $$('input[name="photo-shape"]'))r.addEventListener("change",()=>{if(r.checked){studio.setShape(r.value==="none"?null:r.value);after()}});
+ for(const r of $$('input[name="photo-color"]'))r.addEventListener("change",()=>{if(r.checked){studio.setColor(r.value);after()}});
+ for(const b of $$("[data-stamp]"))b.addEventListener("click",()=>{studio.armStamp(b.dataset.stamp);after()});
+ $("[data-arm]").addEventListener("click",()=>{studio.armStamp(custom.value);after()});
+ scaleIn.addEventListener("input",()=>{studio.setStampScale(Number(scaleIn.value));after()});
+ const copyText=async t=>{try{await navigator.clipboard.writeText(t);return true}catch(e){const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.append(ta);ta.select();let ok=false;try{ok=document.execCommand("copy")}catch(x){}ta.remove();return ok}};
+ const copyRect=async f=>{const sel=studio.state.frames.find(q=>q.id===studio.state.selected_frame);if(!sel){say("No frame selected.");return}say((await copyText(f(sel.rect)))?"Copied.":"Could not copy.")};
+ $("[data-copy-rect]").addEventListener("click",()=>copyRect(rectText));$("[data-copy-csv]").addEventListener("click",()=>copyRect(rectCsv));
+ async function exportBlob(){const[ew,eh]=exportSize(studio.width,studio.height,2),c=document.createElement("canvas");c.width=ew;c.height=eh;const x=c.getContext("2d");x.scale(ew/studio.width,eh/studio.height);
+  paint(x,studio.width,studio.height,studio.state,doc(),{selection:false});const blob=await new Promise(r=>c.toBlob(r,"image/png"));box.dataset.exportSize=ew+"x"+eh;return blob}
+ $("[data-export]").addEventListener("click",async()=>{try{const blob=await exportBlob();if(!blob){say("Could not save the photo.");return}box.dataset.exportBytes=String(blob.size);
+   const url=URL.createObjectURL(blob),a=document.createElement("a");if(!("download" in a)){window.open(url,"_blank");say("Opened the PNG in a new tab: press and hold it to save.");return}
+   a.href=url;a.download=EXPORT_NAME;a.hidden=true;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);say("Saved as PNG.")}catch(e){say("Could not save the photo.")}});
+ try{const probe=new File([new Blob(["x"])],"x.png",{type:"image/png"});if(navigator.canShare&&navigator.canShare({files:[probe]})){shareB.hidden=false;
+   shareB.addEventListener("click",async()=>{try{const blob=await exportBlob();await navigator.share({files:[new File([blob],EXPORT_NAME,{type:"image/png"})]})}catch(e){}})}}catch(e){}
+ const PROBES=JSON.parse(box.dataset.probes||"[]");
+ async function check(){checkOut.textContent="Checking…";const outcomes={};
+  for(const p of PROBES){try{const r=await loadImage(fromB64(p.data));r.release();outcomes[p.id]="supported"}catch(e){outcomes[p.id]="unsupported_by_runtime"}}
+  let applied=null;const exif=PROBES.find(p=>p.id==="jpeg_exif_orientation_6");if(exif){try{const r=await loadImage(fromB64(exif.data),{raw:true});applied=r.width<r.height;r.release()}catch(e){}}
+  const features={};const tryDo=(k,f)=>{try{features[k]=f()}catch(e){features[k]=false}};
+  tryDo("pointerEvents",()=>"PointerEvent" in window);tryDo("touchActionNone",()=>CSS.supports("touch-action","none"));tryDo("createImageBitmap",()=>typeof createImageBitmap==="function");
+  tryDo("canvasToBlob",()=>typeof HTMLCanvasElement.prototype.toBlob==="function");tryDo("clipboardRead",()=>!!(navigator.clipboard&&navigator.clipboard.read));tryDo("clipboardWrite",()=>!!(navigator.clipboard&&navigator.clipboard.writeText));
+  tryDo("webShareFiles",()=>!!navigator.canShare);tryDo("anchorDownload",()=>"download" in HTMLAnchorElement.prototype);tryDo("devicePixelRatio",()=>window.devicePixelRatio||1);
+  tryDo("canvas4096",()=>{const c=document.createElement("canvas");c.width=c.height=4096;const x=c.getContext("2d");x.fillStyle="#f00";x.fillRect(4095,4095,1,1);return x.getImageData(4095,4095,1,1).data[3]===255});
+  const ev=evidence({userAgent:navigator.userAgent,outcomes,features,verifiedAt:new Date().toISOString().slice(0,10),exifAppliedByEngine:applied});
+  checkOut.textContent=JSON.stringify(ev,null,2);box.dataset.check=JSON.stringify(ev);return ev}
+ $("[data-check]").addEventListener("click",check);
+ if(typeof ResizeObserver==="function")new ResizeObserver(()=>{fit();render()}).observe(stage.parentElement);else window.addEventListener("resize",()=>{fit();render()});
+ box.photo={studio,docs,importBytes,check,fit,render,sync};fit();setStatus("idle",MESSAGES.idle);after();return box})}
+globalThis.webUiPhoto={fixed,sniff,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
+ rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS};
+if(typeof document!=="undefined")bindPhoto();
+"""
+
+
 def _example_cards() -> str:
     return ('<section class="ui-grid"><article class="ui-card"><h2>Components</h2><p>Tokens, panels, cards, tags, controls and output surfaces.</p>'
             '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
@@ -4406,7 +5702,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article>'
             '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article>'
             '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article>'
-            '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
+            '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -4437,6 +5734,7 @@ def example_pages() -> dict[str, str]:
         "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
         "examples/clipboard-shelf.html": shelf_document(),
         "examples/coordinates.html": coordinates_document(),
+        "examples/photo-studio.html": photo_document(),
         "examples/composition-studio.html": studio_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),

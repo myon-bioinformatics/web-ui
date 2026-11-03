@@ -3,6 +3,7 @@
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error.
 The ordinary dependency-light unit suite does not discover this module.
 """
+import base64
 import functools
 import http.server
 from pathlib import Path
@@ -1583,6 +1584,509 @@ class CoordinatesBrowserTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class PhotoBrowserTests(unittest.TestCase):
+    """The photo studio in Chromium: every rule in the page equals Python's (and so the Dart tests' and Pillow's), and the page works and keeps nothing."""
+
+    @staticmethod
+    def corpus():
+        import io
+        import random
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from PIL import Image
+        from test_python_wrapper import PHOTO_FIXTURE, photo_file
+        rng = random.Random(8)
+        blobs = []
+        for case in PHOTO_FIXTURE['cases']:
+            data = photo_file(case['id']) if case['data'] else b''
+            blobs.append(data)
+            blobs += [data[:n] for n in range(0, len(data), max(1, len(data) // 25))]
+            for _ in range(25):
+                mutated = bytearray(data)
+                for _ in range(rng.randint(1, 4)):
+                    if mutated:
+                        mutated[rng.randrange(len(mutated))] = rng.randrange(256)
+                blobs.append(bytes(mutated))
+        for marker in range(0xC0, 0xD0):                                                    # every start-of-frame marker, in a JPEG header only
+            sof = bytes([0xFF, marker, 0, 17, 8, 1, 224, 2, 128, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1])
+            blobs.append(b'\xff\xd8\xff\xe0\x00\x04\x00\x00' + sof + b'\xff\xd9')
+        for width, height in [(1, 1), (3, 2), (255, 256), (257, 255), (16383, 1), (1, 16383)] + [(rng.randint(1, 200), rng.randint(1, 200)) for _ in range(12)]:
+            rgb = Image.new('RGB', (width, height), (9, 99, 199))
+            rgba = rgb.convert('RGBA')
+            for image, fmt, options in ((rgb, 'PNG', {}), (rgba, 'PNG', {}), (rgb.convert('P'), 'GIF', {}), (rgb, 'JPEG', {'quality': 60}), (rgb, 'JPEG', {'progressive': True}),
+                                        (rgb, 'WEBP', {'quality': 50}), (rgb, 'WEBP', {'lossless': True}), (rgba, 'WEBP', {'quality': 50}), (rgba, 'WEBP', {'lossless': True})):
+                if fmt == 'WEBP' and max(width, height) > 16383:
+                    continue
+                buffer = io.BytesIO()
+                image.save(buffer, fmt, **options)
+                blobs.append(buffer.getvalue())
+        return blobs
+
+    def serve_page(self):
+        from web_ui import photo_document
+        return WorldBrowserTests.serve({'photo.html': photo_document()})
+
+    def test_every_rule_in_the_page_equals_pythons(self):
+        import json
+        import random
+        import web_ui as w
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import PHOTO_FIXTURE, photo_file
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/photo.html')
+                    blobs = self.corpus()
+                    lists = [list(b) for b in blobs]
+                    self.assertGreater(len(lists), 1500)
+                    got = page.evaluate('lists => lists.map(a => { const b = Uint8Array.from(a); return [webUiPhoto.sniff(b), webUiPhoto.headerSize(b), Array.from(webUiPhoto.neutralizeOrientation(b))] })', lists)
+                    for blob, (sniffed, header, neutral) in zip(blobs, got):
+                        self.assertEqual(sniffed, w.photo_sniff(blob))
+                        self.assertEqual(header, (list(w.photo_header_size(blob)) if w.photo_header_size(blob) else None))
+                        self.assertEqual(bytes(neutral), w.photo_neutralize_orientation(blob))
+                    # The decision: the same bytes, the same engine answer (none, a size, an oversize), the same declared type.
+                    declared = [None, '', 'image/png', 'image/jpeg', 'image/avif', 'application/octet-stream', 'text/plain', 'image/x-icon']
+                    answers = [None, [64, 32], [1, 1], [9000, 9000], [0, 5], [40000000, 1], [40000001, 1]]
+                    rng = random.Random(4)
+                    jobs = [[rng.randrange(len(lists)), rng.choice(declared), rng.choice(answers)] for _ in range(1500)]
+                    got = page.evaluate("""([lists, jobs]) => Promise.all(jobs.map(([i, mime, answer]) =>
+                        webUiPhoto.decide(Uint8Array.from(lists[i]), answer === null ? null : async () => answer, mime === null ? undefined : mime)))""", [lists, jobs])
+                    for (index, mime, answer), result in zip(jobs, got):
+                        expected = w.photo_decide(blobs[index], (lambda data, a=answer: tuple(a)) if answer else None, mime)
+                        expected = {**expected, **({"document": list(expected["document"])} if "document" in expected else {})}
+                        self.assertEqual(result, expected, (index, mime, answer))
+                    self.assertEqual(page.evaluate('n => webUiPhoto.decide(new Uint8Array(0), null, undefined)', 0), w.photo_decide(b''))
+                    # Limits, orientation and sizes.
+                    lengths = [-1, 0, 1, 33554431, 33554432, 33554433, 10 ** 9]
+                    self.assertEqual(page.evaluate('v => v.map(n => webUiPhoto.rejectBytes(n))', lengths), [w.photo_reject_bytes(n) for n in lengths])
+                    sizes = [[a, b] for a in (-3, 0, 1, 64, 8000, 10000, 40000000, 40000001) for b in (-1, 0, 1, 5, 5000, 5001, 10000)]
+                    self.assertEqual(page.evaluate('v => v.map(s => webUiPhoto.rejectSize(...s))', sizes), [w.photo_reject_size(*s) for s in sizes])
+                    rng = random.Random(6)
+                    docs = [[a, b] for a in (1, 2, 3, 4, 63, 64, 4095, 4096, 4097, 6144, 24576, 36864) for b in (1, 2, 3, 5, 64, 6144)] + [[rng.randint(1, 12000), rng.randint(1, 12000)] for _ in range(1500)]
+                    self.assertEqual(page.evaluate('v => v.map(s => webUiPhoto.documentSize(...s))', docs), [list(w.photo_document_size(*s)) for s in docs])
+                    cases = [[o, a, b] for o in range(0, 10) for a, b in ((64, 32), (5, 3), (1, 1), (7, 2))]
+                    self.assertEqual(page.evaluate('v => v.map(([o, a, b]) => [webUiPhoto.orientationMatrix(o, a, b), webUiPhoto.orientedSize(a, b, o)])', cases),
+                                     [[list(w.photo_orientation_matrix(o, a, b)), list(w.photo_oriented_size(a, b, o))] for o, a, b in cases])
+                    self.assertEqual(page.evaluate('v => v.map(o => webUiPhoto.orientationOp(o))', list(range(-1, 11))), [w.photo_orientation_op(o) for o in range(-1, 11)])
+                    for rejection in ('empty', 'tooLargeBytes', 'tooManyPixels', 'undecodable', 'heicConversionFailed'):
+                        self.assertEqual(page.evaluate('r => webUiPhoto.failure(r)', rejection), w.photo_failure(rejection))
+                    # Rectangles and shapes: the same arithmetic in the same order, so exactly the same numbers.
+                    rng = random.Random(12)
+                    unit = lambda: rng.choice([0, 1, 0.04, 0.5, 0.2, 0.8, rng.random(), rng.uniform(-0.5, 1.5), rng.uniform(0, 1)])
+                    rects = [{'left': unit(), 'top': unit(), 'right': unit(), 'bottom': unit()} for _ in range(600)]
+                    moves = [[unit() - 0.5, unit() - 0.5] for _ in rects]
+                    handles = [rng.choice(w.PHOTO_HANDLES) for _ in rects]
+                    shapes = [rng.choice(w.PHOTO_SHAPES) for _ in rects]
+                    slops = [rng.choice([0, 0, 0.01, 0.0133, 0.05]) for _ in rects]
+                    points = [[unit(), unit()] for _ in rects]
+                    got = page.evaluate("""([rects, moves, handles, shapes, slops, points]) => rects.map((r, i) => ({
+                        sanitized: webUiPhoto.rectSanitized(r), moved: webUiPhoto.rectTranslated(r, ...moves[i]), resized: webUiPhoto.rectResized(r, handles[i], ...moves[i]),
+                        diagonal: webUiPhoto.rectFromDiagonal(r.left, r.top, r.right, r.bottom), text: webUiPhoto.rectText(r), csv: webUiPhoto.rectCsv(r),
+                        edges: webUiPhoto.rectEdgeMidpoints(r), circle: webUiPhoto.circle(r), triangle: webUiPhoto.triangle(r), trimids: webUiPhoto.triangleMidpoints(r),
+                        contains: webUiPhoto.shapeContains(r, shapes[i], ...points[i], slops[i]), describe: webUiPhoto.describe(r, shapes[i]),
+                        cross: webUiPhoto.segmentIntersection(r.left, r.top, r.right, r.bottom, r.left, r.bottom, r.right, r.top)}))""", [rects, moves, handles, shapes, slops, points])
+                    for i, r in enumerate(rects):
+                        expected = {'sanitized': w.photo_rect_sanitized(r), 'moved': w.photo_rect_translated(r, *moves[i]), 'resized': w.photo_rect_resized(r, handles[i], *moves[i]),
+                                    'diagonal': w.photo_rect_from_diagonal(r['left'], r['top'], r['right'], r['bottom']), 'text': w.photo_rect_text(r), 'csv': w.photo_rect_csv(r),
+                                    'edges': w.photo_rect_edge_midpoints(r), 'circle': w.photo_circle(r), 'triangle': w.photo_triangle(r), 'trimids': w.photo_triangle_midpoints(r),
+                                    'contains': w.photo_shape_contains(r, shapes[i], *points[i], slops[i]), 'describe': w.photo_describe(r, shapes[i]),
+                                    'cross': w.photo_segment_intersection(r['left'], r['top'], r['right'], r['bottom'], r['left'], r['bottom'], r['right'], r['top'])}
+                        self.assertEqual(got[i], expected, (i, r, handles[i], shapes[i]))
+                    # Hit targets, with the canvas sizes the page really has, and the export arithmetic.
+                    jobs = []
+                    for _ in range(800):
+                        width, height = rng.choice([(400, 300), (760, 280), (320, 240), (1000.5, 333.25), (0, 10)])
+                        frames = [{'id': f'f{k}', 'rect': {'left': unit(), 'top': unit(), 'right': unit(), 'bottom': unit()}, 'shape': rng.choice(w.PHOTO_SHAPES)} for k in range(rng.randint(0, 3))]
+                        stamps = [{'id': f's{k}', 'x': unit(), 'y': unit(), 'scale': rng.choice([0.4, 1, 3, rng.uniform(0.4, 3)])} for k in range(rng.randint(0, 3))]
+                        jobs.append([width, height, frames, stamps, rng.uniform(-20, width + 20), rng.uniform(-20, height + 20)])
+                    got = page.evaluate("""jobs => jobs.map(([w, h, frames, stamps, x, y]) => [webUiPhoto.hitFrame(frames, w, h, x, y), webUiPhoto.hitStamp(stamps, w, h, x, y),
+                        frames.map(f => webUiPhoto.hitHandle(f.rect, w, h, x, y))])""", jobs)
+                    for (width, height, frames, stamps, x, y), result in zip(jobs, got):
+                        self.assertEqual(result, [w.photo_hit_frame(frames, width, height, x, y), w.photo_hit_stamp(stamps, width, height, x, y),
+                                                  [w.photo_hit_handle(f['rect'], width, height, x, y) for f in frames]], (width, height, x, y))
+                    sizes = [[rng.uniform(0.1, 5000), rng.uniform(0.1, 5000)] for _ in range(300)] + [[760, 280], [400.25, 300.2], [0.1, 0.1], [3000, 100], [1, 1]]
+                    self.assertEqual(page.evaluate('v => v.map(([a, b]) => [webUiPhoto.exportSize(a, b), webUiPhoto.exportSize(a, b, 1.5), webUiPhoto.stampPx(a, b, 2.5), webUiPhoto.containRect(a, b, 300, 200), webUiPhoto.containRect(b, a, 300, 200)])', sizes),
+                                     [[list(w.photo_export_size(a, b)), list(w.photo_export_size(a, b, 1.5)), w.photo_stamp_px(a, b, 2.5), list(w.photo_contain_rect(a, b, 300, 200)), list(w.photo_contain_rect(b, a, 300, 200))] for a, b in sizes])
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+
+    def test_the_editing_state_machine_equals_pythons_step_by_step(self):
+        import random
+        import web_ui as w
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/photo.html')
+                    rng = random.Random(33)
+                    names = {'pointerDown': 'pointer_down', 'pointerMove': 'pointer_move', 'pointerUp': 'pointer_up', 'pointerCancel': 'pointer_cancel', 'setShape': 'set_shape', 'armStamp': 'arm_stamp',
+                             'setColor': 'set_color', 'undo': 'undo', 'redo': 'redo', 'nudge': 'nudge', 'deleteSelectedFrame': 'delete_selected_frame', 'resetSelectedFrame': 'reset_selected_frame',
+                             'setStampScale': 'set_stamp_scale', 'setImage': 'set_image'}
+                    scripts = []
+                    edge = [[400, 400, [['armStamp', ['🔥']], ['pointerDown', [1, 100, 100]], ['pointerMove', [1, 120, 100]], ['pointerMove', [1, 127.9, 100]], ['pointerMove', [1, 128, 100]],
+                                        ['pointerMove', [1, 155.9, 100]], ['pointerMove', [1, 156, 100]], ['pointerUp', [1]]]],
+                            [400, 400, [['armStamp', ['⭐']], ['pointerDown', [1, 100, 100]], ['pointerMove', [1, 103.9, 100]], ['pointerUp', [1]], ['pointerDown', [1, 200, 200]], ['pointerMove', [1, 204, 200]],
+                                        ['pointerCancel', [1]], ['undo', []], ['undo', []], ['redo', []]]],
+                            [400, 300, [['setShape', ['rectangle']], ['pointerDown', [1, 40, 30]], ['pointerMove', [1, 160, 120]], ['pointerUp', [1]], ['setShape', [None]],
+                                        ['pointerDown', [1, 40, 30]], ['pointerMove', [1, 41, 30]], ['pointerMove', [1, 60, 50]], ['pointerUp', [1]], ['pointerDown', [2, 58, 46]], ['pointerMove', [2, 100, 100]],
+                                        ['pointerUp', [2]], ['nudge', [0.5, 0.5]], ['resetSelectedFrame', []], ['undo', []], ['undo', []], ['undo', []], ['redo', []]]]]
+                    scripts.extend(edge)
+                    for _ in range(120):
+                        width, height = rng.choice([(400, 300), (760, 280), (320, 240), (500.5, 333.25)])
+                        ops = []
+                        for _ in range(90):
+                            kind = rng.choice(['pointerDown', 'pointerMove', 'pointerMove', 'pointerMove', 'pointerUp', 'pointerCancel', 'setShape', 'armStamp', 'setColor', 'undo', 'redo', 'nudge',
+                                               'deleteSelectedFrame', 'resetSelectedFrame', 'setStampScale', 'setImage'])
+                            pointer = rng.choice([1, 2])
+                            x, y = rng.uniform(-20, width + 20), rng.uniform(-20, height + 20)
+                            args = {'pointerDown': [pointer, x, y], 'pointerMove': [pointer, x, y], 'pointerUp': [pointer], 'pointerCancel': [pointer],
+                                    'setShape': [rng.choice([None, None, 'rectangle', 'circle', 'triangle', 'star'])], 'armStamp': [rng.choice(['⭐', '🔥', ' ', '', '⭐'])],
+                                    'setColor': [rng.choice([c for _, c in w.PHOTO_COLORS])], 'undo': [], 'redo': [], 'nudge': [rng.uniform(-0.2, 0.2), rng.uniform(-0.2, 0.2)],
+                                    'deleteSelectedFrame': [], 'resetSelectedFrame': [], 'setStampScale': [rng.uniform(-1, 5)], 'setImage': [rng.choice([None, 1, 2, 3])]}[kind]
+                            if kind == 'pointerMove' and ops and ops[-1][0] in ('pointerDown', 'pointerMove') and rng.random() < 0.6:
+                                args = [ops[-1][1][0], ops[-1][1][1] + rng.uniform(-60, 60), ops[-1][1][2] + rng.uniform(-60, 60)] if len(ops[-1][1]) == 3 else args
+                            ops.append([kind, args])
+                        scripts.append([width, height, ops])
+                    got = page.evaluate("""scripts => scripts.map(([w, h, ops]) => { const s = new webUiPhoto.PhotoStudio(w, h), trace = [];
+                        for (const [op, args] of ops) { try { s[op](...args) } catch (e) { trace.push('error'); continue }
+                          trace.push([s.state, s.history.depth, s.history.canUndo, s.history.canRedo, s.pendingEmoji]) } return trace })""", scripts)
+                    steps = 0
+                    for script_number, ((width, height, ops), trace) in enumerate(zip(scripts, got)):
+                        s = w.PhotoStudio(width, height)
+                        for step, ((op, args), seen) in enumerate(zip(ops, trace)):
+                            try:
+                                getattr(s, names[op])(*args)
+                            except ValueError:
+                                self.assertEqual(seen, 'error', (script_number, step, op, args))
+                                continue
+                            self.assertEqual(seen, [s.state, s.history.depth, s.history.can_undo, s.history.can_redo, s.pending_emoji], (script_number, step, op, args))
+                            steps += 1
+                    self.assertGreater(steps, 9000)
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+
+    def test_evidence_and_the_probe_pictures_equal_pythons(self):
+        import io
+        import web_ui as w
+        from PIL import Image
+        probes = w.photo_probes()
+        self.assertEqual([p['id'] for p in probes], ['png', 'jpeg', 'jpeg_exif_orientation_6', 'webp_lossy', 'webp_lossless', 'webp_alpha', 'gif', 'avif', 'heic'])
+        for probe in probes:                                                                # every probe is a real file, and says what it is
+            data = base64.b64decode(probe['data'])
+            kind = w.photo_sniff(data)['kind']
+            self.assertEqual('image/' + kind, probe['mime'])
+            if kind != 'heic':
+                with Image.open(io.BytesIO(data)) as image:
+                    image.load()
+        outcomes = {'png': 'supported', 'heic': 'unsupported_by_runtime'}
+        features = {'pointerEvents': True, 'devicePixelRatio': 2}
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    page.goto(origin + '/photo.html')
+                    for applied in (None, True, False):
+                        got = page.evaluate('([o, f, a]) => webUiPhoto.evidence({userAgent: "UA", outcomes: o, features: f, verifiedAt: "2026-11-03", exifAppliedByEngine: a})', [outcomes, features, applied])
+                        self.assertEqual(got, w.photo_evidence('UA', outcomes, features, '2026-11-03', applied))
+                    self.assertEqual(page.evaluate('() => webUiPhoto.evidence({})'), w.photo_evidence())
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+        with self.assertRaises(ValueError):
+            w.photo_evidence(outcomes={'png': 'works'})
+
+
+class PhotoPageBrowserTests(unittest.TestCase):
+    """The photo studio page in Chromium: import outcomes, upright pixels, drawing, history, export, and keeping nothing."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import PHOTO_CASES, photo_file
+        self.cases, self.file = PHOTO_CASES, photo_file
+        from web_ui import photo_document
+        self.server, self.origin = WorldBrowserTests.serve({'photo.html': photo_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = self.playwright.chromium.launch()
+        self.context = self.browser.new_context(viewport={'width': 800, 'height': 900}, accept_downloads=True)
+        self.page = self.context.new_page()
+        self.errors, self.external = [], []
+        self.page.on('pageerror', lambda error: self.errors.append(str(error)))
+        self.page.on('console', lambda message: self.errors.append('console: ' + message.text) if message.type == 'error' else None)
+        self.page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        self.page.goto(self.origin + '/photo.html')
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def mime(self, case_id):
+        return {'png': 'image/png', 'jpeg': 'image/jpeg', 'webp': 'image/webp', 'gif': 'image/gif', 'avif': 'image/avif', 'heic': 'image/heic'}.get(self.cases[case_id]['format'], 'image/png')
+
+    def pick(self, case_id):
+        self.page.set_input_files('#photo-file', files=[{'name': case_id, 'mimeType': self.mime(case_id), 'buffer': self.file(case_id)}])
+        self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.photoPhase !== 'loading'")
+        return self.page.eval_on_selector('[data-ui-photo]', 'b => [b.dataset.photoPhase, b.dataset.photoOutcome]')
+
+    def stage(self):
+        self.page.locator('[data-stage]').scroll_into_view_if_needed()                        # a pointer outside the viewport reaches nothing
+        return self.page.locator('[data-stage]').bounding_box()
+
+    def drag(self, a, b, steps=6):
+        box = self.stage()
+        self.page.mouse.move(box['x'] + a[0] * box['width'], box['y'] + a[1] * box['height'])
+        self.page.mouse.down()
+        self.page.mouse.move(box['x'] + b[0] * box['width'], box['y'] + b[1] * box['height'], steps=steps)
+        self.page.mouse.up()
+
+    def tap(self, at):
+        box = self.stage()
+        self.page.mouse.click(box['x'] + at[0] * box['width'], box['y'] + at[1] * box['height'])
+
+    def data(self, name):
+        return self.page.eval_on_selector('[data-ui-photo]', f'b => b.dataset.{name}')
+
+    def test_import_outcomes_equal_what_flutter_measured(self):
+        import web_ui as w
+        for case_id, case in self.cases.items():
+            expected = case['flutter_test_ci']
+            if not case['data'] or expected in (None, 'not_verified'):
+                continue
+            if case_id == 'heic_synthetic_markers_64x32':                                   # a real HEIC: Chromium has no decoder for it, so it says so
+                expected = 'rejected:heicConversionFailed'
+            with self.subTest(case_id):
+                phase, outcome = self.pick(case_id)
+                self.assertEqual(outcome, expected)
+                self.assertEqual(phase, 'success' if expected == 'supported' else 'failure')
+                self.assertEqual(self.page.inner_text('[data-status]'), w.PHOTO_MESSAGES['success'] if expected == 'supported' else w.photo_failure(expected.split(':')[1])['message'])
+        self.pick('png_markers_64x32')
+        self.assertEqual((self.page.inner_text('[data-meta]'), self.data('photoSize'), self.data('documentSize')), ('PNG · 64 × 32', '64x32', '43x21'))
+        self.pick('png_claim_10000x10000')                                                  # a refused import leaves the photo that was there
+        self.assertEqual((self.page.inner_text('[data-status]'), self.data('documentSize')), (w.PHOTO_MESSAGES['tooManyPixels'], '43x21'))
+        self.assertTrue(self.page.locator('[data-retry]').is_visible())
+        self.page.set_input_files('#photo-file', files=[{'name': 'a.txt', 'mimeType': 'text/plain', 'buffer': self.file('png_markers_64x32')}])    # a declared type that is not an image
+        self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.photoPhase !== 'loading'")
+        self.assertEqual(self.page.inner_text('[data-status]'), w.PHOTO_MESSAGES['unsupportedFormat'])
+
+    def test_every_exif_orientation_is_turned_upright_like_pillow(self):
+        import io
+        import web_ui
+        from PIL import Image, ImageOps
+        quadrants = ((0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75))
+        for orientation in range(1, 9):
+            case_id = f'jpeg_exif_orientation_{orientation}_markers_64x32'
+            with self.subTest(orientation=orientation):
+                self.assertEqual(self.pick(case_id), ['success', 'supported'])
+                self.assertEqual(self.data('orientation'), str(orientation))
+                with Image.open(io.BytesIO(self.file(case_id))) as original:
+                    expected = ImageOps.exif_transpose(original).convert('RGB')
+                ow, oh = expected.size
+                self.assertEqual(self.data('documentSize'), '%dx%d' % web_ui.photo_document_size(ow, oh))
+                got = self.page.evaluate("""quadrants => { const b = document.querySelector('[data-ui-photo]').photo, c = b.docs.get(b.studio.state.image).canvas, g = c.getContext('2d');
+                    return quadrants.map(([fx, fy]) => Array.from(g.getImageData(Math.floor(fx * c.width), Math.floor(fy * c.height), 1, 1).data)) }""", [list(q) for q in quadrants])
+                for (fx, fy), pixel in zip(quadrants, got):
+                    want = expected.getpixel((int(fx * ow), int(fy * oh)))
+                    for channel in range(3):
+                        self.assertLessEqual(abs(pixel[channel] - want[channel]), 24, (orientation, fx, fy, pixel, want))
+                    self.assertEqual(pixel[3], 255)
+
+    def test_what_this_engine_does_to_orientation_is_measured_not_assumed(self):
+        self.page.click('summary')
+        self.page.click('[data-check]')
+        self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.check")
+        import json
+        report = json.loads(self.data('check'))
+        self.assertIn(report['exifOrientationAppliedByEngine'], (True, False))
+        self.assertEqual(report['exifOrientationAppliedByEngine'], True)                    # Chromium turns EXIF pictures itself; the page neutralises that, so its result does not depend on it
+        measured = {key: value['loader_browser_canvas_adapter'] for key, value in report['outcomes'].items()}
+        for probe in ('png', 'jpeg', 'jpeg_exif_orientation_6', 'webp_lossy', 'webp_lossless', 'webp_alpha', 'gif', 'avif'):
+            self.assertEqual(measured[probe], 'supported', probe)
+        self.assertEqual(measured['heic'], 'unsupported_by_runtime')
+        for feature in ('pointerEvents', 'touchActionNone', 'createImageBitmap', 'canvasToBlob', 'anchorDownload', 'canvas4096'):
+            self.assertTrue(report['features'][feature], feature)
+        shown = json.loads(self.page.inner_text('[data-check-out]'))
+        self.assertEqual((shown['schemaVersion'], shown['environmentId'], shown['entryPoint']), (2, 'web_ui_photo_studio', 'loader_browser_canvas_adapter'))
+        self.assertEqual(shown, report)
+        import web_ui as w
+        self.assertEqual(set(shown), set(w.photo_evidence()))
+        self.assertIn(shown['verifiedAt'][:2], ('20',))
+
+    def test_drawing_moving_history_keyboard_and_stamps(self):
+        page = self.page
+        page.click('label[for="photo-shape-rectangle"]')
+        self.drag((0.1, 0.2), (0.5, 0.7))
+        self.assertEqual((self.data('frames'), self.data('depth')), ('1', '2'))              # choosing the tool is a step, so is the drag
+        left, top, right, bottom = (float(v) for v in self.data('rect').split(', '))
+        for got, want in zip((left, top, right, bottom), (0.1, 0.2, 0.5, 0.7)):
+            self.assertAlmostEqual(got, want, delta=0.02)
+        self.assertIn('shape: rectangle', page.inner_text('[data-geometry]'))
+        self.assertIn('mid.top:', page.inner_text('[data-geometry]'))
+        page.click('label[for="photo-shape-none"]')
+        self.drag((0.3, 0.45), (0.4, 0.55))                                                  # inside the frame: it moves
+        moved = [float(v) for v in self.data('rect').split(', ')]
+        self.assertGreater(moved[0], left + 0.05)
+        page.click('[data-undo]')
+        self.assertEqual([float(v) for v in self.data('rect').split(', ')], [left, top, right, bottom])
+        page.click('[data-redo]')
+        self.assertEqual([float(v) for v in self.data('rect').split(', ')], moved)
+        page.focus('[data-stage]')
+        page.keyboard.press('ArrowRight')
+        nudged = [float(v) for v in self.data('rect').split(', ')]
+        self.assertAlmostEqual(nudged[0], moved[0] + 0.01, places=3)
+        page.keyboard.press('Control+z')
+        self.assertEqual([float(v) for v in self.data('rect').split(', ')], moved)
+        page.keyboard.press('Control+Shift+z')
+        self.assertAlmostEqual([float(v) for v in self.data('rect').split(', ')][0], moved[0] + 0.01, places=3)
+        page.click('label[for="photo-color-#e53935"]')
+        self.assertEqual(page.evaluate("() => document.querySelector('[data-ui-photo]').photo.studio.state.frames[0].color"), '#e53935')
+        page.click('[data-reset]')
+        self.assertEqual(self.data('rect'), '0.2000, 0.2000, 0.8000, 0.8000')
+        page.click('[data-delete]')
+        self.assertEqual(self.data('frames'), '0')
+        self.assertEqual(page.inner_text('[data-geometry]'), 'No frame selected.')
+        page.click('[data-stamp="⭐"]')                                                      # arm, then tap twice, then spray
+        self.assertEqual((page.get_attribute('[data-stamp="⭐"]', 'aria-pressed'), self.data('armed')), ('true', '⭐'))
+        self.tap((0.2, 0.3))
+        self.tap((0.8, 0.7))
+        self.assertEqual(self.data('stamps'), '2')
+        before = int(self.data('depth'))
+        self.drag((0.1, 0.5), (0.9, 0.5), steps=20)
+        self.assertGreaterEqual(int(self.data('stamps')), 5)
+        self.assertEqual(int(self.data('depth')), before + 1)                                # one spray is one undo step
+        page.click('[data-undo]')
+        self.assertEqual(self.data('stamps'), '2')
+        page.fill('#photo-custom', 'OK')
+        page.click('[data-arm]')
+        self.assertEqual(self.data('armed'), 'OK')
+        page.click('[data-stamp="⭐"]')
+        self.assertEqual(self.data('armed'), '⭐')
+        page.fill('#photo-scale', '2.5')
+        self.assertEqual(page.inner_text('[data-scale-out]'), '2.5')
+        label = page.get_attribute('[data-stage]', 'aria-label')
+        self.assertIn('2 stamps', label)
+        self.assertIn('armed', label)
+
+    def test_export_is_a_png_of_the_photo_frames_and_stamps(self):
+        import io
+        import web_ui as w
+        from PIL import Image
+        self.assertEqual(self.pick('png_markers_64x32'), ['success', 'supported'])
+        self.page.click('label[for="photo-shape-rectangle"]')
+        self.drag((0.1, 0.1), (0.9, 0.9))
+        self.page.click('[data-stamp="🔥"]')
+        self.tap((0.5, 0.5))
+        box = self.stage()
+        with self.page.expect_download() as download:
+            self.page.click('[data-export]')
+        self.assertEqual(download.value.suggested_filename, w.PHOTO_EXPORT_NAME)
+        data = open(download.value.path(), 'rb').read()
+        self.assertEqual(w.photo_sniff(data)['kind'], 'png')
+        ew, eh = w.photo_export_size(box['width'], box['height'])
+        self.assertEqual(self.data('exportSize'), f'{ew}x{eh}')
+        self.assertEqual(w.photo_header_size(data), (ew, eh))
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            rgb = image.convert('RGB')
+        near = lambda a, b: all(abs(x - y) <= 6 for x, y in zip(a, b))
+        left_edge = round(0.1 * ew)
+        self.assertTrue(near(rgb.getpixel((int(0.25 * ew), int(0.3 * eh))), (255, 0, 0)), rgb.getpixel((int(0.25 * ew), int(0.3 * eh))))      # the photo, upright, fitted whole
+        self.assertTrue(near(rgb.getpixel((int(0.75 * ew), int(0.3 * eh))), (0, 255, 0)))
+        self.assertTrue(near(rgb.getpixel((int(0.25 * ew), int(0.7 * eh))), (0, 0, 255)))
+        self.assertTrue(near(rgb.getpixel((int(0.75 * ew), int(0.7 * eh))), (255, 255, 0)))
+        self.assertTrue(near(rgb.getpixel((left_edge, int(0.5 * eh))), (0x7e, 0x57, 0xc2)), rgb.getpixel((left_edge, int(0.5 * eh))))        # the frame's stroke, in its colour
+        self.assertIn('Saved as PNG.', self.page.inner_text('[data-live]'))
+
+    def test_a_newer_import_replaces_an_older_one_and_clearing_cancels_a_load(self):
+        import base64 as b64
+        a, b = b64.b64encode(self.file('png_markers_64x32')).decode(), b64.b64encode(self.file('webp_lossy_64x32')).decode()
+        self.page.evaluate("""async ([a, b]) => { const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0)), box = document.querySelector('[data-ui-photo]').photo;
+            const first = box.importBytes(bytes(a), 'image/png', 'pick'), second = box.importBytes(bytes(b), 'image/webp', 'pick'); await Promise.all([first, second]) }""", [a, b])
+        self.assertEqual((self.page.inner_text('[data-meta]'), self.data('photoPhase'), self.data('depth')), ('WebP · 64 × 32', 'success', '1'))
+        self.assertEqual(self.page.evaluate("() => document.querySelector('[data-ui-photo]').photo.docs.size"), 1)
+        self.page.evaluate("""async a => { const bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0)), box = document.querySelector('[data-ui-photo]').photo;
+            window.__pending = box.importBytes(bytes(a), 'image/png', 'pick'); document.querySelector('[data-clear]').click(); await window.__pending }""", a)
+        self.assertEqual((self.data('photoPhase'), self.page.inner_text('[data-status]')), ('superseded', 'A newer import replaced this load.'))
+        self.assertEqual(self.page.evaluate("() => document.querySelector('[data-ui-photo]').photo.studio.state.image"), None)
+        self.page.click('[data-undo]')                                                      # undo brings the photo back, from history
+        self.assertEqual(self.page.evaluate("() => document.querySelector('[data-ui-photo]').photo.studio.state.image !== null"), True)
+
+    def test_touch_drags_draw_a_frame_and_do_not_scroll_the_page(self):
+        """On a phone the finger must edit the canvas, not scroll the page: pointer events plus ``touch-action: none`` (Chromium's Pixel emulation; a device is a separate claim)."""
+        context = self.browser.new_context(**self.playwright.devices['Pixel 7'])
+        try:
+            page = context.new_page()
+            page.on('pageerror', lambda error: self.errors.append(str(error)))
+            page.goto(self.origin + '/photo.html')
+            page.tap('label[for="photo-shape-rectangle"]')
+            page.locator('[data-stage]').scroll_into_view_if_needed()
+            box = page.locator('[data-stage]').bounding_box()
+            self.assertLessEqual(box['width'], 412)                                         # laid out for the phone, not a desktop
+            scroll = page.evaluate('() => window.scrollY')
+            cdp = context.new_cdp_session(page)
+            touch = lambda kind, fx=None, fy=None: cdp.send('Input.dispatchTouchEvent', {'type': kind, 'touchPoints': [] if fx is None else [{'x': box['x'] + fx * box['width'], 'y': box['y'] + fy * box['height']}]})
+            touch('touchStart', 0.2, 0.2)
+            for step in range(1, 9):
+                touch('touchMove', 0.2 + step * 0.06, 0.2 + step * 0.05)
+            touch('touchEnd')
+            self.assertEqual(page.eval_on_selector('[data-ui-photo]', 'b => b.dataset.frames'), '1')
+            left, top, right, bottom = (float(v) for v in page.eval_on_selector('[data-ui-photo]', 'b => b.dataset.rect').split(', '))
+            for got, want in zip((left, top, right, bottom), (0.2, 0.2, 0.68, 0.6)):
+                self.assertAlmostEqual(got, want, delta=0.03)
+            self.assertEqual(page.evaluate('() => window.scrollY'), scroll)                  # the drag did not move the page
+            page.click('[data-stamp="⭐"]')                                                    # (a tap right after raw CDP touches gets no click from Chromium's recognizer: a harness matter)
+            page.locator('[data-stage]').scroll_into_view_if_needed()
+            box = page.locator('[data-stage]').bounding_box()
+            page.touchscreen.tap(box['x'] + 0.8 * box['width'], box['y'] + 0.8 * box['height'])
+            self.assertEqual(page.eval_on_selector('[data-ui-photo]', 'b => b.dataset.stamps'), '1')
+        finally:
+            context.close()
+
+    def test_paste_and_drop_take_images_and_the_page_keeps_nothing(self):
+        import base64 as b64
+        import web_ui as w
+        png = b64.b64encode(self.file('png_markers_64x32')).decode()
+        script = """([png, how]) => { const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0)), dt = new DataTransfer(); dt.items.add(new File([bytes], 'x.png', {type: 'image/png'}));
+            const target = document.querySelector('[data-ui-photo]');
+            if (how === 'paste') document.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+            else target.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true})) }"""
+        self.page.evaluate(script, [png, 'paste'])
+        self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.photoPhase === 'success'")
+        self.assertEqual((self.data('source'), self.page.inner_text('[data-meta]')), ('paste', 'PNG · 64 × 32'))
+        self.page.click('[data-clear]')
+        self.page.evaluate(script, [png, 'drop'])
+        self.page.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.photoPhase === 'success'")
+        self.assertEqual(self.data('source'), 'insert')
+        self.page.evaluate("() => document.dispatchEvent(new ClipboardEvent('paste', {clipboardData: new DataTransfer(), bubbles: true, cancelable: true}))")
+        self.assertEqual(self.page.inner_text('[data-status]'), w.PHOTO_MESSAGES['noClipboardImage'])
+        self.page.fill('#photo-custom', 'x')                                                # pasting into a text box is the text box's business
+        before = self.page.inner_text('[data-status]')
+        self.page.evaluate("() => { const e = new ClipboardEvent('paste', {clipboardData: new DataTransfer(), bubbles: true, cancelable: true}); document.querySelector('#photo-custom').dispatchEvent(e) }")
+        self.assertEqual(self.page.inner_text('[data-status]'), before)
+        self.assertEqual(self.page.evaluate("() => [localStorage.length, sessionStorage.length, document.cookie]"), [0, 0, ''])
+        self.assertEqual(self.page.evaluate("() => [...document.querySelectorAll('a[href]')].length"), 0)
+
 
 
 if __name__ == '__main__':

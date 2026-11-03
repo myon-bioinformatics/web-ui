@@ -1295,5 +1295,695 @@ class RepairRegressionTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
 
 
+PHOTO_FIXTURE = json.loads((Path(__file__).resolve().parent / "fixtures" / "photo_import_cases.json").read_text(encoding="utf-8"))
+PHOTO_CASES = {case["id"]: case for case in PHOTO_FIXTURE["cases"]}
+
+
+def photo_file(case_id):
+    data = PHOTO_CASES[case_id]["data"]
+    return base64.b64decode(data) if data else b""
+
+
+def photo_pillow_engine(data):
+    """An engine to decode with: Pillow, fully (so a truncated file fails), as ``(width, height)`` or ``None``."""
+    import io
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            return image.size
+    except Exception:
+        return None
+
+
+class PhotoSniffTests(unittest.TestCase):
+    """Format hints, with flutter_navigation_basic's Dart sniff tests and Pillow as the oracle."""
+
+    def test_the_fixtures_are_the_bytes_that_were_copied(self):
+        import hashlib
+        for case in PHOTO_FIXTURE["cases"]:
+            if case["data"]:
+                with self.subTest(case["id"]):
+                    self.assertEqual(hashlib.sha256(photo_file(case["id"])).hexdigest(), case["sha256"])
+                    self.assertEqual(len(photo_file(case["id"])), case["bytes"])
+        self.assertEqual(PHOTO_FIXTURE["limits"], {"maxInputBytes": web_ui.PHOTO_MAX_BYTES, "maxPixels": web_ui.PHOTO_MAX_PIXELS, "maxDocumentLongEdge": web_ui.PHOTO_MAX_EDGE})
+        self.assertEqual(tuple(PHOTO_FIXTURE["outcomeVocabulary"]), web_ui.PHOTO_OUTCOMES)
+
+    def test_the_dart_sniff_tests(self):
+        w = web_ui
+        kinds = {"png_opaque_2x2": None, "png_opaque_64x32": "png", "png_alpha_64x32": "png", "png_markers_64x32": "png", "jpeg_baseline_markers_64x32": "jpeg",
+                 "webp_lossy_64x32": "webp", "webp_lossless_64x32": "webp", "webp_alpha_8x4": "webp", "gif_still_1x1": "gif", "avif_ftyp_only": "avif",
+                 "heic_synthetic_markers_64x32": "heic", "empty": "empty", "png_truncated": "png", "png_claim_10000x10000": "png"}
+        for case_id, kind in kinds.items():
+            if kind:
+                with self.subTest(case_id):
+                    self.assertEqual(w.photo_sniff(photo_file(case_id))["kind"], kind)
+        for brand in ("heic", "heif", "mif1", "msf1", "heix"):
+            info = w.photo_sniff(photo_file(f"heic_ftyp_{brand}"))
+            self.assertEqual((info["kind"], info["brand"], info["label"]), ("heic", brand, "HEIC"))
+        self.assertEqual(w.photo_sniff(photo_file("avif_ftyp_only"))["brand"], "avif")
+        self.assertEqual(w.photo_sniff(b"")["label"], "empty")
+        self.assertEqual(w.photo_sniff(bytes([1, 2, 3, 4]))["kind"], "unknown")
+        self.assertEqual([w.photo_sniff(photo_file(i))["label"] for i in ("png_markers_64x32", "jpeg_baseline_markers_64x32", "webp_lossy_64x32", "gif_still_1x1")],
+                         ["PNG", "JPEG", "WebP", "GIF"])
+        self.assertTrue(w.photo_sniff(photo_file("jpeg_progressive_markers_64x32"))["progressive"])
+        self.assertFalse(w.photo_sniff(photo_file("jpeg_baseline_markers_64x32"))["progressive"])
+        for orientation in range(1, 9):
+            with self.subTest(orientation=orientation):
+                info = w.photo_sniff(photo_file(f"jpeg_exif_orientation_{orientation}_markers_64x32"))
+                self.assertEqual((info["kind"], info["orientation"]), ("jpeg", orientation))
+        self.assertIsNone(w.photo_sniff(photo_file("jpeg_baseline_markers_64x32"))["orientation"])
+        for tail in (b"\x00" * 3, b"\x89PNG", b"RIFF\0\0\0\0WEB", b"GIF8", b"GIF87a", b"\xff\xd8"):
+            self.assertIn(w.photo_sniff(tail)["kind"], ("gif", "unknown", "png", "jpeg", "webp"))
+
+    def test_marker_scanning_like_the_dart_tests(self):
+        base = photo_file("jpeg_exif_orientation_6_markers_64x32")
+        xmp = "http://ns.adobe.com/xap/1.0/\u0000<x/>".encode("latin-1")
+        length = len(xmp) + 2
+        with_xmp = base[:2] + bytes([0xFF, 0xE1, length >> 8, length & 0xFF]) + xmp + base[2:]
+        self.assertEqual(web_ui.photo_sniff(with_xmp)["orientation"], 6)                    # an XMP APP1 before the EXIF one
+        self.assertEqual(web_ui.photo_sniff(base[:2] + b"\xff\xff" + base[2:])["orientation"], 6)   # fill bytes before a marker
+        self.assertEqual(web_ui.photo_sniff(base[:2] + b"\xff\xff" + base[2:])["kind"], "jpeg")
+
+    @staticmethod
+    def jpeg_with(marker, width=640, height=480):
+        sof = bytes([0xFF, marker, 0, 17, 8, height >> 8, height & 255, width >> 8, width & 255, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1])
+        return b"\xff\xd8" + b"\xff\xe0\x00\x04\x00\x00" + sof + b"\xff\xd9"
+
+    def test_every_start_of_frame_marker(self):
+        for marker in range(0xC0, 0xD0):
+            data = self.jpeg_with(marker)
+            with self.subTest(marker=hex(marker)):
+                self.assertEqual(web_ui.photo_sniff(data)["progressive"], marker in (0xC2, 0xC6, 0xCA, 0xCE))        # Huffman or arithmetic progressive; the rest scan on
+                self.assertEqual(web_ui.photo_header_size(data), (640, 480) if marker not in (0xC4, 0xC8, 0xCC) else None)   # DHT, JPG and DAC are not frames
+        self.assertEqual(web_ui.photo_header_size(self.jpeg_with(0xC0, 65535, 65535)), (65535, 65535))
+
+    def test_progressive_and_orientation_agree_with_pillow(self):
+        import io
+        from PIL import Image
+        for case in PHOTO_FIXTURE["cases"]:
+            if case["format"] != "jpeg":
+                continue
+            with self.subTest(case["id"]):
+                data = photo_file(case["id"])
+                with Image.open(io.BytesIO(data)) as image:
+                    self.assertEqual(web_ui.photo_sniff(data)["progressive"], bool(image.info.get("progressive")))
+                    self.assertEqual(web_ui.photo_sniff(data)["orientation"], image.getexif().get(0x0112))
+
+    def test_orientation_is_neutralised_in_two_bytes_only(self):
+        for orientation in range(1, 9):
+            data = photo_file(f"jpeg_exif_orientation_{orientation}_markers_64x32")
+            neutral = web_ui.photo_neutralize_orientation(data)
+            with self.subTest(orientation=orientation):
+                self.assertEqual(len(neutral), len(data))
+                self.assertEqual(web_ui.photo_sniff(neutral)["orientation"], 1)
+                self.assertLessEqual(sum(a != b for a, b in zip(data, neutral)), 1 if orientation > 1 else 0)
+                self.assertEqual(web_ui.photo_neutralize_orientation(neutral), neutral)
+        for case_id in ("png_markers_64x32", "jpeg_baseline_markers_64x32", "empty", "heic_ftyp_heic"):
+            self.assertEqual(web_ui.photo_neutralize_orientation(photo_file(case_id)), photo_file(case_id))
+        big = bytearray(photo_file("jpeg_exif_orientation_6_markers_64x32"))                  # big-endian TIFF: the value is 00 06
+        self.assertEqual(web_ui.photo_sniff(bytes(big))["orientation_big_endian"] in (True, False), True)
+
+    def test_damaged_files_never_raise(self):
+        rng = random.Random(5)
+        for case in PHOTO_FIXTURE["cases"]:
+            data = photo_file(case["id"]) if case["data"] else b""
+            variants = [data[:n] for n in range(0, len(data) + 1, max(1, len(data) // 60))]
+            for _ in range(40):
+                mutated = bytearray(data)
+                for _ in range(rng.randint(1, 4)):
+                    if mutated:
+                        mutated[rng.randrange(len(mutated))] = rng.randrange(256)
+                variants.append(bytes(mutated))
+            for variant in variants:
+                info = web_ui.photo_sniff(variant)
+                self.assertIn(info["kind"], web_ui.PHOTO_LABELS)
+                self.assertIn(info["orientation"], (None, 1, 2, 3, 4, 5, 6, 7, 8))
+                size = web_ui.photo_header_size(variant)
+                self.assertTrue(size is None or (len(size) == 2 and all(isinstance(v, int) and v >= 0 for v in size)), (case["id"], size))
+                self.assertEqual(len(web_ui.photo_neutralize_orientation(variant)), len(variant))
+                web_ui.photo_decide(variant, photo_pillow_engine)
+
+
+class PhotoImportTests(unittest.TestCase):
+    """Header sizes, the pixel budget, the order of checks and the stored size."""
+
+    def test_header_sizes_equal_pillows_for_every_fixture(self):
+        import io
+        from PIL import Image
+        for case in PHOTO_FIXTURE["cases"]:
+            if not case["data"] or case["format"] in ("heic", "avif", "empty") or case["id"] in ("png_claim_10000x10000", "png_truncated"):
+                continue
+            with self.subTest(case["id"]):
+                with Image.open(io.BytesIO(photo_file(case["id"]))) as image:
+                    self.assertEqual(web_ui.photo_header_size(photo_file(case["id"])), image.size)
+        self.assertEqual(web_ui.photo_header_size(photo_file("png_claim_10000x10000")), (10000, 10000))
+        self.assertEqual(web_ui.photo_header_size(photo_file("png_truncated")), (64, 32))      # cut after the sizes: the header alone cannot tell it is damaged
+        for case_id in ("heic_ftyp_heic", "heic_synthetic_markers_64x32", "avif_ftyp_only", "empty"):
+            self.assertIsNone(web_ui.photo_header_size(photo_file(case_id)))
+
+    def test_pictures_made_by_pillow_in_every_format_agree(self):
+        import io
+        from PIL import Image
+        rng = random.Random(11)
+        sizes = [(1, 1), (1, 2), (2, 1), (16383, 1), (1, 16383), (255, 256), (257, 255), (640, 480)] + [(rng.randint(1, 300), rng.randint(1, 300)) for _ in range(30)]
+        for width, height in sizes:
+            rgb = Image.frombytes("RGB", (width, height), bytes(rng.randrange(256) for _ in range(3 * width * height)) if width * height <= 4096 else bytes(3 * width * height))
+            rgba = rgb.convert("RGBA")
+            rgba.putalpha(Image.frombytes("L", (width, height), bytes(rng.randrange(256) for _ in range(width * height)) if width * height <= 4096 else bytes(width * height)))
+            made = {"png": (rgb, "PNG", {}), "png-rgba": (rgba, "PNG", {}), "gif": (rgb.convert("P"), "GIF", {}), "jpeg": (rgb, "JPEG", {"quality": 70}),
+                    "jpeg-progressive": (rgb, "JPEG", {"progressive": True}), "webp-lossy": (rgb, "WEBP", {"quality": 60}),
+                    "webp-lossless": (rgb, "WEBP", {"lossless": True}), "webp-alpha-lossy": (rgba, "WEBP", {"quality": 60}),
+                    "webp-alpha-lossless": (rgba, "WEBP", {"lossless": True}), "webp-exif": (rgb, "WEBP", {"exif": b"Exif\x00\x00MM\x00*\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00"})}
+            for name, (image, fmt, options) in made.items():
+                if fmt == "WEBP" and max(width, height) > 16383:
+                    continue
+                buffer = io.BytesIO()
+                image.save(buffer, fmt, **options)
+                with self.subTest(size=(width, height), format=name):
+                    self.assertEqual(web_ui.photo_header_size(buffer.getvalue()), (width, height))
+                    self.assertEqual(web_ui.photo_sniff(buffer.getvalue())["kind"], {"png": "png", "png-rgba": "png", "gif": "gif", "jpeg": "jpeg", "jpeg-progressive": "jpeg"}.get(name, "webp"))
+        built = web_ui.photo_png(3, 2, bytes(range(24)))
+        with Image.open(io.BytesIO(built)) as image:
+            image.load()
+            self.assertEqual((image.size, image.mode, list(image.tobytes())), ((3, 2), "RGBA", list(range(24))))
+        self.assertEqual(web_ui.photo_header_size(web_ui.photo_png(40001, 1)), (40001, 1))
+        with self.assertRaises(ValueError):
+            web_ui.photo_png(2, 2, b"short")
+
+    def test_the_png_probe_is_a_2x2_picture_and_probes_are_what_they_claim(self):
+        import io
+        from PIL import Image
+        probes = {p["id"]: p for p in web_ui.photo_probes()}
+        self.assertEqual(list(probes), ["png", "jpeg", "jpeg_exif_orientation_6", "webp_lossy", "webp_lossless", "webp_alpha", "gif", "avif", "heic"])
+        png = base64.b64decode(probes["png"]["data"])
+        with Image.open(io.BytesIO(png)) as image:
+            image.load()
+            self.assertEqual((image.size, list(image.convert("RGBA").tobytes())), ((2, 2), [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 128]))
+        self.assertEqual(web_ui.photo_header_size(png), (2, 2))
+        for probe in probes.values():
+            data = base64.b64decode(probe["data"])
+            self.assertEqual("image/" + web_ui.photo_sniff(data)["kind"], probe["mime"])
+            if probe["id"] != "heic":
+                with Image.open(io.BytesIO(data)) as image:
+                    image.load()
+        self.assertEqual(web_ui.photo_sniff(base64.b64decode(probes["jpeg_exif_orientation_6"]["data"]))["orientation"], 6)
+        self.assertEqual(web_ui.photo_sniff(base64.b64decode(probes["heic"]["data"]))["brand"] in web_ui.PHOTO_HEIC_BRANDS, True)
+
+    def test_the_decision_order_reproduces_what_flutter_measured(self):
+        for case in PHOTO_FIXTURE["cases"]:
+            expected = case["flutter_test_ci"]
+            if expected in (None, "not_verified"):
+                continue
+            with self.subTest(case["id"]):
+                result = web_ui.photo_decide(photo_file(case["id"]), photo_pillow_engine)
+                self.assertEqual(result["outcome"], expected)
+                self.assertIn(result["outcome"], web_ui.PHOTO_OUTCOMES)
+                self.assertEqual(result["ok"], expected == "supported")
+        ok = web_ui.photo_decide(photo_file("png_markers_64x32"), photo_pillow_engine)
+        self.assertEqual((ok["format"], ok["width"], ok["height"], ok["document"], ok["message"], ok["meta"]), ("PNG", 64, 32, (43, 21), "Image loaded", "PNG · 64 × 32"))
+
+    def test_bytes_declared_type_and_pixel_edges(self):
+        w = web_ui
+        self.assertEqual([w.photo_reject_bytes(n) for n in (0, 1, w.PHOTO_MAX_BYTES, w.PHOTO_MAX_BYTES + 1)], ["empty", None, None, "tooLargeBytes"])
+        self.assertEqual(w.photo_decide(bytes(w.PHOTO_MAX_BYTES + 1))["outcome"], "rejected:tooLargeBytes")                      # the runtime case in cases.json
+        self.assertEqual([w.photo_reject_size(*s) for s in ((8000, 5000), (8000, 5001), (10000, 10000), (1, 0), (0, 5), (-1, 5), (40_000_000, 1), (1, 40_000_001))],
+                         [None, "tooManyPixels", "tooManyPixels", "undecodable", "undecodable", "undecodable", None, "tooManyPixels"])
+        png = photo_file("png_markers_64x32")
+        self.assertTrue(w.photo_decide(png, photo_pillow_engine, "image/png")["ok"])
+        self.assertTrue(w.photo_decide(png, photo_pillow_engine, "")["ok"])
+        self.assertTrue(w.photo_decide(png, photo_pillow_engine, "image/x-unknown")["ok"])
+        for declared in ("application/octet-stream", "text/plain", "video/mp4"):
+            refused = w.photo_decide(png, photo_pillow_engine, declared)
+            self.assertEqual((refused["outcome"], refused["reason"], refused["message"]), ("rejected:undecodable", "unsupportedFormat", "That image format could not be decoded."))
+        self.assertEqual(w.photo_decide(b"", None, "application/pdf")["reason"], "unsupportedFormat")                           # the declared type is looked at first, as in Flutter
+        self.assertEqual(w.photo_decide(w.photo_png(10000, 10000), lambda d: (_ for _ in ()).throw(AssertionError("decoded before the pixel budget")))["outcome"], "rejected:tooManyPixels")
+        self.assertEqual(w.photo_decide(png, lambda d: (9000, 9000))["outcome"], "rejected:tooManyPixels")                      # an engine size over budget, as for HEIC
+        self.assertEqual(w.photo_decide(png, lambda d: (0, 0))["outcome"], "rejected:undecodable")
+        self.assertEqual(w.photo_decide(bytes([7, 7, 7]), lambda d: (4, 4), "image/avif")["format"], "AVIF")                     # no magic bytes: the declared type names it
+        self.assertEqual(w.photo_decide(bytes([7, 7, 7]), lambda d: (4, 4))["format"], "IMAGE")
+        self.assertEqual(w.photo_decide(photo_file("heic_ftyp_heic"))["message"], w.PHOTO_MESSAGES["heicUnsupported"])
+        self.assertEqual(sorted(w.PHOTO_MESSAGES), sorted(set(w.PHOTO_MESSAGES)))
+        for rejection in ("empty", "tooLargeBytes", "tooManyPixels", "undecodable", "heicConversionFailed"):
+            failure = w.photo_failure(rejection)
+            self.assertIn(failure["reason"], w.PHOTO_MESSAGES)
+            self.assertIn(failure["outcome"], w.PHOTO_OUTCOMES)
+
+    def test_document_size_golden_values_and_exact_arithmetic(self):
+        from fractions import Fraction
+        w = web_ui
+        self.assertEqual([w.photo_document_size(*s) for s in ((64, 32), (1, 1), (2, 2), (3, 3), (1080, 1920), (1920, 1080), (8000, 6000), (6000, 8000), (24576, 3), (4096, 4096), (40000000, 1))],
+                         [(43, 21), (1, 1), (1, 1), (2, 2), (720, 1280), (1280, 720), (4096, 3072), (3072, 4096), (4096, 1), (2731, 2731), (4096, 1)])
+
+        def exact(width, height):                                                         # the same rules in exact rational arithmetic
+            half_up = lambda x: math.floor(x + Fraction(1, 2))
+            tw, th = (min(max(half_up(Fraction(2, 3) * v), 1), v) for v in (width, height))
+            long_edge = max(tw, th)
+            if long_edge > 4096:
+                fit = Fraction(4096, long_edge)
+                tw, th = (min(max(half_up(v * fit), 1), s) for v, s in ((tw, width), (th, height)))
+            return tw, th
+        rng = random.Random(3)
+        sizes = [(a, b) for a in (1, 2, 3, 4, 5, 63, 64, 1000, 4095, 4096, 4097, 6143, 6144, 6145, 7000) for b in (1, 2, 3, 7, 64, 1000, 4096, 6144, 9000)]
+        sizes += [(rng.randint(1, 12000), rng.randint(1, 12000)) for _ in range(3000)]
+        for size in sizes:
+            self.assertEqual(w.photo_document_size(*size), exact(*size), size)
+            tw, th = w.photo_document_size(*size)
+            self.assertTrue(1 <= tw <= size[0] and 1 <= th <= size[1] and max(tw, th) <= 4096, size)
+
+
+class PhotoOrientationTests(unittest.TestCase):
+    """EXIF Orientation 1-8: the table, the turn the page applies, and Pillow's own transposes as the oracle."""
+
+    def test_the_operation_table_from_the_dart_tests(self):
+        w = web_ui
+        self.assertEqual([w.photo_orientation_op(o) for o in (0, 1, 9, -1, True, None, 2.0)], [None] * 7)
+        self.assertEqual([tuple(w.photo_orientation_op(o).values()) for o in range(2, 9)],
+                         [("flipX", 0, True, False), ("rotate", 180, False, False), ("flipY", 0, False, True), ("transpose", 90, True, False),
+                          ("rotate", 90, False, False), ("transverse", -90, True, False), ("rotate", -90, False, False)])
+        self.assertEqual([w.photo_oriented_size(64, 32, o) for o in range(1, 9)], [(64, 32)] * 4 + [(32, 64)] * 4)
+
+    def test_the_matrix_turns_a_picture_like_pillows_transposes(self):
+        from PIL import Image
+        methods = {2: Image.Transpose.FLIP_LEFT_RIGHT, 3: Image.Transpose.ROTATE_180, 4: Image.Transpose.FLIP_TOP_BOTTOM, 5: Image.Transpose.TRANSPOSE,
+                   6: Image.Transpose.ROTATE_270, 7: Image.Transpose.TRANSVERSE, 8: Image.Transpose.ROTATE_90}
+        for width, height in ((5, 3), (1, 1), (2, 7), (64, 32)):
+            image = Image.new("RGB", (width, height))
+            image.putdata([(x * 3 % 256, y * 5 % 256, (x + y * width) % 256) for y in range(height) for x in range(width)])
+            for orientation in range(1, 9):
+                expected = image if orientation == 1 else image.transpose(methods[orientation])
+                a, b, c, d, e, f = web_ui.photo_orientation_matrix(orientation, width, height)
+                self.assertEqual(expected.size, web_ui.photo_oriented_size(width, height, orientation))
+                for y in range(height):
+                    for x in range(width):
+                        tx, ty = math.floor(a * (x + .5) + c * (y + .5) + e), math.floor(b * (x + .5) + d * (y + .5) + f)
+                        self.assertEqual(expected.getpixel((tx, ty)), image.getpixel((x, y)), (width, height, orientation, x, y))
+        self.assertEqual(web_ui.photo_orientation_matrix(0, 4, 4), (1, 0, 0, 1, 0, 0))
+        self.assertEqual(web_ui.photo_orientation_matrix(99, 4, 4), (1, 0, 0, 1, 0, 0))
+
+    def test_neutralised_files_turned_by_the_matrix_equal_pillows_exif_transpose(self):
+        import io
+        from PIL import Image, ImageOps
+        for orientation in range(1, 9):
+            data = photo_file(f"jpeg_exif_orientation_{orientation}_markers_64x32")
+            with Image.open(io.BytesIO(data)) as original:
+                expected = ImageOps.exif_transpose(original).convert("RGB")
+            with Image.open(io.BytesIO(web_ui.photo_neutralize_orientation(data))) as stored:
+                stored = stored.convert("RGB")
+            width, height = stored.size
+            a, b, c, d, e, f = web_ui.photo_orientation_matrix(orientation, width, height)
+            upright = Image.new("RGB", web_ui.photo_oriented_size(width, height, orientation))
+            for y in range(height):
+                for x in range(width):
+                    upright.putpixel((math.floor(a * (x + .5) + c * (y + .5) + e), math.floor(b * (x + .5) + d * (y + .5) + f)), stored.getpixel((x, y)))
+            with self.subTest(orientation=orientation):
+                self.assertEqual(upright.size, expected.size)
+                self.assertEqual(upright.tobytes(), expected.tobytes())
+
+
+class PhotoGeometryTests(unittest.TestCase):
+    """Rectangles, shapes and hit targets: the Dart tests' numbers, and the identities that hold for every box."""
+
+    def test_the_dart_rectangle_tests(self):
+        w, R = web_ui, web_ui.photo_rect
+        self.assertEqual(w.photo_rect_sanitized(w.PHOTO_INITIAL_RECT), R(0.2, 0.2, 0.8, 0.8))
+        tiny = w.photo_rect_sanitized(R(0.1, 0.1, 0.12, 0.11))
+        self.assertGreaterEqual(tiny["right"] - tiny["left"], 0.04 - 1e-12)
+        self.assertGreaterEqual(tiny["bottom"] - tiny["top"], 0.04 - 1e-12)
+        moved = w.photo_rect_translated(w.PHOTO_INITIAL_RECT, 0.9, -0.5)
+        self.assertTrue(moved["left"] >= 0 and moved["top"] >= 0 and moved["right"] <= 1 and moved["bottom"] <= 1)
+        resized = w.photo_rect_resized(w.PHOTO_INITIAL_RECT, "bottomRight", -0.1, -0.1)
+        for key, value in (("right", 0.7), ("bottom", 0.7), ("left", 0.2), ("top", 0.2)):
+            self.assertAlmostEqual(resized[key], value, places=9)
+        self.assertEqual(w.photo_rect_from_diagonal(.5, .5, .8, .9), R(.5, .5, .8, .9))
+        self.assertEqual(w.photo_rect_from_diagonal(.5, .5, .2, .1), R(.2, .1, .5, .5))
+        self.assertEqual(w.photo_rect_from_diagonal(.5, .5, .7, .2), R(.5, .2, .7, .5))
+        self.assertEqual(w.photo_rect_from_diagonal(.5, .5, .1, .75), R(.1, .5, .5, .75))
+        self.assertEqual(w.photo_rect_from_diagonal(-1, 2, 3, -4), R(0, 0, 1, 1))
+        self.assertEqual(w.photo_rect_text(R(0.2, 0.2, 0.8, 0.8)), "left: 0.2000\ntop: 0.2000\nright: 0.8000\nbottom: 0.8000")
+        self.assertEqual(w.photo_rect_csv(R(1 / 3, 0.00005, 0.99995, 1)), "0.3333, 0.0001, 1.0000, 1.0000")
+        with self.assertRaises(ValueError):
+            w.photo_rect_resized(w.PHOTO_INITIAL_RECT, "middle", 0, 0)
+
+    def test_the_dart_geometry_table(self):
+        w, R = web_ui, web_ui.photo_rect
+        cases = [(R(0.2, 0.2, 0.8, 0.8), [(0.5, 0.2), (0.8, 0.5), (0.5, 0.8), (0.2, 0.5)], (0.5, 0.5, 0.3), [(0.5, 0.2), (0.8, 0.8), (0.2, 0.8)], [(0.65, 0.5), (0.5, 0.8), (0.35, 0.5)], (0.5, 0.5)),
+                 (R(0.1, 0.25, 0.9, 0.55), [(0.5, 0.25), (0.9, 0.4), (0.5, 0.55), (0.1, 0.4)], (0.5, 0.4, 0.15), [(0.5, 0.25), (0.9, 0.55), (0.1, 0.55)], [(0.7, 0.4), (0.5, 0.55), (0.3, 0.4)], None)]
+        pairs = lambda points: [(p["x"], p["y"]) for p in points]
+        for box, rect_mids, circle, vertices, tri_mids, crossing in cases:
+            for got, want in zip(pairs(w.photo_rect_edge_midpoints(box)) + pairs(w.photo_triangle(box)) + pairs(w.photo_triangle_midpoints(box)), rect_mids + vertices + tri_mids):
+                self.assertAlmostEqual(got[0], want[0], places=9)
+                self.assertAlmostEqual(got[1], want[1], places=9)
+            c = w.photo_circle(box)
+            for got, want in zip((c["cx"], c["cy"], c["radius"]), circle):
+                self.assertAlmostEqual(got, want, places=9)
+            hit = w.photo_segment_intersection(box["left"], box["top"], box["right"], box["bottom"], box["left"], box["bottom"], box["right"], box["top"])
+            if crossing:
+                self.assertAlmostEqual(hit["x"], crossing[0], places=9)
+                self.assertAlmostEqual(hit["y"], crossing[1], places=9)
+        hit = w.photo_segment_intersection(0, 0, 1, 1, 0, 1, 1, 0)
+        self.assertEqual((hit["x"], hit["y"]), (0.5, 0.5))
+        self.assertIsNone(w.photo_segment_intersection(0, 0, 1, 0, 0, 1, 1, 1))              # parallel
+        self.assertIsNone(w.photo_segment_intersection(0, 0, 1, 1, 2, 0, 3, 0))              # misses
+        box = R(0.2, 0.2, 0.8, 0.8)
+        self.assertIn("radius:", w.photo_describe(box, "circle"))
+        self.assertIn("apex:", w.photo_describe(box, "triangle"))
+        self.assertEqual(w.photo_describe(box, "rectangle").splitlines()[0:2], ["shape: rectangle", "left: 0.2000"])
+        self.assertEqual(w.photo_describe(box, "circle"), "shape: circle\ncx: 0.5000\ncy: 0.5000\nradius: 0.3000")
+        with self.assertRaises(ValueError):
+            w.photo_describe(box, "star")
+        self.assertFalse(w.photo_shape_contains(box, "circle", 0.21, 0.21))
+        self.assertTrue(w.photo_shape_contains(box, "circle", 0.5, 0.5))
+        self.assertFalse(w.photo_shape_contains(box, "triangle", 0.21, 0.21))
+        self.assertTrue(w.photo_shape_contains(box, "triangle", 0.5, 0.5))
+        self.assertTrue(w.photo_shape_contains(box, "triangle", 0.33, 0.5, slop=0.05))      # the stroke grab: 0.018 outside the left edge
+        self.assertFalse(w.photo_shape_contains(box, "triangle", 0.2, 0.5, slop=0.05))      # 0.134 outside it
+        self.assertTrue(w.photo_shape_contains(box, "rectangle", 0.19, 0.5, slop=0.02))
+
+    def test_hit_targets_and_the_export_numbers(self):
+        w, R = web_ui, web_ui.photo_rect
+        box = R(0.25, 0.25, 0.75, 0.75)                                                    # 400 x 400 canvas: the frame spans 100..300
+        grabbed = {(100, 100): "topLeft", (301, 99): "topRight", (95, 305): "bottomLeft", (310, 300): "bottomRight", (100, 200): "left", (300, 200): "right", (200, 100): "top",
+                   (200, 300): "bottom", (200, 200): "move", (110, 110): "topLeft", (104, 200): "left", (150, 150): "move", (50, 50): None, (200, 340): None}
+        for point, handle in grabbed.items():
+            self.assertEqual(w.photo_hit_handle(box, 400, 400, *point), handle, point)
+        tiny = R(0.5, 0.5, 0.54, 0.54)                                                     # 16 x 16: every point is within 18 of some corner; corners are tried in order
+        self.assertEqual(w.photo_hit_handle(tiny, 400, 400, 208, 208), "topLeft")
+        self.assertEqual(w.photo_hit_handle(tiny, 400, 400, 215, 215), "topRight")
+        self.assertEqual(w.photo_hit_handle(R(0.5, 0.5, 0.58, 0.58), 400, 400, 230, 230), "bottomRight")
+        frames = [{"id": "bottom", "rect": R(0.2, 0.2, 0.8, 0.8), "shape": "rectangle"}, {"id": "top", "rect": R(0.15, 0.15, 0.45, 0.45), "shape": "rectangle"}]
+        self.assertEqual(w.photo_hit_frame(frames, 400, 300, 88, 66)["id"], "top")
+        self.assertEqual(w.photo_hit_frame(frames, 400, 300, 300, 200)["id"], "bottom")
+        self.assertIsNone(w.photo_hit_frame(frames, 400, 300, 10, 10))
+        self.assertIsNone(w.photo_hit_frame(frames, 0, 300, 10, 10))
+        stamps = [{"id": "a", "x": 0.5, "y": 0.5, "scale": 1}, {"id": "b", "x": 0.5, "y": 0.5, "scale": 3}]
+        self.assertEqual(w.photo_hit_stamp(stamps, 400, 300, 210, 150)["id"], "b")           # both are hit: topmost wins
+        self.assertEqual(w.photo_hit_stamp(stamps[:1], 400, 300, 200 + 18, 150)["id"], "a")  # at least 18 pixels
+        self.assertIsNone(w.photo_hit_stamp(stamps[:1], 400, 300, 200 + 18.5, 150))
+        self.assertEqual(w.photo_hit_stamp(stamps[1:], 400, 300, 200 + 44, 150)["id"], "b")  # 300 * 0.05 * 3 = 45
+        self.assertEqual([w.photo_export_size(*s) for s in ((760, 280), (400.25, 300.2), (0.1, 0.1), (3000, 100), (1, 1))], [(1520, 560), (801, 600), (1, 1), (4096, 200), (2, 2)])
+        self.assertEqual(w.photo_contain_rect(100, 50, 400, 400), (0, 100, 400, 200))
+        self.assertEqual(w.photo_contain_rect(50, 100, 400, 400), (100, 0, 200, 400))
+        self.assertEqual(w.photo_contain_rect(200, 100, 400, 200), (0, 0, 400, 200))
+        self.assertEqual([w.photo_stamp_px(400, 300, s) for s in (1, 0.1, 0.4, 3, 9)], [30.0, 12.0, 12.0, 90.0, 90.0])
+
+
+class PhotoStudioTests(unittest.TestCase):
+    """Undo history and the editing state machine, with the Dart history and canvas tests as the oracle."""
+
+    @staticmethod
+    def state(**changes):
+        return {"image": None, "frames": [], "selected_frame": None, "draft_color": "#7e57c2", "draft_shape": None, "stamps": [], "selected_stamp": None, "stamp_scale": 1, **changes}
+
+    def test_the_dart_history_tests(self):
+        h = web_ui.PhotoHistory()
+        before = self.state(frames=[{"id": "frame-a", "rect": web_ui.PHOTO_INITIAL_RECT, "shape": "rectangle", "color": "#7e57c2"}])
+        after = {**before, "frames": [{**before["frames"][0], "rect": web_ui.photo_rect(.1, .1, .9, .9)}], "selected_frame": "frame-a"}
+        h.begin_gesture(before)
+        self.assertTrue(h.end_gesture(after))
+        self.assertEqual((h.depth, h.can_undo), (1, True))
+        self.assertEqual(h.undo(after), before)
+        self.assertEqual((h.depth, h.can_redo), (0, True))
+        state = self.state(draft_color="#e53935")
+        h = web_ui.PhotoHistory()
+        h.begin_gesture(state)
+        self.assertFalse(h.end_gesture(state))
+        self.assertFalse(h.record_change(state, state))
+        self.assertEqual((h.depth, h.can_undo), (0, False))
+        base, h, current = self.state(), web_ui.PhotoHistory(), None
+        for i in range(25):
+            self.assertTrue(h.record_change({**base, "stamp_scale": 1.0 + i * 0.01}, {**base, "stamp_scale": 1.0 + (i + 1) * 0.01}))
+            current = {**base, "stamp_scale": 1.0 + (i + 1) * 0.01}
+        self.assertEqual(h.depth, 20)                                                      # capped at 20 entries
+        first = h.undo(current)
+        self.assertAlmostEqual(first["stamp_scale"], 1.24, places=9)
+        oldest, cursor = None, first
+        while h.can_undo:
+            oldest = cursor = h.undo(cursor)
+        self.assertAlmostEqual(oldest["stamp_scale"], 1.05, places=9)
+        self.assertEqual(h.depth, 0)
+        h = web_ui.PhotoHistory()
+        for i in range(20):
+            h.record_change({**base, "stamp_scale": 1.0 + i * 0.01}, {**base, "stamp_scale": 1.0 + (i + 1) * 0.01})
+        same = {**base, "stamp_scale": 9}
+        self.assertFalse(h.record_change(same, same))
+        h.begin_gesture(same)
+        self.assertFalse(h.end_gesture(same))
+        self.assertEqual(h.depth, 20)
+        a, b, c = (self.state(draft_shape=s) for s in (None, "circle", "triangle"))        # multi undo, redo, and a new edit clears redo
+        h = web_ui.PhotoHistory()
+        self.assertTrue(h.record_change(a, b) and h.record_change(b, c))
+        self.assertEqual((h.undo(c)["draft_shape"], h.undo(b)["draft_shape"], h.undo(a)), ("circle", None, None))
+        h = web_ui.PhotoHistory()
+        h.record_change(a, b), h.record_change(b, c)
+        self.assertEqual(h.undo(c), b)
+        self.assertTrue(h.can_redo)
+        self.assertEqual(h.redo(b), c)
+        self.assertFalse(h.can_redo)
+        self.assertEqual(h.undo(c), b)
+        d = self.state(draft_shape="rectangle")
+        self.assertTrue(h.record_change(b, d))
+        self.assertEqual((h.can_redo, h.redo(d)), (False, None))
+        stale = self.state(frames=[{"id": "x"}])
+        h = web_ui.PhotoHistory()
+        h.begin_gesture(stale)
+        h.undo(stale)                                                                      # undo and redo drop an open gesture
+        self.assertFalse(h.end_gesture(self.state()))
+        h.clear()
+        self.assertEqual((h.depth, h.can_undo, h.can_redo), (0, False, False))
+
+    def test_dragging_makes_a_frame_from_the_origin_in_every_direction(self):
+        w = web_ui
+        s = w.PhotoStudio(400, 300)
+        s.set_shape("rectangle")
+        s.pointer_down(1, 20, 15)
+        s.pointer_move(1, 180, 165)
+        s.pointer_up(1)
+        (frame,) = s.state["frames"]
+        self.assertEqual((frame["id"], frame["shape"], frame["color"], s.state["selected_frame"]), ("frame-1", "rectangle", "#7e57c2", "frame-1"))
+        self.assertAlmostEqual(frame["rect"]["left"], 0.05, places=9)
+        self.assertAlmostEqual(frame["rect"]["top"], 0.05, places=9)
+        self.assertAlmostEqual(frame["rect"]["right"], 0.45, places=9)
+        self.assertAlmostEqual(frame["rect"]["bottom"], 0.55, places=9)
+        s = w.PhotoStudio(400, 300)                                                         # up and left from the centre, with another frame away in a corner
+        s.state = self.state(draft_shape="rectangle", frames=[{"id": "away", "rect": w.photo_rect(.8, .8, .95, .95), "shape": "rectangle", "color": "#7e57c2"}])
+        s.pointer_down(1, 200, 150)
+        s.pointer_move(1, 80, 60)
+        s.pointer_up(1)
+        created = s.state["frames"][-1]["rect"]
+        self.assertEqual(len(s.state["frames"]), 2)
+        self.assertAlmostEqual(created["right"], 0.5, places=9)
+        self.assertAlmostEqual(created["bottom"], 0.5, places=9)
+        self.assertLess(created["left"], 0.35)
+        self.assertLess(created["top"], 0.35)
+        s = w.PhotoStudio(400, 300)                                                         # no tool: an empty drag creates nothing
+        s.pointer_down(1, 40, 30)
+        s.pointer_move(1, 160, 120)
+        s.pointer_up(1)
+        self.assertEqual((s.state["frames"], s.history.depth), ([], 0))
+        s = w.PhotoStudio(400, 300)
+        s.set_shape("circle")
+        for start, end in (((20, 15), (120, 90)), ((220, 165), (360, 270))):
+            s.pointer_down(1, *start)
+            s.pointer_move(1, *end)
+            s.pointer_up(1)
+        self.assertEqual([f["shape"] for f in s.state["frames"]], ["circle", "circle"])
+        self.assertEqual(s.state["selected_frame"], s.state["frames"][-1]["id"])
+        s.pointer_down(1, 100, 75)                                                         # a click does not move: a small drag below 4 pixels is a tap
+        s.pointer_move(1, 102, 76)
+        s.pointer_up(1)
+        self.assertEqual(s.state["selected_frame"], s.state["frames"][0]["id"])
+
+    def test_moving_resizing_and_overlaps(self):
+        w, R = web_ui, web_ui.photo_rect
+        s = w.PhotoStudio(400, 300)
+        s.state = self.state(frames=[{"id": "f1", "rect": R(.2, .2, .8, .8), "shape": "rectangle", "color": "#7e57c2"}], selected_frame="f1")
+        s.pointer_down(1, 200, 150)
+        s.pointer_move(1, 248, 174)
+        s.pointer_up(1)
+        moved = s.state["frames"][0]["rect"]
+        self.assertAlmostEqual(moved["left"], 0.2 + 0.12, places=9)
+        self.assertAlmostEqual(moved["top"], 0.2 + 0.08, places=9)
+        self.assertEqual(s.history.depth, 1)
+        self.assertTrue(s.undo())
+        self.assertEqual(s.state["frames"][0]["rect"], R(.2, .2, .8, .8))
+        s.pointer_down(1, 320, 240)                                                        # the bottom-right corner of the frame
+        s.pointer_move(1, 280, 210)
+        s.pointer_up(1)
+        grown = s.state["frames"][0]["rect"]
+        self.assertAlmostEqual(grown["right"], 0.8 - 40 / 400, places=9)
+        self.assertAlmostEqual(grown["bottom"], 0.8 - 30 / 300, places=9)
+        s = w.PhotoStudio(400, 300)                                                         # a buried selected frame's handle does not steal the gesture
+        s.state = self.state(frames=[{"id": "bottom", "rect": R(.2, .2, .8, .8), "shape": "rectangle", "color": "#7e57c2"},
+                                     {"id": "top", "rect": R(.15, .15, .45, .45), "shape": "rectangle", "color": "#7e57c2"}], selected_frame="bottom")
+        s.pointer_down(1, 88, 66)
+        s.pointer_move(1, 112, 84)
+        s.pointer_move(1, 136, 102)
+        s.pointer_up(1)
+        by_id = {f["id"]: f for f in s.state["frames"]}
+        self.assertEqual((s.state["selected_frame"], by_id["bottom"]["rect"]), ("top", R(.2, .2, .8, .8)))
+        self.assertGreater(by_id["top"]["rect"]["left"], 0.15)
+        self.assertGreater(by_id["top"]["rect"]["top"], 0.15)
+        s = w.PhotoStudio(400, 300)                                                         # a circle's empty corner defers to the rectangle under it
+        s.state = self.state(frames=[{"id": "bottom", "rect": R(.1, .1, .9, .9), "shape": "rectangle", "color": "#7e57c2"},
+                                     {"id": "topCircle", "rect": R(.2, .2, .8, .8), "shape": "circle", "color": "#7e57c2"}], selected_frame="topCircle")
+        s.pointer_down(1, 88, 66)
+        s.pointer_move(1, 128, 96)
+        s.pointer_up(1)
+        by_id = {f["id"]: f for f in s.state["frames"]}
+        self.assertEqual(s.state["selected_frame"], "bottom")
+        self.assertGreater(by_id["bottom"]["rect"]["left"], 0.1)
+        self.assertEqual(by_id["topCircle"]["rect"], R(.2, .2, .8, .8))
+
+    def test_stamps_taps_spray_and_one_undo_step_per_gesture(self):
+        from unittest import mock
+        w = web_ui
+        s = w.PhotoStudio(400, 400)
+        s.arm_stamp("⭐")
+        for point in ((80, 120), (320, 280)):
+            s.pointer_down(1, *point)
+            s.pointer_up(1)
+        self.assertEqual([x["emoji"] for x in s.state["stamps"]], ["⭐", "⭐"])
+        self.assertEqual((s.state["stamps"][0]["x"], s.state["stamps"][0]["y"], s.pending_emoji), (0.2, 0.3, "⭐"))
+        self.assertEqual((s.state["selected_stamp"], s.history.depth), ("stamp-2", 2))
+        s = w.PhotoStudio(400, 400)                                                         # the spray places a stamp again only 28 pixels on
+        s.arm_stamp("🔥")
+        s.pointer_down(1, 100, 100)
+        s.pointer_move(1, 120, 100)
+        s.pointer_move(1, 127.9, 100)
+        self.assertEqual(len(s.state["stamps"]), 1)
+        s.pointer_move(1, 128, 100)
+        self.assertEqual(len(s.state["stamps"]), 2)
+        s.pointer_up(1)
+        s = w.PhotoStudio(400, 400)                                                         # a press that moves less than 4 pixels is still a tap
+        s.arm_stamp("🔥")
+        s.pointer_down(1, 100, 100)
+        s.pointer_move(1, 103.9, 100)
+        s.pointer_up(1)
+        self.assertEqual((len(s.state["stamps"]), s.state["stamps"][0]["x"]), (1, 0.25))
+        s = w.PhotoStudio(400, 400)
+        s.arm_stamp("🔥")
+        s.pointer_down(1, 100, 100)
+        s.pointer_move(1, 104, 100)
+        s.pointer_up(1)
+        self.assertEqual(len(s.state["stamps"]), 1)                                         # a drag of 4 or more starts at the press point and sprays from there
+        self.assertEqual(s.state["stamps"][0]["x"], 0.25)
+        s = w.PhotoStudio(400, 400)
+        s.arm_stamp("🔥")
+        with mock.patch.object(s.history, "begin_gesture", wraps=s.history.begin_gesture) as begun, mock.patch.object(s.history, "end_gesture", wraps=s.history.end_gesture) as ended:
+            s.pointer_down(1, 40, 200)
+            for x in (140, 260, 360):
+                s.pointer_move(1, x, 200)
+            s.pointer_up(1)
+        self.assertGreaterEqual(len(s.state["stamps"]), 4)
+        self.assertEqual({x["emoji"] for x in s.state["stamps"]}, {"🔥"})
+        self.assertEqual((begun.call_count, ended.call_count, s.history.depth), (1, 1, 1))     # one transaction, one undo step
+        gaps = [s.state["stamps"][i + 1]["x"] * 400 - s.state["stamps"][i]["x"] * 400 for i in range(len(s.state["stamps"]) - 1)]
+        self.assertTrue(all(g >= 28 - 1e-9 for g in gaps), gaps)
+        self.assertTrue(s.undo())
+        self.assertEqual(s.state["stamps"], [])
+        self.assertTrue(s.redo())
+        self.assertEqual(len(s.state["stamps"]), len(gaps) + 1)
+        s = w.PhotoStudio(400, 400)                                                         # cancelling commits what was placed, like lifting the pointer
+        s.arm_stamp("⭐")
+        s.pointer_down(7, 40, 40)
+        s.pointer_move(7, 140, 40)
+        s.pointer_cancel(7)
+        self.assertEqual((len(s.state["stamps"]) >= 2, s.history.depth, s.history.can_undo), (True, 1, True))
+        s.pointer_down(7, 300, 300)                                                         # the next tap is its own step
+        s.pointer_up(7)
+        self.assertEqual(s.history.depth, 2)
+
+    def test_dragging_a_stamp_scale_selection_and_editing_actions(self):
+        w, R = web_ui, web_ui.photo_rect
+        s = w.PhotoStudio(400, 400)
+        s.arm_stamp("⭐")
+        s.pointer_down(1, 200, 200)
+        s.pointer_up(1)
+        s.arm_stamp("⭐")                                                                   # arming the armed one disarms it
+        self.assertIsNone(s.pending_emoji)
+        depth = s.history.depth
+        s.set_stamp_scale(2)
+        self.assertEqual((s.state["stamps"][0]["scale"], s.state["stamp_scale"], s.history.depth), (2, 2, depth))      # the slider is not an undo step
+        s.set_stamp_scale(99)
+        self.assertEqual(s.state["stamps"][0]["scale"], 3)
+        s.pointer_down(2, 200, 200)                                                         # drag the stamp
+        s.pointer_move(2, 300, 100)
+        s.pointer_up(2)
+        self.assertEqual((s.state["stamps"][0]["x"], s.state["stamps"][0]["y"]), (0.75, 0.25))
+        s.pointer_down(2, 300, 100)                                                         # outside the canvas is clamped
+        s.pointer_move(2, 900, -50)
+        s.pointer_up(2)
+        self.assertEqual((s.state["stamps"][0]["x"], s.state["stamps"][0]["y"]), (1.0, 0.0))
+        s.set_shape("triangle")
+        s.arm_stamp("🍀")
+        self.assertIsNone(s.state["draft_shape"])                                           # arming drops the frame tool
+        s.set_shape("triangle")
+        self.assertIsNone(s.pending_emoji)                                                  # choosing a tool drops the stamp
+        with self.assertRaises(ValueError):
+            s.set_shape("star")
+        s.pointer_down(1, 20, 20)
+        s.pointer_move(1, 120, 120)
+        s.pointer_up(1)
+        frame_id = s.state["selected_frame"]
+        s.set_color("#e53935")
+        self.assertEqual(([f["color"] for f in s.state["frames"] if f["id"] == frame_id], s.state["draft_color"]), (["#e53935"], "#e53935"))
+        depth = s.history.depth
+        s.set_color("#e53935")
+        self.assertEqual(s.history.depth, depth)                                            # nothing changed: no step
+        s.nudge(0.01, 0.02)
+        s.reset_selected_frame()
+        self.assertEqual(s.state["frames"][0]["rect"], R(.2, .2, .8, .8))
+        s.delete_selected_frame()
+        self.assertEqual((s.state["frames"], s.state["selected_frame"]), ([], None))
+        s.delete_selected_frame()
+        s.set_image(7)
+        self.assertEqual(s.state["image"], 7)
+        while s.undo():
+            pass
+        self.assertEqual((s.state["frames"], s.state["image"], s.history.can_redo), ([], None, True))
+        s.set_shape("circle")
+        s.undo()
+        s.arm_stamp("⭐")
+        s.set_shape("circle")
+        s.undo()
+        self.assertIsNone(s.pending_emoji if s.state["draft_shape"] else None)
+
+    def test_any_pointer_sequence_keeps_the_state_sound(self):
+        w = web_ui
+        rng = random.Random(21)
+        for run in range(60):
+            s = w.PhotoStudio(rng.choice([400, 320, 760]), rng.choice([300, 280, 500]))
+            ids = set()
+            for _ in range(80):
+                action = rng.choice(["down", "move", "move", "up", "cancel", "shape", "arm", "color", "undo", "redo", "nudge", "delete", "reset", "scale"])
+                p = rng.choice([1, 2])
+                x, y = rng.uniform(-30, s.width + 30), rng.uniform(-30, s.height + 30)
+                if action == "down": s.pointer_down(p, x, y)
+                elif action == "move": s.pointer_move(p, x, y)
+                elif action == "up": s.pointer_up(p)
+                elif action == "cancel": s.pointer_cancel(p)
+                elif action == "shape": s.set_shape(rng.choice([None, "rectangle", "circle", "triangle"]))
+                elif action == "arm": s.arm_stamp(rng.choice(["⭐", "🔥", " ", ""]))
+                elif action == "color": s.set_color(rng.choice([c for _, c in w.PHOTO_COLORS]))
+                elif action == "undo": s.undo()
+                elif action == "redo": s.redo()
+                elif action == "nudge": s.nudge(rng.uniform(-.2, .2), rng.uniform(-.2, .2))
+                elif action == "delete": s.delete_selected_frame()
+                elif action == "reset": s.reset_selected_frame()
+                else: s.set_stamp_scale(rng.uniform(0, 5))
+                state = s.state
+                for frame in state["frames"]:
+                    r = frame["rect"]
+                    self.assertTrue(0 <= r["left"] <= r["right"] <= 1 and 0 <= r["top"] <= r["bottom"] <= 1, (run, r))
+                    ids.add(frame["id"])
+                self.assertEqual(len({f["id"] for f in state["frames"]}), len(state["frames"]))
+                self.assertEqual(len({x["id"] for x in state["stamps"]}), len(state["stamps"]))
+                self.assertTrue(state["selected_frame"] is None or any(f["id"] == state["selected_frame"] for f in state["frames"]))
+                for stamp in state["stamps"]:
+                    self.assertTrue(0 <= stamp["x"] <= 1 and 0 <= stamp["y"] <= 1 and 0.4 <= stamp["scale"] <= 3 or stamp["scale"] == 1)
+                self.assertLessEqual(s.history.depth, 20)
+
+
 if __name__ == '__main__':
     unittest.main()
