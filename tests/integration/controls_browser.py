@@ -6,6 +6,7 @@ The ordinary dependency-light unit suite does not discover this module.
 import base64
 import functools
 import http.server
+import json
 import os
 from pathlib import Path
 import shutil
@@ -2214,6 +2215,338 @@ class BtkAdapterBrowserTests(unittest.TestCase):
                     browser.close()
         finally:
             server.shutdown()
+
+
+class ClipboardBrowserTests(unittest.TestCase):
+    """The clipboard loops in Chromium: the read order, error codes and text rules equal Python's (and so Ironmate's and Dart's), and the shelf, the temporary clipboard and the
+    photo studio use them."""
+
+    DOUBLE = """
+        const PNG = %s;
+        const padded = n => { const png = atob(PNG), bytes = new Uint8Array(n); for (let i = 0; i < png.length; i++) bytes[i] = png.charCodeAt(i);
+          let out = ''; for (let i = 0; i < n; i += 0x8000) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(out) };
+        const resolve = v => typeof v === 'string' ? v.replace(/@pad:(\\d+)/g, (m, n) => padded(+n)) : Array.isArray(v) ? v.map(resolve) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)])) : v;
+        const makeClip = config => { const calls = {read: 0, readText: 0, getType: 0, arrayBuffer: 0}; if (config.absent) return {clip: undefined, calls}; const fail = name => { throw new DOMException('injected', name) }, clip = {};
+          if (!config.noText) clip.readText = async () => { calls.readText++; if (config.textError) fail(config.textError); return config.text || '' };
+          if (!config.noRead) clip.read = async () => { calls.read++; if (config.readError) fail(config.readError);
+            return (config.items || []).map(item => ({types: item.formats.map(f => f.type), getType: async type => { calls.getType++; const f = item.formats.find(f => f.type === type); if (f.error) fail(f.error);
+              const blob = new Blob([Uint8Array.from(atob(f.base64 || ''), c => c.charCodeAt(0))], {type}); if (f.oversized) Object.defineProperty(blob, 'size', {value: 32 * 1024 * 1024 + 1});
+              const read = blob.arrayBuffer.bind(blob); blob.arrayBuffer = () => { calls.arrayBuffer++; return read() }; return blob }})) };
+          return {clip, calls} };
+        const importer = async (bytes, mime) => { if (webUiShelf.sniffImageMime(bytes) !== mime) throw new Error('mime'); const url = URL.createObjectURL(new Blob([bytes], {type: mime}));
+          try { const img = new Image(); img.src = url; await img.decode(); if (img.naturalWidth * img.naturalHeight > 4 * 1024 * 1024) throw new Error('4mp'); return true } finally { URL.revokeObjectURL(url) } };
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        import test_python_wrapper as t
+        self.t = t
+        from web_ui import shelf_document, photo_document
+        self.server, self.origin = WorldBrowserTests.serve({'shelf.html': shelf_document(), 'photo.html': photo_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 800, 'height': 900}, accept_downloads=True)
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self, name):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/' + name)
+        return page
+
+    def test_the_read_order_and_error_codes_equal_pythons_on_ironmates_scenarios(self):
+        t = self.t
+        page = self.page('shelf.html')
+        scenarios = t.clip_scenarios()
+        script = "async ([scenarios, png]) => { " + (self.DOUBLE % json.dumps(t.CLIP_IMAGE)) + """
+            const out = []; for (const [name, raw] of scenarios) { const config = resolve(raw), {clip, calls} = makeClip(config), result = await webUiShelf.clipboardPick(clip, importer); out.push([name, result, calls]) } return out }"""
+        got = page.evaluate(script, [[[name, config] for name, config, _ in scenarios], t.CLIP_IMAGE])
+        for (name, config, code), (seen_name, result, calls) in zip(scenarios, got):
+            python_clip = None if config.get('absent') else t.ClipDouble(t.clip_resolve(config))
+            expected = web_ui_module().clipboard_pick(python_clip, t.clip_importer)
+            expected = {k: v for k, v in expected.items()}
+            self.assertEqual(seen_name, name)
+            self.assertEqual({k: result[k] for k in expected}, expected, name)
+            if python_clip is not None:
+                reads = sum(blob.read_calls for item in python_clip.items for blob in item.blobs)
+                self.assertEqual((calls['read'], calls['readText'], calls['getType'], calls['arrayBuffer']), (python_clip.calls['read'], python_clip.calls['readText'], python_clip.calls['getType'], reads), name)
+            if code:
+                self.assertEqual(result['code'], code, name)
+
+    def test_shelf_mode_and_limits_equal_pythons(self):
+        t = self.t
+        w = web_ui_module()
+        page = self.page('shelf.html')
+        configs = [{"text": "  a memo \n"}, {"text": "data:image/png;base64,!!!", "items": [t.clip_binary()]}, {"text": t.CLIP_URI}, {"text": "memo", "items": [t.clip_binary()]}, {"textError": "NotAllowedError", "items": [t.clip_binary()]},
+                   {"text": "memo", "readError": "NotAllowedError"}, {"text": "memo", "items": [t.clip_binary(t.CLIP_IMAGE, "image/jpeg")]}, {"textError": "NotAllowedError", "readError": "NotAllowedError"}, {}, {"noText": True, "noRead": True},
+                   {"text": "memo", "noRead": True}, {"noText": True, "items": [t.clip_binary()]}]
+        script = "async ([configs, png, limits]) => { " + (self.DOUBLE % json.dumps(t.CLIP_IMAGE)) + """
+            const out = []; for (const config of configs) for (const limit of limits) { const {clip} = makeClip(config); out.push(await webUiShelf.clipboardPick(clip, importer, 'shelf', limit)) } return out }"""
+        limits = [32 * 1024 * 1024, 0, 60, len(base64.b64decode(t.CLIP_IMAGE))]
+        got = page.evaluate(script, [configs, t.CLIP_IMAGE, limits])
+        index = 0
+        for config in configs:
+            for limit in limits:
+                clip = t.ClipDouble(config)
+                expected = w.clipboard_pick(clip, t.clip_importer, 'shelf', limit)
+                self.assertEqual({k: got[index][k] for k in expected}, expected, (config, limit))
+                index += 1
+
+    def test_text_rules_equal_pythons(self):
+        import random
+        import re
+        w = web_ui_module()
+        t = self.t
+        page = self.page('shelf.html')
+        rng = random.Random(14)
+        texts = ['', ' ', 'memo', t.CLIP_IMAGE, t.CLIP_URI, t.CLIP_IMAGE + '=', ' \ufeff' + t.CLIP_URI + '\n', 'DATA:IMAGE/PNG;charset=utf-8;BASE64,' + t.CLIP_IMAGE, 'data:image/png;base64,!!!', 'data:image/gif;base64,R0lGODlh', 'data:text/plain;base64,aGk=',
+                 'data:image/png,abc', 'data:image', 'data:imagex', base64.b64encode(b'ordinary text, not an image at all, just long enough').decode(), 'iVBORw0KGgo' * 3, '/9j/' * 8, 'UklGRg' * 4,
+                 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'x' * 100] + t.shelf_fuzz_texts()[:200]
+        got = page.evaluate("texts => texts.map(t => { try { return {ok: webUiShelf.clipboardTextImage(t)} } catch (e) { return {error: e.code, category: e.category} } })", texts)
+        for text, result in zip(texts, got):
+            try:
+                expected = {'ok': w.clipboard_text_image(text)}
+            except w.ClipboardError as error:
+                expected = {'error': error.code, 'category': error.category}
+            self.assertEqual(result, expected, text[:60])
+        # the temporary clipboard: seeded sequences of texts, one emoji or surrogate among them
+        words = ['one', 'two', 'three', '', '😀', '@rep:x:100000', '@rep:x:100001', '@rep:😀:50000', '@rep:😀:50001', 'é', 'one']          # long texts are named, then built on both sides
+        runs = [[rng.choice(words + [f'entry {rng.randrange(60)}']) for _ in range(90)] for _ in range(20)]
+        runs.append([f'entry {i}' for i in range(45)] + ['entry 20', 'entry 44', 'entry 3', 'entry 30'])        # past the 30-entry limit, then repeats from inside and outside it
+        expand = lambda s: re.sub(r"@rep:(.):(\d+)", lambda m: m.group(1) * int(m.group(2)), s)
+        got = page.evaluate("""runs => runs.map(run => { let entries = [], trace = []; for (const raw of run) { const text = raw.replace(/@rep:(.|..):(\\d+)/gu, (m, u, n) => u.repeat(+n));
+            const [next, outcome] = webUiShelf.sessionClipSave(entries, text); entries = next; trace.push([outcome, entries.length, entries[0] === undefined ? null : entries[0].length]) } return trace })""", runs)
+        for run, trace in zip(runs, got):
+            entries, expected = [], []
+            for text in map(expand, run):
+                entries, outcome = w.session_clip_save(entries, text)
+                expected.append([outcome, len(entries), None if not entries else w.utf16_length(entries[0])])
+            self.assertEqual(trace, expected)
+        units = lambda s: list(__import__('struct').unpack('<%dH' % (len(s.encode('utf-16-le', 'surrogatepass')) // 2), s.encode('utf-16-le', 'surrogatepass')))
+        samples = ['', 'a', 'é', 'あ', '😀', '\ud800', 'x\udc00y', 'aé あ😀', '\ud83d', '😀\ud83d']
+        got = page.evaluate("samples => samples.map(u => webUiShelf.shelfTextSize(String.fromCharCode(...u)))", [units(s) for s in samples])
+        self.assertEqual(got, [w.shelf_text_size(s) for s in samples])
+        rooms = [[c, u, s] for c in (0, 19, 20, 25) for u in (0, 100, w.SHELF_MAX_TOTAL_BYTES - 5, w.SHELF_MAX_TOTAL_BYTES) for s in (0, 5, 6, w.SHELF_MAX_TOTAL_BYTES)]
+        self.assertEqual(page.evaluate("v => v.map(a => webUiShelf.shelfRoom(...a))", rooms), [w.shelf_room(*a) for a in rooms])
+        blobs = [w.photo_png(3, 2, bytes(range(24))), w.photo_png(1, 1), b'\x89PNG\r\n\x1a\n' + bytes(range(256)) * 8, b'GIF89a', b'', b'\x89PNG\r\n\x1a\n']
+        for data in blobs:
+            for as_uri in (True, False):
+                try:
+                    expected = w.png_base64_text(data, as_uri)
+                except ValueError:
+                    expected = 'error'
+                self.assertEqual(page.evaluate("([d, u]) => { try { return webUiShelf.pngBase64Text(Uint8Array.from(d), u) } catch (e) { return 'error' } }", [list(data), as_uri]), expected)
+
+    @staticmethod
+    def press(page, selector, root='[data-ui-shelf]'):
+        """Click and wait until the page has finished the read that click started."""
+        page.click(selector)
+        page.wait_for_function("root => !document.querySelector(root).hasAttribute('data-busy')", arg=root, timeout=120000)
+
+    def stub_clipboard(self, page, text='', reads=None):
+        """Replace the page's clipboard with one that records what is written and answers reads from ``text`` and ``reads``."""
+        page.evaluate("""([text, items]) => { window.__written = []; Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {
+            writeText: async t => { window.__written.push(t) }, readText: async () => { if (text === null) throw new DOMException('denied', 'NotAllowedError'); return text },
+            read: async () => items === null ? (() => { throw new DOMException('denied', 'NotAllowedError') })() : items.map(it => ({types: [it.type], getType: async () => new Blob([Uint8Array.from(atob(it.base64), c => c.charCodeAt(0))], {type: it.type})})) }}) }""",
+                      [text, reads if reads is None else reads])
+
+    def test_the_temporary_clipboard_page(self):
+        page = self.page('shelf.html')
+        entries = lambda: page.evaluate("() => document.querySelector('[data-ui-tempclip]').tempclip.entries")
+        status = lambda: page.inner_text('[data-tc-status]')
+        self.assertEqual((status(), page.is_visible('[data-tc-empty]'), page.is_disabled('[data-tc-clear]')), ('', True, True))
+        for text in ('one', 'two', 'one'):
+            page.fill('#tempclip-input', text)
+            page.click('[data-tc-save-text]')
+        self.assertEqual((entries(), status(), page.input_value('#tempclip-input')), (['one', 'two'], 'Saved to temporary clipboard', ''))
+        page.click('[data-tc-save-text]')                                                      # nothing typed: nothing to save
+        self.assertEqual((status(), entries()), ('No copied text to save', ['one', 'two']))
+        self.stub_clipboard(page, 'Copied before opening menu')
+        page.click('[data-tc-save]')
+        self.assertEqual(entries(), ['Copied before opening menu', 'one', 'two'])
+        page.click('[data-tc-list] li:nth-child(2) button')
+        self.assertEqual((page.evaluate('() => window.__written'), status()), (['one'], 'Copied to system clipboard'))
+        self.stub_clipboard(page, 'x' * 100001)
+        page.click('[data-tc-save]')
+        self.assertEqual((status(), len(entries())), ('Text is too large to save', 3))
+        self.stub_clipboard(page, None)                                                        # reading is refused
+        page.click('[data-tc-save]')
+        self.assertEqual(status(), 'Cannot read system clipboard')
+        page.evaluate("() => { Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: async () => { throw new DOMException('no', 'NotAllowedError') }}}) }")
+        page.click('[data-tc-list] li:first-child button')
+        self.assertEqual(status(), 'Cannot copy to system clipboard')
+        for number in range(35):
+            page.fill('#tempclip-input', f'entry {number}')
+            page.click('[data-tc-save-text]')
+        self.assertEqual((len(entries()), entries()[0], entries()[-1], page.get_attribute('[data-ui-tempclip]', 'data-entries')), (30, 'entry 34', 'entry 5', '30'))
+        self.assertEqual(page.get_attribute('[data-tc-list] li:first-child button', 'aria-label'), 'Copy saved text: entry 34')
+        page.click('[data-tc-clear]')
+        self.assertEqual((entries(), status(), page.is_visible('[data-tc-empty]')), ([], 'Temporary clipboard cleared', True))
+        self.assertEqual(page.evaluate('() => [localStorage.length, sessionStorage.length, document.cookie]'), [0, 0, ''])         # nothing is kept anywhere
+
+    def test_the_shelf_reads_the_clipboard_and_keeps_its_item_limit(self):
+        t = self.t
+        w = web_ui_module()
+        page = self.page('shelf.html')
+        status = lambda: page.inner_text('[data-shelf-status]')
+        count = lambda: int(page.get_attribute('[data-ui-shelf]', 'data-items'))
+        self.stub_clipboard(page, 'a note to keep')
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual((count(), status()), (1, 'Added.'))
+        self.stub_clipboard(page, '', [{'type': 'image/png', 'base64': t.CLIP_IMAGE}])
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual((count(), status(), page.locator('[data-kind="image"]').count()), (2, 'Image added (png, %d bytes).' % len(base64.b64decode(t.CLIP_IMAGE)), 1))
+        self.stub_clipboard(page, 'data:image/png;base64,!!!')
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual((count(), status()), (3, 'Added as text: it looked like an image but was refused (bad_base64).'))
+        self.stub_clipboard(page, None, None)
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual((count(), status()), (3, w.CLIPBOARD_MESSAGES['clipboard-denied']))
+        self.stub_clipboard(page, '', [{'type': 'image/png', 'base64': base64.b64encode(b'not a png').decode()}])
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual((count(), status()), (3, w.CLIPBOARD_MESSAGES['clipboard-invalid-image']))
+        self.stub_clipboard(page, '', [])
+        self.press(page, '[data-shelf-paste]')
+        self.assertEqual(status(), w.CLIPBOARD_MESSAGES['clipboard-no-image'])
+        # the item limit
+        for number in range(20 - 3):
+            page.fill('#shelf-input', f'item {number}')
+            page.click('[data-shelf-add]')
+        self.assertEqual(count(), 20)
+        page.fill('#shelf-input', 'one too many')
+        page.click('[data-shelf-add]')
+        self.assertEqual((count(), status(), page.input_value('#shelf-input')), (20, 'The shelf holds at most 20 items.', 'one too many'))
+        page.click('[data-shelf-clear]')
+        self.assertEqual(count(), 0)
+        # clearing while the clipboard is being read drops that read
+        page.evaluate("""() => { window.__release = null; Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {readText: () => new Promise(r => { window.__release = () => r('late text') })}}) }""")
+        page.click('[data-shelf-paste]')
+        page.click('[data-shelf-clear]')
+        page.evaluate('() => window.__release()')
+        page.wait_for_function("() => document.querySelector('[data-shelf-status]').textContent.includes('cleared while')")
+        self.assertEqual(count(), 0)
+
+    def synthetic_events_work(self, page):
+        """Whether this engine lets a page build paste and drop events that carry files (some ignore ``clipboardData`` / ``dataTransfer`` in the constructor)."""
+        return page.evaluate("""() => { try { const dt = new DataTransfer(); dt.items.add(new File(['x'], 'x.png', {type: 'image/png'}));
+            return new ClipboardEvent('paste', {clipboardData: dt}).clipboardData === dt && new DragEvent('drop', {dataTransfer: dt}).dataTransfer === dt } catch (e) { return false } }""")
+
+    def test_the_shelf_takes_image_files_by_paste_and_drop_and_keeps_its_budget(self):
+        t = self.t
+        page = self.page('shelf.html')
+        if not self.synthetic_events_work(page):
+            self.skipTest('this engine ignores clipboardData / dataTransfer on events a page builds; real paste and drop are Layer 3 (a device)')
+        status = lambda: page.inner_text('[data-shelf-status]')
+        count = lambda: int(page.get_attribute('[data-ui-shelf]', 'data-items'))
+        # images arrive by paste and by drop, are checked against their bytes, and share a 32 MiB budget
+        script = """async ([png, how, size, type]) => { const bytes = new Uint8Array(size), head = Uint8Array.from(atob(png), c => c.charCodeAt(0)); bytes.set(head);
+            const dt = new DataTransfer(); dt.items.add(new File([bytes], 'x.bin', {type})); const box = document.querySelector('[data-ui-shelf]');
+            if (how === 'paste') document.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); else box.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true})) }"""
+        page.evaluate(script, [t.CLIP_IMAGE, 'paste', 4096, 'image/png'])
+        page.wait_for_function("() => document.querySelector('[data-ui-shelf]').dataset.items === '1'")
+        page.evaluate(script, [t.CLIP_IMAGE, 'drop', 4096, 'image/png'])
+        page.wait_for_function("() => document.querySelector('[data-ui-shelf]').dataset.items === '2'")
+        page.evaluate(script, [t.CLIP_IMAGE, 'paste', 4096, 'image/jpeg'])
+        page.wait_for_function("() => document.querySelector('[data-shelf-status]').textContent.includes('does not match')")
+        page.evaluate(script, [base64.b64encode(b'GIF89a').decode(), 'drop', 64, 'image/png'])
+        page.wait_for_function("() => document.querySelector('[data-shelf-status]').textContent.includes('not a PNG, JPEG or WebP')")
+        self.assertEqual(count(), 2)
+        page.click('[data-shelf-clear]')
+        half = 16 * 1024 * 1024
+        for expected in (1, 2):
+            page.evaluate(script, [t.CLIP_IMAGE, 'paste', half, 'image/png'])
+            page.wait_for_function("n => document.querySelector('[data-ui-shelf]').dataset.items === String(n)", arg=expected, timeout=60000)
+        self.assertEqual(page.get_attribute('[data-ui-shelf]', 'data-bytes'), str(2 * half))
+        page.fill('#shelf-input', 'a')
+        page.click('[data-shelf-add]')
+        self.assertEqual((count(), status()), (2, 'The shelf as a whole must stay within 32 MiB.'))
+        page.evaluate(script, [t.CLIP_IMAGE, 'paste', 4096, 'image/png'])
+        page.wait_for_function("() => document.querySelector('[data-shelf-status]').textContent.includes('32 MiB')")
+        self.assertEqual(count(), 2)
+        page.click('[data-shelf-clear]')
+
+    def test_the_photo_page_reads_the_clipboard_and_hands_a_png_back_as_base64(self):
+        import io
+        t = self.t
+        w = web_ui_module()
+        from PIL import Image
+        photo = self.page('photo.html')
+        status = lambda p: p.inner_text('[data-status]')
+        phase = lambda p: p.get_attribute('[data-ui-photo]', 'data-photo-phase')
+        self.stub_clipboard(photo, t.CLIP_URI)
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        photo.wait_for_function("() => document.querySelector('[data-ui-photo]').dataset.photoPhase === 'success'")
+        self.assertEqual((photo.get_attribute('[data-ui-photo]', 'data-source'), photo.inner_text('[data-meta]')), ('paste', 'PNG · 3 × 1'))
+        self.stub_clipboard(photo, '', [{'type': 'image/png', 'base64': base64.b64encode(t.clip_png(5, 4, [9, 8, 7, 255])).decode()}])
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        photo.wait_for_function("() => document.querySelector('[data-meta]').textContent === 'PNG · 5 × 4'")
+        self.stub_clipboard(photo, None, None)
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        self.assertEqual((status(photo), photo.is_visible('[data-retry]')), (w.CLIPBOARD_MESSAGES['clipboard-denied'], True))
+        self.stub_clipboard(photo, 'data:image/png;base64,!!!')
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        self.assertEqual(status(photo), w.CLIPBOARD_MESSAGES['clipboard-invalid-image'])
+        truncated = t.photo_file('png_truncated')
+        self.stub_clipboard(photo, '', [{'type': 'image/png', 'base64': base64.b64encode(truncated).decode()}])
+        self.press(photo, '[data-paste]', '[data-ui-photo]')                                                         # the page's own reason is kept: this PNG stops short
+        photo.wait_for_function("() => document.querySelector('[data-status]').textContent === 'That image format could not be decoded.'")
+        self.assertEqual(phase(photo), 'failure')
+        self.stub_clipboard(photo, '', [])
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        self.assertEqual(status(photo), w.CLIPBOARD_MESSAGES['clipboard-no-image'])
+        # the whole loop: draw, export as Base64, put it on the shelf, copy it back from there, paste it into the photo page
+        self.stub_clipboard(photo, t.CLIP_URI)
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        photo.wait_for_function("() => document.querySelector('[data-meta]').textContent === 'PNG · 3 × 1'")
+        photo.click('label[for="photo-shape-rectangle"]')
+        box = photo.locator('[data-stage]').bounding_box()
+        photo.mouse.move(box['x'] + 0.2 * box['width'], box['y'] + 0.2 * box['height'])
+        photo.mouse.down()
+        photo.mouse.move(box['x'] + 0.8 * box['width'], box['y'] + 0.8 * box['height'], steps=5)
+        photo.mouse.up()
+        photo.evaluate("() => { window.__written = [] }")
+        photo.click('[data-copy-b64-uri]')
+        photo.wait_for_function('() => window.__written.length === 1')
+        as_uri = photo.evaluate('() => window.__written[0]')
+        photo.click('[data-copy-b64]')
+        photo.wait_for_function('() => window.__written.length === 2')
+        plain = photo.evaluate('() => window.__written[1]')
+        self.assertEqual((as_uri.startswith('data:image/png;base64,'), as_uri.split(',', 1)[1] == plain), (True, True))
+        self.assertIn('characters', photo.inner_text('[data-live]'))
+        back = w.decode_image_text(as_uri)
+        self.assertTrue(back['ok'])
+        with Image.open(io.BytesIO(base64.b64decode(back['data']))) as image:
+            image.load()
+            ew, eh = w.photo_export_size(box['width'], box['height'])
+            self.assertEqual(image.size, (ew, eh))
+        shelf = self.page('shelf.html')
+        shelf.fill('#shelf-input', as_uri)
+        shelf.click('[data-shelf-add]')
+        self.assertEqual((shelf.get_attribute('[data-ui-shelf]', 'data-items'), shelf.locator('[data-kind="image"]').count()), ('1', 1))
+        self.stub_clipboard(shelf, '', [])
+        shelf.click('[data-kind="image"] button[data-act="copy"]')
+        shelf.wait_for_function('() => window.__written.length === 1')
+        shelf_text = shelf.evaluate('() => window.__written[0]')
+        self.assertEqual(shelf_text, as_uri)                                                  # the shelf gives back exactly what it was given
+        self.stub_clipboard(photo, shelf_text)
+        self.press(photo, '[data-paste]', '[data-ui-photo]')
+        photo.wait_for_function("(size) => document.querySelector('[data-meta]').textContent === 'PNG · ' + size", arg=f'{ew} × {eh}')
+        self.assertEqual(phase(photo), 'success')
+
+
+def web_ui_module():
+    import web_ui
+    return web_ui
+
 
 
 if __name__ == '__main__':

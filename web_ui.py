@@ -4129,7 +4129,8 @@ def photo_html() -> str:
             '<button class="ui-button" type="button" data-delete disabled>Delete frame</button></div>'
             '<h3>Geometry</h3><pre class="ui-output" data-geometry>No frame selected.</pre>'
             '<div class="ui-photo-bar"><button class="ui-button" type="button" data-copy-rect>Copy rectangle</button><button class="ui-button" type="button" data-copy-csv>Copy as CSV</button></div>'
-            '<div class="ui-photo-bar"><button class="ui-button" type="button" data-export>Save PNG</button><button class="ui-button" type="button" data-share hidden>Share PNG</button></div>'
+            '<div class="ui-photo-bar"><button class="ui-button" type="button" data-export>Save PNG</button><button class="ui-button" type="button" data-copy-b64-uri>Copy as Base64 (data URL)</button>'
+            '<button class="ui-button" type="button" data-copy-b64>Copy as Base64</button><button class="ui-button" type="button" data-share hidden>Share PNG</button></div>'
             '<p class="ui-photo-live" role="status" aria-live="polite" data-live></p>'
             '<details class="ui-photo-check"><summary>This browser</summary><p class="ui-muted">Tries to decode a few tiny pictures and reports what this browser can do, as JSON in the same shape as the Flutter app\'s import evidence. '
             'It measures this browser only; it is not a test of any other device.</p><button class="ui-button" type="button" data-check>Check this browser</button>'
@@ -4726,6 +4727,179 @@ def shelf_bundle(items: list[dict[str, Any]]) -> str:
     return "".join(parts).rstrip(_SHELF_WS)
 
 
+# --- Clipboard loops: the temporary text clipboard, reading the system clipboard, the shelf's budget, and handing a PNG back as Base64 ------------------------
+# Absorbs flutter_navigation_basic's SessionTextClipboard (lib/shared/widgets/session_text_clipboard.dart, with its Dart tests) and Ironmate's clipboard
+# rules (studio/studio.js: clipboardImageText, the "paste image" order and error codes, the shelf's 20-item and 32 MiB budget with in-flight reservations;
+# docs/image-studio.md). Python is the reference; shelf.js and photo.js must agree. Deliberate differences: whitespace in Base64 is ASCII only (as in
+# decode_image_text), and the temporary clipboard lives in the page (a page reload empties it; there is no storage, so it does not follow you to another page).
+
+SESSION_CLIP_MAX_ENTRIES = 30
+SESSION_CLIP_MAX_CHARS = 100_000
+SESSION_CLIP_MESSAGES = {
+    "title": "Temporary clipboard", "subtitle": "Text only · kept until page reload", "save": "Save copied text", "empty": "Nothing saved yet", "copy": "Copy saved text",
+    "noText": "No copied text to save", "saved": "Saved to temporary clipboard", "tooLarge": "Text is too large to save", "readFailed": "Cannot read system clipboard",
+    "copied": "Copied to system clipboard", "copyFailed": "Cannot copy to system clipboard", "cleared": "Temporary clipboard cleared"}
+
+
+def utf16_length(text: str) -> int:
+    """The length JavaScript and Dart give a string: UTF-16 code units (an emoji counts 2)."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def session_clip_save(entries: list[str], text: str | None) -> tuple[list[str], str]:
+    """Save copied text: ``(entries, outcome)`` with outcome ``saved``, ``noText`` (nothing to read) or ``tooLarge`` (over 100,000 units). A repeated text moves to the front
+    instead of being listed twice, and at most 30 entries are kept."""
+    if not text:
+        return list(entries), "noText"
+    if utf16_length(text) > SESSION_CLIP_MAX_CHARS:
+        return list(entries), "tooLarge"
+    return [text, *(e for e in entries if e != text)][:SESSION_CLIP_MAX_ENTRIES], "saved"
+
+
+_CLIP_IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    return ("image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if data.startswith(b"\xff\xd8\xff")
+            else "image/webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else None)
+
+
+class ClipboardError(Exception):
+    """A clipboard read that cannot continue: ``code`` is one of clipboard-unsupported, -denied, -invalid-image, -read-failed, -no-image."""
+
+    def __init__(self, code: str, category: str | None = None):
+        super().__init__(code)
+        self.code, self.category = code, category
+
+
+class ClipboardFailure(Exception):
+    """What the browser's clipboard API raises (``name`` such as NotAllowedError, SecurityError or NotSupportedError); the test doubles raise it too."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.name = name
+
+
+def clipboard_text_image(text: str, max_bytes: int = SHELF_MAX_IMAGE_BYTES) -> dict[str, Any] | None:
+    """Image text on the clipboard: the decoded image (``decode_image_text``'s result) when the text is a Base64 image or ``data:image`` URL, ``None`` for ordinary text
+    (even valid Base64 that is not an image), and ``ClipboardError("clipboard-invalid-image")`` when it says it is an image (an explicit ``data:image`` or a PNG/JPEG/WebP
+    signature in its first 16 characters) but is not a valid one, so a stale older image is never imported instead."""
+    value = _shelf_strip(text)
+    explicit = re.match(r"data:image(?:/|[;,]|$)", value, re.I) is not None
+    prefix = re.sub(r"[ \t\r\n\f\v]+", "", value)[:16]
+    recognised = re.fullmatch(r"[A-Za-z0-9+/]{16}", prefix) is not None and _sniff_image_mime(base64.b64decode(prefix)) is not None
+    result = decode_image_text(value, max_bytes)
+    if result["ok"]:
+        return result
+    if explicit or recognised:
+        raise ClipboardError("clipboard-invalid-image", result["category"])
+    return None
+
+
+def clipboard_pick(clip: Any, importer: Any, mode: str = "import", max_bytes: int = SHELF_MAX_IMAGE_BYTES) -> dict[str, Any]:
+    """Read an image from the system clipboard in Ironmate's order. ``clip`` has optional ``read_text()`` (returns text) and ``read()`` (returns items with ``types`` and
+    ``get_type(type)`` returning a blob with ``size`` and ``read()`` (bytes)); all may raise ``ClipboardFailure``. ``importer(data, mime)`` accepts the image or raises (the page's own checks).
+    1. Image text wins (Base64 or a data URL); invalid image text is an error (in ``shelf`` mode the text is kept as text and the reason is reported).
+    2. Otherwise the first PNG, JPEG or WebP item (a denied text read does not stop this).
+    3. In ``shelf`` mode, plain text is the last resort.
+    4. Otherwise one code: denied > invalid-image > read-failed or unsupported > no-image.
+    ``max_bytes`` (default 32 MiB) is the most an image may be: larger Base64 is refused unread and a larger item is never read.
+    ``{"ok": True, "source": "text"|"item"|"plain", ...}`` or ``{"ok": False, "code", "category"?}``."""
+    has_text, has_read = callable(getattr(clip, "read_text", None)), callable(getattr(clip, "read", None))
+    if not (has_text or has_read):
+        return {"ok": False, "code": "clipboard-unsupported"}
+    failures: list[tuple[str, str | None]] = []                                    # (name or code, category)
+    text = ""
+
+    def import_(data: bytes, mime: str, source: str) -> dict[str, Any]:
+        try:
+            return {"ok": True, "source": source, "mime": mime, "size": len(data), "imported": importer(data, mime)}
+        except Exception:
+            return {"ok": False, "code": "clipboard-invalid-image", "category": "rejected"}
+
+    if has_text:
+        try:
+            text = clip.read_text()
+        except ClipboardFailure as error:
+            failures.append((error.name, None))
+        try:
+            payload = clipboard_text_image(text, max_bytes)
+        except ClipboardError as error:
+            if mode == "shelf":
+                return {"ok": True, "source": "plain", "text": _shelf_strip(text), "refused": error.category}
+            return {"ok": False, "code": error.code, "category": error.category}
+        if payload:
+            return import_(base64.b64decode(payload["data"]), payload["mime"], "text")
+    if has_read:
+        items: list[Any] = []
+        try:
+            items = clip.read()
+        except ClipboardFailure as error:
+            failures.append((error.name, None))
+        for item in items:
+            for kind in [t for t in item.types if t in _CLIP_IMAGE_TYPES]:
+                try:
+                    blob = item.get_type(kind)                                       # ``size`` first: nothing over 32 MiB is read
+                    if blob.size > max_bytes:
+                        raise ClipboardError("clipboard-invalid-image", "too_large")
+                    data = blob.read()
+                except ClipboardFailure as error:                                    # a refusal stays a refusal; any other trouble reading this item means a bad image
+                    failures.append((error.name, None) if error.name in ("NotAllowedError", "SecurityError", "NotSupportedError") else ("clipboard-invalid-image", "unreadable"))
+                    continue
+                except ClipboardError as error:
+                    failures.append((error.code, error.category))
+                    continue
+                done = import_(data, kind, "item")
+                if done["ok"]:
+                    return done
+                failures.append((done["code"], done["category"]))
+    if mode == "shelf" and _shelf_strip(text) and not any(name == "clipboard-invalid-image" for name, _ in failures):
+        return {"ok": True, "source": "plain", "text": _shelf_strip(text), "refused": None}
+    if any(name in ("NotAllowedError", "SecurityError") for name, _ in failures):
+        return {"ok": False, "code": "clipboard-denied"}
+    invalid = next((c for name, c in failures if name == "clipboard-invalid-image"), None)
+    if any(name == "clipboard-invalid-image" for name, _ in failures):
+        return {"ok": False, "code": "clipboard-invalid-image", "category": invalid}
+    if failures:
+        return {"ok": False, "code": "clipboard-unsupported" if all(name == "NotSupportedError" for name, _ in failures) else "clipboard-read-failed"}
+    return {"ok": False, "code": "clipboard-no-image"}
+
+
+CLIPBOARD_MESSAGES = {
+    "clipboard-unsupported": "This browser cannot read the clipboard here. Use the file picker or paste into the box.",
+    "clipboard-denied": "Reading the clipboard is not allowed. Check the permission, or use the file picker or paste into the box.",
+    "clipboard-invalid-image": "The image on the clipboard is not valid.",
+    "clipboard-read-failed": "Could not read the clipboard. Try again, or use the file picker.",
+    "clipboard-no-image": "The clipboard has no PNG, JPEG or WebP image, or image text."}
+SHELF_MAX_ITEMS = 20
+SHELF_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+
+
+def shelf_text_size(text: str) -> int:
+    """The bytes a text takes on the shelf: its UTF-8 length (1 to 4 bytes per character; a lone surrogate counts 3, as in Ironmate)."""
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def shelf_room(count: int, used_bytes: int, size: int) -> str | None:
+    """Whether one more item of ``size`` bytes fits: ``None``, ``full`` (20 items) or ``budget`` (32 MiB in all). The page checks again when a slow read finishes, in place of
+    Ironmate's reservation for reads still in flight."""
+    if count >= SHELF_MAX_ITEMS:
+        return "full"
+    return "budget" if size > SHELF_MAX_TOTAL_BYTES - used_bytes else None
+
+
+def png_base64_text(data: bytes, data_uri: bool = True) -> str:
+    """A PNG as text to paste elsewhere: ``data:image/png;base64,...`` or plain standard Base64, exactly its bytes (no URL-safe form, padding change or percent-encoding).
+    ``ValueError`` for anything that is not a PNG or is over 32 MiB, the size ``decode_image_text`` accepts back."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("not a PNG")
+    if len(data) > SHELF_MAX_IMAGE_BYTES:
+        raise ValueError("over 32 MiB")
+    encoded = base64.b64encode(data).decode("ascii")
+    return "data:image/png;base64," + encoded if data_uri else encoded
+
+
+
 def _shelf_css() -> str:
     """Filter and order are radio buttons, so the rules are CSS: which kind shows, how items are ordered, which control looks selected."""
     rules = [".ui-shelf-radio{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}",
@@ -4746,6 +4920,9 @@ def _shelf_css() -> str:
         for name in names:
             rules.append(f'.ui-shelf:has(#shelf-{group}-{name}:checked) label[for="shelf-{group}-{name}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
             rules.append(f'.ui-shelf:has(#shelf-{group}-{name}:focus-visible) label[for="shelf-{group}-{name}"]{{outline:2px solid var(--ui-fg);outline-offset:2px}}')
+    rules += [".ui-tempclip{margin-top:24px}.ui-tempclip textarea{width:100%;box-sizing:border-box}.ui-tempclip-list{display:flex;flex-direction:column;gap:8px;margin:8px 0 0;padding:0;list-style:none}",
+              ".ui-tempclip-list li{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--ui-border);border-radius:var(--ui-radius)}",
+              ".ui-tempclip-text{flex:1;min-width:0;max-height:3em;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}"]
     return "@layer components{" + "".join(rules) + "}"
 
 
@@ -4765,7 +4942,7 @@ def shelf_html() -> str:
                      for k, label in (("goal", "Goal"), ("context", "Context / reference material"), ("must", "Must include"),
                                       ("avoid", "Constraints / avoid"), ("format", "Output format"), ("raw", "Raw source")))
     return ('<section class="ui-panel ui-shelf" id="shelf" data-ui-shelf><h2>Clipboard shelf</h2>'
-            '<p class="ui-muted">Paste text, a URL, Markdown or a Base64 image (PNG, JPEG, WebP). Everything stays in this page: nothing is saved or sent, '
+            '<p class="ui-muted">Paste text, a URL, Markdown or an image (PNG, JPEG, WebP: a file, the clipboard or Base64). Up to 20 items and 32 MiB. Everything stays in this page: nothing is saved or sent, '
             'and a reload empties the shelf.</p>'
             '<label for="shelf-input">Add to the shelf</label><textarea class="ui-input" id="shelf-input" rows="3" data-shelf-input></textarea>'
             '<div class="ui-shelf-actions"><button class="ui-button" type="button" data-shelf-add>Add</button>'
@@ -4781,9 +4958,19 @@ def shelf_html() -> str:
             '<pre class="ui-output" data-shelf-prompt aria-live="polite"></pre></details></section>')
 
 
+def tempclip_html() -> str:
+    """The temporary text clipboard as semantic HTML: save what was copied (or typed), copy any saved text back. Thirty entries, kept until the page is reloaded."""
+    m = SESSION_CLIP_MESSAGES
+    return ('<section class="ui-panel ui-tempclip" id="tempclip" data-ui-tempclip><h2>' + m["title"] + '</h2><p class="ui-muted">' + m["subtitle"] + ' (30 entries, 100,000 characters each; '
+            'saving a text again moves it to the top).</p><div class="ui-shelf-actions"><button class="ui-button" type="button" data-tc-save>' + m["save"] + '</button>'
+            '<button class="ui-button" type="button" data-tc-clear disabled>Clear</button></div><label for="tempclip-input">Or type or paste text to save</label>'
+            '<textarea class="ui-input" id="tempclip-input" rows="2" data-tc-input></textarea><p><button class="ui-button" type="button" data-tc-save-text>Save this text</button></p>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-tc-status></p><p class="ui-muted" data-tc-empty>' + m["empty"] + '</p><ol class="ui-tempclip-list" data-tc-list></ol></section>')
+
+
 def shelf_document(*, theme: str = "modern") -> str:
-    """A single-file page for the clipboard shelf."""
-    return render_document(trusted_html='<main class="ui-page">' + shelf_html() + "</main>" + module_script(_JS["shelf.js"]), title="Clipboard shelf",
+    """A single-file page for the clipboard shelf and the temporary clipboard."""
+    return render_document(trusted_html='<main class="ui-page">' + shelf_html() + tempclip_html() + "</main>" + module_script(_JS["shelf.js"]), title="Clipboard shelf",
                            theme=theme, css=bundled_css())
 
 
@@ -5186,35 +5373,65 @@ globalThis.webUiDoor={emojiKey,emojiPath,mulberry32,doorDraw,doorOptions,bindDoo
 if(typeof document!=="undefined")bindDoor();
 """
 
-_JS["shelf.js"] = r"""/* web-ui shelf: a clipboard shelf in the page (memory only). The rules are Python's (web_ui.shelf_classify, decode_image_text, ...); this must agree. */
-const MAX_IMAGE=32*1024*1024;
+_CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
 const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 export const strip=s=>(s.startsWith("﻿")?s.slice(1):s).replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
-const lines=t=>t.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
-const URLRE=/^https?:\/\/[^ \t\r\n\f\v<>"]+$/i,LINE_MD=/^[ \t]{0,3}(?:#{1,6}[ \t]|[-*+][ \t]|>[ \t]|```)/,LINK_MD=/\[[^\]]+\]\([^)]+\)/;
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
-export function shelfClassify(text){if(URLRE.test(strip(text)))return"url";return lines(text).some(l=>LINE_MD.test(l))||LINK_MD.test(text)?"markdown":"text"}
-export function markdownPlain(text){
- let out=lines(text).map(l=>{l=l.replace(/^[ \t]{0,3}#{1,6}[ \t]+/,"").replace(/^[ \t]{0,3}>[ \t]?/,"").replace(/^[ \t]*[-*+][ \t]+/,"").replace(/^[ \t]*\d+[.)][ \t]+/,"");return/^[ \t]*```[^\n]*$/.test(l)?"":l}).join("\n");
- out=out.replace(/\[([^\]]+)\]\(([^)]+)\)/g,"$1 ($2)").replace(/`([^`\n]+)`/g,"$1").replace(/\*\*([^*\n]+)\*\*/g,"$1").replace(/~~([^~\n]+)~~/g,"$1");
- return strip(out)}
 export const shelfMaxChars=n=>4*Math.floor((n+2)/3);
-export function looksLikeImage(text,minChars=80){text=strip(text);if(text.slice(0,11).toLowerCase()==="data:image/")return true;const c=text.replace(/[ \t\r\n\f\v]+/g,"");return c.length>=minChars&&c.length%4===0&&B64.test(c)}
+export function sniffImageMime(b){return b.length>=8&&b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47&&b[4]===0x0d&&b[5]===0x0a&&b[6]===0x1a&&b[7]===0x0a?"image/png":b.length>=3&&b[0]===0xff&&b[1]===0xd8&&b[2]===0xff?"image/jpeg":
+ b.length>=12&&b[0]===0x52&&b[1]===0x49&&b[2]===0x46&&b[3]===0x46&&b[8]===0x57&&b[9]===0x45&&b[10]===0x42&&b[11]===0x50?"image/webp":null}
 export function decodeImageText(input,maxBytes=MAX_IMAGE){
  const fail=category=>({ok:false,category});let text=strip(input);if(!text)return fail("empty");
  let declared=null;const m=DATA.exec(text);
  if(m){declared=(m[1]||"").toLowerCase()||null;if(declared==="image/jpg")declared="image/jpeg";text=text.slice(m[0].length)}
  else if(text.slice(0,5).toLowerCase()==="data:")return fail("bad_data_uri");
- if(declared!==null&&!["image/png","image/jpeg","image/webp"].includes(declared))return fail("unsupported_type");
+ if(declared!==null&&!IMAGE_TYPES.includes(declared))return fail("unsupported_type");
  const encoded=text.replace(/[ \t\r\n\f\v]+/g,"");if(!encoded)return fail("empty");
  if(encoded.length>shelfMaxChars(maxBytes))return fail("too_large");
  if(encoded.length%4||!B64.test(encoded))return fail("bad_base64");
  const pad=encoded.endsWith("==")?2:encoded.endsWith("=")?1:0,n=encoded.length/4*3-pad;
  if(n<=0)return fail("empty");if(n>maxBytes)return fail("too_large");
- const head=atob(encoded.slice(0,16)),at=i=>head.charCodeAt(i);
- const mime=head.length>=8&&[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((v,i)=>at(i)===v)?"image/png":head.length>=3&&at(0)===0xff&&at(1)===0xd8&&at(2)===0xff?"image/jpeg":head.length>=12&&head.slice(0,4)==="RIFF"&&head.slice(8,12)==="WEBP"?"image/webp":null;
+ const head=atob(encoded.slice(0,16)),mime=sniffImageMime(Uint8Array.from(head,c=>c.charCodeAt(0)));
  if(mime===null)return fail("unsupported_format");if(declared!==null&&declared!==mime)return fail("mismatch");
  return{ok:true,format:mime.slice(6),mime,bytes:n,data:encoded}}
+class ClipErr extends Error{constructor(code,category=null){super(code);this.code=code;this.category=category}}
+const clipError=(code,category=null)=>new ClipErr(code,category);
+const fromBase64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+export function toBase64(bytes){let out="";for(let i=0;i<bytes.length;i+=0x8000)out+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(out)}
+export function clipboardTextImage(text,maxBytes=MAX_IMAGE){const value=strip(text),explicit=/^data:image(?:\/|[;,]|$)/i.test(value),prefix=value.replace(/[ \t\r\n\f\v]+/g,"").slice(0,16);
+ const recognised=/^[A-Za-z0-9+/]{16}$/.test(prefix)&&sniffImageMime(fromBase64(prefix))!==null,r=decodeImageText(value,maxBytes);
+ if(r.ok)return r;if(explicit||recognised)throw clipError("clipboard-invalid-image",r.category);return null}
+export async function clipboardPick(clip,importer,mode="import",maxBytes=MAX_IMAGE){
+ const hasText=!!clip&&typeof clip.readText==="function",hasRead=!!clip&&typeof clip.read==="function";
+ if(!(hasText||hasRead))return{ok:false,code:"clipboard-unsupported"};
+ const failures=[],REFUSED=["NotAllowedError","SecurityError","NotSupportedError"];let text="";
+ const take=async(data,mime,source)=>{try{return{ok:true,source,mime,size:data.length,imported:await importer(data,mime)}}catch(e){return{ok:false,code:"clipboard-invalid-image",category:"rejected"}}};
+ if(hasText){try{text=await clip.readText()}catch(e){failures.push([e.name,null])}
+  let payload;try{payload=clipboardTextImage(text,maxBytes)}catch(e){if(mode==="shelf")return{ok:true,source:"plain",text:strip(text),refused:e.category};return{ok:false,code:e.code,category:e.category}}
+  if(payload)return take(fromBase64(payload.data),payload.mime,"text")}
+ if(hasRead){let items=[];try{items=await clip.read()}catch(e){failures.push([e.name,null])}
+  for(const item of items)for(const kind of item.types.filter(t=>IMAGE_TYPES.includes(t))){let data;
+   try{const blob=await item.getType(kind);if(blob.size>maxBytes)throw clipError("clipboard-invalid-image","too_large");data=new Uint8Array(await blob.arrayBuffer())}
+   catch(e){failures.push(e instanceof ClipErr?[e.code,e.category]:REFUSED.includes(e.name)?[e.name,null]:["clipboard-invalid-image","unreadable"]);continue}
+   const done=await take(data,kind,"item");if(done.ok)return done;failures.push([done.code,done.category])}}
+ if(mode==="shelf"&&strip(text)&&!failures.some(f=>f[0]==="clipboard-invalid-image"))return{ok:true,source:"plain",text:strip(text),refused:null};
+ if(failures.some(f=>f[0]==="NotAllowedError"||f[0]==="SecurityError"))return{ok:false,code:"clipboard-denied"};
+ const bad=failures.find(f=>f[0]==="clipboard-invalid-image");if(bad)return{ok:false,code:"clipboard-invalid-image",category:bad[1]};
+ if(failures.length)return{ok:false,code:failures.every(f=>f[0]==="NotSupportedError")?"clipboard-unsupported":"clipboard-read-failed"};
+ return{ok:false,code:"clipboard-no-image"}}
+export const CLIPBOARD_MESSAGES={"clipboard-unsupported":"This browser cannot read the clipboard here. Use the file picker or paste into the box.","clipboard-denied":"Reading the clipboard is not allowed. Check the permission, or use the file picker or paste into the box.",
+ "clipboard-invalid-image":"The image on the clipboard is not valid.","clipboard-read-failed":"Could not read the clipboard. Try again, or use the file picker.","clipboard-no-image":"The clipboard has no PNG, JPEG or WebP image, or image text."};
+export function pngBase64Text(bytes,dataUri=true){if(!(bytes.length>=8&&sniffImageMime(bytes)==="image/png"))throw new Error("not a PNG");if(bytes.length>MAX_IMAGE)throw new Error("over 32 MiB");const text=toBase64(bytes);return dataUri?"data:image/png;base64,"+text:text}
+"""
+_JS["shelf.js"] = r"""/* web-ui shelf: a clipboard shelf in the page (memory only). The rules are Python's (web_ui.shelf_classify, decode_image_text, ...); this must agree. */
+""" + _CLIPBOARD_JS + r"""const lines=t=>t.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+const URLRE=/^https?:\/\/[^ \t\r\n\f\v<>"]+$/i,LINE_MD=/^[ \t]{0,3}(?:#{1,6}[ \t]|[-*+][ \t]|>[ \t]|```)/,LINK_MD=/\[[^\]]+\]\([^)]+\)/;
+export function shelfClassify(text){if(URLRE.test(strip(text)))return"url";return lines(text).some(l=>LINE_MD.test(l))||LINK_MD.test(text)?"markdown":"text"}
+export function markdownPlain(text){
+ let out=lines(text).map(l=>{l=l.replace(/^[ \t]{0,3}#{1,6}[ \t]+/,"").replace(/^[ \t]{0,3}>[ \t]?/,"").replace(/^[ \t]*[-*+][ \t]+/,"").replace(/^[ \t]*\d+[.)][ \t]+/,"");return/^[ \t]*```[^\n]*$/.test(l)?"":l}).join("\n");
+ out=out.replace(/\[([^\]]+)\]\(([^)]+)\)/g,"$1 ($2)").replace(/`([^`\n]+)`/g,"$1").replace(/\*\*([^*\n]+)\*\*/g,"$1").replace(/~~([^~\n]+)~~/g,"$1");
+ return strip(out)}
+export function looksLikeImage(text,minChars=80){text=strip(text);if(text.slice(0,11).toLowerCase()==="data:image/")return true;const c=text.replace(/[ \t\r\n\f\v]+/g,"");return c.length>=minChars&&c.length%4===0&&B64.test(c)}
 export function buildPrompt(fields,image=null){
  let out="# System Prompt Draft\n\n";
  for(const[key,title]of[["goal","Goal"],["context","Context / reference material"],["must","Must include"],["avoid","Constraints / avoid"],["format","Output format"],["raw","Raw source"]]){const v=strip(String(fields[key]??""));if(v)out+="## "+title+"\n"+v+"\n\n"}
@@ -5222,9 +5439,16 @@ export function buildPrompt(fields,image=null){
  return out.replace(/[ \t\r\n\f\v]+$/,"")}
 export function shelfBundle(items){const labels={text:"Text",url:"URL",markdown:"Markdown",image:"Image"};let out="# Context Bundle\n\n";
  items.forEach((it,i)=>{out+="## "+(i+1)+". "+labels[it.kind]+"\n"+(it.kind==="image"?"data:"+it.mime+";base64,"+it.data:(it.text??""))+"\n\n"});return out.replace(/[ \t\r\n\f\v]+$/,"")}
+export const SESSION_CLIP_MESSAGES={title:"Temporary clipboard",subtitle:"Text only · kept until page reload",save:"Save copied text",empty:"Nothing saved yet",copy:"Copy saved text",noText:"No copied text to save",saved:"Saved to temporary clipboard",tooLarge:"Text is too large to save",readFailed:"Cannot read system clipboard",copied:"Copied to system clipboard",copyFailed:"Cannot copy to system clipboard",cleared:"Temporary clipboard cleared"};
+export const SESSION_CLIP_MAX_ENTRIES=30,SESSION_CLIP_MAX_CHARS=100000,SHELF_MAX_ITEMS=20,SHELF_MAX_TOTAL=32*1024*1024;
+export function sessionClipSave(entries,text){if(!text)return[[...entries],"noText"];if(text.length>SESSION_CLIP_MAX_CHARS)return[[...entries],"tooLarge"];return[[text,...entries.filter(e=>e!==text)].slice(0,SESSION_CLIP_MAX_ENTRIES),"saved"]}
+export function shelfTextSize(text){let size=0;for(const ch of text){const c=ch.codePointAt(0);size+=c<=0x7f?1:c<=0x7ff?2:c<=0xffff?3:4}return size}
+export const shelfRoom=(count,used,size)=>count>=SHELF_MAX_ITEMS?"full":size>SHELF_MAX_TOTAL-used?"budget":null;
 export function bindShelf(root=document){return[...root.querySelectorAll("[data-ui-shelf]")].map(box=>{
  const $=s=>box.querySelector(s),input=$("[data-shelf-input]"),list=$("[data-shelf-items]"),status=$("[data-shelf-status]"),prompt=$("[data-shelf-prompt]");
- const items=[];let next=1,image=null,manual=[];const say=t=>{status.textContent=t};
+ const items=[];let next=1,image=null,manual=[],generation=0;const say=t=>{status.textContent=t};
+ const used=()=>items.reduce((s,i)=>s+i.size,0),remaining=()=>Math.max(SHELF_MAX_TOTAL-used(),0);
+ const roomText=r=>r==="full"?"The shelf holds at most "+SHELF_MAX_ITEMS+" items.":"The shelf as a whole must stay within 32 MiB.";
  const checked=name=>box.querySelector('input[name="'+name+'"]:checked').value;
  const display=()=>{const kind=checked("shelf-kind"),sort=checked("shelf-sort");const vis=items.filter(i=>kind==="all"||i.kind===kind);
   return sort==="oldest"?[...vis].sort((a,b)=>a.n-b.n):sort==="manual"?[...vis].sort((a,b)=>manual.indexOf(a.id)-manual.indexOf(b.id)):[...vis].sort((a,b)=>b.n-a.n)};
@@ -5239,16 +5463,34 @@ export function bindShelf(root=document){return[...root.querySelectorAll("[data-
   const btn=(label,act)=>{const b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=label;b.dataset.act=act;tools.append(b)};
   btn("Copy","copy");if(it.kind==="markdown")btn("Copy plain","plain");btn("Up","up");btn("Down","down");btn("Remove","remove");
   li.append(pick,tag,body,tools);return li}));
+  box.dataset.items=String(items.length);box.dataset.bytes=String(used());
   const none=items.length===0;if(none)say("Nothing on the shelf yet.")};
- const add=it=>{it.id=next;it.n=next++;items.unshift(it);manual.unshift(it.id);draw()};
+ const add=it=>{const r=shelfRoom(items.length,used(),it.size);if(r){say(roomText(r));return false}it.id=next;it.n=next++;items.unshift(it);manual.unshift(it.id);draw();return true};
+ const addPlain=(text,msg)=>{if(add({kind:shelfClassify(text),text,size:shelfTextSize(text)})){say(msg);return true}return false};
+ const addImage=(r,msg)=>{if(add({kind:"image",format:r.format,mime:r.mime,bytes:r.bytes,data:r.data,size:r.bytes})){say(msg);return true}return false};
  const addText=raw=>{const text=strip(raw);if(!text){say("Nothing to add.");return false}
-  if(looksLikeImage(text)){const r=decodeImageText(text);if(r.ok){add({kind:"image",...r});say("Image added ("+r.format+", "+r.bytes+" bytes).");return true}
-   add({kind:shelfClassify(text),text});say("Added as text: it looked like an image but was refused ("+r.category+").");return true}
-  add({kind:shelfClassify(text),text});say("Added.");return true};
+  if(looksLikeImage(text)){const r=decodeImageText(text,remaining());if(r.ok)return addImage(r,"Image added ("+r.format+", "+r.bytes+" bytes).");
+   return addPlain(text,"Added as text: it looked like an image but was refused ("+r.category+").")}
+  return addPlain(text,"Added.")};
+ const addBytes=(bytes,mime,msgOk)=>{const r={format:mime.slice(6),mime,bytes:bytes.length,data:toBase64(bytes)};return addImage(r,msgOk||"Image added ("+r.format+", "+r.bytes+" bytes).")};
  const copy=async t=>{try{await navigator.clipboard.writeText(t);return true}catch(e){return false}};
+ const cleared=gen=>{if(gen!==generation){say("The shelf was cleared while that was being read.");return true}return false};
+ const busy=async f=>{box.dataset.busy="1";try{return await f()}finally{delete box.dataset.busy}};
+ const takeFile=f=>busy(async()=>{const gen=generation;if(!f.size){say("The image is empty.");return}if(f.size>remaining()){say(roomText("budget"));return}
+  const bytes=new Uint8Array(await f.arrayBuffer());if(cleared(gen))return;const mime=sniffImageMime(bytes);
+  if(!mime){say("That file is not a PNG, JPEG or WebP image.");return}if(f.type&&f.type.toLowerCase()!==mime){say("The image type does not match its data.");return}addBytes(bytes,mime)});
  $("[data-shelf-add]").addEventListener("click",()=>{if(addText(input.value))input.value=""});
- $("[data-shelf-paste]").addEventListener("click",async()=>{let t="";try{t=await navigator.clipboard.readText()}catch(e){say("The browser did not allow reading the clipboard: paste into the box instead.");return}addText(t)});
- $("[data-shelf-clear]").addEventListener("click",()=>{items.length=0;manual=[];draw();say("Shelf cleared.")});
+ $("[data-shelf-paste]").addEventListener("click",()=>busy(async()=>{const gen=generation;
+  const r=await clipboardPick(navigator.clipboard,async(bytes,mime)=>{if(sniffImageMime(bytes)!==mime)throw new Error("mismatch");return{bytes,mime}},"shelf",remaining());
+  if(cleared(gen))return;if(!r.ok){say(CLIPBOARD_MESSAGES[r.code]);return}
+  if(r.source==="plain"){addPlain(r.text,r.refused?"Added as text: it looked like an image but was refused ("+r.refused+").":"Added.");return}
+  addBytes(r.imported.bytes,r.imported.mime)}));
+ document.addEventListener("paste",e=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;const cd=e.clipboardData;if(!cd)return;
+  const f=[...(cd.files||[])].find(x=>/^image\//.test(x.type));if(f){e.preventDefault();takeFile(f);return}
+  const text=cd.getData("text/plain");if(text){e.preventDefault();addText(text)}});
+ box.addEventListener("dragover",e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files"))e.preventDefault()});
+ box.addEventListener("drop",e=>{const f=e.dataTransfer&&[...e.dataTransfer.files].find(x=>/^image\//.test(x.type));if(f){e.preventDefault();takeFile(f)}});
+ $("[data-shelf-clear]").addEventListener("click",()=>{generation+=1;items.length=0;manual=[];draw();say("Shelf cleared.")});
  $("[data-shelf-bundle]").addEventListener("click",async()=>{const picked=items.filter(i=>i.picked),shown=display(),use=picked.length?display().filter(i=>i.picked):shown;
   if(!items.length){say("The shelf is empty.");return}const text=shelfBundle(use);say(await copy(text)?"Copied a bundle of "+use.length+" item(s), "+text.length+" characters.":"The browser did not allow copying.")});
  list.addEventListener("click",async e=>{const b=e.target.closest("button[data-act]");if(!b)return;const id=Number(b.closest("li").dataset.id),it=items.find(i=>i.id===id);
@@ -5264,8 +5506,20 @@ export function bindShelf(root=document){return[...root.querySelectorAll("[data-
  $("[data-shelf-attach]").addEventListener("click",()=>{const picked=items.find(i=>i.kind==="image"&&i.picked)||items.find(i=>i.kind==="image");image=picked?{mime:picked.mime,bytes:picked.bytes}:null;say(image?"Image attached to the prompt.":"No image on the shelf to attach.");render()});
  $("[data-shelf-copy-prompt]").addEventListener("click",async()=>{const t=buildPrompt(fields(),image);say(await copy(t)?"Copied the prompt ("+t.length+" characters).":"The browser did not allow copying.")});
  draw();render();return box})}
-globalThis.webUiShelf={shelfClassify,markdownPlain,looksLikeImage,decodeImageText,buildPrompt,shelfBundle,shelfMaxChars,bindShelf};
-if(typeof document!=="undefined")bindShelf();
+export function bindTempClip(root=document){return[...root.querySelectorAll("[data-ui-tempclip]")].map(box=>{
+ const $=s=>box.querySelector(s),list=$("[data-tc-list]"),status=$("[data-tc-status]"),M=SESSION_CLIP_MESSAGES;let entries=[];
+ const say=k=>{status.textContent=M[k]};
+ const draw=()=>{list.replaceChildren(...entries.map((t,i)=>{const li=document.createElement("li"),s=document.createElement("span"),b=document.createElement("button");s.className="ui-tempclip-text";s.textContent=t;
+   b.type="button";b.className="ui-button";b.textContent="Copy";b.dataset.tcCopy=String(i);b.setAttribute("aria-label",M.copy+": "+t.slice(0,32));li.append(s,b);return li}));
+  $("[data-tc-empty]").hidden=entries.length>0;$("[data-tc-clear]").disabled=entries.length===0;box.dataset.entries=String(entries.length)};
+ const save=text=>{const[next,outcome]=sessionClipSave(entries,text);entries=next;say(outcome);draw();return outcome};
+ $("[data-tc-save]").addEventListener("click",async()=>{let text;try{text=await navigator.clipboard.readText()}catch(e){say("readFailed");return}save(text)});
+ $("[data-tc-save-text]").addEventListener("click",()=>{const el=$("[data-tc-input]");if(save(el.value)==="saved")el.value=""});
+ $("[data-tc-clear]").addEventListener("click",()=>{entries=[];say("cleared");draw()});
+ list.addEventListener("click",async e=>{const b=e.target.closest("button[data-tc-copy]");if(!b)return;try{await navigator.clipboard.writeText(entries[Number(b.dataset.tcCopy)]);say("copied")}catch(x){say("copyFailed")}});
+ draw();box.tempclip={get entries(){return[...entries]},save};return box})}
+globalThis.webUiShelf={shelfClassify,markdownPlain,looksLikeImage,decodeImageText,buildPrompt,shelfBundle,shelfMaxChars,sessionClipSave,shelfTextSize,shelfRoom,clipboardTextImage,clipboardPick,sniffImageMime,pngBase64Text,CLIPBOARD_MESSAGES,SESSION_CLIP_MESSAGES,bindShelf,bindTempClip};
+if(typeof document!=="undefined"){bindShelf();bindTempClip()}
 """
 
 _JS["curl.js"] = r"""/* web-ui curl: the editor's curl subset, read in the page and never run or sent. Python (web_ui.parse_curl) is the reference; this must agree with it. */
@@ -5458,7 +5712,7 @@ EXAMPLE_STUBS = {
 
 _JS["photo.js"] = r"""/* web-ui photo: the photo studio in the page (memory only). Format hints, header sizes, EXIF orientation, import rules, frame and stamp geometry, undo history and the editing state machine.
    The rules are Python's (web_ui.photo_sniff, photo_decide, PhotoStudio, ...); this must agree. Nothing is stored or sent. */
-const MAX_BYTES=32*1024*1024,MAX_PIXELS=40000000,MAX_EDGE=4096,DOWNSCALE=2/3,MIN_SIZE=0.04,HISTORY_LIMIT=20,HANDLE_SLOP=18,STAMP_MIN_HIT=18;
+""" + _CLIPBOARD_JS + r"""const MAX_BYTES=32*1024*1024,MAX_PIXELS=40000000,MAX_EDGE=4096,DOWNSCALE=2/3,MIN_SIZE=0.04,HISTORY_LIMIT=20,HANDLE_SLOP=18,STAMP_MIN_HIT=18;
 export const EXPORT_NAME="photo-studio.png";
 export const LABELS={empty:"empty",png:"PNG",jpeg:"JPEG",webp:"WebP",gif:"GIF",avif:"AVIF",heic:"HEIC",unknown:"unknown"};
 const HEIC=["heic","heif","mif1","msf1","heix"];
@@ -5707,10 +5961,14 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
  retry.addEventListener("click",()=>{retry.hidden=true;if(lastSource==="paste")pasteButton();else file.click()});
  const imageOf=items=>{for(const it of items||[])if(it.kind==="file"&&/^image\//.test(it.type))return it.getAsFile();return null};
  document.addEventListener("paste",e=>{const t=e.target;if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;const cd=e.clipboardData;if(!cd)return;
-  const f=(cd.files&&[...cd.files].find(x=>/^image\//.test(x.type)))||imageOf(cd.items);if(!f){setStatus("failure",MESSAGES.noClipboardImage);box.dataset.photoOutcome="";return}e.preventDefault();importFile(f,"paste")});
- async function pasteButton(){if(!(navigator.clipboard&&navigator.clipboard.read)){setStatus("failure",MESSAGES.clipboardUnavailable);retry.hidden=false;return}
-  try{const items=await navigator.clipboard.read();for(const item of items){const type=item.types.find(t=>/^image\//.test(t));if(type){const blob=await item.getType(type);await importFile(new File([blob],"clipboard",{type}),"paste");return}}
-   setStatus("failure",MESSAGES.noClipboardImage)}catch(e){setStatus("failure",MESSAGES.clipboardUnavailable);retry.hidden=false}}
+  const f=(cd.files&&[...cd.files].find(x=>/^image\//.test(x.type)))||imageOf(cd.items);if(f){e.preventDefault();importFile(f,"paste");return}
+  const text=cd.getData?cd.getData("text/plain"):"";if(text){try{const payload=clipboardTextImage(text);if(payload){e.preventDefault();importBytes(fromBase64(payload.data),payload.mime,"paste");return}}
+   catch(err){e.preventDefault();setStatus("failure",CLIPBOARD_MESSAGES[err.code]);box.dataset.photoOutcome="";return}}
+  setStatus("failure",MESSAGES.noClipboardImage);box.dataset.photoOutcome=""});
+ /* Ironmate's order: image text first, then the clipboard's PNG, JPEG or WebP; one error code when nothing comes of it. The page's own checks (decide) say why an image is refused. */
+ async function pasteButton(){box.dataset.busy="1";let tried=false;try{const r=await clipboardPick(navigator.clipboard,async(bytes,mime)=>{tried=true;await importBytes(bytes,mime,"paste");if(box.dataset.photoPhase==="failure")throw new Error("rejected")},"import");
+  if(r.ok||(r.code==="clipboard-invalid-image"&&tried&&box.dataset.photoPhase==="failure"))return;   /* importBytes has already said why this image was refused */
+  setStatus("failure",CLIPBOARD_MESSAGES[r.code]);box.dataset.photoOutcome="";retry.hidden=false}finally{delete box.dataset.busy}}
  $("[data-paste]").addEventListener("click",pasteButton);
  box.addEventListener("dragover",e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files"))e.preventDefault()});
  box.addEventListener("drop",e=>{const f=e.dataTransfer&&[...e.dataTransfer.files].find(x=>/^image\//.test(x.type)||x.type==="");if(f){e.preventDefault();importFile(f,"insert")}});
@@ -5740,6 +5998,9 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
  $("[data-copy-rect]").addEventListener("click",()=>copyRect(rectText));$("[data-copy-csv]").addEventListener("click",()=>copyRect(rectCsv));
  async function exportBlob(){const[ew,eh]=exportSize(studio.width,studio.height,2),c=document.createElement("canvas");c.width=ew;c.height=eh;const x=c.getContext("2d");x.scale(ew/studio.width,eh/studio.height);
   paint(x,studio.width,studio.height,studio.state,doc(),{selection:false});const blob=await new Promise(r=>c.toBlob(r,"image/png"));box.dataset.exportSize=ew+"x"+eh;return blob}
+ for(const[sel,uri]of[["[data-copy-b64-uri]",true],["[data-copy-b64]",false]])$(sel).addEventListener("click",async()=>{try{const blob=await exportBlob();if(!blob){say("Could not save the photo.");return}
+   const text=pngBase64Text(new Uint8Array(await blob.arrayBuffer()),uri);box.dataset.b64Length=String(text.length);say((await copyText(text))?"Copied the PNG as Base64 ("+text.length+" characters).":"Could not copy.")}
+  catch(e){say(e.message==="over 32 MiB"?"The PNG is over 32 MiB: too large to hand off as text.":"Could not save the photo.")}});
  $("[data-export]").addEventListener("click",async()=>{try{const blob=await exportBlob();if(!blob){say("Could not save the photo.");return}box.dataset.exportBytes=String(blob.size);
    const url=URL.createObjectURL(blob),a=document.createElement("a");if(!("download" in a)){window.open(url,"_blank");say("Opened the PNG in a new tab: press and hold it to save.");return}
    a.href=url;a.download=EXPORT_NAME;a.hidden=true;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);say("Saved as PNG.")}catch(e){say("Could not save the photo.")}});
@@ -5763,7 +6024,7 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
  const reward=new URLSearchParams(location.hash.slice(1)).get("stamp");if(["⭐","🎵","🎨","🏆","🌈","💎","🚀","👑"].includes(reward)){custom.value=reward;studio.armStamp(reward)}
  box.photo={studio,docs,importBytes,check,fit,render,sync};fit();setStatus("idle",MESSAGES.idle);after();return box})}
 globalThis.webUiPhoto={fixed,sniff,pngComplete,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
- rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS};
+ rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS,clipboardPick,clipboardTextImage,decodeImageText,pngBase64Text,sniffImageMime,CLIPBOARD_MESSAGES};
 if(typeof document!=="undefined")bindPhoto();
 """
 

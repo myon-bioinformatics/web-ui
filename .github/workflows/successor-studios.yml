@@ -10,6 +10,9 @@ on:
       - .github/workflows/successor-studios.yml
   push:
     branches: [main]
+concurrency:
+  group: successor-studios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
