@@ -6,7 +6,8 @@
   "exports": [
     "Synth",
     "start",
-    "now"
+    "now",
+    "setContext"
   ],
   "packages": [
     "@babel/runtime",
@@ -16,9 +17,9 @@
     "tslib"
   ],
   "subset": {
-    "bytes": 237120,
+    "bytes": 237137,
     "gzip_bytes": 61374,
-    "sha256": "9da01ad4f38d2b0c69208bf05ff8ba8547a0622c8579dbdbf417cc43ed13dba4"
+    "sha256": "944ddf682813e678e1b3ecb8a92c02e9648f117b8f0ee6d278c2a3f68027cb41"
   },
   "full_umd": {
     "bytes": 345500,

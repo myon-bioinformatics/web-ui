@@ -78,7 +78,7 @@ The existing key/mode/progression is converted to explicit arpeggiated notes by
 **Use progression as notes**. **Play notes** uses the current notes, BPM and note
 value. A bounded plan (1..256 notes, MIDI 0..127) has integer microsecond timing;
 Python and JS agree. Stop disposes the voice and cancels a pending asynchronous
-load. Next playback and pagehide also dispose it. No autoplay or remote samples.
+load. The native AudioContext is created/resumed synchronously in the user gesture before the lazy import, then passed to Tone via setContext; this preserves the user gesture across lazy loading. Context startup waits are bounded and Stop cancels pending playback immediately. Stop suspends that context; pagehide closes it. Next playback and pagehide also dispose the voice. No autoplay or remote samples.
 
 Tone.js is **optional** and loaded locally only after Play. Build-free pages and
 all pure calculations need neither npm nor Tone. Build and serve an audio-enabled
@@ -92,7 +92,7 @@ python -m http.server 8000 --directory build/site
 ```
 
 Node 26, Tone 15.1.22, esbuild 0.25.12 and npm's lockfile are fixed. The build
-exports `Synth`, `start`, `now`; it emits `tone-studio.min.js`, all bundled-package
+exports `Synth`, `start`, `now`, `setContext`; it emits `tone-studio.min.js`, all bundled-package
 licenses, and a JSON measurement/hash receipt. No build output is checked into
 source or added to default Python dependencies. The audio build is an optional
 browser artifact, not a second canonical JS source tree. Tone's internal
@@ -104,7 +104,7 @@ Two identical builds on Linux x86_64 / Node 26.13.0 produced the same bytes:
 | Tone 15.1.22 artifact | Bytes | gzip bytes |
 |---|---:|---:|
 | Upstream full UMD build | 345,500 | 79,843 |
-| Minified ESM subset | 237,120 | 61,374 |
+| Minified ESM subset | 237,137 | 61,374 |
 
 These are artifact sizes, not startup-time or memory measurements. The full UMD
 is already minified upstream; ESM and UMD formats differ, so the comparison is a
@@ -133,3 +133,14 @@ progression-to-notes, real waveform generation, Stop, no external HTTP requests.
 acceptance suite in Chromium, Firefox and WebKit with generated audio and preserves the measurement artifacts.
 Existing Python, Node, shared-board, UI, DOM and platform-matrix workflows remain.
 Phone widths are browser emulation; native iOS/Android behavior is not certified.
+
+Headless Firefox also requires an actual clocked audio output. CI starts a
+PulseAudio null sink (no speakers) before the real-signal tests. This is test
+infrastructure, not a runtime dependency of the static site; autoplay blocking
+is not disabled. A bare AudioContext stayed suspended in the no-device probe,
+so that condition is distinguished from a Tone.js failure.
+
+A sporadic existing WebKit ResizeObserver loop during EXIF imports was also
+observed. Photo studio now observes a zero-height width probe rather than the
+canvas parent whose height changes during imports; existing orientation/resize
+acceptance tests cover this behavior without filtering browser errors.

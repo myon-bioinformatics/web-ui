@@ -89,6 +89,11 @@ def test_audio_cross_runtime_and_player_stop_race():
     assert result['calls'][0] == ['A4',0.2125,10.05]
 
 
+def test_audio_wait_is_cancellable_and_bounded_without_a_device():
+    expression="""await(async()=>{const tone={start:()=>new Promise(()=>{})},p=m.createAudioPlayer(async()=>tone,()=>{},5);let timeout=false;try{await p.play([])}catch(e){timeout=e.message==="audio start timeout"}const q=m.createAudioPlayer(()=>new Promise(()=>{}));const pending=q.play([]);q.stop();return{timeout,cancelled:await pending}})()"""
+    assert js_call('studio-audio.js',expression,None)=={'timeout':True,'cancelled':None}
+
+
 def test_timeline_is_utc_ordered_even_across_local_dates():
     rows=[{'id':'ny','title':'NY','zone':'America/New_York','utc_ms':1793512800000},
           {'id':'jp','title':'JP','zone':'Asia/Tokyo','utc_ms':1793509200000}]

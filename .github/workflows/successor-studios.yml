@@ -40,6 +40,14 @@ jobs:
           cmp build/site/vendor/tone-studio.min.js build/repeat/vendor/tone-studio.min.js
           cmp build/site/vendor/tone-studio.LICENSE.txt build/repeat/vendor/tone-studio.LICENSE.txt
       - run: python -m playwright install --with-deps ${{ matrix.browser }}
+      - name: Start a virtual audio output for headless browser signal tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=studio_test
+          pactl set-default-sink studio_test
+          pactl info
       - run: python tests/integration/successor_browser.py -v
         env:
           WEBUI_BROWSER: ${{ matrix.browser }}

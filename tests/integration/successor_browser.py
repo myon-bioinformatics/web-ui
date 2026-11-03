@@ -79,6 +79,12 @@ class SuccessorBrowser(unittest.TestCase):
                 page.reload();expect(page.locator('[data-value]')).to_contain_text('Count: 0')
                 page.goto(self.origin+'/examples/'+reward_url.removeprefix('./'))
                 expect(page.locator('[data-ui-photo]')).to_have_attribute('data-armed','⭐')
+                for index,glyph in enumerate(('👩\u200d💻','👨\u200d👩\u200d👧\u200d👦','🇯🇵','1️⃣')):
+                    page.locator('[data-custom]').fill(glyph)
+                    page.locator('[data-arm]').click()
+                    expect(page.locator('[data-ui-photo]')).to_have_attribute('data-armed',glyph)
+                    page.locator('[data-stage]').click(position={'x':40+index*45,'y':80})
+                    self.assertEqual(page.locator('[data-ui-photo]').evaluate('b=>b.photo.studio.state.stamps.at(-1).emoji'),glyph)
                 page.close()
 
     def test_timeline_local_entry_sorted_utc_and_dst_validation(self):
@@ -101,13 +107,14 @@ class SuccessorBrowser(unittest.TestCase):
         page=self.browser.new_page(viewport={'width':390,'height':844})
         errors=[];requests=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
+        page.on('console',lambda m:print('audio console:',m.type,m.text) if m.type in ('warning','error') else None)
         page.on('request',lambda r:requests.append(r.url))
         page.goto(self.origin+'/examples/composition-studio.html')
         self.assertFalse(any('tone-studio.min.js' in r for r in requests))
         page.locator('[data-progression-notes]').click()
         self.assertEqual(page.locator('[data-notes]').input_value().split(),u.progression_notes('C','I V vi IV'))
         page.locator('[data-audio-play]').click()
-        expect(page.locator('[data-audio-status]')).to_have_text('Scheduled 12 notes')
+        expect(page.locator('[data-audio-status]')).to_have_text('Scheduled 12 notes',timeout=10000)
         page.locator('[data-audio-stop]').click();expect(page.locator('[data-audio-status]')).to_have_text('Stopped')
         # Real Web Audio signal: not just a mocked Synth call.
         signal=page.evaluate('''async()=>{const tone=await import('/vendor/tone-studio.min.js');await tone.start();const voice=new tone.Synth({volume:-18}).toDestination(),ctx=voice.context.rawContext,analyser=ctx.createAnalyser();analyser.fftSize=2048;voice.connect(analyser);voice.triggerAttackRelease('A4',0.3,tone.now()+0.02);let peak=0;for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,20));const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);for(const v of data)peak=Math.max(peak,Math.abs(v))}voice.dispose();analyser.disconnect();return{peak,state:ctx.state}}''')
