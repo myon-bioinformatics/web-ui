@@ -2582,6 +2582,8 @@ class PlaygroundBrowserTests(unittest.TestCase):
         page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
         if clock:
             page.clock.install()
+            # Freeze real time before navigation; run_for alone still lets wall time advance.
+            page.clock.pause_at(page.evaluate("Date.now() + 1000"))
         page.goto(self.origin + '/play.html')
         return page
 

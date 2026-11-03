@@ -4173,8 +4173,8 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
                      "click": {"target": "#playground [data-irony-next]", "observe": "#playground [data-irony-arena]", "attribute": "data-spawn", "before": None, "after": ""}},
     "web-ui-mcp-lab": {"page": "mcp-lab.html", "elements": ["#mcp h2", "#mcp [data-mcp-sessions]", "#mcp [data-mcp-template=\"initialize\"]"],
                        "click": {"target": "#mcp [data-mcp-template=\"initialize\"]", "observe": "#mcp", "attribute": "data-template", "before": None, "after": "initialize"}},
-    # The request form is lower on the page, so this one opens at it (#mcp-method) to keep everything on the first screen.
-    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method", "elements": ["#mcp-method", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
+    # The request form is lower on the page, so this one opens at its label (#mcp-method-label) to keep everything on the first screen.
+    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method-label", "elements": ["#mcp-method-label", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
                         "click": {"target": "#mcp [data-mcp-send]", "observe": "#mcp", "attribute": "data-http-status", "before": None, "after": "400"}},
     "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
                            "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
@@ -6254,7 +6254,7 @@ def mcp_html() -> str:
             '<p class="ui-muted" role="status" aria-live="polite" data-mcp-sessions></p>'
             '<h3>Send a request</h3><p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
             f'<div class="ui-mcp-row">{buttons}</div>'
-            '<label for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
+            '<label id="mcp-method-label" for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
             '<label for="mcp-path">Path</label><input class="ui-input" id="mcp-path" data-mcp-path value="/mcp" autocomplete="off">'
             '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="3"></textarea>'
             '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="8"></textarea>'
