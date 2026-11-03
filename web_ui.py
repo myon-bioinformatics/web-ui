@@ -46,6 +46,8 @@ export function prettyJson(value){return JSON.stringify(value,null,2)}
 /** Copy a value as text; falls back to a hidden textarea where the async clipboard is missing (plain http, old WebViews). */
 export async function copyText(value){const text=String(value);try{await navigator.clipboard.writeText(text)}catch(error){const box=document.createElement("textarea");box.value=text;box.setAttribute("readonly","");box.style.cssText="position:fixed;opacity:0";try{document.body.append(box);box.select();if(typeof document.execCommand!=="function"||!document.execCommand("copy"))throw error}finally{box.remove()}}}
 /** Switch data-ui-theme on <body> with no reload: controls are <select data-ui-theme-switch> or radios named ui-theme. The choice is remembered (localStorage, best effort). Returns the theme in effect. */
+/** Buttons with data-ui-toggle flip aria-pressed on click (memory only: nothing is saved); data-label-on / data-label-off, when present, rename the button. */
+export function bindToggles(root=document){return[...root.querySelectorAll("[data-ui-toggle]")].map(b=>{const sync=()=>{const label=b.getAttribute("aria-pressed")==="true"?b.dataset.labelOn:b.dataset.labelOff;if(label){b.setAttribute("aria-label",label);b.title=label}};b.addEventListener("click",()=>{b.setAttribute("aria-pressed",String(b.getAttribute("aria-pressed")!=="true"));sync()});sync();return b})}
 export function bindTheme(root=document,{key="web-ui-theme"}={}){const body=document.body,controls=[...root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]")];const known=name=>controls.some(c=>c.tagName==="SELECT"?[...c.options].some(o=>o.value===name):c.value===name);const sync=()=>{for(const c of controls){if(c.tagName==="SELECT")c.value=body.dataset.uiTheme;else c.checked=c.value===body.dataset.uiTheme}};let saved=null;try{saved=localStorage.getItem(key)}catch{}if(saved&&known(saved))body.dataset.uiTheme=saved;sync();for(const c of controls)c.addEventListener("change",()=>{if(!known(c.value))return;body.dataset.uiTheme=c.value;sync();try{localStorage.setItem(key,c.value)}catch{}});return body.dataset.uiTheme}
 /** Mark on-screen elements with data-lit (IntersectionObserver); CSS decides what lit looks like. Without IntersectionObserver every element counts as lit. Returns a stop function. */
 export function observeLit(targets,{threshold=0.4,root=null}={}){const nodes=typeof targets==="string"?[...document.querySelectorAll(targets)]:[...targets];if(typeof IntersectionObserver==="undefined"){for(const n of nodes)n.dataset.lit="";return()=>{}}const io=new IntersectionObserver(entries=>{for(const e of entries){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{threshold,root});for(const n of nodes)io.observe(n);return()=>io.disconnect()}
@@ -402,6 +404,38 @@ def _require_local_or_https(value: str, *, label: str, allow_query: bool = True)
 
 # The stylesheets, as data: Python is the only source (there are no css/ files). Names are kept so the bundle order is stable.
 _CSS = {
+    "shell.css": (
+        "@layer components{"
+        ".ui-shell{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;height:100vh;height:100dvh;min-width:0;background:var(--ui-bg);color:var(--ui-fg)}"
+        ".ui-shell-radio{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}"
+        ".ui-shell-icons{position:absolute;width:0;height:0;overflow:hidden}"
+        ".ui-shell svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}"
+        ".ui-shell-header{display:flex;align-items:center;gap:8px;min-height:56px;padding:0 8px;background:var(--ui-panel);border-bottom:1px solid var(--ui-border)}"
+        ".ui-shell-title{flex:1;min-width:0;margin:0 8px;font-size:1.25rem;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".ui-shell-actions{display:flex;align-items:center;gap:8px;flex:none}.ui-shell-actions .ui-input{padding:8px;max-width:128px}"
+        ".ui-icon-button{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;border-radius:50%;flex:none;cursor:pointer}"
+        ".ui-icon-button[aria-pressed=true] svg{fill:currentColor}"
+        ".ui-shell-body{display:flex;min-height:0}"
+        ".ui-rail{display:none;flex-direction:column;gap:8px;width:80px;flex:none;padding:8px;border-right:1px solid var(--ui-border);background:var(--ui-panel);overflow:auto}"
+        ".ui-rail-item,.ui-bottom-item{display:flex;align-items:center;gap:16px;min-height:48px;padding:0 16px;border-radius:var(--ui-radius);cursor:pointer}"
+        ".ui-rail-label,.ui-bottom-label{font-size:.75rem}"
+        ".ui-shell-main{flex:1;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;padding:24px;overscroll-behavior:contain}"
+        ".ui-shell-main h2{margin:0 0 16px;font-size:1.5rem;font-weight:400}"
+        ".ui-shell-tags{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}"
+        ".ui-shell-cards{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(256px,1fr))}"
+        ".ui-shell-card{display:flex;gap:16px;margin:0;min-width:0}.ui-shell-card h3{margin:0 0 8px;font-size:1rem;font-weight:400}.ui-shell-card p{margin:0;overflow-wrap:anywhere}"
+        ".ui-shell-table{width:100%;border-collapse:collapse}.ui-shell-table th,.ui-shell-table td{padding:8px 16px;border-bottom:1px solid var(--ui-border);text-align:left}"
+        ".ui-shell-scroll{overflow-x:auto}.ui-shell-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}"
+        ".ui-bottom-nav{display:flex;border-top:1px solid var(--ui-border);background:var(--ui-panel)}"
+        ".ui-bottom-item{flex:1;flex-direction:column;justify-content:center;gap:0;min-height:64px;padding:8px 0;text-align:center}"
+        "@media(min-width:900px){.ui-rail{display:flex}.ui-bottom-nav{display:none}.ui-rail-item{justify-content:center;padding:0}"
+        ".ui-rail-label{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}"
+        "@media(min-width:1200px){.ui-rail{width:256px}.ui-rail-item{justify-content:flex-start;padding:0 16px}"
+        ".ui-rail-label{position:static;width:auto;height:auto;margin:0;overflow:visible;clip-path:none;white-space:normal}}"
+        "@media(max-height:480px){.ui-shell{height:auto;min-height:100dvh}.ui-shell-body{min-height:240px}.ui-shell-main{overflow:visible}}"
+        "@media(prefers-reduced-motion:reduce){.ui-shell-main{scroll-behavior:auto}}"
+        "}"
+    ),
     "tokens.css": r""":root{--ui-bg:#0d1117;--ui-panel:#101820;--ui-fg:#d1f7c4;--ui-muted:#8b949e;--ui-border:#58a6ff;--ui-accent:#7ee787;--ui-danger:#cf222e;--ui-radius:0;--ui-space:1rem;--ui-max:960px;--ui-font:Meiryo,メイリオ,sans-serif;--ui-font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
 """,
     "base.css": r"""@layer base{*{box-sizing:border-box}body{margin:0;background:var(--ui-bg);color:var(--ui-fg);font:16px/1.6 var(--ui-font)}pre,code,kbd,samp{font-family:var(--ui-font-mono)!important}.ui-page{max-width:var(--ui-max);margin:auto;padding:1.25rem}a{color:inherit}}""",
@@ -2574,6 +2608,142 @@ def world_document(spec: Any, *, theme: str = "modern") -> str:
                            css=bundled_css() + world_css(world), embedded_modules=("world.js",))
 
 
+# --- App shell showcase: a header, a rail (wide) or bottom bar (narrow), sections that switch with no reload and no script ------------
+# Absorbs flutter_navigation_basic's UI Showcase layout (the HTML comparison experiment) as a theme-aware, data-driven component.
+
+SHOWCASE_SCHEMA = "web-ui-showcase/1"
+SHOWCASE_ICONS: dict[str, str] = {
+    "star": "m12 3 2.8 6 6.5.8-4.8 4.5 1.3 6.5-5.8-3.3-5.8 3.3 1.3-6.5L2.7 9.8 9.2 9Z",
+    "overview": "M3 3h7v9H3ZM14 3h7v5h-7ZM3 16h7v5H3ZM14 12h7v9h-7Z",
+    "components": "M3 3h6v6H3ZM3 15h6v6H3ZM15 15h6v6h-6ZM17 2l5 5-5 5-5-5Z",
+    "data": "M3 4h18v16H3ZM3 9h18M9 9v11M15 9v11",
+    "media": "M3 4h18v16H3Zm2 13 5-6 4 4 2-2 3 4",
+    "responsive": "M3 5h18v14H3ZM16 5v14M16 12h5",
+    "tune": "M3 6h10m4 0h4M3 12h4m4 0h10M3 18h12m4 0h2M13 3v6M7 9v6M15 15v6",
+    "layers": "m12 3 9 7-9 7-9-7Zm-9 12 9 7 9-7",
+    "home": "m3 10 9-7 9 7M6 9v11h4v-7h4v7h4V9",
+    "info": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 11v6M12 7.5v.5",
+}
+
+
+def showcase_validate(spec: Any) -> dict[str, Any]:
+    """Checked copy of a ``web-ui-showcase/1`` spec: ``title``, optional ``emoji``, ``favorite`` and ``themes`` flags, and 2..6 sections, each with
+    ``id``, ``label``, ``icon`` (a ``SHOWCASE_ICONS`` name), ``heading`` and any of ``lead``, ``tags``, ``cards``, ``table``, ``controls``."""
+    if not isinstance(spec, dict) or spec.get("schema") != SHOWCASE_SCHEMA:
+        raise ValueError(f"expected schema {SHOWCASE_SCHEMA}")
+    if set(spec) - {"schema", "id", "title", "emoji", "favorite", "themes", "sections"}:
+        raise ValueError("a showcase has schema, id, title, emoji, favorite, themes and sections")
+    sid = spec.get("id", "showcase")
+    if not isinstance(sid, str) or not _WORLD_ID.fullmatch(sid):
+        raise ValueError("id must be a lowercase token")
+    flags = {key: spec.get(key, False) for key in ("favorite", "themes")}
+    if any(not isinstance(v, bool) for v in flags.values()):
+        raise ValueError("favorite and themes are true or false")
+    sections_in = spec.get("sections")
+    if not isinstance(sections_in, list) or not 2 <= len(sections_in) <= 6:
+        raise ValueError("a showcase has 2..6 sections")
+    seen: set[str] = set()
+    sections = []
+    for sec in sections_in:
+        if not isinstance(sec, dict) or set(sec) - {"id", "label", "icon", "heading", "lead", "tags", "cards", "table", "controls"}:
+            raise ValueError("a section has id, label, icon, heading, lead, tags, cards, table and controls")
+        icon = sec.get("icon", "info")
+        if icon not in SHOWCASE_ICONS:
+            raise ValueError(f"unknown icon {icon!r} (one of {', '.join(SHOWCASE_ICONS)})")
+        tags = sec.get("tags", [])
+        if not isinstance(tags, list) or len(tags) > 8:
+            raise ValueError("tags is a list of up to 8 strings")
+        cards = sec.get("cards", [])
+        if not isinstance(cards, list) or len(cards) > 8:
+            raise ValueError("cards is a list of up to 8")
+        table = sec.get("table")
+        if table is not None:
+            if not isinstance(table, dict) or set(table) - {"columns", "rows"} or not isinstance(table.get("columns"), list) \
+                    or not 1 <= len(table["columns"]) <= 6 or not isinstance(table.get("rows"), list) or len(table["rows"]) > 16 \
+                    or any(not isinstance(r, list) or len(r) != len(table["columns"]) for r in table["rows"]):
+                raise ValueError("a table has 1..6 columns and up to 16 rows of the same width")
+            table = {"columns": [_world_text(c, "column", 40) for c in table["columns"]],
+                     "rows": [[_world_text(c, "cell", 80, required=False) for c in r] for r in table["rows"]]}
+        if not isinstance(sec.get("controls", False), bool):
+            raise ValueError("controls is true or false")
+        out_cards = []
+        for card in cards:
+            if not isinstance(card, dict) or set(card) - {"icon", "title", "body"} or card.get("icon", "info") not in SHOWCASE_ICONS:
+                raise ValueError("a card has an icon name, title and body")
+            out_cards.append({"icon": card.get("icon", "info"), "title": _world_text(card.get("title"), "title", 60),
+                              "body": _world_text(card.get("body"), "body", 240)})
+        sections.append({"id": _world_id(sec.get("id"), "section id", seen), "label": _world_text(sec.get("label"), "label", 24), "icon": icon,
+                         "heading": _world_text(sec.get("heading"), "heading", 80), "lead": _world_text(sec.get("lead", ""), "lead", 240, required=False),
+                         "tags": [_world_text(t, "tag", 40) for t in tags], "cards": out_cards, "table": table, "controls": sec.get("controls", False)})
+    return {"schema": SHOWCASE_SCHEMA, "id": sid, "title": _world_text(spec.get("title", "Showcase"), "title", 60),
+            "emoji": _world_text(spec.get("emoji", ""), "emoji", 16, required=False), **flags, "sections": sections}
+
+
+def showcase_css(spec: Any) -> str:
+    """The rules that depend on the sections: which one shows, which control looks selected or focused. Plain CSS, no script."""
+    show = showcase_validate(spec)
+    sid, rules = show["id"], []
+    for sec in show["sections"]:
+        radio, label = f"#{sid}-sec-{sec['id']}", f"label[for=\"{sid}-sec-{sec['id']}\"]"
+        rules.append(f'#{sid}:has({radio}:checked) .ui-shell-section:not([data-section="{sec["id"]}"]){{display:none}}')
+        rules.append(f'#{sid}:has({radio}:checked) {label}{{background:var(--ui-accent);color:var(--ui-bg)}}')
+        rules.append(f'#{sid}:has({radio}:focus-visible) {label}{{outline:2px solid var(--ui-fg);outline-offset:2px}}')
+    return "@layer components{" + "".join(rules) + "}"
+
+
+def showcase_html(spec: Any) -> str:
+    """The shell as semantic HTML. Sections switch through radio buttons (rail and bottom bar share them), so there is no reload and no script;
+    only the favorite button and the theme list use ``bindToggles`` / ``bindTheme`` from ui.js. Everything is escaped."""
+    show = showcase_validate(spec)
+    sid, sections = show["id"], show["sections"]
+    used = sorted({s["icon"] for s in sections} | {c["icon"] for s in sections for c in s["cards"]} | ({"star"} if show["favorite"] else set()))
+    sprite = "".join(f'<symbol id="{sid}-icon-{name}" viewBox="0 0 24 24"><path d="{SHOWCASE_ICONS[name]}"/></symbol>' for name in used)
+    icon = lambda name: f'<svg aria-hidden="true"><use href="#{sid}-icon-{name}"/></svg>'
+    radios = "".join(f'<input class="ui-shell-radio" type="radio" name="{sid}-section" id="{sid}-sec-{s["id"]}" value="{s["id"]}"{" checked" if i == 0 else ""}>'
+                     for i, s in enumerate(sections))
+    nav = lambda css, label_css: "".join(f'<label class="{css}" for="{sid}-sec-{s["id"]}">{icon(s["icon"])}<span class="{label_css}">{escape(s["label"])}</span></label>'
+                                         for s in sections)
+    favorite = ('<button class="ui-button ui-icon-button" type="button" data-ui-toggle aria-pressed="false" aria-label="Favorite this page" '
+                f'title="Favorite this page" data-label-off="Favorite this page" data-label-on="Remove from favorites">{icon("star")}</button>' if show["favorite"] else "")
+    themes = ('<select class="ui-input" data-ui-theme-switch aria-label="Theme">' + "".join(f'<option value="{t}">{t}</option>' for t in (*THEMES, *CANDIDATE_THEMES))
+              + "</select>" if show["themes"] else "")
+
+    def body(s: dict[str, Any]) -> str:
+        out = [f'<h2 id="{sid}-h-{s["id"]}">{escape(s["heading"])}</h2>']
+        if s["lead"]:
+            out.append(f'<p class="ui-muted">{escape(s["lead"])}</p>')
+        if s["tags"]:
+            out.append('<div class="ui-shell-tags">' + "".join(f'<span class="ui-tag">{escape(t)}</span>' for t in s["tags"]) + "</div>")
+        if s["cards"]:
+            out.append('<div class="ui-shell-cards">' + "".join(
+                f'<article class="ui-card ui-shell-card">{icon(c["icon"])}<div><h3>{escape(c["title"])}</h3><p>{escape(c["body"])}</p></div></article>'
+                for c in s["cards"]) + "</div>")
+        if s["table"]:
+            head = "".join(f'<th scope="col">{escape(c)}</th>' for c in s["table"]["columns"])
+            rows = "".join("<tr>" + "".join(f"<td>{escape(c)}</td>" for c in r) + "</tr>" for r in s["table"]["rows"])
+            out.append(f'<div class="ui-shell-scroll"><table class="ui-shell-table"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
+        if s["controls"]:
+            out.append(f'<div class="ui-shell-controls"><label for="{sid}-demo-input">Input</label><input class="ui-input" id="{sid}-demo-input" value="shared semantic HTML"> '
+                       '<button class="ui-button" type="button">Button</button><span class="ui-tag">tag</span></div>'
+                       '<article class="ui-panel"><h3>Panel</h3><p class="ui-muted">Muted text on a panel, using the current theme.</p></article>')
+        return "".join(out)
+
+    main = "".join(f'<section class="ui-shell-section" data-section="{s["id"]}" aria-labelledby="{sid}-h-{s["id"]}">{body(s)}</section>' for s in sections)
+    title = f'{escape(show["emoji"])} {escape(show["title"])}'.strip()
+    return (f'<div class="ui-shell" id="{sid}"><svg class="ui-shell-icons" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">{sprite}</svg>{radios}'
+            f'<header class="ui-shell-header"><h1 class="ui-shell-title">{title}</h1><div class="ui-shell-actions">{themes}{favorite}</div></header>'
+            f'<div class="ui-shell-body"><nav class="ui-rail" aria-label="Sections">{nav("ui-rail-item", "ui-rail-label")}</nav>'
+            f'<main class="ui-shell-main" tabindex="0" aria-label="Content, scrollable">{main}</main></div>'
+            f'<nav class="ui-bottom-nav" aria-label="Sections (compact)">{nav("ui-bottom-item", "ui-bottom-label")}</nav></div>')
+
+
+def showcase_document(spec: Any, *, theme: str = "modern") -> str:
+    """A single-file page for a showcase: bundled CSS, its section rules, its HTML and the two ui.js helpers it uses."""
+    show = showcase_validate(spec)
+    return render_document(trusted_html=showcase_html(show) + module_script(EMBEDDED_UI_JS + "\nbindTheme();bindToggles();\n"),
+                           title=show["title"], theme=theme, css=bundled_css() + showcase_css(show))
+
+
 def random_theme(seed: int) -> dict[str, str]:
     """A seeded palette plus corner radius as ``--ui-*`` tokens; every text pair meets WCAG AA by construction."""
     rng = random.Random(seed)
@@ -3084,7 +3254,8 @@ def _example_cards() -> str:
     return ('<section class="ui-grid"><article class="ui-card"><h2>Components</h2><p>Tokens, panels, cards, tags, controls and output surfaces.</p>'
             '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
             '<article class="ui-card"><h2>Stub examples</h2><p><a href="./mcp-stub.html">MCP Stub</a> · <a href="./api-stub.html">API Stub</a></p></article>'
-            '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article></section>')
+            '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article>'
+            '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -3112,6 +3283,7 @@ def example_pages() -> dict[str, str]:
         "examples/mcp-stub.html": stub_document(EXAMPLE_STUBS["mcp"]),
         "examples/api-stub.html": stub_document(EXAMPLE_STUBS["api"]),
         "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
+        "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -3193,6 +3365,47 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                  'vars': {'--ui-matrix-col': '240px',
                                           '--ui-matrix-gap': '16px',
                                           '--ui-matrix-pad': '8px'}}]},
+ 'showcase': {'schema': 'web-ui-showcase/1',
+              'id': 'showcase',
+              'title': 'UI Showcase',
+              'emoji': '🎨',
+              'favorite': True,
+              'themes': True,
+              'sections': [{'id': 'overview',
+                            'label': 'Overview',
+                            'icon': 'overview',
+                            'heading': 'One shell, any content',
+                            'lead': 'Python builds this page from one spec. Pick a section on the rail (wide screens) or the bottom bar (narrow ones).',
+                            'tags': ['Python builds it', 'No reload', 'No script to switch', 'Any theme'],
+                            'cards': [{'icon': 'responsive',
+                                       'title': 'Responsive navigation',
+                                       'body': 'A rail on wide screens and a bottom bar on narrow ones; both choose the same section.'},
+                                      {'icon': 'tune',
+                                       'title': 'Data in, page out',
+                                       'body': 'Labels, icons and sections come from data, so another repository only supplies its own spec.'},
+                                      {'icon': 'layers',
+                                       'title': 'Low coupling',
+                                       'body': 'Plain ui-* classes and tokens only: every theme, including random ones, applies.'}]},
+                           {'id': 'components',
+                            'label': 'Components',
+                            'icon': 'components',
+                            'heading': 'Components',
+                            'lead': 'The shared controls, as the current theme draws them.',
+                            'controls': True},
+                           {'id': 'data',
+                            'label': 'Data',
+                            'icon': 'data',
+                            'heading': 'Data',
+                            'table': {'columns': ['Piece', 'Written in', 'Checked by'],
+                                      'rows': [['Rules', 'Python', 'unit tests'],
+                                               ['Page script', 'JavaScript', 'Chromium, against Python'],
+                                               ['Styles', 'CSS, from Python', 'contrast and layout sweeps']]}},
+                           {'id': 'media',
+                            'label': 'Media',
+                            'icon': 'media',
+                            'heading': 'Media',
+                            'lead': 'Images are plain img elements with alt text; data-ui-lightbox opens them larger.',
+                            'tags': ['img', 'alt text', 'lightbox']}]},
  'world': {'schema': 'web-ui-world/1',
            'id': 'demo',
            'title': 'web-ui world (prototype)',

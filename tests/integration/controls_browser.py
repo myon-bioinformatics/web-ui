@@ -16,7 +16,7 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from web_ui import (EXAMPLE_STUBS, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
+from web_ui import (EXAMPLE_STUBS, showcase_document, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
                     clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label,
                     world_document, zone_offset, zone_rows)
 
@@ -779,6 +779,134 @@ class GeneratedSiteBrowserTests(unittest.TestCase):
                     self.assertEqual(errors, [])
                 finally:
                     browser.close()
+
+
+class ShowcaseBrowserTests(unittest.TestCase):
+    """The app shell in Chromium: sections switch with no reload, the rail gives way to the bottom bar, nothing overflows, every theme reads."""
+
+    def pages(self):
+        from web_ui import example_data
+        return WorldBrowserTests.serve({'showcase.html': showcase_document(example_data('showcase'))})
+
+    def test_sections_switch_by_rail_bottom_bar_and_keyboard_without_a_reload(self):
+        server, origin = self.pages()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 1280, 'height': 800})
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/showcase.html')
+                    page.evaluate('window.stay = 1')                                       # survives only if the page is never reloaded
+                    visible = lambda: [s.get_attribute('data-section') for s in page.locator('.ui-shell-section').all() if s.is_visible()]
+                    self.assertEqual(visible(), ['overview'])
+                    expect(page.locator('.ui-rail')).to_be_visible()
+                    expect(page.locator('.ui-bottom-nav')).to_be_hidden()
+                    self.assertEqual(page.locator('.ui-rail').bounding_box()['width'], 256)    # wide: the full rail, labels shown
+                    page.locator('.ui-rail label', has_text='Data').click()
+                    self.assertEqual(visible(), ['data'])
+                    expect(page.locator('.ui-shell-table')).to_be_visible()
+                    # Keyboard: the radios are one group, so the arrow keys move between sections.
+                    page.locator('#showcase-sec-data').focus()
+                    page.keyboard.press('ArrowRight')
+                    self.assertEqual(visible(), ['media'])
+                    page.keyboard.press('ArrowLeft'); page.keyboard.press('ArrowLeft')
+                    self.assertEqual(visible(), ['components'])
+                    # The selected control is drawn selected (and only that one), in the rail and in the bottom bar.
+                    selected = page.evaluate("""() => [...document.querySelectorAll('.ui-rail label')].map(l => getComputedStyle(l).backgroundColor !== 'rgba(0, 0, 0, 0)')""")
+                    self.assertEqual(selected, [False, True, False, False])
+                    # 80 px rail between 900 and 1199: labels stay for screen readers but are not drawn.
+                    page.set_viewport_size({'width': 1000, 'height': 800})
+                    self.assertEqual(page.locator('.ui-rail').bounding_box()['width'], 80)
+                    label = page.locator('.ui-rail .ui-rail-label').first
+                    self.assertLessEqual(label.bounding_box()['width'], 1)
+                    self.assertEqual(label.text_content(), 'Overview')
+                    # Narrow: the bottom bar replaces the rail and chooses the same sections.
+                    page.set_viewport_size({'width': 390, 'height': 800})
+                    expect(page.locator('.ui-rail')).to_be_hidden()
+                    expect(page.locator('.ui-bottom-nav')).to_be_visible()
+                    page.locator('.ui-bottom-nav label', has_text='Media').click()
+                    self.assertEqual(visible(), ['media'])
+                    page.locator('.ui-bottom-nav label', has_text='Overview').click()
+                    self.assertEqual(visible(), ['overview'])
+                    self.assertEqual(page.evaluate('window.stay'), 1)
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_favorite_is_memory_only_and_the_theme_list_works(self):
+        server, origin = self.pages()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 1280, 'height': 800})
+                    page.goto(origin + '/showcase.html')
+                    star = page.locator('[data-ui-toggle]')
+                    self.assertEqual((star.get_attribute('aria-pressed'), star.get_attribute('aria-label')), ('false', 'Favorite this page'))
+                    star.click()
+                    self.assertEqual((star.get_attribute('aria-pressed'), star.get_attribute('aria-label'), star.get_attribute('title')),
+                                     ('true', 'Remove from favorites', 'Remove from favorites'))
+                    star.focus(); page.keyboard.press('Space')
+                    self.assertEqual(star.get_attribute('aria-pressed'), 'false')
+                    star.click()
+                    self.assertEqual(page.evaluate('localStorage.length'), 0)              # nothing is saved for the favorite
+                    page.reload()
+                    self.assertEqual(page.locator('[data-ui-toggle]').get_attribute('aria-pressed'), 'false')
+                    page.locator('[data-ui-theme-switch]').select_option('green')
+                    self.assertEqual(page.evaluate('document.body.dataset.uiTheme'), 'green')
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_overflow_at_any_width_or_height_and_the_selection_reads_in_every_theme(self):
+        server, origin = self.pages()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    page.goto(origin + '/showcase.html')
+                    for width in (320, 384, 768, 899, 900, 1199, 1200, 1440):
+                        for height in (900, 432):
+                            for section in ('overview', 'components', 'data', 'media'):
+                                with self.subTest(width=width, height=height, section=section):
+                                    page.set_viewport_size({'width': width, 'height': height})
+                                    page.locator(f'label[for="showcase-sec-{section}"]:visible').first.click()
+                                    metrics = page.evaluate("""() => {
+                                        const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; };
+                                        const nav = [...document.querySelectorAll('.ui-rail, .ui-bottom-nav')].find(n => getComputedStyle(n).display !== 'none');
+                                        return {docW: document.documentElement.scrollWidth, innerW: innerWidth, header: box('.ui-shell-header'),
+                                                main: box('.ui-shell-main'), nav: nav.getBoundingClientRect().toJSON(), headerH: document.querySelector('.ui-shell-header').offsetHeight};
+                                    }""")
+                                    self.assertLessEqual(metrics['docW'], metrics['innerW'])           # no sideways scrolling
+                                    self.assertGreaterEqual(metrics['header'][0], 0); self.assertLessEqual(metrics['header'][1], width)
+                                    self.assertGreaterEqual(metrics['main'][0], 0); self.assertLessEqual(metrics['main'][1], width)
+                                    self.assertGreaterEqual(metrics['nav']['left'], 0); self.assertLessEqual(metrics['nav']['right'], width)
+                                    self.assertEqual(metrics['headerH'] % 8, 0)                       # the header is on the 8 px grid
+                    # The selected rail/bottom-bar item reads in every theme (accent on the page color, both ways round).
+                    page.set_viewport_size({'width': 1280, 'height': 800})
+                    page.locator('.ui-rail label', has_text='Overview').click()
+                    for theme in ('modern', 'github-like', 'green', 'red', 'blue'):
+                        with self.subTest(theme=theme):
+                            page.evaluate('theme => { document.body.dataset.uiTheme = theme }', theme)
+                            colors = page.evaluate("""() => {
+                                const l = document.querySelector('.ui-rail label[for="showcase-sec-overview"]'), s = getComputedStyle(l);
+                                const hex = c => '#' + c.match(/\\d+/g).slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('');
+                                return {bg: hex(s.backgroundColor), fg: hex(s.color)};
+                            }""")
+                            self.assertGreaterEqual(contrast_ratio(colors['fg'], colors['bg']), 4.5, colors)
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

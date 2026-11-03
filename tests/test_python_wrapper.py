@@ -644,6 +644,64 @@ class StubTests(unittest.TestCase):
         self.assertIn('bindStub({input:"#mcp-query"', page)
 
 
+SHOWCASE = web_ui.example_data("showcase")
+
+
+class ShowcaseTests(unittest.TestCase):
+    """The app shell: data in, page out; sections switch with radios, so the rules are CSS the generator writes."""
+
+    def test_example_is_valid_and_validation_is_idempotent(self):
+        show = web_ui.showcase_validate(SHOWCASE)
+        self.assertEqual(web_ui.showcase_validate(show), show)
+        self.assertEqual([s["id"] for s in show["sections"]], ["overview", "components", "data", "media"])
+
+    def test_bad_specs_are_refused(self):
+        section = SHOWCASE["sections"][0]
+        two = SHOWCASE["sections"][:2]
+        for bad in ({**SHOWCASE, "schema": "x"}, {**SHOWCASE, "extra": 1}, {**SHOWCASE, "id": "Bad Id"}, {**SHOWCASE, "sections": two[:1]},
+                    {**SHOWCASE, "sections": [{**section, "id": f"s{i}"} for i in range(7)]}, {**SHOWCASE, "sections": [section, section]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "icon": "nope"}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "label": ""}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "extra": 1}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "cards": [{"icon": "nope", "title": "t", "body": "b"}]}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "table": {"columns": ["a"], "rows": [["1", "2"]]}}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "table": {"columns": [], "rows": []}}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "tags": ["x"] * 9}]},
+                    {**SHOWCASE, "sections": [section, {**section, "id": "b", "controls": "yes"}]},
+                    {**SHOWCASE, "favorite": "yes"}, {**SHOWCASE, "themes": 1}, "not a dict", None):
+            with self.subTest(bad=str(bad)[:60]), self.assertRaises(ValueError):
+                web_ui.showcase_validate(bad)
+
+    def test_everything_is_escaped_and_every_icon_and_radio_resolves(self):
+        hostile = {**SHOWCASE, "title": "<i>t</i>", "emoji": "<b>", "sections": [
+            {"id": "a", "label": "<b>A</b>", "icon": "star", "heading": "<script>1</script>", "lead": "<img src=x>", "tags": ["<u>"],
+             "cards": [{"icon": "info", "title": "<s>", "body": "<em>b</em>"}], "table": {"columns": ["<x-col>"], "rows": [["<x-cell>"]]}},
+            {"id": "b", "label": "B", "icon": "data", "heading": "H"}]}
+        html = web_ui.showcase_html(hostile)
+        for raw in ("<script>", "<i>t</i>", "<b>A</b>", "<img src=x>", "<u>", "<s>", "<em>", "<x-cell>", "<x-col>", "<b>"):
+            self.assertNotIn(raw, html)
+        for use in re.findall(r'<use href="#([^"]+)"', html):
+            self.assertIn(f'<symbol id="{use}"', html)
+        for target in re.findall(r'<label class="[^"]+" for="([^"]+)"', html):
+            self.assertIn(f'id="{target}"', html)
+        self.assertEqual(html.count('type="radio"'), 2)
+        self.assertEqual(html.count("checked"), 1)                                             # one section is open to begin with
+        self.assertEqual(html.count('class="ui-rail-item"'), html.count('class="ui-bottom-item"'))   # the rail and the bottom bar list the same sections
+
+    def test_rules_name_every_section_and_the_page_is_one_file(self):
+        css = web_ui.showcase_css(SHOWCASE)
+        for sec in SHOWCASE["sections"]:
+            self.assertIn(f'#showcase:has(#showcase-sec-{sec["id"]}:checked) .ui-shell-section:not([data-section="{sec["id"]}"]){{display:none}}', css)
+            self.assertIn(f'label[for="showcase-sec-{sec["id"]}"]', css)
+        page = web_ui.showcase_document(SHOWCASE)
+        self.assertEqual(page.count("<script"), 1)                                             # one inline module: ui.js and the two calls
+        self.assertIn("bindTheme();bindToggles();", page)
+        self.assertNotIn("<link", page)
+        for flags, expect in (({"favorite": False, "themes": False}, False), ({}, True)):
+            html = web_ui.showcase_html({**SHOWCASE, **flags})
+            self.assertEqual(("data-ui-toggle" in html, "data-ui-theme-switch" in html), (expect, expect))
+
+
 CURL_CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "curl_request_cases.json").read_text(encoding="utf-8"))["cases"]
 
 
