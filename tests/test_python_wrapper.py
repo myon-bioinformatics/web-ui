@@ -522,11 +522,20 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(html.count('class="ui-board-zones"'), 1)                                # the clocks share one row
         self.assertNotIn("ui-board-zone", web_ui.world_html({**WORLD, "board": {"title": "T", "items": [{"text": "x"}]}}))
 
-    def test_world_script_stores_and_sends_nothing(self):
-        # The board keeps what a visitor writes in the page only: no storage, no cookies, no network, no place names.
-        for word in ("localStorage", "sessionStorage", "indexedDB", "cookie", "fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket",
+    def test_world_script_stores_nothing_and_requests_only_for_the_opt_in_shared_section(self):
+        # What a visitor writes stays in the page: no storage, cookies, beacons or sockets, no place names. The one network call is the
+        # shared section's refresh button (opt in with shared_issue): an anonymous GET without credentials, cache or referrer.
+        for word in ("localStorage", "sessionStorage", "indexedDB", "cookie", "XMLHttpRequest", "sendBeacon", "WebSocket",
                      "caches", "Intl", "timeZone", "navigator", "geolocation", "pushState", "postMessage", "Worker"):
             self.assertTrue(word not in web_ui.WORLD_JS, word)                                # (replaceState only edits the #spot fragment)
+        self.assertEqual(web_ui.WORLD_JS.count("fetch("), 1)
+        for needle in ('method:"GET"', 'credentials:"omit"', 'cache:"no-store"', 'referrerPolicy:"no-referrer"'):
+            self.assertIn(needle, web_ui.WORLD_SHARED_JS)
+        self.assertIn("fetch(", web_ui.WORLD_SHARED_JS)
+        plain = {**WORLD, "board": {**WORLD["board"], "shared_issue": None}}
+        for needle in ("api.github.com", "data-shared-refresh", "ui-board-shared"):
+            self.assertNotIn(needle, web_ui.world_html(plain))
+            self.assertIn(needle, web_ui.world_html(WORLD))
 
     def test_actors_player_and_board_are_validated_and_escaped(self):
         floor = WORLD["floors"][0]
