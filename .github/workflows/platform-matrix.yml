@@ -3,7 +3,7 @@ name: Platform matrix
 # Where the pages are tried on other engines and emulated devices (Linux runners; the lab for Firefox and WebKit).
 #
 # Layer 1 (the rules are the same everywhere) is proved by the parity tests: Python is the reference, the page's JavaScript must give identical answers.
-# Layer 2 (the page works in this engine) is the photo studio's page tests plus browser-test-kit's probe: key elements fit the screen at several widths without
+# Layer 2 (the page works in this engine) is the photo studio's and clipboard loops' page tests plus browser-test-kit's probe: key elements fit the screen at several widths without
 # overflow, overlap or clipping, and a real click (a tap on touch profiles) changes what the page promises.
 # Layer 3 (a real device) is NOT run here. Pixel and iPhone profiles are emulation, and Playwright's WebKit is not Safari: iOS Safari (HEIC, camera, Share, download)
 # stays "not verified" until the page's "Check this browser" JSON is kept from a device.
@@ -30,9 +30,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests'}
-          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests'}
-          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests'}
+          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests'}
+          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests'}
+          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests'}
           - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
           - {name: webkit / iPhone 13 (emulation), browser: webkit, profile: iphone, device: 'iPhone 13', tests: 'PhotoPageBrowserTests'}
     steps:

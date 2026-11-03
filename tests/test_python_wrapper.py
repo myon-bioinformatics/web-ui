@@ -2090,5 +2090,255 @@ class BtkAdapterTests(unittest.TestCase):
         self.assertIn("unknown adapter", bad.stderr)
 
 
+def clip_png(width, height, rgba):
+    pixels = bytes(rgba[i % len(rgba)] for i in range(width * 4)) * height
+    return web_ui.photo_png(width, height, pixels)
+
+
+CLIP_PIXELS = [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 0, 0]
+CLIP_IMAGE = base64.b64encode(clip_png(3, 1, CLIP_PIXELS)).decode()
+CLIP_GREEN = base64.b64encode(clip_png(1, 1, [0, 255, 0, 255])).decode()
+CLIP_URI = "data:image/png;base64," + CLIP_IMAGE
+
+
+def clip_resolve(value):
+    """Replace the ``@pad:N`` markers scenarios carry (a 32 MiB payload is not shipped around as text) with the real Base64."""
+    if isinstance(value, str):
+        return re.sub(r"@pad:(\d+)", lambda m: clip_padded(int(m.group(1))), value)
+    if isinstance(value, list):
+        return [clip_resolve(v) for v in value]
+    if isinstance(value, dict):
+        return {k: clip_resolve(v) for k, v in value.items()}
+    return value
+
+
+def clip_padded(size):
+    """Base64 of the 3 x 1 PNG followed by zeros up to ``size`` bytes (a file at, and just over, the 32 MiB ceiling)."""
+    data = bytearray(size)
+    png = base64.b64decode(CLIP_IMAGE)
+    data[:len(png)] = png
+    return base64.b64encode(bytes(data)).decode()
+
+
+class ClipBlob:
+    def __init__(self, data, size=None):
+        self.data, self.size = data, len(data) if size is None else size
+        self.read_calls = 0
+
+    def read(self):
+        self.read_calls += 1
+        return self.data
+
+
+class ClipItem:
+    def __init__(self, formats, calls):
+        self.formats, self.types, self.calls, self.blobs = formats, [f["type"] for f in formats], calls, []
+
+    def get_type(self, kind):
+        self.calls["getType"] += 1
+        fmt = next(f for f in self.formats if f["type"] == kind)
+        if fmt.get("error"):
+            raise web_ui.ClipboardFailure(fmt["error"])
+        blob = ClipBlob(base64.b64decode(fmt.get("base64", "")), 32 * 1024 * 1024 + 1 if fmt.get("oversized") else None)
+        self.blobs.append(blob)
+        return blob
+
+
+class ClipDouble:
+    """The browser's clipboard as Ironmate's tests double it: optional readText and read, with injected failures and call counts."""
+
+    def __init__(self, config):
+        self.calls = {"read": 0, "readText": 0, "getType": 0}
+        self.config = config
+        if not config.get("noText"):
+            self.read_text = self._read_text
+        if not config.get("noRead"):
+            self.read = self._read
+        self.items = []
+
+    def _read_text(self):
+        self.calls["readText"] += 1
+        if self.config.get("textError"):
+            raise web_ui.ClipboardFailure(self.config["textError"])
+        return self.config.get("text", "")
+
+    def _read(self):
+        self.calls["read"] += 1
+        if self.config.get("readError"):
+            raise web_ui.ClipboardFailure(self.config["readError"])
+        self.items = [ClipItem(item["formats"], self.calls) for item in self.config.get("items", [])]
+        return self.items
+
+
+def clip_binary(base64_text=CLIP_IMAGE, kind="image/png", **more):
+    return {"formats": [{"type": kind, "base64": base64_text, **more}]}
+
+
+def clip_importer(data, mime):
+    """Ironmate's importImageBytes in miniature: the bytes must be the declared type, decode, and stay within 4 megapixels."""
+    from io import BytesIO
+    from PIL import Image
+    if web_ui._sniff_image_mime(data) != mime:
+        raise ValueError("MIME mismatch")
+    with Image.open(BytesIO(data)) as image:
+        image.load()
+        if image.width * image.height > 4 * 1024 * 1024:
+            raise ValueError("over 4 MP")
+    return True
+
+
+def clip_scenarios():
+    """Ironmate's tests/studio_clipboard.cjs scenarios: (name, config, expected error code or None)."""
+    big, over = "@pad:33554432", "@pad:33554433"
+    return [
+        ("ordinary-text-and-PNG", {"text": "これは普通のメモです", "items": [clip_binary()]}, None),
+        ("base64-of-nonimage-and-PNG", {"text": base64.b64encode(b"ordinary text").decode(), "items": [clip_binary()]}, None),
+        ("image-Base64-wins-over-binary", {"text": CLIP_URI, "items": [clip_binary(CLIP_GREEN)]}, None),
+        ("raw-image-Base64", {"text": CLIP_IMAGE, "noRead": True}, None),
+        ("BOM-case-parameters-and-wrapping", {"text": "\ufeff DATA:IMAGE/PNG;charset=utf-8;BASE64,\n" + CLIP_IMAGE + "\n"}, None),
+        ("invalid-image-data-URI-does-not-import-stale-PNG", {"text": "data:image/png;base64,!!!", "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("invalid-image-URI-header", {"text": "data:image/png,abc", "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("MIME-mismatch-text", {"text": CLIP_URI.replace("image/png", "image/jpeg"), "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("unsupported-image-URI", {"text": "data:image/gif;base64,R0lGODlh", "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("recognized-raw-image-with-invalid-padding", {"text": CLIP_IMAGE + "=", "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("undecodable-image-text", {"text": "data:image/png;base64," + base64.b64encode(bytes.fromhex("89504e470d0a1a0a000000000000")).decode(), "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("text-denied-image-readable", {"textError": "NotAllowedError", "items": [clip_binary()]}, None),
+        ("text-failed-image-readable", {"textError": "UnknownError", "items": [clip_binary()]}, None),
+        ("text-unsupported-image-readable", {"textError": "NotSupportedError", "items": [clip_binary()]}, None),
+        ("binary-only-API", {"noText": True, "items": [clip_binary()]}, None),
+        ("both-APIs-denied", {"textError": "NotAllowedError", "readError": "NotAllowedError"}, "clipboard-denied"),
+        ("normal-text-image-denied", {"text": "memo", "readError": "NotAllowedError"}, "clipboard-denied"),
+        ("security-error", {"noText": True, "readError": "SecurityError"}, "clipboard-denied"),
+        ("API-absent", {"absent": True}, "clipboard-unsupported"),
+        ("read-methods-absent", {"noText": True, "noRead": True}, "clipboard-unsupported"),
+        ("API-NotSupportedError", {"noText": True, "readError": "NotSupportedError"}, "clipboard-unsupported"),
+        ("API-other-failure", {"noText": True, "readError": "UnknownError"}, "clipboard-read-failed"),
+        ("item-read-other-failure-means-a-bad-image", {"noText": True, "items": [{"formats": [{"type": "image/png", "error": "UnknownError"}]}]}, "clipboard-invalid-image"),
+        ("item-read-not-supported", {"noText": True, "items": [{"formats": [{"type": "image/png", "error": "NotSupportedError"}]}]}, "clipboard-unsupported"),
+        ("item-read-denied-wins-over-invalid", {"noText": True, "items": [{"formats": [{"type": "image/png", "error": "NotAllowedError"}, {"type": "image/jpeg", "base64": CLIP_IMAGE}]}]}, "clipboard-denied"),
+        ("gif-item-is-no-image", {"items": [{"formats": [{"type": "image/gif", "base64": CLIP_IMAGE}]}]}, "clipboard-no-image"),
+        ("text-only-no-image", {"text": "memo", "noRead": True}, "clipboard-no-image"),
+        ("empty-clipboard", {}, "clipboard-no-image"),
+        ("nonimage-items", {"items": [{"formats": [{"type": "text/html"}]}]}, "clipboard-no-image"),
+        ("later-item-after-getType-denial", {"items": [{"formats": [{"type": "image/png", "error": "NotAllowedError"}]}, clip_binary()]}, None),
+        ("later-format-after-corrupt-image", {"items": [{"formats": [{"type": "image/jpeg", "base64": CLIP_IMAGE}, {"type": "image/png", "base64": CLIP_IMAGE}]}]}, None),
+        ("binary-MIME-mismatch", {"items": [clip_binary(CLIP_IMAGE, "image/jpeg")]}, "clipboard-invalid-image"),
+        ("binary-over-32MiB-before-read", {"items": [{"formats": [{"type": "image/png", "base64": CLIP_IMAGE, "oversized": True}]}]}, "clipboard-invalid-image"),
+        ("binary-exactly-32MiB", {"items": [clip_binary(big)]}, None),
+        ("raw-Base64-exactly-32MiB", {"text": big}, None),
+        ("raw-Base64-over-32MiB", {"text": over, "items": [clip_binary()]}, "clipboard-invalid-image"),
+        ("URI-Base64-over-32MiB", {"text": "data:image/png;base64," + over}, "clipboard-invalid-image"),
+        ("4MP-boundary-accepted", {"items": [clip_binary(base64.b64encode(clip_png(2048, 2048, [1, 2, 3, 255])).decode())]}, None),
+        ("over-4MP-rejected", {"items": [clip_binary(base64.b64encode(clip_png(2049, 2048, [1, 2, 3, 255])).decode())]}, "clipboard-invalid-image"),
+    ]
+
+
+class ClipboardTests(unittest.TestCase):
+    """The temporary clipboard, the clipboard read order and error codes, the shelf budget, and handing a PNG back as Base64."""
+
+    def test_the_temporary_clipboard_like_the_dart_tests(self):
+        w = web_ui
+        entries, outcome = w.session_clip_save([], "one")
+        entries, _ = w.session_clip_save(entries, "two")
+        entries, _ = w.session_clip_save(entries, "one")
+        self.assertEqual(entries, ["one", "two"])                                          # a repeat moves to the front, not listed twice
+        self.assertEqual((w.session_clip_save(entries, "")[1], w.session_clip_save(entries, None)[1]), ("noText", "noText"))
+        self.assertEqual(w.session_clip_save(entries, "x" * (w.SESSION_CLIP_MAX_CHARS + 1)), (["one", "two"], "tooLarge"))
+        self.assertEqual(w.session_clip_save(entries, "x" * w.SESSION_CLIP_MAX_CHARS)[1], "saved")
+        self.assertEqual(w.session_clip_save([], "saved user text"), (["saved user text"], "saved"))
+        self.assertEqual((w.utf16_length("x"), w.utf16_length("é"), w.utf16_length("😀"), w.utf16_length("\ud800")), (1, 1, 2, 1))
+        self.assertEqual(w.session_clip_save([], "😀" * 50000)[1], "saved")                  # 100,000 code units
+        self.assertEqual(w.session_clip_save([], "😀" * 50001)[1], "tooLarge")               # 100,002 units, though only 50,001 characters
+        many = []
+        for number in range(40):
+            many, _ = w.session_clip_save(many, f"entry {number}")
+        self.assertEqual((len(many), many[0], many[-1]), (30, "entry 39", "entry 10"))      # the newest 30
+        many, _ = w.session_clip_save(many, "entry 15")
+        self.assertEqual((len(many), many[0], many[1]), (30, "entry 15", "entry 39"))
+        self.assertEqual(many.count("entry 15"), 1)
+        for key in ("save", "noText", "saved", "tooLarge", "readFailed", "copied", "copyFailed", "empty", "copy", "title", "subtitle"):
+            self.assertTrue(w.SESSION_CLIP_MESSAGES[key])
+
+    def test_ironmates_clipboard_scenarios(self):
+        for name, config, code in clip_scenarios():
+            config = clip_resolve(config)
+            with self.subTest(name):
+                clip = None if config.get("absent") else ClipDouble(config)
+                result = web_ui.clipboard_pick(clip, clip_importer)
+                if code:
+                    self.assertEqual((result["ok"], result["code"]), (False, code), result)
+                    self.assertIn(code, web_ui.CLIPBOARD_MESSAGES)
+                else:
+                    self.assertTrue(result["ok"], result)
+                    self.assertIn(result["source"], ("text", "item"))
+        for name, reads, read_texts, source in (("ordinary-text-and-PNG", 1, 1, "item"), ("image-Base64-wins-over-binary", 0, 1, "text"), ("invalid-image-data-URI-does-not-import-stale-PNG", 0, 1, None),
+                                               ("empty-clipboard", 1, 1, None)):
+            config = next(c for n, c, _ in clip_scenarios() if n == name)
+            clip = ClipDouble(clip_resolve(config))
+            result = web_ui.clipboard_pick(clip, clip_importer)
+            self.assertEqual((clip.calls["read"], clip.calls["readText"], result.get("source")), (reads, read_texts, source), name)
+        clip = ClipDouble(clip_resolve(next(c for n, c, _ in clip_scenarios() if n == "binary-over-32MiB-before-read")))
+        web_ui.clipboard_pick(clip, clip_importer)
+        self.assertEqual([blob.read_calls for item in clip.items for blob in item.blobs], [0])        # an oversized item is asked for but never read
+        green = web_ui.clipboard_pick(ClipDouble({"text": CLIP_URI, "items": [clip_binary(CLIP_GREEN)]}), lambda d, m: len(d))
+        self.assertEqual((green["source"], green["mime"], green["size"]), ("text", "image/png", len(base64.b64decode(CLIP_IMAGE))))
+
+    def test_a_smaller_limit_refuses_unread(self):
+        w = web_ui
+        small = len(base64.b64decode(CLIP_IMAGE))
+        self.assertTrue(w.clipboard_pick(ClipDouble({"text": CLIP_URI}), lambda d, m: 1, max_bytes=small)["ok"])
+        self.assertEqual(w.clipboard_pick(ClipDouble({"text": CLIP_URI}), lambda d, m: 1, max_bytes=small - 1)["category"], "too_large")
+        clip = ClipDouble({"items": [clip_binary()]})
+        self.assertEqual(w.clipboard_pick(clip, lambda d, m: 1, max_bytes=small - 1), {"ok": False, "code": "clipboard-invalid-image", "category": "too_large"})
+        self.assertEqual([blob.read_calls for blob in clip.items[0].blobs], [0])                        # the blob was looked at (its size) but never read
+        self.assertTrue(w.clipboard_pick(ClipDouble({"items": [clip_binary()]}), lambda d, m: 1, max_bytes=small)["ok"])
+        self.assertEqual(w.clipboard_pick(ClipDouble({"text": "memo"}), lambda d, m: 1, "shelf", 0)["source"], "plain")
+
+    def test_the_shelf_keeps_text_and_reports_why_when_image_text_is_refused(self):
+        w = web_ui
+        pick = lambda config: w.clipboard_pick(ClipDouble(config), clip_importer, mode="shelf")
+        self.assertEqual(pick({"text": "  a memo \n"}), {"ok": True, "source": "plain", "text": "a memo", "refused": None})
+        self.assertEqual(pick({"text": "data:image/png;base64,!!!", "items": [clip_binary()]}), {"ok": True, "source": "plain", "text": "data:image/png;base64,!!!", "refused": "bad_base64"})
+        self.assertEqual(pick({"text": CLIP_URI})["source"], "text")
+        self.assertEqual(pick({"text": "memo", "items": [clip_binary()]})["source"], "item")                  # an image beats the text beside it
+        self.assertEqual(pick({"textError": "NotAllowedError", "items": [clip_binary()]})["source"], "item")
+        self.assertEqual(pick({"text": "memo", "readError": "NotAllowedError"})["source"], "plain")            # text still lands when the image read is refused
+        self.assertEqual(pick({"text": "memo", "items": [clip_binary(CLIP_IMAGE, "image/jpeg")]})["code"], "clipboard-invalid-image")   # but a broken image is an error, not a note
+        self.assertEqual(pick({"textError": "NotAllowedError", "readError": "NotAllowedError"})["code"], "clipboard-denied")
+        self.assertEqual(pick({})["code"], "clipboard-no-image")
+        self.assertEqual(pick({"noText": True, "noRead": True})["code"], "clipboard-unsupported")
+
+    def test_the_shelf_budget_like_ironmates(self):
+        w = web_ui
+        self.assertEqual((w.SHELF_MAX_ITEMS, w.SHELF_MAX_TOTAL_BYTES), (20, 32 * 1024 * 1024))
+        self.assertEqual([w.shelf_room(19, 0, 1), w.shelf_room(20, 0, 1), w.shelf_room(0, w.SHELF_MAX_TOTAL_BYTES - 5, 5), w.shelf_room(0, w.SHELF_MAX_TOTAL_BYTES - 5, 6),
+                          w.shelf_room(0, 0, w.SHELF_MAX_TOTAL_BYTES), w.shelf_room(0, 0, w.SHELF_MAX_TOTAL_BYTES + 1)], [None, "full", None, "budget", None, "budget"])
+        self.assertEqual([w.shelf_text_size(t) for t in ("", "a", "é", "あ", "😀", "\ud800", "aé あ😀")], [0, 1, 2, 3, 4, 3, 1 + 2 + 1 + 3 + 4])
+
+    def test_a_png_goes_back_out_as_base64_and_in_again(self):
+        import io
+        from PIL import Image
+        w = web_ui
+        rng = random.Random(2)
+        for width, height in ((1, 1), (3, 2), (17, 5), (64, 64)):
+            buffer = io.BytesIO()
+            Image.frombytes("RGB", (width, height), bytes(rng.randrange(256) for _ in range(3 * width * height))).save(buffer, "PNG")
+            png = buffer.getvalue()
+            for as_uri in (True, False):
+                text = w.png_base64_text(png, as_uri)
+                with self.subTest(size=(width, height), uri=as_uri):
+                    self.assertEqual(text.startswith("data:image/png;base64,"), as_uri)
+                    back = w.decode_image_text(text)
+                    self.assertTrue(back["ok"])
+                    self.assertEqual((base64.b64decode(back["data"]), back["mime"]), (png, "image/png"))
+                    self.assertEqual(text.split(",")[-1], base64.b64encode(png).decode())                 # standard Base64, no URL-safe form, no padding change
+                    self.assertTrue(w.clipboard_text_image(text)["ok"])
+        with self.assertRaises(ValueError):
+            w.png_base64_text(b"GIF89a")
+        with self.assertRaises(ValueError):
+            w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES))
+        self.assertTrue(w.png_base64_text(b"\x89PNG\r\n\x1a\n" + bytes(w.SHELF_MAX_IMAGE_BYTES - 8)))
+
+
 if __name__ == '__main__':
     unittest.main()
