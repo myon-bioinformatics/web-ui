@@ -7,7 +7,7 @@
     "Synth",
     "start",
     "now",
-    "setContext"
+    "getContext"
   ],
   "packages": [
     "@babel/runtime",
@@ -18,8 +18,8 @@
   ],
   "subset": {
     "bytes": 237137,
-    "gzip_bytes": 61374,
-    "sha256": "944ddf682813e678e1b3ecb8a92c02e9648f117b8f0ee6d278c2a3f68027cb41"
+    "gzip_bytes": 61383,
+    "sha256": "27793516b31dbc84d1cf7289788c9d5922415efd03882da813fb54e18128ac92"
   },
   "full_umd": {
     "bytes": 345500,

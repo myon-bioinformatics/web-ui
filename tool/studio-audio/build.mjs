@@ -21,6 +21,6 @@ for(const name of [...packages].sort()){
  licenses.push(name+'@'+pkg.version+' ('+pkg.license+')\n'+license);
 }
 await writeFile(resolve(out,'tone-studio.LICENSE.txt'),licenses.join('\n\n----------------\n\n'));
-const report={schema:'web-ui-audio-build/1',node:process.versions.node,tone:'15.1.22',esbuild:'0.25.12',exports:['Synth','start','now','setContext'],packages:[...packages].sort(),subset:{bytes:data.length,gzip_bytes:gzipSync(data).length,sha256:sha(data)},full_umd:{bytes:full.length,gzip_bytes:gzipSync(full).length,sha256:sha(full)},lock_sha256:sha(await readFile(resolve(here,'package-lock.json')))};
+const report={schema:'web-ui-audio-build/1',node:process.versions.node,tone:'15.1.22',esbuild:'0.25.12',exports:['Synth','start','now','getContext'],packages:[...packages].sort(),subset:{bytes:data.length,gzip_bytes:gzipSync(data).length,sha256:sha(data)},full_umd:{bytes:full.length,gzip_bytes:gzipSync(full).length,sha256:sha(full)},lock_sha256:sha(await readFile(resolve(here,'package-lock.json')))};
 await writeFile(resolve(out,'tone-studio.build.json'),JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify(report));

@@ -65,7 +65,11 @@ class SuccessorBrowser(unittest.TestCase):
                 page.locator('[data-import]').click();self.assertEqual(page.locator('[data-garden]').inner_text(),before)
                 for i in range(6):
                     card=u.irony_round(42,i)
-                    page.locator('[data-choices] button').nth(card['correct']).click()
+                    choice=page.locator('[data-choices] button').nth(card['correct'])
+                    # Center the real pointer target: headless Firefox's physical screen may be shorter than the emulated CSS viewport.
+                    choice.evaluate("b=>b.scrollIntoView({block:'center',inline:'nearest'})")
+                    page.evaluate('()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')
+                    choice.click()
                     expect(page.locator('[data-score]')).to_have_text(f'{i+1} / {i+1}')
                     # Counter updates must not change an already answered quest card.
                     prompt=page.locator('[data-irony]').inner_text()
@@ -117,7 +121,11 @@ class SuccessorBrowser(unittest.TestCase):
         expect(page.locator('[data-audio-status]')).to_have_text('Scheduled 12 notes',timeout=10000)
         page.locator('[data-audio-stop]').click();expect(page.locator('[data-audio-status]')).to_have_text('Stopped')
         # Real Web Audio signal: not just a mocked Synth call.
-        signal=page.evaluate('''async()=>{const tone=await import('/vendor/tone-studio.min.js');await tone.start();const voice=new tone.Synth({volume:-18}).toDestination(),ctx=voice.context.rawContext,analyser=ctx.createAnalyser();analyser.fftSize=2048;voice.connect(analyser);voice.triggerAttackRelease('A4',0.3,tone.now()+0.02);let peak=0;for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,20));const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);for(const v of data)peak=Math.max(peak,Math.abs(v))}voice.dispose();analyser.disconnect();return{peak,state:ctx.state}}''')
+        page.evaluate('''async()=>{const tone=await import('/vendor/tone-studio.min.js'),button=document.createElement('button');button.dataset.signalProbe='';button.textContent='Measure audio signal';button.onclick=async()=>{try{await tone.start();const voice=new tone.Synth({volume:-18}).toDestination(),ctx=voice.context.rawContext,analyser=ctx.createAnalyser();analyser.fftSize=2048;voice.connect(analyser);voice.triggerAttackRelease('A4',0.3,tone.now()+0.02);let peak=0;for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,20));const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);for(const v of data)peak=Math.max(peak,Math.abs(v))}voice.dispose();analyser.disconnect();window.audioSignal={peak,state:ctx.state}}catch(e){window.audioSignal={error:String(e)}}};document.body.append(button)}''')
+        page.locator('[data-signal-probe]').click()
+        page.wait_for_function('()=>window.audioSignal!==undefined',timeout=10000)
+        signal=page.evaluate('window.audioSignal')
+        self.assertNotIn('error',signal)
         self.assertGreater(signal['peak'],0.0001)
         self.assertEqual(signal['state'],'running')
         self.assertFalse(any(r.startswith(('http://','https://')) and not r.startswith(self.origin) for r in requests))

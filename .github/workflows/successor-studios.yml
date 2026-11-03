@@ -47,10 +47,12 @@ jobs:
           pulseaudio --start --exit-idle-time=-1
           pactl load-module module-null-sink sink_name=studio_test
           pactl set-default-sink studio_test
+          pactl load-module module-native-protocol-tcp listen=127.0.0.1 port=4714 auth-ip-acl=127.0.0.1
           pactl info
       - run: python tests/integration/successor_browser.py -v
         env:
           WEBUI_BROWSER: ${{ matrix.browser }}
+          PULSE_SERVER: tcp:127.0.0.1:4714
       - uses: actions/upload-artifact@v7
         if: always()
         with:
