@@ -30,9 +30,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests'}
-          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests'}
-          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests'}
+          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
+          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
+          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
           - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
           - {name: webkit / iPhone 13 (emulation), browser: webkit, profile: iphone, device: 'iPhone 13', tests: 'PhotoPageBrowserTests'}
     steps:

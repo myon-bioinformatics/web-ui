@@ -155,6 +155,20 @@ every loading test, so a compile error looked like zero tests); `ok` needs a pas
 cannot tell `1.0` from `1`); only strings are names, reasons and error text; messages never contain the input; characters XML 1.0 cannot carry are written as U+FFFD; a missing class is
 `(none)` in an identity (the originals refused the whole report). The BTK adapter is `web-ui-test-report`.
 
+MCP lab (`examples/mcp-lab.html`): flutter_navigation_basic's `lib/shared/mcp` and the mock server's routes (`build_tools/src/mock_mcp.dart`), as an MCP server that lives in the page
+(nothing is sent). `McpFoundation` is the dual-era demo server as a state machine: legacy `2025-03-26` (`initialize` opens a session, `Mcp-Session-Id` after it) and current-official
+`2026-07-28` (`server/discover`, no session, `_meta` on every request, results carry `resultType` and lists `ttlMs` and `cacheScope`); `echo`, `demo://readme`, `greet`. `McpRoutes` is
+the HTTP layer with its status rules (400/404 for a missing or unknown session, 400 for a request that does not match its `_meta`, 404 for an unknown current-era method but 200 for a legacy
+one, 202 for an accepted notification, 403 for an Origin that is not listed, 401 or 403 for a Bearer, 405 for a GET) and the OAuth discovery documents; `McpClient` checks everything it
+is told (well-formed JSON-RPC, the id it sent, a non-2xx is never success, no session is kept from a failure) and runs both echo demos; `mcp_validate_modern` is the header/body check in the
+Dart order. The helpers: `mcp_header_encode/decode` (a header name that is not printable ASCII travels as `=?base64?...?=`, checked strictly), `pkce_challenge_s256` (RFC 7636 Appendix B is
+the oracle), `oauth_server_metadata` / `oauth_resource_metadata` (a server's silence is never read as a promise), `bearer_inspect` (expired is reported before a wrong audience; the signature
+is not checked), `rpc_response_parse`. The Dart tests are the golden values (ported case by case); `mcp.js` answers every request of 120 seeded scripts (8,400 requests with damaged
+envelopes, headers, Origins and Bearers) exactly as Python's server does, and equals it on the client's handling of 26 canned replies, 800 header names, PKCE, session ids, Bearer
+tokens and OAuth documents. Deliberate differences: ids and verifiers come from an injected random source (Dart's `Random(42)` cannot be reproduced; the default is the OS's), the
+Bearer clock is in seconds and `Authorization` splits on ASCII whitespace, and the page cannot tell `-32603.0` from `-32603`. The in-process transport of the Dart repo (session errors as
+400 and 404, no Origin, no Authorization) is `mcp_foundation_transport`. The Digest/HMAC auth matrix is a separate mock and is not part of this. BTK adapters: `web-ui-mcp-lab`, `web-ui-mcp-send`.
+
 curl import: `parse_curl(text)` reads a curl command (the editor's subset: `-X -H -d --data-urlencode -u -G -I -A -e --url`, quoting, line continuations,
 full-width characters) into method, URL, headers, query, body mode and form fields, with credentials marked `sensitive`; `mask_curl` shows them
 as `***`. It never runs curl or sends anything, and error codes never contain the input. The page's `curl.js` (front page, "Request draft")

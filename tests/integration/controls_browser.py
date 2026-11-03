@@ -3108,5 +3108,403 @@ class ReportBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('[data-report-input]').input_value(), self.JUNIT, 'a refused file leaves the text alone')
 
 
+class McpBrowserTests(unittest.TestCase):
+    """The MCP lab in a real browser: every request of seeded scripts gets the same answer from the page's server as from Python's, the client demos and the helpers agree, and the
+    page works."""
+
+    LEGACY, CURRENT = '2025-03-26', '2026-07-28'
+    META = 'io.modelcontextprotocol/protocolVersion'
+    NOW = 1789387200
+
+    def setUp(self):
+        from web_ui import mcp_document
+        self.server, self.origin = WorldBrowserTests.serve({'mcp.html': mcp_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/mcp.html')
+        return page
+
+    JS_TRY = "const tryit = fn => { try { return {ok: fn()} } catch (e) { return {error: e.message} } };"
+
+    @staticmethod
+    def attempt(fn, *args, **kwargs):
+        try:
+            return {'ok': fn(*args, **kwargs)}
+        except ValueError as error:
+            return {'error': str(error)}
+
+    # --- seeded request scripts
+    def meta(self, rng, version=None):
+        return {self.META: version or self.CURRENT, 'io.modelcontextprotocol/clientInfo': {'name': 'test', 'version': '0'}, 'io.modelcontextprotocol/clientCapabilities': {}}
+
+    def modern(self, rng, rid):
+        w = web_ui_module()
+        method = rng.choice(['server/discover', 'tools/list', 'tools/call', 'tools/call', 'resources/list', 'resources/read', 'prompts/list', 'prompts/get', 'ping', 'totally/unknown', 'notifications/initialized'])
+        name = {'tools/call': rng.choice(['echo', 'echo', 'other', 'エコー', ' echo ', '=?base64?YQ==?=']), 'prompts/get': rng.choice(['greet', 'nope']), 'resources/read': rng.choice(['demo://readme', 'demo://x'])}.get(method)
+        params = {'_meta': self.meta(rng)}
+        if method == 'tools/call':
+            params.update(name=name, arguments=rng.choice([{'text': 'hi'}, {'text': 5}, {}, 'x']))
+        elif method == 'prompts/get':
+            params['name'] = name
+        elif method == 'resources/read':
+            params['uri'] = name
+        headers = {'mcp-protocol-version': self.CURRENT, 'mcp-method': method}
+        if name is not None:
+            headers['mcp-name'] = rng.choice([w.mcp_header_encode(name), name, w.mcp_header_encode(name), 'other', '=?base64?!!!?='])
+        body = {'jsonrpc': '2.0', 'method': method, 'params': params}
+        if method != 'notifications/initialized' or rng.random() < 0.2:
+            body['id'] = rid
+        for _ in range(rng.choice([0, 0, 1, 1, 2])):
+            action = rng.randrange(15)
+            params = body.get('params')
+            meta = params['_meta'] if isinstance(params, dict) and isinstance(params.get('_meta'), dict) else None
+            if action == 0:
+                headers.pop(rng.choice(['mcp-protocol-version', 'mcp-method', 'mcp-name']), None)
+            elif action == 1:
+                headers['mcp-protocol-version'] = rng.choice(['2099-01-01', self.LEGACY, '', self.CURRENT])
+            elif action == 2 and meta is not None:
+                meta.pop(rng.choice([self.META, 'io.modelcontextprotocol/clientInfo', 'io.modelcontextprotocol/clientCapabilities']), None)
+            elif action == 3 and meta is not None:
+                meta[self.META] = rng.choice([self.LEGACY, '2099-01-01', '', 5, None, self.CURRENT])
+            elif action == 4 and meta is not None:
+                meta['io.modelcontextprotocol/clientInfo'] = rng.choice(['nope', {}, {'name': ''}, {'name': 'x'}, {'name': 'x', 'version': ''}, {'name': 1, 'version': '0'}, {'version': '0'}, None])
+            elif action == 5 and meta is not None:
+                meta['io.modelcontextprotocol/clientCapabilities'] = rng.choice(['nope', [], None, 5])
+            elif action == 6:
+                body['params'] = rng.choice([[], None, 'x', {}])
+            elif action == 7:
+                headers['mcp-method'] = rng.choice(['tools/list', '', 'server/discover'])
+            elif action == 8:
+                body['method'] = 'totally/unknown'
+            elif action == 9:
+                body.pop('id', None)
+            elif action == 10:
+                body['id'] = rng.choice([None, 'str-id', 0, 7])
+            elif action == 11:
+                headers['mcp-name'] = rng.choice(['エコー', w.mcp_header_encode('エコー'), '=?', '=?base64?'])
+            elif action == 12:
+                headers.pop('mcp-protocol-version', None)
+                headers['Mcp-Method'] = headers.pop('mcp-method', 'x')
+            elif action == 13 and meta is not None:
+                meta[self.META] = headers['mcp-protocol-version'] = rng.choice(['2099-01-01', self.LEGACY])      # header and body agree on a version that is not the current one
+            else:
+                body['jsonrpc'] = rng.choice(['1.0', 2, None])
+        return headers, body
+
+    def legacy(self, rng, rid, sessions):
+        method = rng.choice(['initialize', 'initialize', 'notifications/initialized', 'notifications/initialized', 'notifications/initialized', 'ping', 'tools/list', 'tools/call', 'resources/list', 'resources/read',
+                             'prompts/list', 'prompts/get', 'totally/unknown'])
+        info = rng.choice([{'name': 't', 'version': '0'}] * 4 + ['nope', {}, {'name': ''}, {'name': 'x'}, {'name': 1, 'version': '0'}])
+        params = None
+        if method == 'initialize':
+            params = rng.choice([{'protocolVersion': rng.choice([self.LEGACY, '1999-01-01', '', 5]), 'capabilities': rng.choice([{}, {}, 'nope', None]), 'clientInfo': info}] * 3 + [None, 'x', {}])
+        elif method == 'tools/call':
+            params = {'name': rng.choice(['echo', 'echo', 'other']), 'arguments': rng.choice([{'text': 'hi'}, {'text': 5}, {}, None])}
+        elif method == 'resources/read':
+            params = {'uri': rng.choice(['demo://readme', 'x'])}
+        elif method == 'prompts/get':
+            params = {'name': rng.choice(['greet', 'x'])}
+        body = {'jsonrpc': '2.0', 'method': method}
+        if params is not None:
+            body['params'] = params
+        if method != 'notifications/initialized' or rng.random() < 0.2:
+            body['id'] = rid
+        headers = {}
+        if method != 'initialize' or rng.random() < 0.1:
+            session = (rng.choice(sessions) if rng.random() < 0.75 else rng.choice(['nope', '', 'sess-0'])) if sessions else rng.choice(['nope', ''])
+            if session or rng.random() < 0.5:
+                headers[rng.choice(['mcp-session-id', 'Mcp-Session-Id', 'MCP-SESSION-ID'])] = session
+        if rng.random() < 0.2:
+            headers['mcp-protocol-version'] = rng.choice([self.LEGACY, '1999-01-01', self.CURRENT, ''])
+        return headers, body
+
+    def script(self, rng, size, sessions):
+        w = web_ui_module()
+        requests = []
+        for rid in range(1, size + 1):
+            kind = rng.random()
+            headers, body = self.modern(rng, rid) if kind < 0.4 else self.legacy(rng, rid, sessions)
+            if rid in (1, 2) or (rid % 17 == 0):      # sessions need an initialize that is well formed
+                headers, body = {}, {'jsonrpc': '2.0', 'id': rid, 'method': 'initialize', 'params': {'protocolVersion': self.LEGACY, 'capabilities': {}, 'clientInfo': {'name': 't', 'version': '0'}}}
+                requests.append({'method': 'POST', 'path': '/mcp', 'headers': headers, 'body': json.dumps(body)})
+                continue
+            if rng.random() < 0.1:
+                headers[rng.choice(['origin', 'Origin', 'ORIGIN'])] = rng.choice(['http://127.0.0.1:8787', 'http://localhost:8787', 'https://evil.example', '', 'http://127.0.0.1:9999'])
+            if rng.random() < 0.12:
+                aud = rng.choice(['http://127.0.0.1:8787/mcp', 'http://127.0.0.1:8787/mcp', 'http://evil.example/mcp', ['x', 'http://127.0.0.1:8787/mcp'], [], 5, None])
+                exp = rng.choice([1, self.NOW - 1, self.NOW, self.NOW + 1, 4070908800, 1.5, True, None])
+                token = w.demo_bearer_token(aud, exp) if exp is not None else w.demo_bearer_token(aud, 0).replace('"exp":0', '"zz":0')
+                headers[rng.choice(['authorization', 'Authorization'])] = rng.choice(['Bearer ' + token] * 3 + ['Bearer', 'Bearer not-a-jwt', 'Basic abc', '', 'bearer ' + token, 'Bearer  ' + token, token])
+            raw = rng.choice([json.dumps(body, ensure_ascii=False)] * 12 + ['{broken', '[]', 'null', '', '{"jsonrpc":"2.0","method":""}'])
+            method = rng.choice(['POST'] * 15 + ['GET', 'post', 'PUT'])
+            path = rng.choice(['/mcp'] * 20 + ['/mcp/', '/mcp/support-matrix', '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp', '/nope', '/'])
+            requests.append({'method': method, 'path': path, 'headers': headers, 'body': raw if rng.random() > 0.05 else None})
+        return requests
+
+    def test_every_request_gets_the_same_answer_as_pythons_server(self):
+        w = web_ui_module()
+        rng = random.Random(20261103)
+        page = self.page()
+        scripts = [self.script(rng, 70, [f'sess-{i}' for i in range(1, 6)]) for _ in range(120)]
+        got = page.evaluate("""scripts => scripts.map(script => { let n = 0; const routes = new webUiMcp.McpRoutes(new webUiMcp.McpFoundation(() => 'sess-' + (++n)), {clock: () => 1789387200});
+            return script.map(r => routes.handle(r.method, r.path, r.headers, r.body)) })""", scripts)
+        statuses, nonempty = {}, 0
+        for script, answers in zip(scripts, got):
+            counter = iter(range(1, 10 ** 6))
+            routes = w.McpRoutes(w.McpFoundation(lambda: f'sess-{next(counter)}'), clock=lambda: self.NOW)
+            for request, seen in zip(script, answers):
+                expected = routes.handle(request['method'], request['path'], request['headers'], request['body'])
+                self.assertEqual(seen, expected, request)
+                key = None if expected is None else expected['status']
+                statuses[key] = statuses.get(key, 0) + 1
+                nonempty += bool(routes.handler.sessions)
+        for status in (200, 202, 400, 401, 403, 404, 405):
+            self.assertGreater(statuses.get(status, 0), 20, (status, statuses))
+        self.assertGreater(nonempty, 2000, 'sessions get opened often enough for the legacy paths to be reached')
+
+    def test_the_in_process_transport_and_the_client_demos_agree(self):
+        w = web_ui_module()
+        page = self.page()
+        got = page.evaluate("""() => { const out = {}; for (const which of ['legacy', 'modern']) for (const kind of ['routes', 'foundation']) { let n = 0;
+            const handler = new webUiMcp.McpFoundation(() => 'sess-' + (++n)), transport = kind === 'routes' ? webUiMcp.mcpInProcess(new webUiMcp.McpRoutes(handler)) : webUiMcp.mcpFoundationTransport(handler),
+            client = new webUiMcp.McpClient(transport, 'cn', 'cv'); out[which + ':' + kind] = which === 'legacy' ? client.runEchoDemo('ünï 😀') : client.runModernEchoDemo('ünï 😀') } return out }""")
+        for which in ('legacy', 'modern'):
+            for kind in ('routes', 'foundation'):
+                counter = iter(range(1, 100))
+                handler = w.McpFoundation(lambda: f'sess-{next(counter)}')
+                transport = w.mcp_in_process(w.McpRoutes(handler)) if kind == 'routes' else w.mcp_foundation_transport(handler)
+                client = w.McpClient(transport, 'cn', 'cv')
+                expected = client.run_echo_demo('ünï 😀') if which == 'legacy' else client.run_modern_echo_demo('ünï 😀')
+                self.assertEqual(got[f'{which}:{kind}'], expected)
+                self.assertTrue(expected['ok'])
+
+    CANNED = [
+        (200, {'mcp-session-id': 'sess-x'}, {'jsonrpc': '2.0', 'id': 1, 'result': {'protocolVersion': '2025-03-26'}}), (500, {'mcp-session-id': 'sess-x'}, {'jsonrpc': '2.0', 'id': 1, 'result': {}}),
+        (401, {'Mcp-Session-Id': 'keep?'}, {'jsonrpc': '2.0', 'id': 1, 'result': {}}), (403, {}, {'error': 'forbidden'}), (401, {}, {'error': {'nested': [1, {'a': None}]}}), (502, {}, {'error': None}),
+        (404, {}, {'error': 'session_invalid'}), (200, {}, 'text'), (200, {}, None), (200, {}, [1]), (200, {}, {}), (200, {'mcp-session-id': 'sess-y'}, {'jsonrpc': '2.0', 'id': 99, 'result': {}}),
+        (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': {'code': '-32603', 'message': 'x'}}), (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': {'code': -32603, 'message': 42}}),
+        (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': {'message': 'x'}}), (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': {'code': -32603}}), (200, {}, {'jsonrpc': '1.0', 'id': 1, 'result': {}}),
+        (200, {}, {'jsonrpc': '2.0', 'id': 1}), (200, {}, {'jsonrpc': '2.0', 'id': 1, 'result': {}, 'error': {'code': 1, 'message': 'x'}}), (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': 'text'}),
+        (200, {}, {'jsonrpc': '2.0', 'id': 1, 'error': {'code': -1, 'message': 'm', 'data': {'k': 1}}}), (200, {'mcp-session-id': ''}, {'jsonrpc': '2.0', 'id': 1, 'result': {'protocolVersion': 5}}),
+        (202, {'mcp-session-id': 'sess-n'}, None), (204, {}, None), (400, {}, {'error': 'notification_rejected'}), (200, {}, {'jsonrpc': '2.0', 'id': 1, 'result': None}),
+    ]
+
+    def test_the_client_checks_what_a_server_sends_the_same_way(self):
+        w = web_ui_module()
+        page = self.page()
+        got = page.evaluate("""canned => canned.map(([status, headers, body]) => { const client = new webUiMcp.McpClient(() => ({status_code: status, headers, body}));
+            const init = client.initialize(), s1 = client.sessionId, pv = client.protocolVersion, second = client.listTools(), note = client.notifyInitialized(); return [init, s1, pv, second, note, client.sessionId] })""", self.CANNED)
+        for (status, headers, body), seen in zip(self.CANNED, got):
+            client = w.McpClient(lambda h, b, status=status, headers=headers, body=body: {'status_code': status, 'headers': headers, 'body': body})
+            init = client.initialize()
+            expected = [init, client.session_id, client.protocol_version, client.list_tools(), client.notify_initialized(), client.session_id]
+            self.assertEqual(seen, expected, (status, headers, body))
+
+    def test_header_names_pkce_session_ids_and_oauth_documents_equal_python(self):
+        w = web_ui_module()
+        rng = random.Random(77)
+        page = self.page()
+        pieces = ['a', 'echo', 'demo://readme', ' ', '  x ', '=?', '?=', '=?base64?', 'YQ==', '!!!', '/w==', 'エコー', '😀', '\t', '\x7f', 'é', '=?base64?YQ==?=', '=?notbase64?YQ==?=', '=?base64?YQ?=', '=?base64?Y=Q=?=', '4pyT', '﻿']
+        names = [''.join(rng.choice(pieces) for _ in range(rng.randint(0, 5))) for _ in range(800)] + pieces
+        got = page.evaluate(self.JS_TRY + "names => names.map(n => { const e = webUiMcp.mcpHeaderEncode(n); return [webUiMcp.mcpHeaderNeedsEncoding(n), e, webUiMcp.mcpHeaderDecode(e), webUiMcp.mcpHeaderDecode(n), tryit(() => webUiMcp.mcpStreamableHeaders({name: n, method: 'm'}))] })", names)
+        for name, seen in zip(names, got):
+            encoded = w.mcp_header_encode(name)
+            self.assertEqual(seen, [w.mcp_header_needs_encoding(name), encoded, w.mcp_header_decode(encoded), w.mcp_header_decode(name),
+                                    {'ok': w.mcp_streamable_headers(name=name, method='m')}], name)
+        verifiers = ['dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk', '', 'a', 'ü' * 40] + [''.join(rng.choice('abcXYZ019-._~') for _ in range(rng.randint(43, 128))) for _ in range(60)]
+        self.assertEqual(page.evaluate("v => v.map(x => webUiMcp.pkceChallengeS256(x))", verifiers), [w.pkce_challenge_s256(x) for x in verifiers])
+        seeds = [0, 1, 42, 4294967295] + [rng.randrange(2 ** 32) for _ in range(20)]
+        self.assertEqual(page.evaluate(self.JS_TRY + "s => s.map(seed => [webUiMcp.mcpSessionId(webUiMcp.mulberry32(seed)), webUiMcp.mcpSessionId(webUiMcp.mulberry32(seed), 5), tryit(() => webUiMcp.pkcePair(webUiMcp.mulberry32(seed), 43 + seed % 86)), tryit(() => webUiMcp.pkcePair(webUiMcp.mulberry32(seed), 42))])", seeds),
+                         [[w.mcp_session_id(w.mulberry32(s).__next__), w.mcp_session_id(w.mulberry32(s).__next__, 5), {'ok': w.pkce_pair(w.mulberry32(s).__next__, 43 + s % 86)}, {'error': 'verifier_length must be 43..128'}] for s in seeds])
+
+        def tokens():
+            out = []
+            for _ in range(500):
+                aud = rng.choice(['x', 'http://a', ['x', 'y'], ['y'], [], [''], 5, None, ['x', 3], 'ü'])
+                exp = rng.choice([1, self.NOW, self.NOW + 1, 4070908800, 1.5, 2.9, -3, True, False, None, 'soon'])
+                payload = {'alg': 'none'}
+                body = {k: v for k, v in (('aud', aud), ('exp', exp)) if v is not None or k == 'aud'}
+                b64 = lambda obj: w._b64url_nopad(json.dumps(obj, ensure_ascii=False).encode())
+                token = b64(payload) + '.' + b64(body) + '.sig'
+                header = rng.choice(['Bearer ' + token] * 6 + ['bearer ' + token, 'BEARER ' + token, 'Bearer  ' + token, ' Bearer ' + token, 'Bearer ' + token + ' ', 'Basic ' + token, token, 'Bearer', 'Bearer a.b', 'Bearer a.%%.c',
+                                                              'Bearer x.' + b64([1]) + '.z', 'Bearer x.' + w._b64url_nopad(b'\xff\xfe') + '.z', 'Bearer x.' + w._b64url_nopad(b'{"aud":NaN}') + '.z', 'Bearer x.' + w._b64url_nopad(b'{"aud":"x","exp":1e999}') + '.z',
+                                                              'Bearer x.' + b64(body)[:-1] + '.z', 'Bearer x.' + b64(body) + '=.z', '', None])
+                out.append([header, rng.choice(['x', 'y', 'http://a', 'ü'])])
+            return out
+        cases = tokens()
+        self.assertEqual(page.evaluate("c => c.map(([h, a]) => webUiMcp.bearerInspect(h, a, 1789387200))", cases), [w.bearer_inspect(h, a, self.NOW) for h, a in cases])
+        statuses = {w.bearer_inspect(h, a, self.NOW)['status'] for h, a in cases}
+        self.assertEqual(statuses, {'missing', 'malformed', 'expired', 'wrong_audience', 'ok'})
+
+        def documents(kind):
+            out = []
+            base = {'issuer': 'https://a/', 'authorization_endpoint': 'https://a/auth', 'token_endpoint': 'https://a/token', 'response_types_supported': ['code']} if kind == 'server' else \
+                {'resource': 'https://r/', 'authorization_servers': ['https://a/']}
+            extras = ['registration_endpoint', 'scopes_supported', 'code_challenge_methods_supported', 'token_endpoint_auth_methods_supported', 'grant_types_supported', 'bearer_methods_supported', 'resource_name', 'unknown']
+            for _ in range(500):
+                doc = dict(base)
+                for _ in range(rng.randint(0, 3)):
+                    doc[rng.choice(extras)] = rng.choice([[], ['S256'], ['s256', 'plain'], [1], 'str', '', 5, None, ['a', ''], {}, ['none']])
+                for _ in range(rng.choice([0, 0, 1])):
+                    key = rng.choice(list(base))
+                    doc[key] = rng.choice([None, '', 5, [], [''], ['a', 1], ['a'], 'ok', {}])
+                if rng.random() < 0.05:
+                    doc = rng.choice([[], 'x', None, 5])
+                out.append(doc)
+            return out
+        servers, resources = documents('server'), documents('resource')
+        got = page.evaluate(self.JS_TRY + "([s, r]) => [s.map(d => tryit(() => webUiMcp.oauthServerMetadata(d))), r.map(d => tryit(() => webUiMcp.oauthResourceMetadata(d)))]", [servers, resources])
+        self.assertEqual(got[0], [self.attempt(w.oauth_server_metadata, d) for d in servers])
+        self.assertEqual(got[1], [self.attempt(w.oauth_resource_metadata, d) for d in resources])
+        self.assertGreater(sum('ok' in g for g in got[0]), 80)
+        self.assertGreater(sum('error' in g for g in got[0]), 80)
+        self.assertGreater(sum('ok' in g for g in got[1]), 80)
+        self.assertGreater(sum('error' in g for g in got[1]), 80)
+
+    def test_json_rpc_parsing_equals_python(self):
+        w = web_ui_module()
+        rng = random.Random(5)
+        page = self.page()
+        values = [None, 1, 'a', True, [], {}, {'code': -1, 'message': 'm'}, {'code': '1', 'message': 'm'}, {'code': 1}, {'message': 'm'}, {'code': 1, 'message': 'm', 'data': {'k': [1]}}, {'x': 1}]
+        responses = []
+        for index in range(600):
+            r = {}
+            if index % 4 == 0:      # a quarter are well formed, so the accepting branches are covered too
+                r = {'jsonrpc': '2.0', 'id': rng.choice([1, 2, 'a']), rng.choice(['result', 'error']): None}
+                key = next(k for k in ('result', 'error') if k in r)
+                r[key] = rng.choice([v for v in values if key == 'result' or (isinstance(v, dict) and isinstance(v.get('code'), int) and isinstance(v.get('message'), str))])
+                responses.append([r, r['id'] if rng.random() < 0.8 else rng.choice([None, 1, 2, 'a'])])
+                continue
+            for key, options in (('jsonrpc', ['2.0', '2.0', '2.0', '1.0', 2, None]), ('id', [1, 2, 'a', None]), ('result', values), ('error', values)):
+                if rng.random() < 0.55 or key == 'jsonrpc':
+                    r[key] = rng.choice(options)
+            responses.append([r if rng.random() > 0.05 else rng.choice([[], 'x', None, 5]), rng.choice([None, 1, 2, 'a'])])
+        got = page.evaluate(self.JS_TRY + "c => c.map(([r, id]) => tryit(() => webUiMcp.rpcResponseParse(r, id)))", responses)
+        self.assertEqual(got, [self.attempt(w.rpc_response_parse, r, i) for r, i in responses])
+        self.assertGreater(sum('ok' in g for g in got), 60)
+        requests = []
+        for _ in range(300):
+            r = {}
+            for key, options in (('jsonrpc', ['2.0', '2.0', '2.0', '1.0', 2]), ('id', [1, 'a', None, 0]), ('method', ['ping', 'tools/list', '', 5, None, 'x']), ('params', [{}, [], None, 'p', {'a': 1}])):
+                if rng.random() < 0.8 or key == 'jsonrpc':
+                    r[key] = rng.choice(options)
+            requests.append(json.dumps(r))
+        raws = requests + ['{"jsonrpc":"2.0","method":"a"}', '{"jsonrpc":"2.0","id":3,"method":"a","params":[1]}', '{broken', '', '[]', 'null', '"s"', '{"jsonrpc":"2.0","method":"a","x":NaN}',
+                                                           '{"jsonrpc":"2.0","method":"","id":1}', '{"jsonrpc":"2.0","id":null,"method":"a"}'] + [r for r, _ in responses[200:300] if isinstance(r, dict)]
+        got = page.evaluate("c => c.map(r => webUiMcp.rpcRequestParse(r))", raws)
+        self.assertEqual(got, [w.rpc_request_parse(r) for r in raws])
+        self.assertGreater(sum(g is not None for g in got), 40)
+
+    def test_the_page_sends_requests_to_its_own_server(self):
+        page = self.page()
+        self.assertEqual(page.locator('[data-mcp-sessions]').inner_text(), '0 session(s) open on the in-page server.')
+        send = lambda: page.locator('[data-mcp-send]').click()
+        page.locator('[data-mcp-template="initialize"]').click()
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 200')
+        self.assertIn('mcp-session-id: ', page.locator('[data-mcp-out-headers]').inner_text())
+        self.assertIn('"protocolVersion": "2025-03-26"', page.locator('[data-mcp-out-body]').inner_text())
+        self.assertEqual(page.locator('[data-ui-mcp]').get_attribute('data-sessions'), '1')
+        session = page.locator('[data-mcp-out-headers]').inner_text().split('mcp-session-id: ')[1].splitlines()[0]
+        self.assertIn('Last: ' + session, page.locator('[data-mcp-sessions]').inner_text())
+        page.locator('[data-mcp-template="initialized"]').click()
+        self.assertIn('mcp-session-id: ' + session, page.locator('[data-mcp-headers]').input_value())
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 202')
+        self.assertEqual(page.locator('[data-mcp-out-body]').inner_text(), '(empty)')
+        page.locator('[data-mcp-template="toolsCall"]').click()
+        send()
+        self.assertIn('"text": "hello"', page.locator('[data-mcp-out-body]').inner_text())
+        page.locator('[data-mcp-headers]').fill('')
+        page.locator('[data-mcp-template="toolsList"]').click()
+        page.locator('[data-mcp-headers]').fill('')
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 400')
+        self.assertIn('session_required', page.locator('[data-mcp-out-body]').inner_text())
+        page.locator('[data-mcp-template="discover"]').click()
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 200')
+        self.assertIn('"resultType": "complete"', page.locator('[data-mcp-out-body]').inner_text())
+        page.locator('[data-mcp-template="modernCall"]').click()
+        send()
+        self.assertIn('"resultType": "complete"', page.locator('[data-mcp-out-body]').inner_text())
+        page.locator('[data-mcp-headers]').fill('mcp-protocol-version: 2026-07-28\nmcp-method: tools/call\nmcp-name: other')
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 400')
+        self.assertIn('Mcp-Name does not match body params', page.locator('[data-mcp-out-body]').inner_text())
+        page.locator('[data-mcp-headers]').fill('not a header line')
+        send()
+        self.assertIn('Each header line is name: value', page.locator('[data-mcp-http-status]').inner_text())
+        self.assertEqual(page.locator('[data-ui-mcp]').get_attribute('data-http-status'), 'error')
+        page.locator('[data-mcp-method]').select_option('GET')
+        page.locator('[data-mcp-headers]').fill('')
+        send()
+        self.assertEqual(page.locator('[data-mcp-http-status]').inner_text(), 'HTTP 405')
+        page.locator('[data-mcp-reset]').click()
+        self.assertEqual(page.locator('[data-mcp-sessions]').inner_text(), '0 session(s) open on the in-page server.')
+
+    def test_the_page_runs_both_demos(self):
+        page = self.page()
+        page.locator('[data-mcp-demo-text]').fill('ünï')
+        page.locator('[data-mcp-demo-legacy]').click()
+        self.assertEqual(page.locator('[data-mcp-demo-log] li').count(), 4)
+        self.assertIn('Demo finished: ok. Session ', page.locator('[data-mcp-demo-status]').inner_text())
+        self.assertIn('ünï', page.locator('[data-mcp-demo-log] li').nth(3).inner_text())
+        self.assertEqual(page.locator('[data-ui-mcp]').get_attribute('data-demo'), 'legacy:ok')
+        page.locator('[data-mcp-demo-modern]').click()
+        self.assertEqual(page.locator('[data-mcp-demo-log] li').count(), 3)
+        self.assertTrue(page.locator('[data-mcp-demo-status]').inner_text().endswith('No session.'))
+        self.assertEqual(page.locator('[data-ui-mcp]').get_attribute('data-demo'), 'modern:ok')
+
+    def test_the_helpers_on_the_page(self):
+        w = web_ui_module()
+        page = self.page()
+        out = page.locator('[data-mcp-codec-out]')
+        self.assertIn('Encoded: ' + w.mcp_header_encode('エコー'), out.inner_text())
+        self.assertIn('Decoded back: "エコー"', out.inner_text())
+        page.locator('[data-mcp-codec-in]').fill('echo')
+        self.assertIn('Needs encoding: no', out.inner_text())
+        page.locator('[data-mcp-codec-in]').fill('=?base64?!!!?=')
+        self.assertIn('As typed, decoded: (malformed)', out.inner_text())
+        self.assertEqual(page.locator('[data-mcp-challenge]').inner_text(), 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM')
+        page.locator('[data-mcp-pkce-new]').click()
+        verifier = page.locator('[data-mcp-verifier]').input_value()
+        self.assertRegex(verifier, r'^[A-Za-z0-9._~-]{64}$')
+        self.assertEqual(page.locator('[data-mcp-challenge]').inner_text(), w.pkce_challenge_s256(verifier))
+        page.locator('[data-mcp-verifier]').fill('')
+        self.assertEqual(page.locator('[data-mcp-challenge]').inner_text(), '')
+        self.assertEqual(page.locator('[data-mcp-auth-out]').inner_text(), 'missing')
+        page.locator('[data-mcp-auth-demo]').click()
+        self.assertTrue(page.locator('[data-mcp-auth-out]').inner_text().startswith('ok · audience http://127.0.0.1:8787/mcp · expires '))
+        page.locator('[data-mcp-aud]').fill('http://other/mcp')
+        self.assertTrue(page.locator('[data-mcp-auth-out]').inner_text().startswith('wrong_audience'))
+        page.locator('[data-mcp-auth]').fill('Bearer nope')
+        self.assertEqual(page.locator('[data-mcp-auth-out]').inner_text(), 'malformed')
+        self.assertIn('"supportsPkceS256": true', page.locator('[data-mcp-meta-out]').inner_text())
+        page.locator('[data-mcp-meta]').fill('{broken')
+        self.assertEqual(page.locator('[data-mcp-meta-out]').inner_text(), 'Not JSON.')
+        page.locator('[data-mcp-meta]').fill('{"issuer": "x"}')
+        self.assertEqual(page.locator('[data-mcp-meta-out]').inner_text(), 'missing OAuth metadata field: response_types_supported')
+        page.locator('input[name="mcp-meta-kind"][value="resource"]').check()
+        self.assertEqual(page.locator('[data-mcp-meta-out]').inner_text(), 'missing protected resource')
+        page.locator('[data-mcp-meta]').fill('{"resource": "https://r/", "authorization_servers": ["https://a/"]}')
+        self.assertIn('"bearer_methods_supported": [\n    "header"\n  ]', page.locator('[data-mcp-meta-out]').inner_text())
+
+
 if __name__ == '__main__':
     unittest.main()

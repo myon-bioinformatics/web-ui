@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from typing import Any
 import urllib.error
@@ -4170,6 +4171,11 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     # The irony part is lower on the page: the probe wants every element inside the first screen, so this one opens at its heading (#irony-title).
     "web-ui-irony": {"page": "playground.html", "fragment": "irony-title", "elements": ["#irony-title", "#playground [data-irony-handle]", "#playground [data-irony-next]"],
                      "click": {"target": "#playground [data-irony-next]", "observe": "#playground [data-irony-arena]", "attribute": "data-spawn", "before": None, "after": ""}},
+    "web-ui-mcp-lab": {"page": "mcp-lab.html", "elements": ["#mcp h2", "#mcp [data-mcp-sessions]", "#mcp [data-mcp-template=\"initialize\"]"],
+                       "click": {"target": "#mcp [data-mcp-template=\"initialize\"]", "observe": "#mcp", "attribute": "data-template", "before": None, "after": "initialize"}},
+    # The request form is lower on the page, so this one opens at it (#mcp-method) to keep everything on the first screen.
+    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method", "elements": ["#mcp-method", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
+                        "click": {"target": "#mcp [data-mcp-send]", "observe": "#mcp", "attribute": "data-http-status", "before": None, "after": "400"}},
     "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
                            "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
                                      "after": "Nothing to read: paste a report first."}},
@@ -5519,6 +5525,764 @@ def report_document(*, theme: str = "modern") -> str:
     return render_document(trusted_html='<main class="ui-page">' + report_html() + "</main>" + module_script(_JS["report.js"]), title="Test report", theme=theme, css=bundled_css())
 
 
+# --- MCP lab: JSON-RPC, the dual-era Streamable HTTP rules, a session client, OAuth metadata, PKCE and a Bearer audience check --------------------
+# Absorbs flutter_navigation_basic's lib/shared/mcp (json_rpc.dart, mcp_protocol.dart, mcp_foundation.dart, mcp_modern_http.dart, mcp_session_client.dart, oauth_pkce.dart)
+# and build_tools/src/mock_mcp.dart (the mock server's routes and Origin policy). Their Dart tests (test/shared/mcp/mcp_foundation_test.dart, mcp_integration_test.dart) are the
+# golden values, RFC 7636 Appendix B is the PKCE oracle. Python is the reference; ``mcp.js`` must agree on every request, in the same order, with the same session ids.
+# Deliberate differences: (1) ids and the PKCE verifier come from an injected random source (Dart's ``Random(42)`` cannot be reproduced; the default is the OS's secure one);
+# (2) the Bearer check takes the clock in seconds and splits ``Authorization`` on ASCII whitespace only; (3) a JSON number written ``-32603.0`` is a float, and the page cannot
+# tell it from an integer, so the tests do not use one; (4) error messages are the Dart ``FormatException`` messages, without the class name; (5) base64 in a header name is
+# checked strictly (alphabet, padding, UTF-8) in both languages; Dart's decoder may differ on the bits after the last group, which no test depends on.
+MCP_LEGACY_VERSION = "2025-03-26"
+MCP_CURRENT_VERSION = "2026-07-28"
+MCP_META_VERSION = "io.modelcontextprotocol/protocolVersion"
+MCP_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+MCP_META_CLIENT_CAPS = "io.modelcontextprotocol/clientCapabilities"
+RPC_PARSE_ERROR, RPC_INVALID_REQUEST, RPC_METHOD_NOT_FOUND, RPC_INVALID_PARAMS, RPC_INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
+RPC_UNAUTHORIZED, RPC_FORBIDDEN, RPC_SESSION_REQUIRED, RPC_SESSION_INVALID, RPC_HEADER_MISMATCH, RPC_UNSUPPORTED_VERSION = -32001, -32003, -32010, -32011, -32020, -32022
+MCP_HEADERS = {"protocol": "mcp-protocol-version", "session": "mcp-session-id", "method": "mcp-method", "name": "mcp-name"}
+_HEADER_SENTINEL = re.compile(r"=\?base64\?([A-Za-z0-9+/=]+)\?=")
+_BASE64_STRICT = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+_PKCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+
+
+def mcp_support_matrix() -> dict[str, Any]:
+    """What this foundation implements (the order of the Dart ``McpSupportMatrix.asJson``); in-app OAuth on the web is never promised."""
+    return {"specificationVersion": MCP_LEGACY_VERSION, "currentOfficialVersion": MCP_CURRENT_VERSION, "implementsCurrentOfficial": True, "legacyMcpEra": True,
+            "currentOfficialEra": True, "streamableHttp": True, "jsonRpc": True, "sessionHeader": True, "oauthDiscovery": True, "pkceS256": True, "bearerAudienceCheck": True,
+            "flutterWebInAppOAuthGuaranteed": False, "legacySseDefault": False}
+
+
+def _compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _base64_strict(text: str) -> bytes:
+    if not _BASE64_STRICT.fullmatch(text):
+        raise ValueError("invalid base64")
+    return base64.b64decode(text)
+
+
+def _b64url_nopad(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _rpc_text(value: Any) -> str:
+    """A value as the Dart code prints it in a message: ``null``, ``true``, a string as it is, anything else as compact JSON."""
+    return value if isinstance(value, str) else _compact(value)
+
+
+def rpc_failure(id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": id, "error": error}
+
+
+def rpc_result(id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": id, "result": result}
+
+
+def rpc_request(method: str, *, id: Any = None, params: Any = None) -> dict[str, Any]:
+    """A request as it goes on the wire: ``id`` and ``params`` are left out when absent (no ``id`` makes it a notification)."""
+    out: dict[str, Any] = {"jsonrpc": "2.0"}
+    if id is not None:
+        out["id"] = id
+    out["method"] = method
+    if params is not None:
+        out["params"] = params
+    return out
+
+
+def rpc_request_parse(raw: Any) -> dict[str, Any] | None:
+    """A JSON-RPC 2.0 request from text or an object, or None: version must be ``"2.0"`` and the method a non-empty string. The result has ``id``, ``method`` and ``params`` keys (None when absent)."""
+    try:
+        value = json.loads(raw, parse_constant=_reject_json_constant) if isinstance(raw, str) else raw
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(value, dict) or value.get("jsonrpc") != "2.0" or not isinstance(value.get("method"), str) or not value["method"]:
+        return None
+    return {"jsonrpc": "2.0", "id": value.get("id"), "method": value["method"], "params": value.get("params")}
+
+
+def rpc_is_notification(request: dict[str, Any]) -> bool:
+    return request.get("id") is None
+
+
+def rpc_response_parse(value: Any, expected_id: Any = None) -> dict[str, Any]:
+    """Validate a response: version 2.0, exactly one of ``result`` and ``error``, an integer ``code`` and a string ``message``, and (when given) the id the request used."""
+    if not isinstance(value, dict) or value.get("jsonrpc") != "2.0":
+        raise ValueError("invalid JSON-RPC response version")
+    has_result, has_error = "result" in value, "error" in value
+    if has_result == has_error:
+        raise ValueError("JSON-RPC response must contain exactly one of result or error")
+    if has_error:
+        error = value["error"]
+        if not isinstance(error, dict):
+            raise ValueError("invalid JSON-RPC error payload")
+        if type(error.get("code")) is not int:
+            raise ValueError("JSON-RPC error code must be an int")
+        if not isinstance(error.get("message"), str):
+            raise ValueError("JSON-RPC error message must be a String")
+        response = rpc_failure(value.get("id"), error["code"], error["message"], error.get("data"))
+    else:
+        response = rpc_result(value.get("id"), value["result"])
+    if expected_id is not None and response["id"] != expected_id:
+        raise ValueError(f"JSON-RPC response id mismatch: expected {_rpc_text(expected_id)} got {_rpc_text(response['id'])}")
+    return response
+
+
+def mcp_header_needs_encoding(value: str) -> bool:
+    """True when a header value cannot travel as it is: leading or trailing space, anything outside printable ASCII, or the shape of the sentinel itself."""
+    if value != value.strip(" ") or _HEADER_SENTINEL.fullmatch(value) or (value.startswith("=?") and value.endswith("?=")):
+        return True
+    return any(ord(c) < 0x20 or ord(c) > 0x7E for c in value)
+
+
+def mcp_header_encode(value: str) -> str:
+    """The value itself when it is safe, otherwise ``=?base64?<base64 of the UTF-8>?=``."""
+    return value if not mcp_header_needs_encoding(value) else "=?base64?" + base64.b64encode(value.encode("utf-8")).decode("ascii") + "?="
+
+
+def mcp_header_decode(value: str) -> str | None:
+    """The original value of a plain or sentinel-encoded header; None for a malformed sentinel (bad base64 or UTF-8, or the shape of one that is not well formed)."""
+    match = _HEADER_SENTINEL.fullmatch(value)
+    if match:
+        try:
+            return _base64_strict(match.group(1)).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    return None if value.startswith("=?") and "?=" in value else value
+
+
+def mcp_streamable_headers(*, session_id: str | None = None, protocol_version: str = MCP_LEGACY_VERSION, accept_event_stream: bool = True, method: str | None = None,
+                           name: str | None = None) -> dict[str, str]:
+    """The headers of a Streamable HTTP POST. A name is encoded when it needs it."""
+    headers = {"content-type": "application/json", "accept": "application/json, text/event-stream" if accept_event_stream else "application/json",
+               MCP_HEADERS["protocol"]: protocol_version}
+    if session_id:
+        headers[MCP_HEADERS["session"]] = session_id
+    if method:
+        headers[MCP_HEADERS["method"]] = method
+    if name:
+        headers[MCP_HEADERS["name"]] = mcp_header_encode(name)
+    return headers
+
+
+def mcp_session_id(random_unit: Any = None, byte_length: int = 18) -> str:
+    """A URL-safe session id with no padding: ``byte_length`` bytes (18 by default) from ``random_unit`` (a callable giving floats in [0, 1); default: the OS's secure source)."""
+    if random_unit is None:
+        return _b64url_nopad(os.urandom(byte_length))
+    return _b64url_nopad(bytes(math.floor(random_unit() * 256) for _ in range(byte_length)))
+
+
+def pkce_challenge_s256(verifier: str) -> str:
+    """RFC 7636 S256: base64url (no padding) of the SHA-256 of the verifier."""
+    return _b64url_nopad(hashlib.sha256(verifier.encode("utf-8")).digest())
+
+
+def pkce_pair(random_unit: Any = None, verifier_length: int = 64) -> dict[str, str]:
+    """A new verifier of 43 to 128 unreserved characters and its S256 challenge."""
+    if not 43 <= verifier_length <= 128:
+        raise ValueError("verifier_length must be 43..128")
+    if random_unit is None:
+        random_unit = lambda: int.from_bytes(os.urandom(4), "big") / 4294967296
+    verifier = "".join(_PKCE_ALPHABET[math.floor(random_unit() * len(_PKCE_ALPHABET))] for _ in range(verifier_length))
+    return {"codeVerifier": verifier, "codeChallenge": pkce_challenge_s256(verifier), "codeChallengeMethod": "S256"}
+
+
+def _string_list(value: dict[str, Any], key: str) -> list[str] | None:
+    if key not in value:
+        return None
+    items = value[key]
+    if not isinstance(items, list) or any(not isinstance(i, str) for i in items):
+        raise ValueError(f"invalid OAuth metadata field: {key}")
+    return list(items)
+
+
+def _optional_string(value: dict[str, Any], key: str) -> str | None:
+    if value.get(key) is None:
+        return None
+    if not isinstance(value[key], str) or not value[key]:
+        raise ValueError(f"invalid OAuth metadata field: {key}")
+    return value[key]
+
+
+def oauth_server_metadata(doc: Any) -> dict[str, Any]:
+    """Authorization server metadata (RFC 8414 subset). It never invents what the server left out: no ``code_challenge_methods_supported`` means no PKCE, an absent token auth
+    method list is ``client_secret_basic``, an absent grant list is ``authorization_code`` and ``implicit``; ``response_types_supported`` is required."""
+    if not isinstance(doc, dict):
+        raise ValueError("OAuth metadata must be an object")
+    methods = _string_list(doc, "code_challenge_methods_supported") or []
+    auth_methods = _string_list(doc, "token_endpoint_auth_methods_supported")
+    responses = _string_list(doc, "response_types_supported")
+    if not responses:
+        raise ValueError("missing OAuth metadata field: response_types_supported")
+    grants = _string_list(doc, "grant_types_supported")
+    for key in ("issuer", "authorization_endpoint", "token_endpoint"):
+        if not isinstance(doc.get(key), str) or not doc[key]:
+            raise ValueError(f"missing OAuth metadata field: {key}")
+    out = {"issuer": doc["issuer"], "authorization_endpoint": doc["authorization_endpoint"], "token_endpoint": doc["token_endpoint"]}
+    registration = _optional_string(doc, "registration_endpoint")
+    if registration is not None:
+        out["registration_endpoint"] = registration
+    out.update(scopes_supported=_string_list(doc, "scopes_supported") or [], response_types_supported=responses,
+               grant_types_supported=grants if grants is not None else ["authorization_code", "implicit"], code_challenge_methods_supported=methods,
+               token_endpoint_auth_methods_supported=auth_methods if auth_methods is not None else ["client_secret_basic"])
+    out["supportsPkceS256"] = any(m.upper() == "S256" for m in methods)
+    return out
+
+
+def oauth_resource_metadata(doc: Any) -> dict[str, Any]:
+    """Protected resource metadata (RFC 9728 subset) for an MCP server over HTTP."""
+    if not isinstance(doc, dict):
+        raise ValueError("OAuth metadata must be an object")
+    if not isinstance(doc.get("resource"), str) or not doc["resource"]:
+        raise ValueError("missing protected resource")
+    servers = doc.get("authorization_servers")
+    if not isinstance(servers, list) or not servers:
+        raise ValueError("missing authorization_servers")
+    if any(not isinstance(s, str) or not s for s in servers):
+        raise ValueError("invalid OAuth metadata field: authorization_servers")
+    scopes = _string_list({k: v for k, v in doc.items() if v is not None}, "scopes_supported") or []
+    methods = _string_list({k: v for k, v in doc.items() if v is not None}, "bearer_methods_supported")
+    out = {"resource": doc["resource"], "authorization_servers": list(servers), "scopes_supported": scopes, "bearer_methods_supported": methods if methods is not None else ["header"]}
+    name = _optional_string(doc, "resource_name")
+    if name is not None:
+        out["resource_name"] = name
+    return out
+
+
+def bearer_inspect(authorization: str | None, expected_audience: str, now: float | None = None) -> dict[str, Any]:
+    """Check a demo JWT-shaped Bearer locally: ``missing``, ``malformed``, ``expired`` (expiry not after ``now``, in seconds), ``wrong_audience`` or ``ok``. The signature is *not* verified:
+    use it only with fixture tokens. Audience may be a string or a non-empty list of non-empty strings; any entry may match; an expired token is reported before a wrong audience."""
+    if not authorization:
+        return {"status": "missing", "audience": None, "expires_at": None}
+    parts = re.split(r"[ \t\n\r\f\v]+", authorization)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return {"status": "malformed", "audience": None, "expires_at": None}
+    segments = parts[1].split(".")
+    malformed = {"status": "malformed", "audience": None, "expires_at": None}
+    if len(segments) < 2:
+        return malformed
+    try:
+        segment = segments[1] + "=" * (-len(segments[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(_strict_urlsafe(segment)).decode("utf-8"), parse_constant=_reject_json_constant)
+        if not isinstance(payload, dict):
+            return malformed
+        aud, exp = payload.get("aud"), payload.get("exp")
+        audiences: list[str] = []
+        if isinstance(aud, str):
+            audiences.append(aud)
+        elif isinstance(aud, list):
+            if not aud or any(not isinstance(i, str) or not i for i in aud):
+                return malformed
+            audiences.extend(aud)
+        elif aud is not None:
+            return malformed
+        audience = audiences[0] if audiences else None
+        expires_at = None
+        if isinstance(exp, (int, float)) and not isinstance(exp, bool):
+            expires_at = int(exp)
+        if expires_at is not None and expires_at <= (time.time() if now is None else now):
+            return {"status": "expired", "audience": audience, "expires_at": expires_at}
+        if expected_audience not in audiences:
+            return {"status": "wrong_audience", "audience": audience, "expires_at": expires_at}
+        return {"status": "ok", "audience": expected_audience, "expires_at": expires_at}
+    except (ValueError, OverflowError, RecursionError):
+        return malformed
+
+
+def _strict_urlsafe(text: str) -> str:
+    if not re.fullmatch(r"(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}==|[A-Za-z0-9_-]{3}=)?", text):
+        raise ValueError("invalid base64url")
+    return text
+
+
+def demo_bearer_token(audience: Any, expires_at: int) -> str:
+    """An unsigned JWT-shaped token for local audience tests (``alg: none``)."""
+    part = lambda value: _b64url_nopad(_compact(value).encode("utf-8"))
+    return part({"alg": "none", "typ": "JWT"}) + "." + part({"aud": audience, "exp": expires_at}) + ".demo-sig"
+
+
+def _mcp_map(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def mcp_meta_version(request: dict[str, Any]) -> str | None:
+    """``params._meta["io.modelcontextprotocol/protocolVersion"]`` when it is a string."""
+    params = request.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    version = meta.get(MCP_META_VERSION) if isinstance(meta, dict) else None
+    return version if isinstance(version, str) else None
+
+
+def mcp_looks_modern(request: dict[str, Any], header_protocol: str | None, meta_version: str | None = None) -> bool:
+    """A request counts as current-official when it is ``server/discover``, carries a ``_meta`` protocol version, or says so in the ``MCP-Protocol-Version`` header."""
+    resolved = meta_version if meta_version is not None else mcp_meta_version(request)
+    return request["method"] == "server/discover" or resolved is not None or header_protocol == MCP_CURRENT_VERSION
+
+
+def mcp_validate_modern(request: dict[str, Any], header_protocol: str | None, meta_version: str | None, header_method: str | None, header_name: str | None) -> dict[str, Any] | None:
+    """Check a current-official request's headers against its body: a failure response (answer it with HTTP 400), or None when it is sound. The checks run in a fixed order."""
+    def fail(message: str, data: Any = None, code: int = RPC_HEADER_MISMATCH) -> dict[str, Any]:
+        return rpc_failure(request.get("id"), code, message, data)
+    if not header_protocol:
+        return fail("MCP-Protocol-Version header is required")
+    params = request["params"] if isinstance(request.get("params"), dict) else None
+    meta = params["_meta"] if params is not None and isinstance(params.get("_meta"), dict) else None
+    if meta is None:
+        return fail("params._meta is required")
+    if not meta_version:
+        return fail("params._meta protocolVersion is required")
+    if header_protocol != meta_version:
+        return fail("MCP-Protocol-Version does not match body _meta", {"header": header_protocol, "meta": meta_version})
+    if header_protocol != MCP_CURRENT_VERSION:
+        return fail("Unsupported protocol version", {"supported": [MCP_LEGACY_VERSION, MCP_CURRENT_VERSION], "requested": header_protocol}, RPC_UNSUPPORTED_VERSION)
+    info = meta.get(MCP_META_CLIENT_INFO)
+    if not isinstance(info, dict):
+        return fail("params._meta clientInfo must be an object")
+    if not isinstance(info.get("name"), str) or not info["name"]:
+        return fail("params._meta clientInfo.name must be a non-empty string")
+    if not isinstance(info.get("version"), str) or not info["version"]:
+        return fail("params._meta clientInfo.version must be a non-empty string")
+    if not isinstance(meta.get(MCP_META_CLIENT_CAPS), dict):
+        return fail("params._meta clientCapabilities must be an object")
+    if not header_method:
+        return fail("Mcp-Method header is required")
+    if header_method != request["method"]:
+        return fail("Mcp-Method does not match JSON-RPC method", {"header": header_method, "method": request["method"]})
+    if request["method"] in ("tools/call", "resources/read", "prompts/get"):
+        expected = params.get("uri" if request["method"] == "resources/read" else "name")
+        if not header_name:
+            return fail("Mcp-Name header is required")
+        decoded = mcp_header_decode(header_name)
+        if decoded is None:
+            return fail("Mcp-Name header is malformed")
+        if isinstance(expected, str) and decoded != expected:
+            return fail("Mcp-Name does not match body params", {"header": header_name, "decoded": decoded, "expected": expected})
+    return None
+
+
+_MCP_CAPABILITIES = {"tools": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False}, "prompts": {"listChanged": False}}
+_MCP_SERVER_INFO = {"name": "flutter-navigation-basic-mcp-foundation", "version": "0.1.0"}
+
+
+class McpFoundation:
+    """The dual-era demo MCP server as a state machine: ``initialize`` opens a session (legacy ``2025-03-26``), while the current-official ``2026-07-28`` requests carry their own
+    ``_meta`` and need no session. It serves ``ping``, tools (``echo``), resources (``demo://readme``) and prompts (``greet``). A foundation stub, not a full MCP host."""
+
+    def __init__(self, session_id_factory: Any = None):
+        self.session_id_factory = session_id_factory or mcp_session_id
+        self.sessions: dict[str, dict[str, Any]] = {}
+
+    def session(self, session_id: str | None) -> dict[str, Any] | None:
+        return self.sessions.get(session_id) if session_id is not None else None
+
+    def handle_rpc(self, request: dict[str, Any], session_id: str | None = None, bearer: dict[str, str] | None = None) -> tuple[dict[str, Any], str | None]:
+        """One request in, ``(response, session id to set)`` out. ``bearer`` is ``{"status": "ok" | "unauthorized" | "forbidden", "reason": ...}`` from the HTTP layer."""
+        rid, method = request.get("id"), request["method"]
+        if bearer is not None and bearer["status"] != "ok":
+            code = RPC_FORBIDDEN if bearer["status"] == "forbidden" else RPC_UNAUTHORIZED
+            return rpc_failure(rid, code, bearer["status"], {"reason": bearer["reason"]}), session_id
+        if method == "initialize":
+            return self._initialize(request)
+        if method == "notifications/initialized":
+            return self._require_session(request, session_id, lambda _s: rpc_result(rid, None))
+        if method == "ping":
+            return self._require_session(request, session_id, lambda _s: rpc_result(rid, {}))
+        if method == "server/discover":
+            return rpc_result(rid, {"resultType": "complete", "protocolVersions": [MCP_LEGACY_VERSION, MCP_CURRENT_VERSION], "capabilities": _MCP_CAPABILITIES, "serverInfo": _MCP_SERVER_INFO,
+                                    "instructions": f"Dual-era demo server. Prefer {MCP_CURRENT_VERSION} with per-request _meta, or legacy initialize + session."}), None
+        params = _mcp_map(request.get("params"))
+        invalid = lambda message: rpc_failure(rid, RPC_INVALID_PARAMS, message)
+        if method == "tools/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"tools": [{"name": "echo", "description": "Echo a string argument", "inputSchema": {
+                "type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}), list_result=True)
+        if method == "tools/call":
+            def call(_s: Any) -> dict[str, Any]:
+                args = _mcp_map(params.get("arguments")) if params else None
+                if (params.get("name") if params else None) != "echo":
+                    return invalid("unknown tool")
+                text = (args or {}).get("text")
+                if not isinstance(text, str):
+                    return invalid("missing text")
+                return rpc_result(rid, {"content": [{"type": "text", "text": text}], "isError": False})
+            return self._modern_or_session(request, session_id, call)
+        if method == "resources/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"resources": [{"uri": "demo://readme", "name": "README", "mimeType": "text/plain"}]}), list_result=True)
+        if method == "resources/read":
+            def read(_s: Any) -> dict[str, Any]:
+                uri = params.get("uri") if params else None
+                if uri != "demo://readme":
+                    return invalid("unknown resource")
+                return rpc_result(rid, {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "MCP foundation demo resource"}]})
+            return self._modern_or_session(request, session_id, read)
+        if method == "prompts/list":
+            return self._modern_or_session(request, session_id, lambda _s: rpc_result(rid, {"prompts": [{"name": "greet", "description": "Greeting prompt"}]}), list_result=True)
+        if method == "prompts/get":
+            def get(_s: Any) -> dict[str, Any]:
+                if (params.get("name") if params else None) != "greet":
+                    return invalid("unknown prompt")
+                return rpc_result(rid, {"description": "Greeting prompt", "messages": [{"role": "user", "content": {"type": "text", "text": "Hello from MCP foundation"}}]})
+            return self._modern_or_session(request, session_id, get)
+        return rpc_failure(rid, RPC_METHOD_NOT_FOUND, f"method not found: {method}"), session_id
+
+    def _initialize(self, request: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        rid = request.get("id")
+        bad = lambda message: (rpc_failure(rid, RPC_INVALID_PARAMS, message), None)
+        params = _mcp_map(request.get("params"))
+        if params is None:
+            return bad("initialize params must be an object")
+        if not isinstance(params.get("protocolVersion"), str) or not params["protocolVersion"]:
+            return bad("protocolVersion must be a non-empty string")
+        if _mcp_map(params.get("capabilities")) is None:
+            return bad("capabilities must be an object")
+        info = _mcp_map(params.get("clientInfo"))
+        if info is None:
+            return bad("clientInfo must be an object")
+        if not isinstance(info.get("name"), str) or not info["name"]:
+            return bad("clientInfo.name must be a non-empty string")
+        if not isinstance(info.get("version"), str) or not info["version"]:
+            return bad("clientInfo.version must be a non-empty string")
+        session_id = self.session_id_factory()
+        self.sessions[session_id] = {"id": session_id, "protocolVersion": MCP_LEGACY_VERSION, "clientInfo": info}
+        return rpc_result(rid, {"protocolVersion": MCP_LEGACY_VERSION, "capabilities": _MCP_CAPABILITIES, "serverInfo": _MCP_SERVER_INFO}), session_id
+
+    def _modern_or_session(self, request: dict[str, Any], session_id: str | None, build: Any, list_result: bool = False) -> tuple[dict[str, Any], str | None]:
+        params = _mcp_map(request.get("params"))
+        meta = _mcp_map(params.get("_meta")) if params else None
+        if meta is not None and meta.get(MCP_META_VERSION) == MCP_CURRENT_VERSION:
+            response = build(None)
+            if "result" in response:       # current-official results say they are complete; lists also carry cache hints
+                result = response["result"]
+                if not isinstance(result, dict):
+                    result = {"resultType": "complete", "value": result}
+                else:
+                    result = dict(result)
+                    result.setdefault("resultType", "complete")
+                    if list_result:
+                        result.setdefault("ttlMs", 60000)
+                        result.setdefault("cacheScope", "private")
+                response = rpc_result(response["id"], result)
+            return response, None
+        return self._require_session(request, session_id, build)
+
+    def _require_session(self, request: dict[str, Any], session_id: str | None, build: Any) -> tuple[dict[str, Any], str | None]:
+        rid = request.get("id")
+        if not session_id:
+            return rpc_failure(rid, RPC_SESSION_REQUIRED, "Mcp-Session-Id required"), session_id
+        session = self.sessions.get(session_id)
+        if session is None:
+            return rpc_failure(rid, RPC_SESSION_INVALID, "unknown session"), session_id
+        return build(session), session_id
+
+
+def mcp_header(headers: dict[str, str], name: str) -> str | None:
+    """A header by name, ignoring case (the first match)."""
+    wanted = name.lower()
+    return next((v for k, v in headers.items() if k.lower() == wanted), None)
+
+
+def mcp_origin_allows(allowed: Any, origin: str | None) -> bool:
+    """The DNS-rebinding guard: no Origin is fine (curl, a CLI); one that is present must be on the list."""
+    return not origin or origin in allowed
+
+
+def mcp_origins_for_port(port: int) -> list[str]:
+    return [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]
+
+
+class McpRoutes:
+    """The mock server's routes: the OAuth discovery documents, ``/mcp/support-matrix`` and the Streamable HTTP endpoint ``/mcp``, with the dual-era status rules.
+
+    Legacy requests need ``Mcp-Session-Id`` after ``initialize`` (400 if absent, 404 if unknown); current-official requests are checked against their ``_meta`` (400); an unknown
+    current-official method is 404, an unknown legacy one is 200 with a JSON-RPC error; an accepted notification is 202 with no body; a Bearer is checked against the audience
+    (401 or 403). ``session_error_status=True`` is the in-process transport: it maps session errors from the handler to 400 and 404 and ignores Origin and Authorization.
+    """
+
+    def __init__(self, handler: McpFoundation | None = None, *, resource: str = "http://127.0.0.1:8787/mcp", issuer: str = "http://127.0.0.1:8787",
+                 expected_audience: str = "http://127.0.0.1:8787/mcp", allowed_origins: Any = None, clock: Any = None, session_error_status: bool = False,
+                 force_bearer: dict[str, str] | None = None):
+        self.handler = handler or McpFoundation()
+        self.resource, self.issuer, self.expected_audience = resource, issuer, expected_audience
+        self.allowed_origins = list(allowed_origins) if allowed_origins is not None else mcp_origins_for_port(8787)
+        self.clock, self.session_error_status, self.force_bearer = clock, session_error_status, force_bearer
+
+    @classmethod
+    def for_port(cls, port: int, handler: McpFoundation | None = None, **kwargs: Any) -> "McpRoutes":
+        """Discovery URLs, audience and Origin list that follow the real listen port."""
+        base = f"http://127.0.0.1:{port}"
+        return cls(handler, resource=base + "/mcp", issuer=base, expected_audience=base + "/mcp", allowed_origins=mcp_origins_for_port(port), **kwargs)
+
+    def handle(self, method: str, path: str, headers: dict[str, str], raw_body: str | None) -> dict[str, Any] | None:
+        """A response ``{"status", "headers", "body"}`` for an MCP or OAuth demo route, or None for any other path."""
+        path = path[:-1] if path.endswith("/") and len(path) > 1 else path
+        if path == "/.well-known/oauth-authorization-server":
+            doc = oauth_server_metadata({"issuer": self.issuer, "authorization_endpoint": self.issuer + "/oauth/authorize", "token_endpoint": self.issuer + "/oauth/token",
+                                         "scopes_supported": ["mcp"], "response_types_supported": ["code"], "grant_types_supported": ["authorization_code"],
+                                         "code_challenge_methods_supported": ["S256"], "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"]})
+            doc.pop("supportsPkceS256")
+            return {"status": 200, "headers": {}, "body": doc}
+        if path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
+            return {"status": 200, "headers": {}, "body": oauth_resource_metadata({"resource": self.resource, "authorization_servers": [self.issuer], "scopes_supported": ["mcp"]})}
+        if path == "/mcp/support-matrix":
+            return {"status": 200, "headers": {}, "body": mcp_support_matrix()}
+        if path != "/mcp":
+            return None
+        if method.upper() != "POST":
+            return {"status": 405, "headers": {"allow": "POST"}, "body": {"error": "method_not_allowed"}}
+        return self._post(headers, raw_body)
+
+    def _post(self, headers: dict[str, str], raw_body: str | None) -> dict[str, Any]:
+        origin = None if self.session_error_status else mcp_header(headers, "origin")
+        if not mcp_origin_allows(self.allowed_origins, origin):
+            return {"status": 403, "headers": {}, "body": {"error": "origin_forbidden", "origin": origin}}
+        request = rpc_request_parse(raw_body)
+        if request is None:
+            return {"status": 400, "headers": {}, "body": rpc_failure(None, RPC_PARSE_ERROR, "parse error")}
+        gate = self.force_bearer
+        auth = None if self.session_error_status else mcp_header(headers, "authorization")
+        if auth:
+            claim = bearer_inspect(auth, self.expected_audience, self.clock() if self.clock else None)
+            gate = {"ok": {"status": "ok", "reason": "ok"}, "wrong_audience": {"status": "forbidden", "reason": "wrong_audience"}, "expired": {"status": "unauthorized", "reason": "expired"},
+                    "missing": {"status": "unauthorized", "reason": "invalid_bearer"}, "malformed": {"status": "unauthorized", "reason": "invalid_bearer"}}[claim["status"]]
+        inbound = mcp_header(headers, MCP_HEADERS["session"])
+        header_protocol = mcp_header(headers, MCP_HEADERS["protocol"])
+        meta_version = mcp_meta_version(request)
+        modern = mcp_looks_modern(request, header_protocol, meta_version)
+        if modern:
+            error = mcp_validate_modern(request, header_protocol, meta_version, mcp_header(headers, MCP_HEADERS["method"]), mcp_header(headers, MCP_HEADERS["name"]))
+            if error is not None:
+                return {"status": 400, "headers": {MCP_HEADERS["protocol"]: MCP_CURRENT_VERSION}, "body": error}
+        elif request["method"] != "initialize":
+            if not inbound:
+                return {"status": 400, "headers": {}, "body": {"error": "session_required", "message": "Mcp-Session-Id required after initialize"}}
+            if self.handler.session(inbound) is None:
+                return {"status": 404, "headers": {}, "body": {"error": "session_not_found", "message": "unknown Mcp-Session-Id"}}
+        response, out_session = self.handler.handle_rpc(request, None if modern else inbound, gate)
+        out_headers = {}
+        if out_session is not None:
+            out_headers[MCP_HEADERS["session"]] = out_session
+        out_headers[MCP_HEADERS["protocol"]] = MCP_CURRENT_VERSION if modern else MCP_LEGACY_VERSION
+        error = response.get("error")
+        code = error["code"] if error else None
+        for status, name, rpc_code in ((401, "unauthorized", RPC_UNAUTHORIZED), (403, "forbidden", RPC_FORBIDDEN)):
+            if code == rpc_code:
+                return {"status": status, "headers": out_headers, "body": {"error": name, "message": error["message"], "reason": error.get("data")}}
+        if rpc_is_notification(request):
+            if error:
+                return {"status": 400, "headers": out_headers, "body": {"error": "notification_rejected", "message": error["message"], "code": error["code"]}}
+            return {"status": 202, "headers": out_headers, "body": None}
+        if modern and code == RPC_METHOD_NOT_FOUND:
+            return {"status": 404, "headers": out_headers, "body": response}
+        status = 200
+        if self.session_error_status:
+            status = 400 if code == RPC_SESSION_REQUIRED else 404 if code == RPC_SESSION_INVALID else 200
+        return {"status": status, "headers": out_headers, "body": response}
+
+
+class McpClient:
+    """A client for the dual-era demos. ``transport(headers, body_text)`` returns ``{"status_code", "headers", "body"}``.
+
+    Whatever the server sends is checked: a response must be well-formed JSON-RPC with the id of the request; a non-2xx status is never success, even if its body looks like a
+    result; a session id is kept only from a successful response (never from a failed ``initialize``); a rejected notification is an error the demos stop on.
+    """
+
+    def __init__(self, transport: Any, client_name: str = "flutter-navigation-basic", client_version: str = "0.1.0"):
+        self.transport, self.client_name, self.client_version = transport, client_name, client_version
+        self.session_id: str | None = None
+        self.protocol_version = MCP_LEGACY_VERSION
+        self._next_id = 1
+
+    def initialize(self) -> dict[str, Any]:
+        request = rpc_request("initialize", id=self._take_id(), params={"protocolVersion": MCP_LEGACY_VERSION, "capabilities": {}, "clientInfo": {"name": self.client_name, "version": self.client_version}})
+        response, session = self._send(request)
+        if "error" not in response:
+            self.session_id = session or self.session_id
+            result = response["result"]
+            if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
+                self.protocol_version = result["protocolVersion"]
+        return response
+
+    def notify_initialized(self) -> dict[str, Any]:
+        return self._send(rpc_request("notifications/initialized"))[0]
+
+    def list_tools(self) -> dict[str, Any]:
+        return self._rpc("tools/list")
+
+    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
+
+    def list_resources(self) -> dict[str, Any]:
+        return self._rpc("resources/list")
+
+    def list_prompts(self) -> dict[str, Any]:
+        return self._rpc("prompts/list")
+
+    def ping(self) -> dict[str, Any]:
+        return self._rpc("ping")
+
+    def run_echo_demo(self, text: str = "hello") -> dict[str, Any]:
+        """initialize, notifications/initialized, tools/list and tools/call(echo) on the legacy path; stops at the first error."""
+        log: list[str] = []
+        done = lambda ok, last=None: {"ok": ok, "log": log, "session_id": self.session_id, "last_response": last}
+        init = self.initialize()
+        log.append("initialize → " + _compact(init))
+        if "error" in init:
+            return done(False)
+        notified = self.notify_initialized()
+        if "error" in notified:
+            log.append(f"notifications/initialized → rejected {_compact(notified)} (session={self.session_id})")
+            return done(False)
+        log.append(f"notifications/initialized → accepted (session={self.session_id})")
+        listed = self.list_tools()
+        log.append("tools/list → " + _compact(listed))
+        if "error" in listed:
+            return done(False)
+        called = self.call_tool("echo", {"text": text})
+        log.append("tools/call(echo) → " + _compact(called))
+        return done("error" not in called, called)
+
+    def run_modern_echo_demo(self, text: str = "hello") -> dict[str, Any]:
+        """The current-official path: server/discover, tools/list, tools/call(echo), with no initialize and no session; every request carries its ``_meta``."""
+        log: list[str] = []
+        self.protocol_version, self.session_id = MCP_CURRENT_VERSION, None
+        done = lambda ok, last=None: {"ok": ok, "log": log, "session_id": self.session_id, "last_response": last}
+        meta = lambda extra=None: {"_meta": {MCP_META_VERSION: MCP_CURRENT_VERSION, MCP_META_CLIENT_INFO: {"name": self.client_name, "version": self.client_version}, MCP_META_CLIENT_CAPS: {}}, **(extra or {})}
+        discover = self._rpc("server/discover", meta())
+        log.append("server/discover → " + _compact(discover))
+        if "error" in discover:
+            return done(False)
+        listed = self._rpc("tools/list", meta())
+        log.append("tools/list → " + _compact(listed))
+        if "error" in listed:
+            return done(False)
+        called = self._rpc("tools/call", meta({"name": "echo", "arguments": {"text": text}}))
+        log.append("tools/call(echo) → " + _compact(called))
+        return done("error" not in called, called)
+
+    def _take_id(self) -> int:
+        value, self._next_id = self._next_id, self._next_id + 1
+        return value
+
+    def _rpc(self, method: str, params: Any = None) -> dict[str, Any]:
+        return self._send(rpc_request(method, id=self._take_id(), params=params))[0]
+
+    def _send(self, request: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        params, name = request.get("params"), None
+        if isinstance(params, dict):
+            if request["method"] in ("tools/call", "prompts/get") and isinstance(params.get("name"), str):
+                name = params["name"]
+            elif request["method"] == "resources/read" and isinstance(params.get("uri"), str):
+                name = params["uri"]
+        headers = mcp_streamable_headers(session_id=self.session_id, protocol_version=self.protocol_version, method=request["method"], name=name)
+        sent = self.transport(headers, _compact(request))
+        returned = mcp_header(sent["headers"], MCP_HEADERS["session"])
+        http_ok = 200 <= sent["status_code"] < 300
+        if "id" not in request:
+            if http_ok:
+                if returned:
+                    self.session_id = returned
+                return rpc_result(None, None), self.session_id
+            return rpc_failure(None, RPC_INTERNAL_ERROR, "notification rejected", {"statusCode": sent["status_code"], "body": sent["body"]}), self.session_id
+        body = sent["body"]
+        rid = request["id"]
+        status_code = lambda code_when_other: RPC_UNAUTHORIZED if sent["status_code"] == 401 else RPC_FORBIDDEN if sent["status_code"] == 403 else code_when_other
+        if isinstance(body, dict):
+            if "error" in body and "jsonrpc" not in body:
+                error = body["error"]
+                response = rpc_failure(rid, status_code(RPC_INTERNAL_ERROR), error if isinstance(error, str) else _compact(error) if error is not None else "http_error", body)
+            else:
+                try:
+                    response = rpc_response_parse(body, rid)
+                except ValueError as error:
+                    response = rpc_failure(rid, RPC_INTERNAL_ERROR, f"invalid JSON-RPC response: {error}", {"statusCode": sent["status_code"], "body": body})
+        else:
+            response = rpc_failure(rid, RPC_INTERNAL_ERROR, "unexpected transport body", {"statusCode": sent["status_code"], "body": body})
+        if not http_ok and "error" not in response:
+            response = rpc_failure(rid, status_code(RPC_INTERNAL_ERROR), f"HTTP {sent['status_code']} with result-shaped body", {"statusCode": sent["status_code"], "body": body})
+        if http_ok and "error" not in response and returned:
+            self.session_id = returned
+        return response, self.session_id
+
+
+def mcp_in_process(routes: McpRoutes, path: str = "/mcp") -> Any:
+    """A client transport that posts straight into a ``McpRoutes`` (no network)."""
+    def post(headers: dict[str, str], body: str) -> dict[str, Any]:
+        out = routes.handle("POST", path, headers, body)
+        return {"status_code": 404, "headers": {}, "body": {"error": "not_found"}} if out is None else {"status_code": out["status"], "headers": out["headers"], "body": out["body"]}
+    return post
+
+
+def mcp_foundation_transport(handler: McpFoundation, force_bearer: dict[str, str] | None = None) -> Any:
+    """A client transport that posts into a handler with the same status rules as the routes, but no Origin, no Authorization and session errors as 400 and 404."""
+    return mcp_in_process(McpRoutes(handler, session_error_status=True, force_bearer=force_bearer))
+
+
+def mcp_exchange(routes: McpRoutes, request: dict[str, Any]) -> dict[str, Any]:
+    """One HTTP exchange against the in-page server, from ``{"method", "path", "headers", "body"}``: what the lab's "Send" does."""
+    method, path = request.get("method", "POST"), request.get("path", "/mcp")
+    headers = request.get("headers", {})
+    if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+        raise ValueError("headers must be an object of strings")
+    body = request.get("body")
+    if body is not None and not isinstance(body, str):
+        body = _compact(body)
+    out = routes.handle(method, path, headers, body)
+    return {"status": 404, "headers": {}, "body": {"error": "not_found"}} if out is None else out
+
+
+_CSS["mcp.css"] = ("@layer components{.ui-mcp h3{margin:24px 0 8px}.ui-mcp label{display:block;margin:8px 0 4px}.ui-mcp .ui-input{width:100%;box-sizing:border-box}.ui-mcp textarea{min-height:96px;"
+                   "font-family:var(--ui-font-mono,monospace)}.ui-mcp-row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-mcp pre{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere;"
+                   "max-height:320px;overflow:auto}.ui-mcp code{overflow-wrap:anywhere}.ui-mcp-status{margin:8px 0;font-weight:600}.ui-mcp-kind{display:flex;flex-wrap:wrap;gap:8px 16px;border:0;padding:0;margin:8px 0}"
+                   ".ui-mcp-kind label{display:inline-block;margin:0}}")
+
+_MCP_SAMPLE_SERVER_DOC = {"issuer": "https://auth.example.test/", "authorization_endpoint": "https://auth.example.test/authorize", "token_endpoint": "https://auth.example.test/token",
+                          "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"], "scopes_supported": ["mcp"]}
+
+
+def mcp_html() -> str:
+    """The MCP lab as semantic HTML: an in-page server to send requests to, two demos, and small tools for header names, PKCE, a Bearer and OAuth metadata."""
+    templates = (("initialize", "initialize"), ("initialized", "notifications/initialized"), ("toolsList", "tools/list"), ("toolsCall", "tools/call (echo)"),
+                 ("discover", "server/discover (2026-07-28)"), ("modernCall", "tools/call (2026-07-28)"))
+    buttons = "".join(f'<button class="ui-button" type="button" data-mcp-template="{key}">{escape(label)}</button> ' for key, label in templates)
+    sample = escape(json.dumps(_MCP_SAMPLE_SERVER_DOC, indent=2), quote=False)
+    return ('<section class="ui-panel ui-mcp" id="mcp" data-ui-mcp><h2>MCP lab</h2>'
+            '<p class="ui-muted">A small MCP server that lives in this page (nothing is sent anywhere): send it requests, run a demo, and try the helpers. It speaks the legacy 2025-03-26 '
+            'protocol (initialize and Mcp-Session-Id) and the current 2026-07-28 one (server/discover and per-request _meta).</p>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-mcp-sessions></p>'
+            '<h3>Send a request</h3><p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
+            f'<div class="ui-mcp-row">{buttons}</div>'
+            '<label for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
+            '<label for="mcp-path">Path</label><input class="ui-input" id="mcp-path" data-mcp-path value="/mcp" autocomplete="off">'
+            '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="3"></textarea>'
+            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="8"></textarea>'
+            '<p><button class="ui-button" type="button" data-mcp-send>Send</button> <button class="ui-button" type="button" data-mcp-reset>Reset the server</button></p>'
+            '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-http-status>Nothing sent yet.</p><pre data-mcp-out-headers></pre><pre data-mcp-out-body></pre>'
+            '<h3>Run a demo</h3><label for="mcp-demo-text">Text to echo</label><input class="ui-input" id="mcp-demo-text" data-mcp-demo-text value="hello" autocomplete="off">'
+            '<p><button class="ui-button" type="button" data-mcp-demo-legacy>Legacy echo demo</button> <button class="ui-button" type="button" data-mcp-demo-modern>Current echo demo</button></p>'
+            '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-demo-status></p><ol data-mcp-demo-log></ol>'
+            '<h3>Header names</h3><p class="ui-muted">A name that is not plain printable ASCII travels as <code>=?base64?...?=</code>.</p>'
+            '<label for="mcp-codec">Name</label><input class="ui-input" id="mcp-codec" data-mcp-codec-in value="エコー" autocomplete="off"><pre data-mcp-codec-out></pre>'
+            '<h3>PKCE (RFC 7636, S256)</h3><label for="mcp-verifier">Code verifier</label>'
+            '<input class="ui-input" id="mcp-verifier" data-mcp-verifier value="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" autocomplete="off" spellcheck="false">'
+            '<p>Challenge: <code data-mcp-challenge></code></p><p class="ui-muted">The value above is the verifier of the RFC\'s Appendix B; its challenge is '
+            '<code>E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM</code>.</p><p><button class="ui-button" type="button" data-mcp-pkce-new>New verifier</button></p>'
+            '<h3>Bearer audience</h3><p class="ui-muted">Reads a JWT-shaped demo token (the signature is not checked).</p>'
+            '<label for="mcp-auth">Authorization header</label><input class="ui-input" id="mcp-auth" data-mcp-auth placeholder="Bearer header.payload.signature" autocomplete="off" spellcheck="false">'
+            '<label for="mcp-aud">Expected audience</label><input class="ui-input" id="mcp-aud" data-mcp-aud value="http://127.0.0.1:8787/mcp" autocomplete="off">'
+            '<p><button class="ui-button" type="button" data-mcp-auth-demo>Make a demo token (valid for an hour)</button></p><p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-auth-out></p>'
+            '<h3>OAuth metadata</h3><fieldset class="ui-mcp-kind"><legend>Document</legend><label><input type="radio" name="mcp-meta-kind" value="server" checked> Authorization server</label>'
+            '<label><input type="radio" name="mcp-meta-kind" value="resource"> Protected resource</label></fieldset>'
+            f'<label for="mcp-meta">JSON</label><textarea class="ui-input" id="mcp-meta" data-mcp-meta spellcheck="false" rows="8">{sample}</textarea><pre data-mcp-meta-out></pre></section>')
+
+
+def mcp_document(*, theme: str = "modern") -> str:
+    """A single-file page for the MCP lab."""
+    return render_document(trusted_html='<main class="ui-page">' + mcp_html() + "</main>" + module_script(_JS["mcp.js"]), title="MCP lab", theme=theme, css=bundled_css())
+
+
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
 # Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
 # lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
@@ -6529,6 +7293,217 @@ if(typeof document!=="undefined")bindReport();
 """
 
 
+_JS["mcp.js"] = r"""/* web-ui mcp: JSON-RPC, the dual-era MCP Streamable HTTP rules, an in-page server, a session client, OAuth metadata, PKCE and a Bearer audience check (nothing is sent). Python (web_ui.McpFoundation, McpRoutes, McpClient, ...) is the reference; this must agree. */
+""" + _SHA_JS + _RNG_JS + r"""export const MCP_LEGACY_VERSION="2025-03-26",MCP_CURRENT_VERSION="2026-07-28",MCP_META_VERSION="io.modelcontextprotocol/protocolVersion",MCP_META_CLIENT_INFO="io.modelcontextprotocol/clientInfo",MCP_META_CLIENT_CAPS="io.modelcontextprotocol/clientCapabilities";
+export const RPC={PARSE_ERROR:-32700,INVALID_REQUEST:-32600,METHOD_NOT_FOUND:-32601,INVALID_PARAMS:-32602,INTERNAL_ERROR:-32603,UNAUTHORIZED:-32001,FORBIDDEN:-32003,SESSION_REQUIRED:-32010,SESSION_INVALID:-32011,HEADER_MISMATCH:-32020,UNSUPPORTED_VERSION:-32022};
+export const MCP_HEADERS={protocol:"mcp-protocol-version",session:"mcp-session-id",method:"mcp-method",name:"mcp-name"};
+const isDict=v=>v!==null&&typeof v==="object"&&!Array.isArray(v),has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k),compact=v=>JSON.stringify(v),nul=v=>v===undefined?null:v;
+const HEADER_SENTINEL=/^=\?base64\?([A-Za-z0-9+/=]+)\?=$/,BASE64_STRICT=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,BASE64URL_STRICT=/^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}==|[A-Za-z0-9_-]{3}=)?$/,PKCE_ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const bytesToBinary=b=>{let s="";for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return s},binaryToBytes=s=>Uint8Array.from(s,c=>c.charCodeAt(0));
+const b64=bytes=>btoa(bytesToBinary(bytes)),b64urlNopad=bytes=>b64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function base64Strict(text){if(!BASE64_STRICT.test(text))throw new Error("invalid base64");return binaryToBytes(atob(text))}
+const utf8Strict=bytes=>new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(bytes),utf8=s=>new TextEncoder().encode(s);
+export const mcpSupportMatrix=()=>({specificationVersion:MCP_LEGACY_VERSION,currentOfficialVersion:MCP_CURRENT_VERSION,implementsCurrentOfficial:true,legacyMcpEra:true,currentOfficialEra:true,streamableHttp:true,jsonRpc:true,sessionHeader:true,oauthDiscovery:true,pkceS256:true,bearerAudienceCheck:true,flutterWebInAppOAuthGuaranteed:false,legacySseDefault:false});
+export function rpcFailure(id,code,message,data=null){const error={code,message};if(data!==null&&data!==undefined)error.data=data;return{jsonrpc:"2.0",id:nul(id),error}}
+export const rpcResult=(id,result)=>({jsonrpc:"2.0",id:nul(id),result:nul(result)});
+export function rpcRequest(method,o={}){const out={jsonrpc:"2.0"};if(o.id!==null&&o.id!==undefined)out.id=o.id;out.method=method;if(o.params!==null&&o.params!==undefined)out.params=o.params;return out}
+export function rpcRequestParse(raw){let value;try{value=typeof raw==="string"?JSON.parse(raw):raw}catch(e){return null}
+ if(!isDict(value)||get(value,"jsonrpc")!=="2.0"||typeof get(value,"method")!=="string"||!value.method)return null;return{jsonrpc:"2.0",id:nul(get(value,"id")),method:value.method,params:nul(get(value,"params"))}}
+function get(o,k){return has(o,k)?o[k]:undefined}
+const rpcText=v=>typeof v==="string"?v:compact(v);
+export const rpcIsNotification=r=>r.id===null||r.id===undefined;
+export function rpcResponseParse(value,expectedId=null){if(!isDict(value)||get(value,"jsonrpc")!=="2.0")throw new Error("invalid JSON-RPC response version");
+ const hasResult=has(value,"result"),hasError=has(value,"error");if(hasResult===hasError)throw new Error("JSON-RPC response must contain exactly one of result or error");let response;
+ if(hasError){const error=value.error;if(!isDict(error))throw new Error("invalid JSON-RPC error payload");if(!Number.isInteger(get(error,"code")))throw new Error("JSON-RPC error code must be an int");
+  if(typeof get(error,"message")!=="string")throw new Error("JSON-RPC error message must be a String");response=rpcFailure(nul(get(value,"id")),error.code,error.message,nul(get(error,"data")))}
+ else response=rpcResult(nul(get(value,"id")),value.result);
+ if(expectedId!==null&&expectedId!==undefined&&response.id!==expectedId)throw new Error("JSON-RPC response id mismatch: expected "+rpcText(expectedId)+" got "+rpcText(response.id));return response}
+export function mcpHeaderNeedsEncoding(value){if(value!==value.replace(/^ +| +$/g,"")||HEADER_SENTINEL.test(value)||(value.startsWith("=?")&&value.endsWith("?=")))return true;
+ for(let i=0;i<value.length;i++){const c=value.charCodeAt(i);if(c<0x20||c>0x7e)return true}return false}
+export const mcpHeaderEncode=value=>mcpHeaderNeedsEncoding(value)?"=?base64?"+b64(utf8(value))+"?=":value;
+export function mcpHeaderDecode(value){const m=HEADER_SENTINEL.exec(value);if(m){try{return utf8Strict(base64Strict(m[1]))}catch(e){return null}}return value.startsWith("=?")&&value.includes("?=")?null:value}
+export function mcpStreamableHeaders(o={}){const{sessionId=null,protocolVersion=MCP_LEGACY_VERSION,acceptEventStream=true,method=null,name=null}=o,
+ headers={"content-type":"application/json",accept:acceptEventStream?"application/json, text/event-stream":"application/json"};headers[MCP_HEADERS.protocol]=protocolVersion;
+ if(sessionId)headers[MCP_HEADERS.session]=sessionId;if(method)headers[MCP_HEADERS.method]=method;if(name)headers[MCP_HEADERS.name]=mcpHeaderEncode(name);return headers}
+const secureBytes=n=>{const b=new Uint8Array(n);crypto.getRandomValues(b);return b};
+export function mcpSessionId(randomUnit=null,byteLength=18){return b64urlNopad(randomUnit===null?secureBytes(byteLength):Uint8Array.from({length:byteLength},()=>Math.floor(randomUnit()*256)))}
+export const pkceChallengeS256=verifier=>b64urlNopad(sha256Bytes(verifier));
+export function pkcePair(randomUnit=null,verifierLength=64){if(!(verifierLength>=43&&verifierLength<=128))throw new Error("verifier_length must be 43..128");
+ const unit=randomUnit||(()=>new Uint32Array(secureBytes(4).buffer)[0]/4294967296);let verifier="";for(let i=0;i<verifierLength;i++)verifier+=PKCE_ALPHABET[Math.floor(unit()*PKCE_ALPHABET.length)];
+ return{codeVerifier:verifier,codeChallenge:pkceChallengeS256(verifier),codeChallengeMethod:"S256"}}
+function stringList(doc,key){if(!has(doc,key))return null;const items=doc[key];if(!Array.isArray(items)||items.some(i=>typeof i!=="string"))throw new Error("invalid OAuth metadata field: "+key);return[...items]}
+function optionalString(doc,key){const v=get(doc,key);if(v===undefined||v===null)return null;if(typeof v!=="string"||!v)throw new Error("invalid OAuth metadata field: "+key);return v}
+export function oauthServerMetadata(doc){if(!isDict(doc))throw new Error("OAuth metadata must be an object");
+ const methods=stringList(doc,"code_challenge_methods_supported")||[],authMethods=stringList(doc,"token_endpoint_auth_methods_supported"),responses=stringList(doc,"response_types_supported");
+ if(!responses||!responses.length)throw new Error("missing OAuth metadata field: response_types_supported");const grants=stringList(doc,"grant_types_supported");
+ for(const key of["issuer","authorization_endpoint","token_endpoint"])if(typeof get(doc,key)!=="string"||!doc[key])throw new Error("missing OAuth metadata field: "+key);
+ const out={issuer:doc.issuer,authorization_endpoint:doc.authorization_endpoint,token_endpoint:doc.token_endpoint},registration=optionalString(doc,"registration_endpoint");if(registration!==null)out.registration_endpoint=registration;
+ out.scopes_supported=stringList(doc,"scopes_supported")||[];out.response_types_supported=responses;out.grant_types_supported=grants!==null?grants:["authorization_code","implicit"];out.code_challenge_methods_supported=methods;
+ out.token_endpoint_auth_methods_supported=authMethods!==null?authMethods:["client_secret_basic"];out.supportsPkceS256=methods.some(m=>m.toUpperCase()==="S256");return out}
+export function oauthResourceMetadata(doc){if(!isDict(doc))throw new Error("OAuth metadata must be an object");if(typeof get(doc,"resource")!=="string"||!doc.resource)throw new Error("missing protected resource");
+ const servers=get(doc,"authorization_servers");if(!Array.isArray(servers)||!servers.length)throw new Error("missing authorization_servers");if(servers.some(s=>typeof s!=="string"||!s))throw new Error("invalid OAuth metadata field: authorization_servers");
+ const present=Object.fromEntries(Object.entries(doc).filter(([,v])=>v!==null)),scopes=stringList(present,"scopes_supported")||[],methods=stringList(present,"bearer_methods_supported"),
+  out={resource:doc.resource,authorization_servers:[...servers],scopes_supported:scopes,bearer_methods_supported:methods!==null?methods:["header"]},name=optionalString(doc,"resource_name");if(name!==null)out.resource_name=name;return out}
+export function bearerInspect(authorization,expectedAudience,now=null){const bad=()=>({status:"malformed",audience:null,expires_at:null});if(!authorization)return{status:"missing",audience:null,expires_at:null};
+ const parts=authorization.split(/[ \t\n\r\f\v]+/);if(parts.length!==2||parts[0].toLowerCase()!=="bearer")return bad();const segments=parts[1].split(".");if(segments.length<2)return bad();
+ try{const segment=segments[1]+"=".repeat((4-segments[1].length%4)%4);if(!BASE64URL_STRICT.test(segment))return bad();
+  const payload=JSON.parse(utf8Strict(binaryToBytes(atob(segment.replace(/-/g,"+").replace(/_/g,"/")))));if(!isDict(payload))return bad();const aud=get(payload,"aud"),exp=get(payload,"exp"),audiences=[];
+  if(typeof aud==="string")audiences.push(aud);else if(Array.isArray(aud)){if(!aud.length||aud.some(i=>typeof i!=="string"||!i))return bad();audiences.push(...aud)}else if(aud!==undefined&&aud!==null)return bad();
+  const audience=audiences.length?audiences[0]:null;let expiresAt=null;if(typeof exp==="number"){if(!Number.isFinite(exp))return bad();expiresAt=Math.trunc(exp)}
+  if(expiresAt!==null&&expiresAt<=(now===null?Date.now()/1000:now))return{status:"expired",audience,expires_at:expiresAt};
+  if(!audiences.includes(expectedAudience))return{status:"wrong_audience",audience,expires_at:expiresAt};return{status:"ok",audience:expectedAudience,expires_at:expiresAt}}catch(e){return bad()}}
+export function demoBearerToken(audience,expiresAt){const part=v=>b64urlNopad(utf8(compact(v)));return part({alg:"none",typ:"JWT"})+"."+part({aud:audience,exp:expiresAt})+".demo-sig"}
+export function mcpMetaVersion(request){const params=request.params,meta=isDict(params)?get(params,"_meta"):null,version=isDict(meta)?get(meta,MCP_META_VERSION):null;return typeof version==="string"?version:null}
+export const mcpLooksModern=(request,headerProtocol,metaVersion=null)=>request.method==="server/discover"||(metaVersion!==null?metaVersion:mcpMetaVersion(request))!==null||headerProtocol===MCP_CURRENT_VERSION;
+export function mcpValidateModern(request,headerProtocol,metaVersion,headerMethod,headerName){const fail=(message,data=null,code=RPC.HEADER_MISMATCH)=>rpcFailure(request.id,code,message,data);
+ if(!headerProtocol)return fail("MCP-Protocol-Version header is required");const params=isDict(request.params)?request.params:null,meta=params!==null&&isDict(get(params,"_meta"))?params._meta:null;
+ if(meta===null)return fail("params._meta is required");if(!metaVersion)return fail("params._meta protocolVersion is required");
+ if(headerProtocol!==metaVersion)return fail("MCP-Protocol-Version does not match body _meta",{header:headerProtocol,meta:metaVersion});
+ if(headerProtocol!==MCP_CURRENT_VERSION)return fail("Unsupported protocol version",{supported:[MCP_LEGACY_VERSION,MCP_CURRENT_VERSION],requested:headerProtocol},RPC.UNSUPPORTED_VERSION);
+ const info=get(meta,MCP_META_CLIENT_INFO);if(!isDict(info))return fail("params._meta clientInfo must be an object");
+ if(typeof get(info,"name")!=="string"||!info.name)return fail("params._meta clientInfo.name must be a non-empty string");if(typeof get(info,"version")!=="string"||!info.version)return fail("params._meta clientInfo.version must be a non-empty string");
+ if(!isDict(get(meta,MCP_META_CLIENT_CAPS)))return fail("params._meta clientCapabilities must be an object");if(!headerMethod)return fail("Mcp-Method header is required");
+ if(headerMethod!==request.method)return fail("Mcp-Method does not match JSON-RPC method",{header:headerMethod,method:request.method});
+ if(["tools/call","resources/read","prompts/get"].includes(request.method)){const expected=get(params,request.method==="resources/read"?"uri":"name");if(!headerName)return fail("Mcp-Name header is required");
+  const decoded=mcpHeaderDecode(headerName);if(decoded===null)return fail("Mcp-Name header is malformed");if(typeof expected==="string"&&decoded!==expected)return fail("Mcp-Name does not match body params",{header:headerName,decoded,expected})}
+ return null}
+const MCP_CAPABILITIES={tools:{listChanged:false},resources:{subscribe:false,listChanged:false},prompts:{listChanged:false}},MCP_SERVER_INFO={name:"flutter-navigation-basic-mcp-foundation",version:"0.1.0"};
+const mapOf=v=>isDict(v)?v:null;
+export class McpFoundation{
+ constructor(sessionIdFactory=null){this.sessionIdFactory=sessionIdFactory||(()=>mcpSessionId());this.sessions=new Map()}
+ session(id){return id===null||id===undefined?null:(this.sessions.get(id)||null)}
+ handleRpc(request,sessionId=null,bearer=null){const rid=nul(request.id),method=request.method;
+  if(bearer!==null&&bearer.status!=="ok")return[rpcFailure(rid,bearer.status==="forbidden"?RPC.FORBIDDEN:RPC.UNAUTHORIZED,bearer.status,{reason:bearer.reason}),sessionId];
+  if(method==="initialize")return this._initialize(request);
+  if(method==="notifications/initialized")return this._requireSession(request,sessionId,()=>rpcResult(rid,null));
+  if(method==="ping")return this._requireSession(request,sessionId,()=>rpcResult(rid,{}));
+  if(method==="server/discover")return[rpcResult(rid,{resultType:"complete",protocolVersions:[MCP_LEGACY_VERSION,MCP_CURRENT_VERSION],capabilities:MCP_CAPABILITIES,serverInfo:MCP_SERVER_INFO,
+   instructions:"Dual-era demo server. Prefer "+MCP_CURRENT_VERSION+" with per-request _meta, or legacy initialize + session."}),null];
+  const params=mapOf(request.params),invalid=message=>rpcFailure(rid,RPC.INVALID_PARAMS,message);
+  if(method==="tools/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{tools:[{name:"echo",description:"Echo a string argument",inputSchema:{type:"object",properties:{text:{type:"string"}},required:["text"]}}]}),true);
+  if(method==="tools/call")return this._modernOrSession(request,sessionId,()=>{const args=params?mapOf(get(params,"arguments")):null;if((params?get(params,"name"):undefined)!=="echo")return invalid("unknown tool");
+   const text=(args||{}).text;if(typeof text!=="string")return invalid("missing text");return rpcResult(rid,{content:[{type:"text",text}],isError:false})});
+  if(method==="resources/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{resources:[{uri:"demo://readme",name:"README",mimeType:"text/plain"}]}),true);
+  if(method==="resources/read")return this._modernOrSession(request,sessionId,()=>{const uri=params?get(params,"uri"):undefined;if(uri!=="demo://readme")return invalid("unknown resource");
+   return rpcResult(rid,{contents:[{uri,mimeType:"text/plain",text:"MCP foundation demo resource"}]})});
+  if(method==="prompts/list")return this._modernOrSession(request,sessionId,()=>rpcResult(rid,{prompts:[{name:"greet",description:"Greeting prompt"}]}),true);
+  if(method==="prompts/get")return this._modernOrSession(request,sessionId,()=>{if((params?get(params,"name"):undefined)!=="greet")return invalid("unknown prompt");
+   return rpcResult(rid,{description:"Greeting prompt",messages:[{role:"user",content:{type:"text",text:"Hello from MCP foundation"}}]})});
+  return[rpcFailure(rid,RPC.METHOD_NOT_FOUND,"method not found: "+method),sessionId]}
+ _initialize(request){const rid=nul(request.id),bad=message=>[rpcFailure(rid,RPC.INVALID_PARAMS,message),null],params=mapOf(request.params);
+  if(params===null)return bad("initialize params must be an object");if(typeof get(params,"protocolVersion")!=="string"||!params.protocolVersion)return bad("protocolVersion must be a non-empty string");
+  if(mapOf(get(params,"capabilities"))===null)return bad("capabilities must be an object");const info=mapOf(get(params,"clientInfo"));if(info===null)return bad("clientInfo must be an object");
+  if(typeof get(info,"name")!=="string"||!info.name)return bad("clientInfo.name must be a non-empty string");if(typeof get(info,"version")!=="string"||!info.version)return bad("clientInfo.version must be a non-empty string");
+  const id=this.sessionIdFactory();this.sessions.set(id,{id,protocolVersion:MCP_LEGACY_VERSION,clientInfo:info});
+  return[rpcResult(rid,{protocolVersion:MCP_LEGACY_VERSION,capabilities:MCP_CAPABILITIES,serverInfo:MCP_SERVER_INFO}),id]}
+ _modernOrSession(request,sessionId,build,listResult=false){const params=mapOf(request.params),meta=params?mapOf(get(params,"_meta")):null;
+  if(meta!==null&&get(meta,MCP_META_VERSION)===MCP_CURRENT_VERSION){let response=build(null);
+   if(has(response,"result")){let result=response.result;if(!isDict(result))result={resultType:"complete",value:result};else{result={...result};if(!has(result,"resultType"))result.resultType="complete";
+    if(listResult){if(!has(result,"ttlMs"))result.ttlMs=60000;if(!has(result,"cacheScope"))result.cacheScope="private"}}response=rpcResult(response.id,result)}
+   return[response,null]}
+  return this._requireSession(request,sessionId,build)}
+ _requireSession(request,sessionId,build){const rid=nul(request.id);if(!sessionId)return[rpcFailure(rid,RPC.SESSION_REQUIRED,"Mcp-Session-Id required"),sessionId];
+  const session=this.sessions.get(sessionId);if(!session)return[rpcFailure(rid,RPC.SESSION_INVALID,"unknown session"),sessionId];return[build(session),sessionId]}}
+export const mcpHeader=(headers,name)=>{const wanted=name.toLowerCase();for(const[k,v]of Object.entries(headers))if(k.toLowerCase()===wanted)return v;return null};
+export const mcpOriginAllows=(allowed,origin)=>!origin||allowed.includes(origin);
+export const mcpOriginsForPort=port=>["http://127.0.0.1:"+port,"http://localhost:"+port];
+const BEARER_GATES={ok:{status:"ok",reason:"ok"},wrong_audience:{status:"forbidden",reason:"wrong_audience"},expired:{status:"unauthorized",reason:"expired"},missing:{status:"unauthorized",reason:"invalid_bearer"},malformed:{status:"unauthorized",reason:"invalid_bearer"}};
+export class McpRoutes{
+ constructor(handler=null,o={}){this.handler=handler||new McpFoundation();this.resource=o.resource||"http://127.0.0.1:8787/mcp";this.issuer=o.issuer||"http://127.0.0.1:8787";this.expectedAudience=o.expectedAudience||"http://127.0.0.1:8787/mcp";
+  this.allowedOrigins=o.allowedOrigins?[...o.allowedOrigins]:mcpOriginsForPort(8787);this.clock=o.clock||null;this.sessionErrorStatus=!!o.sessionErrorStatus;this.forceBearer=o.forceBearer||null}
+ static forPort(port,handler=null,o={}){const base="http://127.0.0.1:"+port;return new McpRoutes(handler,{resource:base+"/mcp",issuer:base,expectedAudience:base+"/mcp",allowedOrigins:mcpOriginsForPort(port),...o})}
+ handle(method,path,headers,rawBody){if(path.endsWith("/")&&path.length>1)path=path.slice(0,-1);
+  if(path==="/.well-known/oauth-authorization-server"){const doc=oauthServerMetadata({issuer:this.issuer,authorization_endpoint:this.issuer+"/oauth/authorize",token_endpoint:this.issuer+"/oauth/token",scopes_supported:["mcp"],response_types_supported:["code"],
+    grant_types_supported:["authorization_code"],code_challenge_methods_supported:["S256"],token_endpoint_auth_methods_supported:["none","client_secret_basic"]});delete doc.supportsPkceS256;return{status:200,headers:{},body:doc}}
+  if(path==="/.well-known/oauth-protected-resource"||path==="/.well-known/oauth-protected-resource/mcp")return{status:200,headers:{},body:oauthResourceMetadata({resource:this.resource,authorization_servers:[this.issuer],scopes_supported:["mcp"]})};
+  if(path==="/mcp/support-matrix")return{status:200,headers:{},body:mcpSupportMatrix()};if(path!=="/mcp")return null;
+  if(method.toUpperCase()!=="POST")return{status:405,headers:{allow:"POST"},body:{error:"method_not_allowed"}};return this._post(headers,rawBody)}
+ _post(headers,rawBody){const origin=this.sessionErrorStatus?null:mcpHeader(headers,"origin");if(!mcpOriginAllows(this.allowedOrigins,origin))return{status:403,headers:{},body:{error:"origin_forbidden",origin}};
+  const request=rpcRequestParse(rawBody);if(request===null)return{status:400,headers:{},body:rpcFailure(null,RPC.PARSE_ERROR,"parse error")};
+  let gate=this.forceBearer;const auth=this.sessionErrorStatus?null:mcpHeader(headers,"authorization");if(auth)gate=BEARER_GATES[bearerInspect(auth,this.expectedAudience,this.clock?this.clock():null).status];
+  const inbound=mcpHeader(headers,MCP_HEADERS.session),headerProtocol=mcpHeader(headers,MCP_HEADERS.protocol),metaVersion=mcpMetaVersion(request),modern=mcpLooksModern(request,headerProtocol,metaVersion);
+  if(modern){const error=mcpValidateModern(request,headerProtocol,metaVersion,mcpHeader(headers,MCP_HEADERS.method),mcpHeader(headers,MCP_HEADERS.name));if(error!==null)return{status:400,headers:{[MCP_HEADERS.protocol]:MCP_CURRENT_VERSION},body:error}}
+  else if(request.method!=="initialize"){if(!inbound)return{status:400,headers:{},body:{error:"session_required",message:"Mcp-Session-Id required after initialize"}};
+   if(this.handler.session(inbound)===null)return{status:404,headers:{},body:{error:"session_not_found",message:"unknown Mcp-Session-Id"}}}
+  const[response,outSession]=this.handler.handleRpc(request,modern?null:inbound,gate),outHeaders={};if(outSession!==null&&outSession!==undefined)outHeaders[MCP_HEADERS.session]=outSession;
+  outHeaders[MCP_HEADERS.protocol]=modern?MCP_CURRENT_VERSION:MCP_LEGACY_VERSION;const error=has(response,"error")?response.error:null,code=error?error.code:null;
+  for(const[status,name,rpcCode]of[[401,"unauthorized",RPC.UNAUTHORIZED],[403,"forbidden",RPC.FORBIDDEN]])if(code===rpcCode)return{status,headers:outHeaders,body:{error:name,message:error.message,reason:nul(error.data)}};
+  if(rpcIsNotification(request)){if(error)return{status:400,headers:outHeaders,body:{error:"notification_rejected",message:error.message,code:error.code}};return{status:202,headers:outHeaders,body:null}}
+  if(modern&&code===RPC.METHOD_NOT_FOUND)return{status:404,headers:outHeaders,body:response};
+  let status=200;if(this.sessionErrorStatus)status=code===RPC.SESSION_REQUIRED?400:code===RPC.SESSION_INVALID?404:200;return{status,headers:outHeaders,body:response}}}
+export class McpClient{
+ constructor(transport,clientName="flutter-navigation-basic",clientVersion="0.1.0"){this.transport=transport;this.clientName=clientName;this.clientVersion=clientVersion;this.sessionId=null;this.protocolVersion=MCP_LEGACY_VERSION;this._nextId=1}
+ initialize(){const request=rpcRequest("initialize",{id:this._takeId(),params:{protocolVersion:MCP_LEGACY_VERSION,capabilities:{},clientInfo:{name:this.clientName,version:this.clientVersion}}}),[response,session]=this._send(request);
+  if(!has(response,"error")){this.sessionId=session||this.sessionId;const result=response.result;if(isDict(result)&&typeof get(result,"protocolVersion")==="string")this.protocolVersion=result.protocolVersion}return response}
+ notifyInitialized(){return this._send(rpcRequest("notifications/initialized"))[0]}
+ listTools(){return this._rpc("tools/list")}
+ callTool(name,args={}){return this._rpc("tools/call",{name,arguments:args})}
+ listResources(){return this._rpc("resources/list")}
+ listPrompts(){return this._rpc("prompts/list")}
+ ping(){return this._rpc("ping")}
+ runEchoDemo(text="hello"){const log=[],done=(ok,last=null)=>({ok,log,session_id:this.sessionId,last_response:last});const init=this.initialize();log.push("initialize → "+compact(init));if(has(init,"error"))return done(false);
+  const notified=this.notifyInitialized();if(has(notified,"error")){log.push("notifications/initialized → rejected "+compact(notified)+" (session="+this.sessionId+")");return done(false)}
+  log.push("notifications/initialized → accepted (session="+this.sessionId+")");const listed=this.listTools();log.push("tools/list → "+compact(listed));if(has(listed,"error"))return done(false);
+  const called=this.callTool("echo",{text});log.push("tools/call(echo) → "+compact(called));return done(!has(called,"error"),called)}
+ runModernEchoDemo(text="hello"){const log=[];this.protocolVersion=MCP_CURRENT_VERSION;this.sessionId=null;const done=(ok,last=null)=>({ok,log,session_id:this.sessionId,last_response:last}),
+  meta=(extra={})=>({_meta:{[MCP_META_VERSION]:MCP_CURRENT_VERSION,[MCP_META_CLIENT_INFO]:{name:this.clientName,version:this.clientVersion},[MCP_META_CLIENT_CAPS]:{}},...extra});
+  const discover=this._rpc("server/discover",meta());log.push("server/discover → "+compact(discover));if(has(discover,"error"))return done(false);
+  const listed=this._rpc("tools/list",meta());log.push("tools/list → "+compact(listed));if(has(listed,"error"))return done(false);
+  const called=this._rpc("tools/call",meta({name:"echo",arguments:{text}}));log.push("tools/call(echo) → "+compact(called));return done(!has(called,"error"),called)}
+ _takeId(){return this._nextId++}
+ _rpc(method,params=null){return this._send(rpcRequest(method,{id:this._takeId(),params}))[0]}
+ _send(request){const params=request.params;let name=null;if(isDict(params)){if((request.method==="tools/call"||request.method==="prompts/get")&&typeof get(params,"name")==="string")name=params.name;else if(request.method==="resources/read"&&typeof get(params,"uri")==="string")name=params.uri}
+  const headers=mcpStreamableHeaders({sessionId:this.sessionId,protocolVersion:this.protocolVersion,method:request.method,name}),sent=this.transport(headers,compact(request)),returned=mcpHeader(sent.headers,MCP_HEADERS.session),httpOk=sent.status_code>=200&&sent.status_code<300;
+  if(!has(request,"id")){if(httpOk){if(returned)this.sessionId=returned;return[rpcResult(null,null),this.sessionId]}return[rpcFailure(null,RPC.INTERNAL_ERROR,"notification rejected",{statusCode:sent.status_code,body:nul(sent.body)}),this.sessionId]}
+  const body=sent.body,rid=request.id,statusCode=other=>sent.status_code===401?RPC.UNAUTHORIZED:sent.status_code===403?RPC.FORBIDDEN:other;let response;
+  if(isDict(body)){if(has(body,"error")&&!has(body,"jsonrpc")){const error=body.error;response=rpcFailure(rid,statusCode(RPC.INTERNAL_ERROR),typeof error==="string"?error:error!==null?compact(error):"http_error",body)}
+   else{try{response=rpcResponseParse(body,rid)}catch(e){response=rpcFailure(rid,RPC.INTERNAL_ERROR,"invalid JSON-RPC response: "+e.message,{statusCode:sent.status_code,body})}}}
+  else response=rpcFailure(rid,RPC.INTERNAL_ERROR,"unexpected transport body",{statusCode:sent.status_code,body:nul(body)});
+  if(!httpOk&&!has(response,"error"))response=rpcFailure(rid,statusCode(RPC.INTERNAL_ERROR),"HTTP "+sent.status_code+" with result-shaped body",{statusCode:sent.status_code,body:nul(body)});
+  if(httpOk&&!has(response,"error")&&returned)this.sessionId=returned;return[response,this.sessionId]}}
+export function mcpInProcess(routes,path="/mcp"){return(headers,body)=>{const out=routes.handle("POST",path,headers,body);return out===null?{status_code:404,headers:{},body:{error:"not_found"}}:{status_code:out.status,headers:out.headers,body:out.body}}}
+export const mcpFoundationTransport=(handler,forceBearer=null)=>mcpInProcess(new McpRoutes(handler,{sessionErrorStatus:true,forceBearer}));
+export function mcpExchange(routes,request){const method=has(request,"method")?request.method:"POST",path=has(request,"path")?request.path:"/mcp",headers=has(request,"headers")?request.headers:{};
+ if(!isDict(headers)||Object.values(headers).some(v=>typeof v!=="string"))throw new Error("headers must be an object of strings");let body=has(request,"body")?request.body:null;if(body!==null&&typeof body!=="string")body=compact(body);
+ const out=routes.handle(method,path,headers,body);return out===null?{status:404,headers:{},body:{error:"not_found"}}:out}
+const api={mcpSupportMatrix,rpcFailure,rpcResult,rpcRequest,rpcRequestParse,rpcIsNotification,rpcResponseParse,mcpHeaderNeedsEncoding,mcpHeaderEncode,mcpHeaderDecode,mcpStreamableHeaders,mcpSessionId,pkceChallengeS256,pkcePair,oauthServerMetadata,oauthResourceMetadata,
+ bearerInspect,demoBearerToken,mcpMetaVersion,mcpLooksModern,mcpValidateModern,McpFoundation,mcpHeader,mcpOriginAllows,mcpOriginsForPort,McpRoutes,McpClient,mcpInProcess,mcpFoundationTransport,mcpExchange,sha256Hex,mulberry32};
+globalThis.webUiMcp=api;
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+const pretty=v=>JSON.stringify(v,null,2);
+export function bindMcp(root=document){return[...root.querySelectorAll("[data-ui-mcp]")].map(box=>{
+ const $=s=>box.querySelector(s),$$=s=>[...box.querySelectorAll(s)];let routes=new McpRoutes(null,{clock:()=>Date.now()/1000}),lastSession="";
+ const sessionsNote=$("[data-mcp-sessions]"),refresh=()=>{sessionsNote.textContent=routes.handler.sessions.size+" session(s) open on the in-page server."+(routes.handler.sessions.size?" Last: "+lastSession:"");box.dataset.sessions=String(routes.handler.sessions.size)};
+ const method=$("[data-mcp-method]"),path=$("[data-mcp-path]"),headersBox=$("[data-mcp-headers]"),body=$("[data-mcp-body]"),statusLine=$("[data-mcp-http-status]"),outHeaders=$("[data-mcp-out-headers]"),outBody=$("[data-mcp-out-body]");
+ const parseHeaders=text=>{const out={};for(const raw of text.split(/\r\n|\r|\n/)){const line=raw.trim();if(!line)continue;const i=line.indexOf(":");if(i<1)throw new Error("Each header line is name: value ("+line.slice(0,40)+")");out[line.slice(0,i).trim()]=line.slice(i+1).trim()}return out};
+ const send=()=>{try{const result=mcpExchange(routes,{method:method.value,path:path.value,headers:parseHeaders(headersBox.value),body:body.value===""?null:body.value});
+   statusLine.textContent="HTTP "+result.status;outHeaders.textContent=Object.entries(result.headers).map(([k,v])=>k+": "+v).join("\n")||"(no headers)";outBody.textContent=result.body===null?"(empty)":pretty(result.body);box.dataset.httpStatus=String(result.status);
+   const session=mcpHeader(result.headers,MCP_HEADERS.session);if(session&&result.status>=200&&result.status<300)lastSession=session;refresh()}catch(e){statusLine.textContent=e.message;outHeaders.textContent="";outBody.textContent="";box.dataset.httpStatus="error"}};
+ const meta={[MCP_META_VERSION]:MCP_CURRENT_VERSION,[MCP_META_CLIENT_INFO]:{name:"web-ui",version:"0"},[MCP_META_CLIENT_CAPS]:{}};
+ const templates={initialize:()=>({h:"",b:{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:MCP_LEGACY_VERSION,capabilities:{},clientInfo:{name:"web-ui",version:"0"}}}}),
+  initialized:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",method:"notifications/initialized"}}),
+  toolsList:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",id:2,method:"tools/list"}}),
+  toolsCall:()=>({h:lastSession?MCP_HEADERS.session+": "+lastSession:"",b:{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"echo",arguments:{text:"hello"}}}}),
+  discover:()=>({h:MCP_HEADERS.protocol+": "+MCP_CURRENT_VERSION+"\n"+MCP_HEADERS.method+": server/discover",b:{jsonrpc:"2.0",id:4,method:"server/discover",params:{_meta:meta}}}),
+  modernCall:()=>({h:MCP_HEADERS.protocol+": "+MCP_CURRENT_VERSION+"\n"+MCP_HEADERS.method+": tools/call\n"+MCP_HEADERS.name+": echo",b:{jsonrpc:"2.0",id:5,method:"tools/call",params:{name:"echo",arguments:{text:"hello"},_meta:meta}}})};
+ for(const button of $$("[data-mcp-template]")){button.addEventListener("click",()=>{const t=templates[button.dataset.mcpTemplate]();box.dataset.template=button.dataset.mcpTemplate;method.value="POST";path.value="/mcp";headersBox.value=t.h;body.value=pretty(t.b)})}
+ $("[data-mcp-send]").addEventListener("click",send);$("[data-mcp-reset]").addEventListener("click",()=>{routes=new McpRoutes(null,{clock:()=>Date.now()/1000});lastSession="";statusLine.textContent="Server reset.";outHeaders.textContent="";outBody.textContent="";refresh()});
+ const demo=(which)=>{const transport=mcpInProcess(routes),client=new McpClient(transport),result=which==="modern"?client.runModernEchoDemo($("[data-mcp-demo-text]").value):client.runEchoDemo($("[data-mcp-demo-text]").value);
+  const log=$("[data-mcp-demo-log]");log.replaceChildren(...result.log.map(line=>el("li",{},el("code",{text:line}))));$("[data-mcp-demo-status]").textContent=(result.ok?"Demo finished: ok.":"Demo stopped on an error.")+(result.session_id?" Session "+result.session_id+".":" No session.");box.dataset.demo=which+":"+(result.ok?"ok":"failed");if(result.session_id)lastSession=result.session_id;refresh()};
+ $("[data-mcp-demo-legacy]").addEventListener("click",()=>demo("legacy"));$("[data-mcp-demo-modern]").addEventListener("click",()=>demo("modern"));
+ const codecIn=$("[data-mcp-codec-in]"),codecOut=$("[data-mcp-codec-out]"),codec=()=>{const v=codecIn.value,e=mcpHeaderEncode(v),d=mcpHeaderDecode(e);codecOut.textContent="Needs encoding: "+(mcpHeaderNeedsEncoding(v)?"yes":"no")+"\nEncoded: "+e+"\nDecoded back: "+(d===null?"(malformed)":JSON.stringify(d))+(d===v?"":"\nNot the same as the input.")+"\nAs typed, decoded: "+(mcpHeaderDecode(v)===null?"(malformed)":JSON.stringify(mcpHeaderDecode(v)))};
+ codecIn.addEventListener("input",codec);codec();
+ const verifier=$("[data-mcp-verifier]"),challenge=$("[data-mcp-challenge]"),pkce=()=>{challenge.textContent=verifier.value?pkceChallengeS256(verifier.value):"";box.dataset.challenge=challenge.textContent};
+ verifier.addEventListener("input",pkce);$("[data-mcp-pkce-new]").addEventListener("click",()=>{verifier.value=pkcePair().codeVerifier;pkce()});pkce();
+ const auth=$("[data-mcp-auth]"),aud=$("[data-mcp-aud]"),authOut=$("[data-mcp-auth-out]"),authRun=()=>{const r=bearerInspect(auth.value,aud.value);authOut.textContent=r.status+(r.audience?" · audience "+r.audience:"")+(r.expires_at!==null?" · expires "+new Date(r.expires_at*1000).toISOString():"");box.dataset.bearer=r.status};
+ auth.addEventListener("input",authRun);aud.addEventListener("input",authRun);$("[data-mcp-auth-demo]").addEventListener("click",()=>{auth.value="Bearer "+demoBearerToken(aud.value,Math.floor(Date.now()/1000)+3600);authRun()});authRun();
+ const meta1=$("[data-mcp-meta]"),metaOut=$("[data-mcp-meta-out]"),metaRun=()=>{try{const kind=$$('input[name="mcp-meta-kind"]').find(r=>r.checked).value,doc=JSON.parse(meta1.value);metaOut.textContent=pretty(kind==="server"?oauthServerMetadata(doc):oauthResourceMetadata(doc));box.dataset.meta="ok"}
+  catch(e){metaOut.textContent=e instanceof SyntaxError?"Not JSON.":e.message;box.dataset.meta="error"}};
+ meta1.addEventListener("input",metaRun);$$('input[name="mcp-meta-kind"]').forEach(r=>r.addEventListener("change",metaRun));metaRun();refresh();box.dataset.mcp_ready="";return box})}
+if(typeof document!=="undefined")bindMcp();
+"""
+
+
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
 """ + _TEXT_JS + r"""export const strip=s=>pyStrip(s.startsWith("\ufeff")?s.slice(1):s);
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
@@ -7195,7 +8170,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
             '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
             '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
-            '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
+            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -7231,6 +8207,7 @@ def example_pages() -> dict[str, str]:
         "examples/door.html": door_document(EXAMPLES["door"]),
         "examples/playground.html": playground_document(),
         "examples/test-report.html": report_document(),
+        "examples/mcp-lab.html": mcp_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }

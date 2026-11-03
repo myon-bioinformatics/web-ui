@@ -2055,7 +2055,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -3093,6 +3093,483 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(expected.returncode, 0, expected.stderr)
             self.assertEqual(json.loads((tmp / "evidence" / "receipt.json").read_text())["matched_expectation"], True)
             self.assertEqual(run("--expect-exit", "0", "--output-dir", str(tmp / "e2"), "--", sys.executable, "-c", "pass").returncode, 2)
+
+
+class McpTests(unittest.TestCase):
+    """The MCP foundation: test/shared/mcp/mcp_foundation_test.dart and mcp_integration_test.dart of flutter_navigation_basic are the golden values (ported case by case);
+    RFC 7636 Appendix B is the PKCE oracle."""
+
+    LEGACY, CURRENT = "2025-03-26", "2026-07-28"
+    META = "io.modelcontextprotocol/protocolVersion"
+
+    def routes(self, session="sess-1", **kwargs):
+        return web_ui.McpRoutes(web_ui.McpFoundation(lambda: session), **kwargs)
+
+    def post(self, routes, body, headers=None, method="POST", path="/mcp"):
+        return routes.handle(method, path, headers or {}, json.dumps(body) if not isinstance(body, str) and body is not None else body)
+
+    def init_body(self, rid=1, version=None):
+        return {"jsonrpc": "2.0", "id": rid, "method": "initialize", "params": {"protocolVersion": version or self.LEGACY, "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
+
+    def modern_meta(self, version=None):
+        return {self.META: version or self.CURRENT, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"}, "io.modelcontextprotocol/clientCapabilities": {}}
+
+    def modern_headers(self, method, name=None, version=None):
+        out = {"mcp-protocol-version": version or self.CURRENT, "mcp-method": method}
+        if name is not None:
+            out["mcp-name"] = name
+        return out
+
+    # --- JSON-RPC
+    def test_a_request_is_parsed_or_refused(self):
+        ok = web_ui.rpc_request_parse({"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        self.assertEqual((ok["method"], web_ui.rpc_is_notification(ok)), ("ping", False))
+        self.assertTrue(web_ui.rpc_is_notification(web_ui.rpc_request_parse('{"jsonrpc":"2.0","method":"x"}')))
+        self.assertTrue(web_ui.rpc_is_notification(web_ui.rpc_request_parse('{"jsonrpc":"2.0","id":null,"method":"x"}')))
+        for bad in ({"jsonrpc": "1.0", "method": "ping"}, {"jsonrpc": "2.0"}, {"jsonrpc": "2.0", "method": ""}, {"jsonrpc": "2.0", "method": 5}, "[1]", "{broken", "NaN", '{"jsonrpc":"2.0","method":"a","x":NaN}', None, 42, []):
+            self.assertIsNone(web_ui.rpc_request_parse(bad), bad)
+        self.assertEqual(web_ui.rpc_request("ping"), {"jsonrpc": "2.0", "method": "ping"})
+        self.assertEqual(list(web_ui.rpc_request("a", id=1, params={})), ["jsonrpc", "id", "method", "params"])
+
+    def test_a_response_must_have_exactly_one_of_result_and_error(self):
+        parse = web_ui.rpc_response_parse
+        for bad in ({"jsonrpc": "1.0", "id": 1, "result": {"ok": True}}, {"jsonrpc": "2.0", "id": 1, "result": {}, "error": {"code": -1, "message": "x"}}, {"jsonrpc": "2.0", "id": 1},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"code": "-32603", "message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": 42}},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603}}, {"jsonrpc": "2.0", "id": 1, "error": "text"},
+                    {"jsonrpc": "2.0", "id": 1, "error": {"code": True, "message": "x"}}, [], None):
+            with self.assertRaises(ValueError, msg=bad):
+                parse(bad)
+        with self.assertRaises(ValueError):
+            parse({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}, 1)
+        self.assertEqual(parse({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}, 1)["result"], {"ok": True})
+        self.assertEqual(parse({"jsonrpc": "2.0", "id": 2, "result": 1})["id"], 2, "no expected id: nothing to compare")
+        valid = parse({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "boom", "data": {"k": 1}}})
+        self.assertEqual((valid["error"]["code"], valid["error"]["message"], valid["error"]["data"]), (-32603, "boom", {"k": 1}))
+
+    # --- PKCE and OAuth metadata
+    def test_pkce_matches_rfc_7636_appendix_b(self):
+        self.assertEqual(web_ui.pkce_challenge_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        pair = web_ui.pkce_pair(web_ui.mulberry32(42).__next__, 64)
+        self.assertEqual((len(pair["codeVerifier"]), pair["codeChallengeMethod"], pair["codeChallenge"]), (64, "S256", web_ui.pkce_challenge_s256(pair["codeVerifier"])))
+        self.assertTrue(re.fullmatch(r"[A-Za-z0-9._~-]{64}", pair["codeVerifier"]))
+        self.assertEqual(len(web_ui.pkce_pair(None, 43)["codeVerifier"]), 43)
+        self.assertEqual(len(web_ui.pkce_pair(None, 128)["codeVerifier"]), 128)
+        for length in (42, 129, 0):
+            with self.assertRaises(ValueError):
+                web_ui.pkce_pair(None, length)
+
+    AS_DOC = {"issuer": "https://auth.example.test/", "authorization_endpoint": "https://auth.example.test/authorize", "token_endpoint": "https://auth.example.test/token", "response_types_supported": ["code"]}
+
+    def test_oauth_metadata_never_invents_what_a_server_left_out(self):
+        full = web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": ["S256"], "scopes_supported": ["mcp"]})
+        self.assertTrue(full["supportsPkceS256"])
+        omitted = web_ui.oauth_server_metadata(self.AS_DOC)
+        self.assertEqual((omitted["code_challenge_methods_supported"], omitted["supportsPkceS256"], omitted["token_endpoint_auth_methods_supported"], omitted["grant_types_supported"]),
+                         ([], False, ["client_secret_basic"], ["authorization_code", "implicit"]))
+        empty = web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": [], "token_endpoint_auth_methods_supported": ["none"]})
+        self.assertEqual((empty["supportsPkceS256"], empty["token_endpoint_auth_methods_supported"]), (False, ["none"]))
+        self.assertTrue(web_ui.oauth_server_metadata({**self.AS_DOC, "code_challenge_methods_supported": ["s256"]})["supportsPkceS256"])
+        prm = web_ui.oauth_resource_metadata({"resource": "https://mcp.example.test/", "authorization_servers": ["https://auth.example.test/"], "scopes_supported": ["mcp"]})
+        self.assertEqual((len(prm["authorization_servers"]), prm["bearer_methods_supported"]), (1, ["header"]))
+
+    def test_oauth_metadata_rejects_the_wrong_types(self):
+        without = {k: v for k, v in self.AS_DOC.items() if k != "response_types_supported"}
+        for bad in (without, {**self.AS_DOC, "response_types_supported": []}, {**self.AS_DOC, "response_types_supported": "code"}, {**self.AS_DOC, "response_types_supported": ["code", 1]},
+                    {**self.AS_DOC, "registration_endpoint": 123}, {**self.AS_DOC, "registration_endpoint": ""}, {**self.AS_DOC, "issuer": ""}, {**self.AS_DOC, "token_endpoint": None},
+                    {**self.AS_DOC, "scopes_supported": None}, {**self.AS_DOC, "code_challenge_methods_supported": "S256"}, [], "x"):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.oauth_server_metadata(bad)
+        resource = {"resource": "https://mcp.example.test/", "authorization_servers": ["https://auth.example.test/"]}
+        for bad in ({**resource, "authorization_servers": ["https://auth.example.test/", 1]}, {**resource, "authorization_servers": [""]}, {**resource, "authorization_servers": []},
+                    {**resource, "resource_name": 9}, {**resource, "resource": ""}, {**resource, "bearer_methods_supported": "header"}, {"authorization_servers": ["a"]}, []):
+            with self.assertRaises(ValueError, msg=bad):
+                web_ui.oauth_resource_metadata(bad)
+        self.assertEqual(web_ui.oauth_resource_metadata({**resource, "scopes_supported": None, "bearer_methods_supported": None})["bearer_methods_supported"], ["header"])
+        self.assertEqual(str(self.fail_message(web_ui.oauth_server_metadata, {**without, "issuer": ""})), "missing OAuth metadata field: response_types_supported", "Dart checks the arrays before the issuer")
+
+    @staticmethod
+    def fail_message(fn, *args):
+        try:
+            fn(*args)
+        except ValueError as error:
+            return error
+        raise AssertionError("no error")
+
+    # --- Bearer audience
+    def jwt(self, aud, exp):
+        return web_ui.demo_bearer_token(aud, exp).rsplit(".", 1)[0] + ".sig"
+
+    def test_bearer_audience_missing_expired_wrong_and_ok(self):
+        now = 1789387200       # 2026-09-14 12:00 UTC, the Dart tests' clock
+        inspect = lambda header, aud="https://mcp.example.test": web_ui.bearer_inspect(header, aud, now)["status"]
+        self.assertEqual(inspect(None), "missing")
+        self.assertEqual(inspect(""), "missing")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", 1)), "expired")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://other.test", 9999999999)), "wrong_audience")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", 9999999999)), "ok")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", "https://mcp.example.test"], 9999999999)), "ok")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", "https://b.test"], 9999999999)), "wrong_audience")
+        self.assertEqual(inspect("Bearer " + self.jwt(["https://a.test", 42], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt([], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt([""], 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt(7, 9999999999)), "malformed")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://other.test", 1)), "expired", "expiry is reported before the audience")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", now)), "expired", "an expiry that is not after now is expired")
+        self.assertEqual(inspect("Bearer " + self.jwt("https://mcp.example.test", now + 1)), "ok")
+        self.assertEqual(web_ui.bearer_inspect("Bearer " + self.jwt("a", 9999999999), "a", now), {"status": "ok", "audience": "a", "expires_at": 9999999999})
+        for bad in ("not-a-jwt", "Bearer not-a-jwt", "Bearer", "Basic abc.def.ghi", "Bearer a b", " Bearer x.y.z", "Bearer x.%%%.z", "Bearer x.W10.z", "Bearer x.bm90LWpzb24.z"):
+            self.assertEqual(inspect(bad), "malformed", bad)
+        self.assertEqual(inspect("Bearer x.e30=.z"), "wrong_audience", "a payload with no aud has no audience to match")
+        self.assertEqual(inspect("bearer " + self.jwt("https://mcp.example.test", 9999999999)), "ok", "the scheme is case-insensitive")
+        self.assertEqual(inspect("Bearer\t" + self.jwt("https://mcp.example.test", 9999999999)), "ok")
+        no_exp = web_ui.demo_bearer_token("a", 1).split(".")
+        no_exp[1] = web_ui._b64url_nopad(b'{"aud":"a"}')
+        self.assertEqual(web_ui.bearer_inspect("Bearer " + ".".join(no_exp), "a", now)["status"], "ok", "no exp: no expiry")
+
+    # --- Foundation handler
+    def initialize(self, handler, params=None, rid=1):
+        request = web_ui.rpc_request("initialize", id=rid, params=params if params is not None else {"protocolVersion": self.LEGACY, "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}})
+        return handler.handle_rpc(request)
+
+    def test_the_session_flow_initialize_list_call(self):
+        handler = web_ui.McpFoundation(lambda: "sess-1")
+        response, session = self.initialize(handler)
+        self.assertEqual((session, response["result"]["protocolVersion"]), ("sess-1", self.LEGACY))
+        listed, _ = handler.handle_rpc(web_ui.rpc_request("tools/list", id=2), "sess-1")
+        self.assertTrue(listed["result"]["tools"])
+        called, _ = handler.handle_rpc(web_ui.rpc_request("tools/call", id=3, params={"name": "echo", "arguments": {"text": "hi"}}), "sess-1")
+        self.assertEqual(called["result"]["content"][0]["text"], "hi")
+        self.assertEqual(called["result"]["isError"], False)
+
+    def test_an_unsupported_client_version_negotiates_down_to_the_pin(self):
+        response, session = self.initialize(web_ui.McpFoundation(lambda: "sess-1"), {"protocolVersion": "1999-01-01", "capabilities": {}, "clientInfo": {"name": "x", "version": "0"}})
+        self.assertEqual((response["result"]["protocolVersion"], session), (self.LEGACY, "sess-1"))
+
+    def test_initialize_rejects_missing_and_malformed_fields_without_a_session(self):
+        info = {"name": "x", "version": "0"}
+        v = self.LEGACY
+        cases = [{"capabilities": {}, "clientInfo": info}, {"protocolVersion": 20250326, "capabilities": {}, "clientInfo": info}, {"protocolVersion": "", "capabilities": {}, "clientInfo": info},
+                 {"protocolVersion": v, "clientInfo": info}, {"protocolVersion": v, "capabilities": "nope", "clientInfo": info}, {"protocolVersion": v, "capabilities": {}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": "nope"}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x"}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "", "version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x", "version": ""}},
+                 {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": 1, "version": "0"}}, {"protocolVersion": v, "capabilities": {}, "clientInfo": {"name": "x", "version": 2}}, "nope", None]
+        for params in cases:
+            handler = web_ui.McpFoundation(lambda: "sess-1")
+            response, session = handler.handle_rpc(web_ui.rpc_request("initialize", id=1, params=params))
+            self.assertEqual((response["error"]["code"], session, handler.session("sess-1")), (web_ui.RPC_INVALID_PARAMS, None, None), params)
+
+    def test_requests_that_need_a_session_say_so(self):
+        handler = web_ui.McpFoundation(lambda: "sess-1")
+        no_session, _ = handler.handle_rpc(web_ui.rpc_request("tools/list", id=1))
+        self.assertEqual(no_session["error"]["code"], web_ui.RPC_SESSION_REQUIRED)
+        initialized, _ = handler.handle_rpc(web_ui.rpc_request("notifications/initialized"))
+        self.assertEqual(initialized["error"]["code"], web_ui.RPC_SESSION_REQUIRED)
+        unknown, returned = handler.handle_rpc(web_ui.rpc_request("ping", id=2), "nope")
+        self.assertEqual((unknown["error"]["code"], returned), (web_ui.RPC_SESSION_INVALID, "nope"))
+        self.initialize(handler)
+        for request in (web_ui.rpc_request("resources/list", id=2), web_ui.rpc_request("prompts/get", id=3, params={"name": "greet"}), web_ui.rpc_request("ping", id=4),
+                        web_ui.rpc_request("notifications/initialized"), web_ui.rpc_request("resources/read", id=5, params={"uri": "demo://readme"})):
+            self.assertNotIn("error", handler.handle_rpc(request, "sess-1")[0], request)
+        self.assertEqual(handler.handle_rpc(web_ui.rpc_request("ping", id=4), "sess-1")[0]["result"], {})
+        for bad in (web_ui.rpc_request("tools/call", id=6, params={"name": "nope"}), web_ui.rpc_request("tools/call", id=6, params={"name": "echo", "arguments": {"text": 5}}),
+                    web_ui.rpc_request("tools/call", id=6, params={"name": "echo"}), web_ui.rpc_request("resources/read", id=6, params={"uri": "x"}), web_ui.rpc_request("prompts/get", id=6, params={"name": "x"})):
+            self.assertEqual(handler.handle_rpc(bad, "sess-1")[0]["error"]["code"], web_ui.RPC_INVALID_PARAMS, bad)
+
+    def test_default_session_ids_are_high_entropy_and_do_not_repeat(self):
+        ids = [web_ui.mcp_session_id() for _ in range(20)]
+        self.assertEqual(len(set(ids)), 20)
+        for item in ids:
+            self.assertTrue(re.fullmatch(r"[A-Za-z0-9_-]{24}", item), item)
+        seeded = web_ui.mulberry32(5)
+        self.assertEqual(web_ui.mcp_session_id(seeded.__next__), web_ui.mcp_session_id(web_ui.mulberry32(5).__next__))
+        self.assertEqual(len(web_ui.mcp_session_id(seeded.__next__, 5)), 7)
+        handler = web_ui.McpFoundation()
+        a = self.initialize(handler)[1]
+        b = self.initialize(handler)[1]
+        self.assertNotEqual(a, b)
+        self.assertEqual(sorted(handler.sessions), sorted([a, b]))
+
+    # --- HTTP routes: sessions, Origin, auth, discovery
+    def test_session_required_and_session_not_found(self):
+        routes = self.routes("sess-http")
+        missing = self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual((missing["status"], missing["body"]["error"]), (400, "session_required"))
+        unknown = self.post(routes, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, {"mcp-session-id": "nope"})
+        self.assertEqual((unknown["status"], unknown["body"]["error"]), (404, "session_not_found"))
+        legacy = self.post(routes, {"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
+        self.assertEqual((legacy["status"], legacy["body"]["error"]), (400, "session_required"))
+
+    def test_origin_allowed_rejected_and_absent(self):
+        routes = self.routes("sess-http")
+        init = self.post(routes, self.init_body())
+        self.assertEqual(init["status"], 200)
+        session = init["headers"]["mcp-session-id"]
+        listed = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+        self.assertEqual(self.post(routes, listed, {"mcp-session-id": session, "origin": "http://127.0.0.1:8787"})["status"], 200)
+        self.assertEqual(self.post(routes, listed, {"mcp-session-id": session, "origin": "http://localhost:8787"})["status"], 200)
+        rejected = self.post(routes, {**listed, "id": 3}, {"mcp-session-id": session, "origin": "https://evil.example"})
+        self.assertEqual((rejected["status"], rejected["body"]), (403, {"error": "origin_forbidden", "origin": "https://evil.example"}))
+        self.assertEqual(self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"mcp-session-id": session})["status"], 202)
+        self.assertEqual(self.post(routes, {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"mcp-session-id": session, "ORIGIN": "https://evil.example"})["status"], 403, "header names ignore case")
+
+    def test_bearer_invalid_expired_or_for_another_audience_is_401_or_403(self):
+        routes = self.routes("sess-auth", expected_audience="http://127.0.0.1:8787/mcp", clock=lambda: 1789387200)
+        session = self.post(routes, self.init_body())["headers"]["mcp-session-id"]
+        note = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        token = lambda aud, exp: "Bearer " + web_ui.demo_bearer_token(aud, exp)
+        expired = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://127.0.0.1:8787/mcp", 1577836800)})
+        self.assertEqual((expired["status"], expired["body"]["error"], expired["body"]["reason"]), (401, "unauthorized", {"reason": "expired"}))
+        wrong = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://evil.example/mcp", 4070908800)})
+        self.assertEqual((wrong["status"], wrong["body"]["error"], wrong["body"]["reason"]), (403, "forbidden", {"reason": "wrong_audience"}))
+        self.assertEqual(self.post(routes, note, {"mcp-session-id": session, "authorization": "Bearer not-a-jwt"})["status"], 401)
+        ok = self.post(routes, note, {"mcp-session-id": session, "authorization": token("http://127.0.0.1:8787/mcp", 4070908800)})
+        self.assertEqual(ok["status"], 202)
+        self.assertEqual(self.post(routes, note, {"mcp-session-id": session})["status"], 202, "no Authorization header: no gate")
+
+    def test_discovery_follows_the_listen_port(self):
+        routes = web_ui.McpRoutes.for_port(9999)
+        self.assertEqual((routes.issuer, routes.resource, routes.expected_audience), ("http://127.0.0.1:9999", "http://127.0.0.1:9999/mcp", "http://127.0.0.1:9999/mcp"))
+        self.assertTrue(web_ui.mcp_origin_allows(routes.allowed_origins, "http://127.0.0.1:9999"))
+        self.assertFalse(web_ui.mcp_origin_allows(routes.allowed_origins, "http://127.0.0.1:8787"))
+        self.assertTrue(web_ui.mcp_origin_allows(routes.allowed_origins, None) and web_ui.mcp_origin_allows(routes.allowed_origins, ""))
+        server = routes.handle("GET", "/.well-known/oauth-authorization-server", {}, None)
+        self.assertEqual((server["status"], server["body"]["issuer"], server["body"]["authorization_endpoint"], server["body"]["token_endpoint"]),
+                         (200, "http://127.0.0.1:9999", "http://127.0.0.1:9999/oauth/authorize", "http://127.0.0.1:9999/oauth/token"))
+        self.assertEqual(server["body"]["code_challenge_methods_supported"], ["S256"])
+        self.assertNotIn("supportsPkceS256", server["body"])
+        for path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource/"):
+            resource = routes.handle("GET", path, {}, None)
+            self.assertEqual((resource["body"]["resource"], resource["body"]["authorization_servers"]), ("http://127.0.0.1:9999/mcp", ["http://127.0.0.1:9999"]), path)
+        matrix = routes.handle("GET", "/mcp/support-matrix", {}, None)["body"]
+        self.assertEqual((matrix["specificationVersion"], matrix["currentOfficialVersion"], matrix["flutterWebInAppOAuthGuaranteed"], matrix["legacySseDefault"], matrix["legacyMcpEra"],
+                          matrix["currentOfficialEra"], matrix["implementsCurrentOfficial"]), (self.LEGACY, self.CURRENT, False, False, True, True, True))
+        self.assertIsNone(routes.handle("GET", "/nope", {}, None))
+        not_post = routes.handle("GET", "/mcp", {}, None)
+        self.assertEqual((not_post["status"], not_post["body"], not_post["headers"]), (405, {"error": "method_not_allowed"}, {"allow": "POST"}))
+        self.assertEqual(routes.handle("get", "/mcp/", {}, None)["status"], 405)
+
+    def test_a_body_that_is_not_json_rpc_is_a_parse_error(self):
+        routes = self.routes()
+        for body in ("{broken", "[]", '{"jsonrpc":"1.0","method":"x"}', None, ""):
+            out = routes.handle("POST", "/mcp", {}, body)
+            self.assertEqual((out["status"], out["body"]["error"]["code"], out["body"]["id"]), (400, web_ui.RPC_PARSE_ERROR, None), body)
+
+    # --- the current-official era
+    def test_server_discover_and_modern_calls_need_no_session(self):
+        routes = self.routes("sess-modern")
+        discover = self.post(routes, {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": self.modern_meta()}}, self.modern_headers("server/discover"))
+        self.assertEqual((discover["status"], discover["body"]["result"]["resultType"], discover["headers"]["mcp-protocol-version"]), (200, "complete", self.CURRENT))
+        self.assertEqual(discover["body"]["result"]["protocolVersions"], [self.LEGACY, self.CURRENT])
+        self.assertNotIn("mcp-session-id", discover["headers"])
+        listed = self.post(routes, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"_meta": self.modern_meta()}}, self.modern_headers("tools/list"))
+        result = listed["body"]["result"]
+        self.assertEqual((listed["status"], result["resultType"], result["ttlMs"], result["cacheScope"]), (200, "complete", 60000, "private"))
+        called = self.post(routes, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "via-http"}, "_meta": self.modern_meta()}},
+                           self.modern_headers("tools/call", "echo"))
+        self.assertEqual((called["status"], called["body"]["result"]["resultType"], called["body"]["result"]["content"][0]["text"]), (200, "complete", "via-http"))
+        self.assertNotIn("ttlMs", called["body"]["result"])
+
+    def test_modern_resources_and_prompts_have_the_modern_shape(self):
+        routes = self.routes()
+        def modern(method, rid, params=None, name=None):
+            return self.post(routes, {"jsonrpc": "2.0", "id": rid, "method": method, "params": {**(params or {}), "_meta": self.modern_meta()}}, self.modern_headers(method, name))["body"]["result"]
+        for method in ("resources/list", "prompts/list"):
+            result = modern(method, 71)
+            self.assertEqual((result["resultType"], result["ttlMs"], result["cacheScope"]), ("complete", 60000, "private"), method)
+        self.assertEqual(modern("resources/list", 71)["resources"][0]["uri"], "demo://readme")
+        self.assertEqual(modern("resources/read", 72, {"uri": "demo://readme"}, "demo://readme")["resultType"], "complete")
+        self.assertEqual(modern("prompts/get", 74, {"name": "greet"}, "greet")["resultType"], "complete")
+        ping = self.post(routes, {"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {"_meta": self.modern_meta()}}, self.modern_headers("ping"))
+        self.assertEqual((ping["status"], ping["body"]["error"]["code"]), (200, web_ui.RPC_SESSION_REQUIRED), "ping has no modern form here: the routes answer 200 with the JSON-RPC error")
+        shaped = web_ui.McpFoundation()._modern_or_session({"id": 1, "method": "x", "params": {"_meta": {self.META: self.CURRENT}}}, None, lambda _s: web_ui.rpc_result(1, 5))
+        self.assertEqual(shaped[0]["result"], {"resultType": "complete", "value": 5})
+
+    def test_a_modern_unknown_method_is_404_and_a_legacy_one_is_200(self):
+        routes = self.routes("sess-modern")
+        modern = self.post(routes, {"jsonrpc": "2.0", "id": 75, "method": "totally/unknown", "params": {"_meta": self.modern_meta()}}, self.modern_headers("totally/unknown"))
+        self.assertEqual((modern["status"], modern["body"]["error"]["code"]), (404, web_ui.RPC_METHOD_NOT_FOUND))
+        session = self.post(routes, self.init_body())["headers"]["mcp-session-id"]
+        legacy = self.post(routes, {"jsonrpc": "2.0", "id": 84, "method": "totally/unknown"}, {"mcp-session-id": session})
+        self.assertEqual((legacy["status"], legacy["body"]["error"]["code"], legacy["headers"]["mcp-protocol-version"]), (200, web_ui.RPC_METHOD_NOT_FOUND, self.LEGACY))
+
+    def modern_failure(self, headers, body, expect_status=400):
+        out = self.post(self.routes(), body, headers)
+        self.assertEqual(out["status"], expect_status, body)
+        self.assertEqual(out["headers"], {"mcp-protocol-version": self.CURRENT})
+        return out["body"]["error"]
+
+    def test_modern_envelope_failures_are_400_with_the_right_code_and_message(self):
+        discover = lambda meta, rid=70: {"jsonrpc": "2.0", "id": rid, "method": "server/discover", "params": {"_meta": meta}}
+        headers = self.modern_headers("server/discover")
+        meta = self.modern_meta()
+        self.assertIn("clientInfo", self.modern_failure(headers, discover({self.META: self.CURRENT}))["message"])
+        self.assertIn("clientInfo", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": "nope"}))["message"])
+        self.assertIn("clientInfo.name", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": {"name": "", "version": "0"}}))["message"])
+        self.assertIn("clientInfo.version", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientInfo": {"name": "x"}}))["message"])
+        self.assertIn("clientCapabilities", self.modern_failure(headers, discover({**meta, "io.modelcontextprotocol/clientCapabilities": "nope"}))["message"])
+        self.assertIn("clientCapabilities", self.modern_failure(headers, discover({self.META: self.CURRENT, "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"}}))["message"])
+        missing_method = self.modern_failure({"mcp-protocol-version": self.CURRENT}, discover(meta, 4))
+        self.assertEqual((missing_method["code"], missing_method["message"]), (web_ui.RPC_HEADER_MISMATCH, "Mcp-Method header is required"))
+        unsupported = self.modern_failure(self.modern_headers("server/discover", version="2099-01-01"), discover(self.modern_meta("2099-01-01"), 5))
+        self.assertEqual((unsupported["code"], unsupported["data"]), (web_ui.RPC_UNSUPPORTED_VERSION, {"supported": [self.LEGACY, self.CURRENT], "requested": "2099-01-01"}))
+        mismatch = self.modern_failure(headers, discover(self.modern_meta(self.LEGACY), 81))
+        self.assertEqual((mismatch["code"], mismatch["message"], mismatch["data"]), (web_ui.RPC_HEADER_MISMATCH, "MCP-Protocol-Version does not match body _meta", {"header": self.CURRENT, "meta": self.LEGACY}))
+        method_mismatch = self.modern_failure(self.modern_headers("tools/list"), discover(meta, 80))
+        self.assertEqual((method_mismatch["code"], method_mismatch["data"]), (web_ui.RPC_HEADER_MISMATCH, {"header": "tools/list", "method": "server/discover"}))
+        self.assertIn("Mcp-Method", method_mismatch["message"])
+        call = lambda: {"jsonrpc": "2.0", "id": 82, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "x"}, "_meta": meta}}
+        self.assertIn("Mcp-Name", self.modern_failure(self.modern_headers("tools/call"), call())["message"])
+        wrong_name = self.modern_failure(self.modern_headers("tools/call", "other"), call())
+        self.assertEqual((wrong_name["message"], wrong_name["data"]), ("Mcp-Name does not match body params", {"header": "other", "decoded": "other", "expected": "echo"}))
+        malformed = self.modern_failure(self.modern_headers("tools/call", "=?base64?!!!?="), call())
+        self.assertIn("malformed", malformed["message"])
+
+    def test_header_only_and_meta_only_modern_markers(self):
+        header_only = self.modern_failure({"mcp-protocol-version": self.CURRENT, "mcp-method": "totally/unknown"}, {"jsonrpc": "2.0", "id": 10, "method": "totally/unknown"})
+        self.assertEqual(header_only["code"], web_ui.RPC_HEADER_MISMATCH)
+        meta_only = self.modern_failure({"mcp-method": "totally/unknown"}, {"jsonrpc": "2.0", "id": 15, "method": "totally/unknown", "params": {"_meta": self.modern_meta()}})
+        self.assertIn("MCP-Protocol-Version", meta_only["message"])
+        legacy_versions = self.modern_failure({"mcp-protocol-version": self.LEGACY, "mcp-method": "x"}, {"jsonrpc": "2.0", "id": 16, "method": "x", "params": {"_meta": self.modern_meta(self.LEGACY)}})
+        self.assertEqual(legacy_versions["code"], web_ui.RPC_UNSUPPORTED_VERSION)
+        no_meta = self.modern_failure({"mcp-protocol-version": self.CURRENT}, {"jsonrpc": "2.0", "id": 17, "method": "x", "params": []})
+        self.assertEqual(no_meta["message"], "params._meta is required")
+        no_version = self.modern_failure({"mcp-protocol-version": self.CURRENT}, {"jsonrpc": "2.0", "id": 18, "method": "x", "params": {"_meta": {}}})
+        self.assertEqual(no_version["message"], "params._meta protocolVersion is required")
+
+    def test_header_names_travel_as_a_base64_sentinel_when_they_must(self):
+        unicode_name, spaced, sentinel = "エコー", " leading ", "=?base64?YQ==?="
+        for value in (unicode_name, spaced, sentinel, "trailing ", "tab\t", "x" + chr(127), "=?foo?="):
+            self.assertTrue(web_ui.mcp_header_needs_encoding(value), repr(value))
+        for value in ("echo", "demo://readme", "a b", "", "=?", "?=", "=?x"):
+            self.assertFalse(web_ui.mcp_header_needs_encoding(value), repr(value))
+        encoded = web_ui.mcp_header_encode(unicode_name)
+        self.assertTrue(encoded.startswith("=?base64?"))
+        self.assertEqual(web_ui.mcp_header_decode(encoded), unicode_name)
+        self.assertEqual(web_ui.mcp_header_decode(spaced), spaced)
+        self.assertEqual(web_ui.mcp_header_decode(web_ui.mcp_header_encode(spaced)), spaced)
+        self.assertEqual(web_ui.mcp_header_decode(web_ui.mcp_header_encode(sentinel)), sentinel)
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?!!!?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?notbase64?YQ==?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?YQ?="), "padding is required")
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?Y=Q=?="))
+        self.assertIsNone(web_ui.mcp_header_decode("=?base64?/w==?="), "bytes that are not UTF-8")
+        self.assertEqual(web_ui.mcp_header_decode("=?base64?YQ==?="), "a")
+        self.assertEqual((web_ui.mcp_header_encode("echo"), web_ui.mcp_header_decode("echo")), ("echo", "echo"))
+        self.assertEqual(web_ui.mcp_header_decode("=?base64?" + base64.b64encode("﻿x".encode()).decode() + "?="), "﻿x", "a BOM is kept")
+        routes = self.routes()
+        called = self.post(routes, {"jsonrpc": "2.0", "id": 76, "method": "tools/call", "params": {"name": unicode_name, "arguments": {"text": "hi"}, "_meta": self.modern_meta()}},
+                           {**self.modern_headers("tools/call"), "mcp-name": encoded})
+        self.assertNotEqual(called["status"], 400)
+        self.assertNotEqual(called["body"].get("error", {}).get("code"), web_ui.RPC_HEADER_MISMATCH)
+        headers = web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="tools/call", name=unicode_name)
+        self.assertEqual(headers["mcp-name"], encoded)
+        self.assertEqual(list(headers), ["content-type", "accept", "mcp-protocol-version", "mcp-method", "mcp-name"])
+        legacy = web_ui.mcp_streamable_headers(session_id="s", accept_event_stream=False)
+        self.assertEqual(legacy, {"content-type": "application/json", "accept": "application/json", "mcp-protocol-version": self.LEGACY, "mcp-session-id": "s"})
+        self.assertNotIn("mcp-session-id", web_ui.mcp_streamable_headers(session_id=""))
+
+    # --- the client (mcp_integration_test.dart)
+    def test_both_echo_demos_over_the_handler_and_over_the_routes(self):
+        for make in (lambda: web_ui.mcp_foundation_transport(web_ui.McpFoundation()), lambda: web_ui.mcp_in_process(self.routes("sess-demo"))):
+            legacy = web_ui.McpClient(make()).run_echo_demo("ping")
+            self.assertEqual((legacy["ok"], bool(legacy["session_id"]), len(legacy["log"])), (True, True, 4))
+            self.assertEqual(legacy["last_response"]["result"]["content"][0]["text"], "ping")
+            modern = web_ui.McpClient(make()).run_modern_echo_demo("modern-ping")
+            self.assertEqual((modern["ok"], modern["session_id"]), (True, None))
+            self.assertEqual(modern["last_response"]["result"]["content"][0]["text"], "modern-ping")
+            self.assertEqual(modern["last_response"]["result"]["resultType"], "complete")
+        self.assertEqual(web_ui.McpClient(web_ui.mcp_in_process(self.routes("sess-demo"))).run_echo_demo("x")["session_id"], "sess-demo")
+        client = web_ui.McpClient(web_ui.mcp_in_process(self.routes("sess-1")))
+        client.run_echo_demo()
+        self.assertEqual((client.ping()["result"], client.list_resources()["result"]["resources"][0]["name"], client.list_prompts()["result"]["prompts"][0]["name"]), ({}, "README", "greet"))
+
+    def transport(self, responder):
+        return lambda headers, body: responder(headers, web_ui.rpc_request_parse(body))
+
+    def test_a_rejected_initialized_notification_stops_the_demo(self):
+        def respond(headers, request):
+            if request["method"] == "initialize":
+                return {"status_code": 200, "headers": {"mcp-session-id": "sess-reject-init"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY, "capabilities": {}, "serverInfo": {"name": "t", "version": "1"}})}
+            if request["method"] == "notifications/initialized":
+                return {"status_code": 404, "headers": {}, "body": {"error": "session_invalid"}}
+            return {"status_code": 500, "headers": {}, "body": {"error": "unexpected"}}
+        result = web_ui.McpClient(self.transport(respond)).run_echo_demo("nope")
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("rejected" in line for line in result["log"]))
+        self.assertEqual(len(result["log"]), 2)
+
+    def test_a_failed_initialize_does_not_keep_a_session_id(self):
+        failing = self.transport(lambda headers, request: {"status_code": 401, "headers": {"mcp-session-id": "should-not-keep"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY})})
+        client = web_ui.McpClient(failing)
+        init = client.initialize()
+        self.assertEqual((init["error"]["code"], client.session_id), (web_ui.RPC_UNAUTHORIZED, None))
+        lying = self.transport(lambda headers, request: {"status_code": 500, "headers": {"mcp-session-id": "sess-should-not-adopt"}, "body": web_ui.rpc_result(request["id"], {"protocolVersion": self.LEGACY})})
+        client = web_ui.McpClient(lying)
+        init = client.initialize()
+        self.assertEqual((init["error"]["code"], init["error"]["message"], client.session_id), (web_ui.RPC_INTERNAL_ERROR, "HTTP 500 with result-shaped body", None))
+        forbidden = web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 403, "headers": {}, "body": {"error": "forbidden"}}))
+        self.assertEqual(forbidden.initialize()["error"]["code"], web_ui.RPC_FORBIDDEN)
+        plain = web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 502, "headers": {}, "body": {"error": {"nested": 1}}}))
+        self.assertEqual(plain.initialize()["error"]["message"], '{"nested":1}')
+        self.assertEqual(web_ui.McpClient(self.transport(lambda headers, request: {"status_code": 200, "headers": {}, "body": "text"})).initialize()["error"]["message"], "unexpected transport body")
+
+    def test_a_malformed_json_rpc_error_becomes_a_failure_not_a_crash(self):
+        for body in ({"jsonrpc": "2.0", "id": 1, "error": {"code": "-32603", "message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": 42}},
+                     {"jsonrpc": "2.0", "id": 1, "error": {"message": "x"}}, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603}}, {"jsonrpc": "2.0", "id": 99, "result": {}},
+                     {"jsonrpc": "2.0", "id": 1}, {"jsonrpc": "1.0", "id": 1, "result": {}}):
+            client = web_ui.McpClient(self.transport(lambda headers, request, body=body: {"status_code": 200, "headers": {"mcp-session-id": "sess-should-not-adopt"}, "body": body}))
+            init = client.initialize()
+            self.assertIn("invalid JSON-RPC response", init["error"]["message"], body)
+            self.assertIsNone(client.session_id)
+
+    def test_notification_status_parity(self):
+        modern = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {"_meta": self.modern_meta()}}
+        headers = web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="notifications/initialized")
+        post = lambda transport: transport(headers, json.dumps(modern))
+        unauthorized = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation(), {"status": "unauthorized", "reason": "expired"}))
+        self.assertEqual((unauthorized["status_code"], unauthorized["body"]["error"], unauthorized["body"]["message"], unauthorized["body"]["reason"]), (401, "unauthorized", "unauthorized", {"reason": "expired"}))
+        forbidden = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation(), {"status": "forbidden", "reason": "wrong_audience"}))
+        self.assertEqual((forbidden["status_code"], forbidden["body"]["error"]), (403, "forbidden"))
+        rejected = post(web_ui.mcp_foundation_transport(web_ui.McpFoundation()))
+        self.assertEqual((rejected["status_code"], rejected["body"]["error"], rejected["body"]["code"]), (400, "notification_rejected", web_ui.RPC_SESSION_REQUIRED))
+        transport = web_ui.mcp_foundation_transport(web_ui.McpFoundation(lambda: "sess-notif-ok"))
+        init = transport({}, json.dumps(self.init_body()))
+        session = init["headers"]["mcp-session-id"]
+        accepted = transport({"mcp-session-id": session}, json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        self.assertEqual((init["status_code"], accepted["status_code"], accepted["body"]), (200, 202, None))
+
+    def test_the_foundation_transport_maps_session_errors_to_http_statuses(self):
+        transport = web_ui.mcp_foundation_transport(web_ui.McpFoundation())
+        missing = transport({}, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "totally/unknown"}))
+        self.assertEqual((missing["status_code"], missing["body"]["error"]), (400, "session_required"))
+        unknown = transport({"mcp-session-id": "no-such-session"}, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "totally/unknown"}))
+        self.assertEqual((unknown["status_code"], unknown["body"]["error"]), (404, "session_not_found"))
+        ping = transport(web_ui.mcp_streamable_headers(protocol_version=self.CURRENT, method="ping"), json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {"_meta": self.modern_meta()}}))
+        self.assertEqual((ping["status_code"], ping["body"]["error"]["code"]), (400, web_ui.RPC_SESSION_REQUIRED), "the in-process transport maps a session error to 400; the routes answer 200")
+        origin = transport({"origin": "https://evil.example"}, json.dumps(self.init_body()))
+        self.assertEqual(origin["status_code"], 200, "the in-process transport ignores Origin")
+        parse = transport({}, "{broken")
+        self.assertEqual((parse["status_code"], parse["body"]["error"]["code"]), (400, web_ui.RPC_PARSE_ERROR))
+
+    def test_the_lab_exchange_wraps_the_routes(self):
+        routes = self.routes("sess-lab")
+        sent = web_ui.mcp_exchange(routes, {"body": self.init_body()})
+        self.assertEqual((sent["status"], sent["headers"]["mcp-session-id"]), (200, "sess-lab"))
+        self.assertEqual(web_ui.mcp_exchange(routes, {"method": "GET", "path": "/nope"})["status"], 404)
+        self.assertEqual(web_ui.mcp_exchange(routes, {"method": "GET", "path": "/mcp"})["status"], 405)
+        for bad in ({"headers": []}, {"headers": {"a": 1}}):
+            with self.assertRaises(ValueError):
+                web_ui.mcp_exchange(routes, bad)
+
+    def test_the_page_is_self_contained_and_in_the_index(self):
+        html = web_ui.mcp_document()
+        for needle in ("data-ui-mcp", "data-mcp-send", "data-mcp-template=\"toolsCall\"", "data-mcp-demo-legacy", "data-mcp-codec-in", "data-mcp-verifier", "data-mcp-auth", "data-mcp-meta", "aria-live=\"polite\""):
+            self.assertIn(needle, html)
+        self.assertEqual(html.count("<script"), 1)
+        self.assertIn("examples/mcp-lab.html", web_ui.example_pages())
+        self.assertIn("./mcp-lab.html", web_ui.example_pages()["examples/index.html"])
+        self.assertIn("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", html)
 
 
 if __name__ == '__main__':
