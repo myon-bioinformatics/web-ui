@@ -1,0 +1,1463 @@
+{
+  "schema": "web-ui-flutter-migration/1",
+  "repository": "myon-bioinformatics/flutter_navigation_basic",
+  "source_commit": "39d659ebffa527e850a1b3f2c45080ececb2eda1",
+  "archive_ready": false,
+  "scope": "File inventory and feature-level mapping; not a claim every Dart implementation was reviewed",
+  "dart_files": 2756,
+  "non_catalogue_files": [
+    {
+      "path": "lib/config.dart",
+      "sha256": "2d04cd618cc8139f2cd72ad80fc3aea02660c155221617d9b1d547ab8f3170d5",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/config/app_config.dart",
+      "sha256": "a502f242325510a15a942d0a036acfaf1043ebd040c6fef91cfce4397517c2f0",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/config/routes.dart",
+      "sha256": "907a58216a5888ba84070902ed45bccd0407b3bdbe35e016b92b1ce4fdd2b34d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/config/app_config.dart",
+      "sha256": "f8ecae222abc1d26970b0759948f0045aaec6a5c4732be6b0dcfa4efb61ceb4b",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/conversion_pattern_links.dart",
+      "sha256": "f6bcc6d7b0692f4b6aceb1ad6e2640ca795a044881d2d2c93ed3fa83a1c041af",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/counter_architecture_example.dart",
+      "sha256": "6666b2d52deee2444ab21cdbb8fcb53e92aff5b8f6822fee843fb3471dfe86bb",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/inherited_catalogue_example.dart",
+      "sha256": "562610e39a9e1971ae24a2006a1dc29822d42cbe4f6fa2d2ccb5e41ced1a62d7",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/interactive_pattern_example.dart",
+      "sha256": "78829dfe67586ab91188e0545eec4f0acd30d80b959fc2dbc2e28af2dd38fbe6",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/json_list_asset.dart",
+      "sha256": "251afc2321b41f1af6c4eaf925a9122b09e72e78b8ec27723fd8b68dd8419780",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/native_notifier_example.dart",
+      "sha256": "b0dbb6125c763821590ed3ddb124e89a073c0c03f62a2114ca6d6d31a68bd5a6",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/native_parallel_pattern_example.dart",
+      "sha256": "d52eab407016513092a8c9229b9f5fb8ea385f858dc7475154fae0eefa3629dc",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/native_state_catalogue_example.dart",
+      "sha256": "ec59c75b25a5e9c5fb82cf7c16f096e8f2c816a764a5c4ce40d2d91a6ddd9734",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/pattern_source_links.dart",
+      "sha256": "cba472b352e63e42a2d958ea9c97962aa516eb6788bd84cdf8f6bf0cfde5b2fc",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/processed_list_example.dart",
+      "sha256": "46eee9b3f6333d2884e4d96f4ef2bc2eeb55a6d355a783d2a1af5dee2c7b8286",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/state_architecture_example.dart",
+      "sha256": "50a66f73e4d1aee9b6521f5458b865fd3b4e4fabedec4d14c8e8e3e09e4e8f4a",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/data_processing/validation_pattern_links.dart",
+      "sha256": "4a0f0edb8cf6c7cb49e3bba8a36510f39e97082a4514e24db3ef17a2dffc8474",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/exceptions/app_exception.dart",
+      "sha256": "a3075ec6ca78fd65634753fa7cd5f0393fa1376e5dc39ba033df66f14187c339",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/exceptions/error_handler.dart",
+      "sha256": "e452df0cd9626f6311c55ec5e4691aa8acc29643d2b43022370916690cd2dcba",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/logging/logger_service.dart",
+      "sha256": "7b63836abbc351c501bb69f6595ca65fe5e8368fba7c3a7f2e99cc6b6d97366d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/navigation/app_navigation.dart",
+      "sha256": "c0e6a14f97270a6ba49e6353630201123e5f45693c8e220755f565e6e4f286ea",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/navigation/app_route_registry.dart",
+      "sha256": "4198b602f22c54b6f3d773de321a0247b185fb31709ebed10f388bc7e23ceebd",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/navigation/app_tools.dart",
+      "sha256": "b8c5ff2f29fbd72ffbff994a3f446e5e3a1f847a9707763699ddc67083c17722",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/navigation/route_names.dart",
+      "sha256": "86f5fdc9df533e7d62553299c1cebe06b51dcb5d21d5d2d94559c7794344ed47",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/services/base_controller.dart",
+      "sha256": "352bdfff8439732e9efa4e2be1eed90bd2f51a2328c40656475c38c700bfd3f3",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/services/storage_service.dart",
+      "sha256": "c724376b2a0419cb7626e5e54e7fe17efb05bb12176c3bfe17afe11dae975751",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/utils/ascii_fullwidth.dart",
+      "sha256": "9e782b2a0d17528154d3ccff698e3db1dad2b6e72283a639d94905d5b53e4298",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/core/utils/url_params.dart",
+      "sha256": "47cecd58617db6cdf616786c442140abfe9a46aad0deaa8347b2c5742c38f685",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/data/composer.dart",
+      "sha256": "7f2a07abf5412b783ab274657aa411ce65df1211b183103753becbeece2b00cc",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/data/ironies.dart",
+      "sha256": "0f35c73ff083a1f488903a9ef39b5ded229ad64905ad988ae2cb5b65fe4bc914",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/data/mock_api_client.dart",
+      "sha256": "7d5c8cc9ec768cdb7959088b72893ae1efeebd2dbce7f7eebaf6ba6c3ef261ef",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/features/clipboard_shelf/presentation/clipboard_shelf_page.dart",
+      "sha256": "4853c5298c42a8e0e139a1463b9b30ee1e66bd155c07bf5216b0c60fd981f0a2",
+      "feature": "clipboard_shelf",
+      "status": "partial",
+      "target": "shelf_document",
+      "remaining": "Native clipboard platform behavior is not equivalent"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/chord_theory.dart",
+      "sha256": "e8836dae53771bf84f2c235a66617a3371bcc521a5cfd2070911462eb335b111",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/composition_generator_controller.dart",
+      "sha256": "0260b341ffc1a4bea3429a2b2807d795881076be084df76011d486ba821d6536",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/metronome_timing.dart",
+      "sha256": "3ec9f082da9261cb1e6675e47917faa64b4a491f8e810cca3dc92b38863e87b7",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/note_sequence.dart",
+      "sha256": "e4868ba750541a3ae45c7d4e2bd4566e416868a8ceb72d0b98a180222396beaa",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/song_seed.dart",
+      "sha256": "d8b1fceeb35cafe7fe1e96e20c8434c50e06da931ea49694865bd8139c3bed27",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/domain/song_seed_generator.dart",
+      "sha256": "1ca133df217525e076cda720db7b6edc954083695b10153c391b1891a1db9909",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/composition_generator/presentation/composition_generator_page.dart",
+      "sha256": "e00c397d020ba97ac02f93c34a1c41689aed81c143b748a4e9ce2c303e8f0676",
+      "feature": "composition_generator",
+      "status": "partial",
+      "target": "studio_document, progression_notes, studio_audio_plan",
+      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/bounding_box.dart",
+      "sha256": "e6782d75a44dbda39e39ce0279e975e37b124610778dd26e71fec3989e4ef324",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/coordinate_formatter.dart",
+      "sha256": "844f58f466acdddd5bf92384dee74f34f8d6e77523b7345f5a3f3c8b3d6669fd",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_expander.dart",
+      "sha256": "b8488bb0ef5648d1ebe8ee6fea0435a52c69e0df3ae92dcbda3a4b395df1afa7",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_expander_io.dart",
+      "sha256": "b8640a7867b1822c523e16bc9f3d0b1cb7d578e496fff251f4a4b7b6bcc05191",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_expander_stub.dart",
+      "sha256": "b2b4886d2e994fd7bc8230bae66702656994ade293f5d6f2b3a6fb83c3a5dd1b",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_expander_web.dart",
+      "sha256": "87f45f42958f7a0f0b8881d1477527637ea142a7ef5d34d66dfd5384249c99cf",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_policy.dart",
+      "sha256": "abda3732a67ea9159ccbf81251935d2d051fddfbd27435114ef35ceb436652df",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/domain/maps_url_web_expansion.dart",
+      "sha256": "0344e23038789d8a90adc7d7aaca7c02b6443c178c77e5bb95969fda204a56f8",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/coordinate_tool/presentation/coordinate_tool_page.dart",
+      "sha256": "0320762ff458a3ce048cfe22a15ec71b7fca2d1bd3fe9ff01bbf6f1eaa76a03c",
+      "feature": "coordinate_tool",
+      "status": "partial",
+      "target": "coordinates_document",
+      "remaining": "Network short-link expansion intentionally excluded"
+    },
+    {
+      "path": "lib/features/counter_playground/domain/counter_battle_effect.dart",
+      "sha256": "cd583df25093dd84c08ef2dea4ad3a1b756b1904a4e64287d3e2eece7eb3d573",
+      "feature": "counter_playground",
+      "status": "successor",
+      "target": "counter_garden, play_document",
+      "remaining": "New reward model; native long-press timing is not copied"
+    },
+    {
+      "path": "lib/features/counter_playground/domain/counter_playground_controller.dart",
+      "sha256": "ddf4cc09ee9584716d0ec67702ec73691b6319d556ca5869c374e27319832ae2",
+      "feature": "counter_playground",
+      "status": "successor",
+      "target": "counter_garden, play_document",
+      "remaining": "New reward model; native long-press timing is not copied"
+    },
+    {
+      "path": "lib/features/counter_playground/presentation/counter_orb_burst.dart",
+      "sha256": "d5d98bf4beba7280f9f2be81426838310eb53d6fe79d78e30b1daac561a7121d",
+      "feature": "counter_playground",
+      "status": "successor",
+      "target": "counter_garden, play_document",
+      "remaining": "New reward model; native long-press timing is not copied"
+    },
+    {
+      "path": "lib/features/counter_playground/presentation/counter_playground_page.dart",
+      "sha256": "0e943fc80b5f19d6257f75058bacdc3c744593389e1ba9828598c1af9a6f202e",
+      "feature": "counter_playground",
+      "status": "successor",
+      "target": "counter_garden, play_document",
+      "remaining": "New reward model; native long-press timing is not copied"
+    },
+    {
+      "path": "lib/features/home/domain/home_controller.dart",
+      "sha256": "68c7b25f061f16f1e03fa3ac0ef61cf727a0a032fd0aa758c6eb72410aba9925",
+      "feature": "home",
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/features/home/presentation/home_screen.dart",
+      "sha256": "d5ada89fc733959b04cbe467b681dbd67b763805f7792a588d08b725c84715e3",
+      "feature": "home",
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/features/http_request_draft/presentation/http_request_draft_page.dart",
+      "sha256": "a138bcfb1e014dfceb1adcf2f8748716bb4ba76f67bfb2e726b70aac84395931",
+      "feature": "http_request_draft",
+      "status": "partial",
+      "target": "parse_curl, stub_document",
+      "remaining": "Real HTTP execution/authentication needs separate disposition"
+    },
+    {
+      "path": "lib/features/irony_generator/domain/irony_generator_controller.dart",
+      "sha256": "241ade833293b6b4bb9ed5ce669490ac8b164ace5087914d74cbda15c6edffc7",
+      "feature": "irony_generator",
+      "status": "successor",
+      "target": "irony_round, play_document",
+      "remaining": "New authored quiz deck; original text corpus remains at source"
+    },
+    {
+      "path": "lib/features/irony_generator/presentation/irony_generator_page.dart",
+      "sha256": "dac52a2d61c44cc29a6cae55f4929e5f73d029663b24bb013c5753a51a8441e2",
+      "feature": "irony_generator",
+      "status": "successor",
+      "target": "irony_round, play_document",
+      "remaining": "New authored quiz deck; original text corpus remains at source"
+    },
+    {
+      "path": "lib/features/now_timeline/domain/now_timeline_models.dart",
+      "sha256": "b678bb26c4cca2ddc1b9931823c36a76f25dc13ed1454bcf34ea0297233a9753",
+      "feature": "now_timeline",
+      "status": "partial",
+      "target": "timeline_events, timeline_wall_to_utc, world_document",
+      "remaining": "Recurrence and persisted entries are not migrated"
+    },
+    {
+      "path": "lib/features/now_timeline/domain/zone_table.dart",
+      "sha256": "9c14c408eb60b9ebced81fa15113ded0e0a0fa8edc747ebf5d0ee47781902145",
+      "feature": "now_timeline",
+      "status": "partial",
+      "target": "timeline_events, timeline_wall_to_utc, world_document",
+      "remaining": "Recurrence and persisted entries are not migrated"
+    },
+    {
+      "path": "lib/features/now_timeline/presentation/now_timeline_page.dart",
+      "sha256": "2a92747206744f6bff3076c0c148f22312389c52ae679dcc3c9c5aecc71453a4",
+      "feature": "now_timeline",
+      "status": "partial",
+      "target": "timeline_events, timeline_wall_to_utc, world_document",
+      "remaining": "Recurrence and persisted entries are not migrated"
+    },
+    {
+      "path": "lib/features/now_timeline/presentation/time_rules_bootstrap.dart",
+      "sha256": "3cb1a85ddb5ef01e54caa51189e52be8dd90fd875a3b557ed5a8765ed6a0d7e2",
+      "feature": "now_timeline",
+      "status": "partial",
+      "target": "timeline_events, timeline_wall_to_utc, world_document",
+      "remaining": "Recurrence and persisted entries are not migrated"
+    },
+    {
+      "path": "lib/features/photo_studio/data/clipboard_image_read.dart",
+      "sha256": "677bdd803c96179cc5304854d8d55f03de4c58583f6af71a6908820e9aaeb9c0",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/gal_photo_sink.dart",
+      "sha256": "4bb3b26e04e8a525fed2f24f9a7d84b7720cbc2b82da32f3dac3c137db0669d9",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/image_format_sniff.dart",
+      "sha256": "29111495b6fd3da9f2674bd6ee4ddca50909f57e57e2daa30900b9293026678c",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/image_picker_photo_source.dart",
+      "sha256": "c3ce7dfa0f4a7d10e7b1bc5b832b72fa916f096d8a85532aee9bb4bc08347f90",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/native_image_normalize_adapter.dart",
+      "sha256": "94be33d843fad8f1eee095ea036d9c387fe2d9e5db4c641e403473fb0a869c79",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/native_image_normalize_adapter_io.dart",
+      "sha256": "f34c58afddc0ec8f9310b323d5e8746a9fb9f84ff0eedb141d32edce40a4dd1e",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/native_image_normalize_adapter_stub.dart",
+      "sha256": "1176b7802134adae71dd70731dae174a0dd46c5c0ca9ed9219b50addd5840f6a",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/photo_import_limits.dart",
+      "sha256": "00fccbf8c286dd33bfe44979f2aadfb5494ce3d20411638f24ba16e02e3b6e6e",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/data/photo_media_ports.dart",
+      "sha256": "d3195770da33731f7a3727ecd29566a128e1176317e617771d369b28e6d06c4e",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/emoji_stamp.dart",
+      "sha256": "c4a5d86f87f66b31bd2a010f2ad4901369bb26e3123d8c34d12bf061b31ead2b",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/normalized_rect.dart",
+      "sha256": "a31c3c2f94c7fa71e22998a82187fce17e806ec5339be8fb6a8d06132930a03a",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/photo_import_status.dart",
+      "sha256": "8599bdb5e1c5296b946552920c467377aaf6fdbde50c07ab4a6c70eff3308e43",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/photo_studio_history.dart",
+      "sha256": "4455e32e022daeb0a311e2a6e746be97d8611feae8fd67a56a43ebaa3e27d204",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/photo_studio_state.dart",
+      "sha256": "153c83ca66a95c429bea119d6b3bc167b0e534dcc792e552a7c18ad77e127eb7",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/studio_document.dart",
+      "sha256": "c8f272d8f323c8b2fa9176fab18a1e81b8ed864f4662a4c519278b37079e67ff",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/studio_export_result.dart",
+      "sha256": "1f24a7f58029aeb445e61f9088062fe4f3be9b4048635e091b859599f06660bb",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/studio_frame.dart",
+      "sha256": "ac948836db528abb4fbadfaf02f369a0504cdf204f540b666a52265a6204bdc7",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/studio_frame_style.dart",
+      "sha256": "d2c0d7a8722c9ac643127a42c3b43f07af743aeefabaa8faa804aef9703cab50",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/domain/studio_geometry.dart",
+      "sha256": "864c1a602a9d2c04f383be0345339408644c505d1a1072563d8ab20c930636d8",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter.dart",
+      "sha256": "55597f3c2c1ed7229faed5a7f318177a92f5997375aafcab2d874344f045aa79",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter_stub.dart",
+      "sha256": "6d6ce68898031f20c78ef807ffad980e4417ff9b9cbfb4064bcac1959c731d0e",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter_web.dart",
+      "sha256": "3c70705704a685379b37a4c37745a23ddabeba3aaa4688931eaa11908213c4f7",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/compose_studio_image.dart",
+      "sha256": "ebc642086d0c648daa0f7e36c01ec680556c66922bf4f61392827a45cd2300ad",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/export_studio_png.dart",
+      "sha256": "3ececa5a3c929e14fbd0ee75a270a843d3dad3269dadab1047929930878998c5",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/photo_rect_canvas.dart",
+      "sha256": "8bd0d018076790131a736b741e5eb1705e106c962ce71be3eea0782c2217c1a7",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/photo_studio_page.dart",
+      "sha256": "fe63a164d17f94a80084d95509762410a566f1d8a947d9ebc47356a1dae44081",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/pick_local_image_bytes.dart",
+      "sha256": "e2efc29f65f87c68fe8e7d2f6f93be993b512c591b1d4e2b92dd18416bac1033",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_io.dart",
+      "sha256": "a46b739c8ba1852dd3ba2ef9e6b69bae7093c6a717830c391624bdac55c4a63d",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_stub.dart",
+      "sha256": "f190ba2d1454331780d493744c868b8e605032cdd4a9e8bc85efd88d63de968e",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_web.dart",
+      "sha256": "b47886dec687b9a4f65846d014ff61abc67fcc690906edfe3abb702963f21e55",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes.dart",
+      "sha256": "f8597ef6e56e8a5ff873139497e9a626597737f28664f33e7f9634f31684585f",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes_stub.dart",
+      "sha256": "5166c759f40c516025f5dbabf3505d15953c2e5ef7b46521c46495b8177ee661",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes_web.dart",
+      "sha256": "b1a3284a30db9a4299facaf35295b8421a9b2cd595c95d3de80ff5ad92f6dd9a",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/save_image_bytes.dart",
+      "sha256": "ead7c40e25193e368ca760d76b7a982592d6161ceffddeb8e1ea15ba5b6f8ce2",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/save_image_bytes_io.dart",
+      "sha256": "7ae4e12855c2527ded22f5990767c292b0e5ee0852df8aa9ceae7400e5d3bd22",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/save_image_bytes_stub.dart",
+      "sha256": "85bd0e5d1ed71d5a7997f399b71ce416b8cf5fe666bd1d9b479d3a2ea414f9f0",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/save_image_bytes_web.dart",
+      "sha256": "1901b71a8c3f665d0297ddacaec1dcbf295fdd48f3a15299436488b894ad7924",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/studio_canvas_capture.dart",
+      "sha256": "c0fa8532b0140d462e3decdfebf95346a13cc5ba3b4805e5cbad2a661bceabd7",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/studio_image_loader.dart",
+      "sha256": "d0f02390a11382ae205623c069aad303a5ba63091a8c406443f1338f4d75fc34",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/studio_image_preview.dart",
+      "sha256": "c9c6b96a611a6c457a4c8397e4957887fb66e68eba34adeb3c38570657dd531a",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/photo_studio/presentation/studio_png_encode.dart",
+      "sha256": "9f8aa87470e6aadf29054a4956ef2bc8598f320bdd468d8b84fec4181b837102",
+      "feature": "photo_studio",
+      "status": "partial",
+      "target": "PhotoStudio, photo_document",
+      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+    },
+    {
+      "path": "lib/features/screen5/domain/screen5_controller.dart",
+      "sha256": "d6e6f57df1c48e7cd9cdfadc0d0fcefc0addbe0c84201d30a9382039e8363f99",
+      "feature": "screen5",
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/features/screen5/presentation/screen5_page.dart",
+      "sha256": "228c41e058aa7d20069b4ba91bd1afdc0abc216a8da50f827b305be426b0cd5d",
+      "feature": "screen5",
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/main.dart",
+      "sha256": "61bebb63b27423cb0b3db0580ee4f07f9c14c8364d12db7043594860310c5cb3",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/clipboard_shelf_screen.dart",
+      "sha256": "397efc6b9c32e26c1535ac4294de5a7a4f2ede61bcb7e7b6d807163691ec4f3d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/composition_generator_screen.dart",
+      "sha256": "7d546d67d58bccb682a93ead3dad6ac70b54e5333999718c2a10259e1a1a4320",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/composition_studio_screen.dart",
+      "sha256": "77beadb832bc74a2055a9e5c5892978c97c205b9fbb86d80613f47ac126d0213",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/coordinate_tool_screen.dart",
+      "sha256": "c4952518d5fb2af538a7f3e4e14ede93e722a3f5fd9c8cc9ed1a5b944cb6e233",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/counter_playground_screen.dart",
+      "sha256": "37d21b215bff0a9d69919d92edab8f368c187ba98ebb7e3a66c13788f4b79236",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/generic_screen.dart",
+      "sha256": "d488ff5a76862f43a5dadbc016202c1dc0768de30970a8a6b62908926a36b808",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/home_screen.dart",
+      "sha256": "7eb7aa1382c9a2d850dd3ebf5df03db0098d2ea0ecf302dc4eec0b6344bc92b0",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/hub_screen.dart",
+      "sha256": "94aca8b48b701ff07063c21d588ff38bdcaf0637107adb79b8e3ea0630efe540",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/irony_generator_screen.dart",
+      "sha256": "fc5b3f789663a085cb7f78b61b1118589dd7300092cc8b82d79398250873e742",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/mcp_integration_screen.dart",
+      "sha256": "1893305b960ca343d4072593052236b3a491e2558a9952d0d4166f01867968e4",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/now_timeline_screen.dart",
+      "sha256": "4fc3b4d15d26c769be535f431666b6a3adc8ae02a7bedc2e05bfd92f4de0dda5",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/pattern_template_screen.dart",
+      "sha256": "f47e4b4b7de717bdfe6d23d5d5806093c9dc238e0664d9dcf5cb8277cfb9c4ee",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/photo_studio_screen.dart",
+      "sha256": "8808d3402511d2c1caa8e123d8ee7c43bc2d3516ad8b7cc4bd45287275c52552",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/screens/ui_showcase_screen.dart",
+      "sha256": "31594cd15c8b1fbeaf89e5179e34559adb94319e3f87ad5b713ddc6c4a139b6b",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/bootstrap/app_bootstrap.dart",
+      "sha256": "87a2fdbecd59ca21108ae3596654f7043744ba07c6449ba15f3927072a2c122a",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/catalog/catalog_search.dart",
+      "sha256": "39df2f2e2f3c80512480b69a28e2497c058d1302379615bb3fbbaecc9b9b7240",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/clipboard/base64_image_bridge.dart",
+      "sha256": "109ac7aae960f3250db2bb83d941bb7f25421aa0e1535f38f5481a828eb5b366",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/diagnostics/build_diagnostics_card.dart",
+      "sha256": "018d33b382eb5bf11ccca4e503c5cdc5290840161de9294f0968c1b2b63e0bae",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/diagnostics/build_metadata.dart",
+      "sha256": "f5a9122b3f5eae8ebfc7b8f4eeffbf77af8ce7c615c803d28aba0039cdae7bec",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/diagnostics/route_diagnostics_observer.dart",
+      "sha256": "cc3b5a043672b0af01b9148ebf1cdc81a439a37fca159ccbf485cfd852617070",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/diagnostics/weight_badge_overlay.dart",
+      "sha256": "25c33af8afe79c3ca587fa06df21e752396395e0ab2c53a1ce3a7ba965d81d39",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/display/display_catalog.dart",
+      "sha256": "eff7fa7c02004d6b5b0632bc8670bb4b6a31b11e0bd645a668179b1f63fc51fb",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/display/display_locale_codes.dart",
+      "sha256": "7d127ea30b911dcb241974b8a498a6ddbd333af6c6689ebd6d007c1c1eb3d2d4",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/display/display_scope.dart",
+      "sha256": "da5e1501350bd2476b7579ce30de4c1623971d9325a9d6050df9368223453f23",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/auth_matrix.dart",
+      "sha256": "d696b6ecf7b17764224a1883c233c3a0a830bfe668acc4cc2029caf585fa006d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_import.dart",
+      "sha256": "d7e4d45bdf1641ef6e738087dd026449105be54e5de286662d1f977cdb1b6de2",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_import_legacy.dart",
+      "sha256": "43161f23af0d3407e66a9b0278b6accd2e9c2dc1dd7c2b577c907d8b184ef5a3",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_import_result.dart",
+      "sha256": "50bd5541cafdb838a1a96557092d85119b1447b09caf288387c53f7f06fd4854",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_import_web.dart",
+      "sha256": "84e7bfbf4094211a165cc7263da75f7f25ce4c8dd06d8304929a4b8511f31b67",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_runtime_transport_stub.dart",
+      "sha256": "d7380434ed15cb80487ba2935e75a5d10ae54a3530188da190580913bee3ed9c",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_runtime_transport_web.dart",
+      "sha256": "ac9629755b42199516008c0bd13ba199805bea0ff2ccbe2239795bba8df9626d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/curl_safe_subset.dart",
+      "sha256": "0c030375b1b0a49a44a70df44347078f990a8555edf58d17fd1fe26d53e9da45",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/digest_nc.dart",
+      "sha256": "cf1d48ff8201900c606811f1a70375b5e18ae51c62af427badd479c3aabe8825",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/live_request_executor.dart",
+      "sha256": "2a3dee669985b0bbf08e4c852317086f56a80e43e34ed74a598e79d1cbfdf2dc",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/live_request_executor_io.dart",
+      "sha256": "919315409cb3224390f9c527ffee61703c9f536e98f5ef3bd051711e4f6bb0ab",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/live_request_executor_stub.dart",
+      "sha256": "fbf31e977fd8c05821acc3fcd6bc3583bfe48edb3022bd587da1239072647e97",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/live_request_executor_web.dart",
+      "sha256": "73ad5aac3769523dc72166f8fc6d8f142a52a930915bf8af7835ddba459e3cc0",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/mock_auth.dart",
+      "sha256": "f54ec9e9b064c3bb5f36d0c6f0efc6e9e47fdcafb02f699ff5e09a0231e47783",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/request_draft.dart",
+      "sha256": "c8d97287cb2dc5ff377be82d142166506dca349f64d313dc75430f8e84729a01",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/request_draft_codec.dart",
+      "sha256": "b333290981373adcd34758bd7d77cb9b4d3d7141154893a444d5e828d780c74e",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/request_executor.dart",
+      "sha256": "04815f660b544402717f988eddfba46988e6b0eba799aeac159782d26e8329fd",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/http/request_field.dart",
+      "sha256": "40f21a5ae4af83c19ba1909532407f1dd0139867c3831371ea3079b22c8ff24e",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/input/ascii_fullwidth_text_input_formatter.dart",
+      "sha256": "a18024ec82e49fb9fa7dcbaa224133fffc97b44a721784b67277bbfefae84096",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/json_rpc.dart",
+      "sha256": "cfc260ce7ccc73b7b3fb4af283483f8f816660267d977c3d0c50c3318e6d0c30",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/mcp.dart",
+      "sha256": "e6ed9562b43342eac82dedbafaa27956be8918f70addd2dcd160410ebef9cfb3",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/mcp_foundation.dart",
+      "sha256": "b73c6fcb9634495d5779eedc2878e8987e2cf12c744ec59da9312750b88dfda7",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/mcp_modern_http.dart",
+      "sha256": "69be2f0ea06a479582270d3769374e0546b84b5ff43d592af919eddffb0454f2",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/mcp_protocol.dart",
+      "sha256": "4e9d7ddf9059e82c25112b782effd1c5b40af2ce6b256a511b10b3b8309f63ae",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/mcp_session_client.dart",
+      "sha256": "ae30007bf516bbafffaf190015bafaeee8ec874dc50310a8c3de4d04f37d6d70",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/mcp/oauth_pkce.dart",
+      "sha256": "97e9909e5874f87793acf0d40f64ad05cba5107571aa2c255e3f771a12306d1c",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/navigation/page_identities.g.dart",
+      "sha256": "f580a22ed6772ae27baef9de9af8fab48b9f0c59f2cac8f77053733e982cb01c",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/platform/open_external_url.dart",
+      "sha256": "8df284896728b261b1d160c8601f812fea66a902c072ff5590c56278d4a43d5d",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/platform/open_external_url_stub.dart",
+      "sha256": "919602a211984a72924982dae743314cccc9a1e9d5fa8b95d2aff77f9aaa86eb",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/platform/open_external_url_web.dart",
+      "sha256": "8075613de2468f7090ad5b7e3d85d7b2106f3221f2990c931411c986c29a15e1",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/themes/app_theme.dart",
+      "sha256": "50d90fdc6bd3b3e271067f379bbc440beba7cb1154450b5d4bec781882b1cd08",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/themes/color_constants.dart",
+      "sha256": "b78965625beed23885e7755ce7865e5c536230c0682649721c126617f679d1c0",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/chord_theory_card.dart",
+      "sha256": "a33e7bd467b75abb57210c375dbe6c0041b64dfc1f80fedae0c83779dbd24bd8",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/clipboard_prompt_workbench.dart",
+      "sha256": "7b24f5d522a7fb8049fbad2dc7c9ff5438a13d279569ec257102ba0fe7376bbe",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/clipboard_shelf.dart",
+      "sha256": "3682f79509444e92a831b8439c76f11783247540a90f7d8721a9bd882ae47ea9",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/composition_studio.dart",
+      "sha256": "ce3ada6b2e1c8ea5780fbef6676673bee33e5df139283f817b6042e60fdd337f",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/custom_app_bar.dart",
+      "sha256": "d75f9c380e321acc8f5a9293265d621602d17c71da9b452ecd88add340fe804b",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/custom_button.dart",
+      "sha256": "c346c8beb76d7b993a3661a2bdb36ec8807b89eb440b6356e49ed6c30e8aa608",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/error_widget.dart",
+      "sha256": "3bf84f6f5fa41585c3d49066a2fdebfbbbb95037ff4dee7036589e5b936093ab",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/hold_repeating_button.dart",
+      "sha256": "9078c8d4af624d3ee7cd5aff5996a0b5d7895c751e54e59b06c5ffb9e31eff70",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/home_overview_panel.dart",
+      "sha256": "5d66bd15cfc4eba55090a72e6b8270cee7a922f024248610af66c5bacf6efa69",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/loading_widget.dart",
+      "sha256": "97ad6bfc0f06566e7c3a3eaf3ecbf0d0098247c45e0962d6134bf9713e0ec9e7",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/note_sequence_card.dart",
+      "sha256": "68ce71a21a9803a935ee1ae4ef8e0a484b410590667164d9461141abf53023e6",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/session_text_clipboard.dart",
+      "sha256": "814e0546d7bd95adbee7a9dbdb6ad812f1a57ca80946e306ff2572f54b14399a",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/song_seed_panel.dart",
+      "sha256": "cfe4bb41be3e5126aab46921c05aae9b5812330db6a87cba3f74b3f746b89d76",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/standard_page_footer.dart",
+      "sha256": "dbdfe982337c9169f3c203f2537d6cd702ee59872f7cca095252059cb33c45f7",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/standard_page_header.dart",
+      "sha256": "7c9d76059850249e037359247ba9e0e769d92d108919f26ed36691daf2f62ac1",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/standard_page_shell.dart",
+      "sha256": "730eb33cd69050bf7267ae4d3cc764a61190b50ecb78557dad1de04d4d7341a3",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/shared/widgets/tool_door_selector.dart",
+      "sha256": "cac6d21fe9482e7ac89b76a98ca2fb8d0a0e90116aa5604241efe4a1b692f89b",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    },
+    {
+      "path": "lib/widgets/nav_button.dart",
+      "sha256": "691fbbcfe3d4982d933c56e7ce46e1e718fa0e3ed9a1111c0ac1d895938cba0a",
+      "feature": null,
+      "status": "unreviewed",
+      "target": null,
+      "remaining": "Explicit disposition and coverage required"
+    }
+  ],
+  "catalogues": {
+    "api_patterns": {
+      "files": 792,
+      "status": "unreviewed",
+      "tree_digest": "64c5b0497298801fabd918cadf3b8e44c5f8ab6f721cf293f7d810ce2b10d372"
+    },
+    "data_processing_patterns": {
+      "files": 202,
+      "status": "unreviewed",
+      "tree_digest": "2763465fcd3df775f1dde111f2688f20c57d73e1a58e971771a6ccc1dfa21a63"
+    },
+    "navigation_patterns": {
+      "files": 792,
+      "status": "unreviewed",
+      "tree_digest": "5c77e046cd7ff460c3c96ef6bc420bc5920719e14528e0e0d1b8d78706c99c23"
+    },
+    "ui_theme_patterns": {
+      "files": 792,
+      "status": "unreviewed",
+      "tree_digest": "c7118e4c0f105f486beb7fcc362546be2c8c1d8a685d6aeb27bc569bf3899f69"
+    }
+  },
+  "archive_blockers": [
+    "Resolve every unreviewed file and catalogue",
+    "Record retained/replaced/dropped behavior with tests",
+    "Validate real-device media/clipboard behavior",
+    "Export or deliberately retire stored entries",
+    "Merge and publish successor pages, then obtain archive approval"
+  ]
+}

@@ -4457,7 +4457,7 @@ def studio_html() -> str:
 
 def studio_document(*, theme: str = "modern") -> str:
     """A single-file page for the composition studio."""
-    return render_document(trusted_html='<main class="ui-page">' + studio_html() + "</main>" + module_script(_JS["composition.js"]), title="Composition studio",
+    return render_document(trusted_html='<main class="ui-page">' + studio_html() + "</main>" + module_script(_JS["composition.js"]) + module_script(_JS["studio-audio.js"]), title="Composition studio",
                            theme=theme, css=bundled_css())
 
 
@@ -5084,7 +5084,7 @@ export const FLAT_KEYS=["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B�
 export const SELECTABLE_KEYS=["C","C♯","D♭","D","D♯","E♭","E","F","F♯","G♭","G","G♯","A♭","A","A♯","B♭","B"];
 export const CHORD_MODIFIERS=["triad","6","m6","7","maj7","m7","m7♭5","sus2","sus4","add9","add11","dim","aug"];
 const MAJOR=[0,2,4,5,7,9,11],MINOR=[0,2,3,5,7,8,10],MAJOR_Q=["","m","m","","","m","dim"],MINOR_Q=["m","dim","","m","m","","" ],LETTERS="CDEFGAB",NAT={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
-const INTERVALS={triad:[0,4,7],"6":[0,4,7,9],m6:[0,3,7,9],"7":[0,4,7,10],maj7:[0,4,7,11],m7:[0,3,7,10],"m7♭5":[0,3,6,10],sus2:[0,2,7],sus4:[0,5,7],add9:[0,4,7,14],add11:[0,4,7,17],dim:[0,3,6],aug:[0,4,8]};
+const INTERVALS={triad:[0,4,7],"6":[0,4,7,9],m6:[0,3,7,9],"7":[0,4,7,10],maj7:[0,4,7,11],m7:[0,3,7,10],"m7♭5":[0,3,6,10],sus2:[0,2,7],sus4:[0,5,7],add9:[0,4,7,14],add11:[0,4,7,17],dim:[0,3,6],dim7:[0,3,6,9],aug:[0,4,8]};
 const ROMAN={I:1,II:2,III:3,IV:4,V:5,VI:6,VII:7},mod=(n,m)=>((n%m)+m)%m,trim=s=>s.replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g,"");
 export function pitchClass(note){const m=typeof note==="string"?/^([A-G])([♯♭]*)$/.exec(note):null;if(!m)throw new Error("unsupported note: "+note);
  const sharps=(m[2].match(/♯/g)||[]).length,flats=(m[2].match(/♭/g)||[]).length;return mod(NAT[m[1]]+sharps-flats,12)}
@@ -5760,11 +5760,266 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
  let seenWidth=Math.round(stage.parentElement.clientWidth),queued=false;const refit=()=>{queued=false;seenWidth=Math.round(stage.parentElement.clientWidth);fit();render()};
  /* Only a change of width refits, and later in the frame: fitting changes the height, which would notify the observer again in the same frame (WebKit reports that loop as an error). */
  if(typeof ResizeObserver==="function")new ResizeObserver(entries=>{if(Math.round(entries[0].contentRect.width)===seenWidth||queued)return;queued=true;requestAnimationFrame(refit)}).observe(stage.parentElement);else window.addEventListener("resize",refit);
+ const reward=new URLSearchParams(location.hash.slice(1)).get("stamp");if(["⭐","🎵","🎨","🏆","🌈","💎","🚀","👑"].includes(reward)){custom.value=reward;studio.armStamp(reward)}
  box.photo={studio,docs,importBytes,check,fit,render,sync};fit();setStatus("idle",MESSAGES.idle);after();return box})}
 globalThis.webUiPhoto={fixed,sniff,pngComplete,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
  rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS};
 if(typeof document!=="undefined")bindPhoto();
 """
+
+
+# Successor tools: portable, versioned replay data; no storage or network in the models.
+PLAY_SCHEMA = "web-ui-play/1"
+GARDEN_GLYPHS = ("🌱", "🌷", "🌳", "🍄", "🌻", "🪨")
+GARDEN_REWARDS = ("⭐", "🎵", "🎨", "🏆", "🌈", "💎", "🚀", "👑")
+IRONY_CARDS = (
+    ("会議を減らす会議を開いた。", "会議が一つ増えた", "議事録が短くなった", "時計を見た", "目的と手段が逆になっています。"),
+    ("自動化の進捗報告を毎日手入力する。", "自動化の管理が手作業", "入力欄が青い", "報告が朝にある", "自動化と手作業の対比です。"),
+    ("集中時間を守るため、五分おきに確認する。", "確認が集中を壊す", "五分は三百秒", "確認は質問である", "守ろうとする行動が目的を妨げています。"),
+    ("簡単な申請のために、説明書が三冊ある。", "簡単さに複雑な準備が要る", "本にページがある", "申請には名前を書く", "簡単という説明と実際の負担が食い違います。"),
+    ("節約の成果を祝って、予算を使い切った。", "お祝いが節約を帳消しにする", "予算は数字で表す", "お祝いで拍手する", "成果を祝う手段が成果を消しています。"),
+    ("自由な発想の提出形式は厳密に一種類。", "自由を求めながら形を縛る", "形式には名前がある", "提出には締切がある", "自由と制約の対比です。"),
+)
+
+
+def _play_int(value: Any, label: str, low: int, high: int) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"{label} must be an integer from {low} to {high}")
+    return value
+
+
+def play_random(state: int) -> int:
+    """xorshift32 word, identical in Python and JS; zero is mapped to a fixed nonzero state."""
+    x = state or 0x6D2B79F5
+    x ^= (x << 13) & 0xFFFFFFFF
+    x ^= x >> 17
+    x ^= (x << 5) & 0xFFFFFFFF
+    return x & 0xFFFFFFFF
+
+
+def counter_garden(seed: int, actions: list[int]) -> dict[str, Any]:
+    """Each accepted +/-1/5/10 changes the counter and plants one reproducible cell.
+
+    Saturation is a no-op. Rewards depend on unique occupied cells (not counter
+    farming); the resulting bit mask and specimens can be reused as test inputs.
+    Undo is replay with the last action removed, reset is replay with no actions.
+    """
+    _play_int(seed, "seed", 0, 0xFFFFFFFF)
+    if not isinstance(actions, list) or len(actions) > 4096:
+        raise ValueError("actions must be a list of at most 4096 steps")
+    state, value, cells, history = seed, 0, {}, [0]
+    for delta in actions:
+        if type(delta) is not int or delta not in (-10, -5, -1, 1, 5, 10):
+            raise ValueError("a step is +/-1, +/-5 or +/-10")
+        next_value = max(-100, min(100, value + delta))
+        if next_value == value:
+            continue
+        value = next_value
+        history = ([value] + history)[:8]
+        state = play_random(state)
+        cell = state % 64
+        state = play_random(state)
+        cells[cell] = GARDEN_GLYPHS[state % len(GARDEN_GLYPHS)]
+    mask = sum(1 << cell for cell in cells)
+    return {"schema": PLAY_SCHEMA, "seed": seed, "value": value, "history": history,
+            "cells": [[cell, cells[cell]] for cell in sorted(cells)], "mask": f"{mask:016x}",
+            "rewards": list(GARDEN_REWARDS[:len(cells) // 8]), "actions": list(actions)}
+
+
+def irony_round(seed: int, round_index: int) -> dict[str, Any]:
+    """A shuffled six-card deck, three shuffled choices, no adjacent repeated cards across decks."""
+    _play_int(seed, "seed", 0, 0xFFFFFFFF)
+    _play_int(round_index, "round", 0, 4095)
+    state, previous, order = seed, None, []
+    for _ in range(round_index // len(IRONY_CARDS) + 1):
+        order = list(range(len(IRONY_CARDS)))
+        for i in range(len(order) - 1, 0, -1):
+            state = play_random(state)
+            j = state % (i + 1)
+            order[i], order[j] = order[j], order[i]
+        if previous == order[0]:
+            order[0], order[1] = order[1], order[0]
+        previous = order[-1]
+    index = order[round_index % len(order)]
+    prompt, answer, wrong1, wrong2, explanation = IRONY_CARDS[index]
+    state = play_random(state ^ round_index)
+    correct = state % 3
+    choices = [wrong1, wrong2]
+    choices.insert(correct, answer)
+    return {"card": index, "prompt": prompt, "choices": choices, "correct": correct, "explanation": explanation}
+
+
+def studio_audio_plan(text: str, bpm: int = 120, note_unit: int = 8) -> list[dict[str, Any]]:
+    """Bounded monophonic score in integer microseconds; no audio dependency."""
+    _play_int(bpm, "bpm", 30, 300)
+    if type(note_unit) is not int or note_unit not in (4, 8):
+        raise ValueError("note_unit must be 4 or 8")
+    if not isinstance(text, str) or len(text) > 8192:
+        raise ValueError("notes must be at most 8192 characters")
+    notes = parse_notes(text)
+    if not 1 <= len(notes) <= 256:
+        raise ValueError("provide 1..256 notes")
+    duration = (240_000_000 + bpm * note_unit // 2) // (bpm * note_unit)
+    result = []
+    for i, note in enumerate(notes):
+        match = re.fullmatch(r"([A-G])([♯♭]?)(-?[0-9])", note)
+        letter, accidental, octave = match.groups()
+        midi = (int(octave) + 1) * 12 + _NATURALS[letter] + {"": 0, "♯": 1, "♭": -1}[accidental]
+        if not 0 <= midi <= 127:
+            raise ValueError("notes must be within MIDI 0..127")
+        result.append({"note": note.replace("♯", "#").replace("♭", "b"), "midi": midi,
+                       "start_us": i * duration, "duration_us": duration})
+    return result
+
+
+def progression_notes(key: str, progression: str, *, minor: bool = False, octave: int = 4) -> list[str]:
+    """Arpeggiate the studio's computed chords into explicit octave-bearing notes."""
+    _play_int(octave, "octave", 0, 7)
+    if not isinstance(progression, str) or len(progression) > 1024:
+        raise ValueError("progression must be at most 1024 characters")
+    chords = convert_progression(key, progression, minor=minor)
+    if not 1 <= len(chords) <= 32:
+        raise ValueError("provide 1..32 chords")
+    notes = []
+    for chord in chords:
+        match = re.fullmatch(r"([A-G][♯♭]*)(.*)", chord)
+        if not match:
+            raise ValueError("unsupported chord in progression")
+        root, quality = match.groups()
+        intervals = {"m": (0, 3, 7), "dim7": (0, 3, 6, 9)}.get(quality, _CHORD_INTERVALS.get(quality or "triad"))
+        if intervals is None:
+            raise ValueError("unsupported chord in progression")
+        for interval in intervals:
+            midi = (octave + 1) * 12 + pitch_class(root) + interval
+            if midi > 127:
+                raise ValueError("MIDI range")
+            notes.append(SHARP_KEYS[midi % 12] + str(midi // 12 - 1))
+    return notes
+
+
+def timeline_events(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Explicit UTC instants, shown in each named IANA zone; stable UTC ordering.
+
+    Does not implement booking, notifications, recurring schedules, or persistence.
+    """
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    if not isinstance(entries, list) or len(entries) > 256:
+        raise ValueError("provide at most 256 events")
+    result, ids = [], set()
+    for row in entries:
+        if not isinstance(row, dict) or set(row) != {"id", "title", "zone", "utc_ms"}:
+            raise ValueError("an event has id, title, zone and utc_ms")
+        identifier = _world_id(row["id"], "event id", ids)
+        title = _world_text(row["title"], "title", 120)
+        zone = row["zone"]
+        if not isinstance(zone, str) or not re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*", zone):
+            raise ValueError("zone must be an IANA name")
+        millis = _play_int(row["utc_ms"], "utc_ms", 1577836800000, 2208988799999)
+        try:
+            local = dt.datetime.fromtimestamp(millis / 1000, dt.timezone.utc).astimezone(ZoneInfo(zone))
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("unknown zone or missing system tzdata") from exc
+        result.append({**row, "id": identifier, "title": title, "local": local.isoformat(timespec="milliseconds")})
+    return sorted(result, key=lambda row: row["utc_ms"])
+
+
+def timeline_wall_to_utc(wall: str, zone: str, *, fold: int | None = None) -> int:
+    """Convert a local appointment to UTC. Reject missing times; require fold for ambiguous times."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    if not isinstance(wall, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", wall):
+        raise ValueError("local time must be YYYY-MM-DDTHH:MM")
+    if fold is not None and (type(fold) is not int or fold not in (0, 1)):
+        raise ValueError("fold must be 0 or 1")
+    # Reuse the public event validator's zone policy and supported window.
+    timeline_events([{"id": "check", "title": "check", "zone": zone, "utc_ms": 1577836800000}])
+    local, tz = dt.datetime.fromisoformat(wall), ZoneInfo(zone)
+    candidates = []
+    for f in (0, 1):
+        instant = local.replace(tzinfo=tz, fold=f).astimezone(dt.timezone.utc)
+        if instant.astimezone(tz).replace(tzinfo=None) == local:
+            candidates.append(int(instant.timestamp()) * 1000)
+    candidates = sorted(set(candidates))
+    if not candidates:
+        raise ValueError("this local time does not exist in that zone")
+    if len(candidates) == 2 and fold is None:
+        raise ValueError("this local time occurs twice; choose fold=0 or fold=1")
+    millis = candidates[fold or 0] if len(candidates) == 2 else candidates[0]
+    _play_int(millis, "utc_ms", 1577836800000, 2208988799999)
+    return millis
+
+
+def play_document() -> str:
+    body = ('<main class="ui-page" data-play><h1>Play studio</h1>'
+            '<p>押して庭を育て、スタンプを集める。結果はシードと操作から再現できます。保存・送信はしません。</p>'
+            '<label>Seed <input class="ui-input" data-seed type="number" min="0" max="4294967295" value="42"></label>'
+            '<section class="ui-panel"><h2>Counter garden</h2><p data-value role="status"></p>'
+            '<div class="ui-studio-row"><label>Step <select data-step><option>1</option><option>5</option><option>10</option></select></label>'
+            '<button class="ui-button" data-delta="1">+ step</button><button class="ui-button" data-delta="-1">− step</button>'
+            '<button class="ui-button" data-undo>Undo</button><button class="ui-button" data-reset>Reset</button></div>'
+            '<div data-garden style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:4px" aria-label="Generated garden"></div>'
+            '<p data-rewards></p><p data-reward-links class="ui-studio-row"></p><details><summary>Replay and generated data</summary><button class="ui-button" data-generated-export>Export generated test input</button>'
+            '<pre class="ui-output" data-generated style="white-space:pre-wrap;overflow-wrap:anywhere"></pre><label>Replay JSON<textarea class="ui-input" data-replay rows="4" style="width:100%;box-sizing:border-box"></textarea></label>'
+            '<button class="ui-button" data-export>Export to text</button> <button class="ui-button" data-import>Replay from text</button>'
+            '<p data-play-status role="status"></p></details></section>'
+            '<section class="ui-panel"><h2>Irony quest</h2><p>矛盾している点を選ぶと1点。6問で一周します。</p><p data-irony></p>'
+            '<div data-choices class="ui-studio-row"></div><p data-score></p><p data-explanation role="status"></p>'
+            '<button class="ui-button" data-next>Next card</button></section></main>')
+    return render_document(trusted_html=body + module_script(_JS["play.js"]), title="Play studio", css=bundled_css())
+
+
+def timeline_document(entries: list[dict[str, Any]] | None = None) -> str:
+    rows = timeline_events([] if entries is None else entries)
+    data = json.dumps([{k: row[k] for k in ("id", "title", "zone", "utc_ms")} for row in rows], ensure_ascii=False).replace("<", "\\u003c")
+    body = ('<main class="ui-page" data-timeline><h1>Zoned timeline</h1><p>UTCの時点で並べ、各予定のタイムゾーンを明示します。予約送信・通知・保存は行いません。</p>'
+            '<form data-add-event class="ui-panel" style="display:grid;gap:12px"><label style="display:grid;gap:4px">Title <input class="ui-input" name="title" required maxlength="120"></label> '
+            '<label style="display:grid;gap:4px">Local date and time <input class="ui-input" name="wall" type="datetime-local" required min="2020-01-01T00:00" max="2039-12-31T23:59"></label> '
+            '<label style="display:grid;gap:4px">IANA zone <input class="ui-input" name="zone" required value="Asia/Tokyo"></label> '
+            '<label style="display:grid;gap:4px">Repeated local time <select name="fold"><option value="">Ask if ambiguous</option><option value="0">Earlier</option><option value="1">Later</option></select></label> '
+            '<button class="ui-button" type="submit">Add event</button></form><details><summary>Import / export events</summary>'
+            '<label style="display:grid;gap:4px">Events JSON<textarea class="ui-input" data-events rows="8" style="width:100%;box-sizing:border-box">' + escape(data) + '</textarea></label>'
+            '<button class="ui-button" data-render-events>Show timeline</button></details><p role="status" data-events-status></p><ol data-event-list></ol></main>')
+    return render_document(trusted_html=body + module_script(_JS["timeline.js"]), title="Zoned timeline", css=bundled_css())
+
+
+_JS["play.js"] = r"""
+export const SCHEMA="web-ui-play/1",GLYPHS=["🌱","🌷","🌳","🍄","🌻","🪨"],REWARDS=["⭐","🎵","🎨","🏆","🌈","💎","🚀","👑"];
+export function integer(v,label,lo,hi){if(!Number.isInteger(v)||v<lo||v>hi)throw new Error(label+" out of range");return v}
+export function randomWord(s){let x=s||0x6d2b79f5;x^=x<<13;x^=x>>>17;x^=x<<5;return x>>>0}
+export function counterGarden(seed,actions){integer(seed,"seed",0,0xffffffff);if(!Array.isArray(actions)||actions.length>4096)throw new Error("actions limit");let state=seed,value=0,history=[0];const cells=new Map();for(const d of actions){if(![-10,-5,-1,1,5,10].includes(d))throw new Error("invalid step");const n=Math.max(-100,Math.min(100,value+d));if(n===value)continue;value=n;history=[value,...history].slice(0,8);state=randomWord(state);const cell=state%64;state=randomWord(state);cells.set(cell,GLYPHS[state%GLYPHS.length])}let mask=0n;for(const c of cells.keys())mask|=1n<<BigInt(c);return{schema:SCHEMA,seed,value,history,cells:[...cells].sort((a,b)=>a[0]-b[0]),mask:mask.toString(16).padStart(16,"0"),rewards:REWARDS.slice(0,Math.floor(cells.size/8)),actions:[...actions]}}
+export function ironyRound(seed,index){integer(seed,"seed",0,0xffffffff);integer(index,"round",0,4095);let state=seed,previous=null,order=[];for(let deck=0;deck<=Math.floor(index/CARDS.length);deck++){order=CARDS.map((_,i)=>i);for(let i=order.length-1;i>0;i--){state=randomWord(state);const j=state%(i+1);[order[i],order[j]]=[order[j],order[i]]}if(previous===order[0])[order[0],order[1]]=[order[1],order[0]];previous=order.at(-1)}const card=order[index%order.length],[prompt,answer,w1,w2,explanation]=CARDS[card];state=randomWord(state^index);const correct=state%3,choices=[w1,w2];choices.splice(correct,0,answer);return{card,prompt,choices,correct,explanation}}
+export function validateReplay(raw){if(!raw||raw.schema!==SCHEMA||Object.keys(raw).some(k=>!["schema","seed","actions","answers"].includes(k)))throw new Error("invalid replay schema");counterGarden(raw.seed,raw.actions);if(!Array.isArray(raw.answers)||raw.answers.length>4095||raw.answers.some(a=>!Number.isInteger(a)||a<0||a>2))throw new Error("invalid answers");return{schema:SCHEMA,seed:raw.seed,actions:[...raw.actions],answers:[...raw.answers]}}
+export function bindPlay(root=document){for(const box of root.querySelectorAll("[data-play]")){const $=s=>box.querySelector(s);let seed=42,actions=[],answers=[],answered=false;const status=t=>$("[data-play-status]").textContent=t;
+const quest=()=>{const index=answers.length-(answered?1:0),card=ironyRound(seed,index);$("[data-irony]").textContent=card.prompt;$("[data-choices]").replaceChildren(...card.choices.map((c,i)=>{const b=document.createElement("button");b.className="ui-button";b.textContent=c;b.disabled=answered;b.onclick=()=>{if(answered)return;answers.push(i);answered=true;$("[data-explanation]").textContent=(i===card.correct?"正解。":"答え: "+card.choices[card.correct]+"。")+card.explanation;$("[data-choices]").querySelectorAll("button").forEach(b=>b.disabled=true);score();$("[data-next]").disabled=answers.length>=4095};return b}));$("[data-next]").disabled=!answered||answers.length>=4095;score()};
+const score=()=>{$("[data-score]").textContent=answers.reduce((n,a,i)=>n+Number(a===ironyRound(seed,i).correct),0)+" / "+answers.length};
+const render=()=>{const r=counterGarden(seed,actions),cells=new Map(r.cells);$("[data-value]").textContent="Count: "+r.value+" · unique cells: "+r.cells.length;$("[data-garden]").replaceChildren(...Array.from({length:64},(_,i)=>{const c=document.createElement("span");c.textContent=cells.get(i)||"·";c.setAttribute("aria-label","Cell "+i+": "+c.textContent);c.style.cssText="text-align:center;font-size:24px;min-height:32px";return c}));$("[data-rewards]").textContent="Rewards: "+(r.rewards.join(" ")||"8セルで最初のスタンプ");$("[data-reward-links]").replaceChildren(...r.rewards.map(glyph=>{const a=document.createElement("a");a.href="./photo-studio.html#stamp="+encodeURIComponent(glyph);a.textContent="Use "+glyph+" in photo studio ";return a}));$("[data-generated]").textContent="";$("[data-undo]").disabled=!actions.length;quest()};
+$("[data-seed]").onchange=()=>{try{seed=integer(Number($("[data-seed]").value),"seed",0,0xffffffff);actions=[];answers=[];answered=false;$("[data-explanation]").textContent="";render();status("")}catch(e){status(e.message)}};
+for(const b of box.querySelectorAll("[data-delta]"))b.onclick=()=>{try{if(actions.length>=4096)throw new Error("4096 actions maximum");actions.push(Number(b.dataset.delta)*Number($("[data-step]").value));render()}catch(e){status(e.message)}};
+$("[data-undo]").onclick=()=>{actions.pop();render()};$("[data-reset]").onclick=()=>{actions=[];render()};
+$("[data-next]").onclick=()=>{if(!answered||answers.length>=4095)return;answered=false;$("[data-explanation]").textContent="";quest()};
+$("[data-generated-export]").onclick=()=>{$("[data-generated]").textContent=JSON.stringify({schema:"web-ui-generated-input/1",replay:{schema:SCHEMA,seed,actions,answers},specimen:counterGarden(seed,actions)},null,2)};
+$("[data-export]").onclick=()=>{$("[data-replay]").value=JSON.stringify({schema:SCHEMA,seed,actions,answers});status("Replay ready")};
+$("[data-import]").onclick=()=>{try{const text=$("[data-replay]").value;if(text.length>100000)throw new Error("replay too large");const r=validateReplay(JSON.parse(text));seed=r.seed;actions=r.actions;answers=r.answers;answered=false;$("[data-seed]").value=seed;$("[data-explanation]").textContent="";render();status("Replayed")}catch(e){status("Invalid replay: "+e.message)}};render()}}
+if(typeof document!=="undefined")bindPlay();
+"""
+_JS["play.js"] = "const CARDS=" + json.dumps(IRONY_CARDS, ensure_ascii=False) + ";\n" + _JS["play.js"]
+
+_JS["timeline.js"] = r"""
+export function timelineEvents(entries){if(!Array.isArray(entries)||entries.length>256)throw new Error("provide at most 256 events");const ids=new Set();return entries.map(e=>{if(!e||Object.keys(e).sort().join(",")!=="id,title,utc_ms,zone"||typeof e.id!=="string"||!/^[a-z0-9][a-z0-9-]{0,31}$/.test(e.id)||ids.has(e.id))throw new Error("invalid event id or fields");ids.add(e.id);if(typeof e.title!=="string"||!e.title.trim()||[...e.title].length>120||typeof e.zone!=="string"||!/^[-A-Za-z0-9_+]+(?:\/[-A-Za-z0-9_+]+)*$/.test(e.zone)||!Number.isInteger(e.utc_ms)||e.utc_ms<1577836800000||e.utc_ms>2208988799999)throw new Error("invalid event");new Intl.DateTimeFormat("en",{timeZone:e.zone});return{...e}}).sort((a,b)=>a.utc_ms-b.utc_ms)}
+export function wallToUtc(wall,zone,fold=null){if(typeof wall!=="string"||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(wall)||![null,0,1].includes(fold))throw new Error("invalid local time or fold");const [y,m,d,h,min]=wall.match(/\d+/g).map(Number),nominal=Date.UTC(y,m-1,d,h,min);if(new Date(nominal).toISOString().slice(0,16)!==wall)throw new Error("invalid date");const fmt=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}),parts=t=>Object.fromEntries(fmt.formatToParts(t).filter(p=>p.type!=="literal").map(p=>[p.type,Number(p.value)])),local=t=>{const p=parts(t);return Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)},offsets=new Set();for(let h=-36;h<=36;h+=6){const t=nominal+h*3600000;offsets.add(local(t)-t)}const candidates=[...offsets].map(o=>nominal-o).filter(t=>local(t)===nominal).sort((a,b)=>a-b);if(!candidates.length)throw new Error("this local time does not exist in that zone");if(candidates.length>1&&fold===null)throw new Error("this local time occurs twice; choose Earlier or Later");const t=candidates[candidates.length>1?(fold||0):0];timelineEvents([{id:"check",title:"check",zone,utc_ms:t}]);return t}
+export function bindTimeline(root=document){for(const box of root.querySelectorAll("[data-timeline]")){const render=()=>{try{const text=box.querySelector("[data-events]").value;if(text.length>100000)throw new Error("events too large");const rows=timelineEvents(JSON.parse(text));box.querySelector("[data-event-list]").replaceChildren(...rows.map(e=>{const li=document.createElement("li"),t=document.createElement("time");t.dateTime=new Date(e.utc_ms).toISOString();t.textContent=new Intl.DateTimeFormat("ja-JP",{timeZone:e.zone,dateStyle:"medium",timeStyle:"long",hour12:false}).format(e.utc_ms);li.append(document.createTextNode(e.title+" · "+e.zone+" · "),t);return li}));box.querySelector("[data-events-status]").textContent=rows.length+" events in UTC order"}catch(e){box.querySelector("[data-events-status]").textContent="Invalid events: "+e.message}};box.querySelector("[data-render-events]").onclick=render;const form=box.querySelector("[data-add-event]");form.onsubmit=e=>{e.preventDefault();try{const entries=JSON.parse(box.querySelector("[data-events]").value),wall=form.elements.wall.value,zone=form.elements.zone.value,fold=form.elements.fold.value,utc_ms=wallToUtc(wall,zone,fold===""?null:Number(fold));let n=1;while(entries.some(e=>e.id==="event-"+n))n++;const row={id:"event-"+n,title:form.elements.title.value,zone,utc_ms};timelineEvents([...entries,row]);box.querySelector("[data-events]").value=JSON.stringify([...entries,row],null,2);render()}catch(e){box.querySelector("[data-events-status]").textContent=e.message}};render()}}
+if(typeof document!=="undefined")bindTimeline();
+"""
+
+_JS["studio-audio.js"] = r"""
+export function audioPlan(text,bpm=120,unit=8){if(typeof text!=="string"||text.length>8192||!Number.isInteger(bpm)||bpm<30||bpm>300||![4,8].includes(unit))throw new Error("invalid notes or tempo");const tokens=text.split(/[ \t\r\n\f\v,]+/).filter(Boolean);if(!tokens.length||tokens.length>256)throw new Error("provide 1..256 notes");const duration=Math.floor((240000000+Math.floor(bpm*unit/2))/(bpm*unit)),natural={C:0,D:2,E:4,F:5,G:7,A:9,B:11};return tokens.map((s,i)=>{const m=/^([A-Ga-g])([#b♯♭]?)(-?[0-9])$/.exec(s);if(!m)throw new Error("invalid note");const letter=m[1].toUpperCase(),a=m[2],midi=(Number(m[3])+1)*12+natural[letter]+(["#","♯"].includes(a)?1:["b","♭"].includes(a)?-1:0);if(midi<0||midi>127)throw new Error("MIDI range");return{note:letter+a.replace("♯","#").replace("♭","b")+m[3],midi,start_us:i*duration,duration_us:duration}})}
+export function progressionNotes(key,progression,minor=false,octave=4){if(typeof progression!=="string"||progression.length>1024||!Number.isInteger(octave)||octave<0||octave>7)throw new Error("invalid progression");const music=globalThis.webUiStudio,chords=music.convertProgression(key,progression,minor),intervals={"triad":[0,4,7],m:[0,3,7],"6":[0,4,7,9],m6:[0,3,7,9],"7":[0,4,7,10],maj7:[0,4,7,11],m7:[0,3,7,10],"m7♭5":[0,3,6,10],sus2:[0,2,7],sus4:[0,5,7],add9:[0,4,7,14],add11:[0,4,7,17],dim:[0,3,6],dim7:[0,3,6,9],aug:[0,4,8]};if(!chords.length||chords.length>32)throw new Error("provide 1..32 chords");return chords.flatMap(c=>{const m=/^([A-G][♯♭]*)(.*)$/.exec(c);if(!m||!Object.hasOwn(intervals,m[2]||"triad"))throw new Error("unsupported chord");return intervals[m[2]||"triad"].map(i=>{const midi=(octave+1)*12+music.pitchClass(m[1])+i;if(midi>127)throw new Error("MIDI range");return music.noteForPitchClass?music.noteForPitchClass(midi,true)+String(Math.floor(midi/12)-1):["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"][midi%12]+String(Math.floor(midi/12)-1)})})}
+export function createAudioPlayer(load){let synth=null,token=0;const stop=()=>{token++;if(synth){synth.dispose();synth=null}};return{stop,async play(plan){stop();const mine=token;const tone=await load();if(mine!==token)return;await tone.start();if(mine!==token)return;synth=new tone.Synth({volume:-18,oscillator:{type:"sine"}}).toDestination();const now=tone.now()+0.05;for(const e of plan)synth.triggerAttackRelease(e.note,e.duration_us/1e6*0.85,now+e.start_us/1e6);return plan.length}}}
+export function bindAudio(root=document){for(const box of root.querySelectorAll("[data-ui-studio]")){const row=document.createElement("div");row.className="ui-studio-row";const play=document.createElement("button"),stop=document.createElement("button"),status=document.createElement("p");play.className=stop.className="ui-button";play.textContent="Play notes";stop.textContent="Stop audio";play.type=stop.type="button";play.dataset.audioPlay="";stop.dataset.audioStop="";status.setAttribute("role","status");status.dataset.audioStatus="";const player=createAudioPlayer(()=>import(new URL("../vendor/tone-studio.min.js",document.baseURI).href));play.onclick=async()=>{play.disabled=true;try{const plan=audioPlan(box.querySelector("[data-notes]").value,Number(box.querySelector("[data-bpm]").value),Number(box.querySelector("[data-note-unit]").value));const count=await player.play(plan);status.textContent=count?"Scheduled "+count+" notes":"Stopped"}catch(e){player.stop();status.textContent="Audio is unavailable on this page."}finally{play.disabled=false}};stop.onclick=()=>{player.stop();status.textContent="Stopped"};window.addEventListener("pagehide",()=>player.stop());const derive=document.createElement("button");derive.className="ui-button";derive.type="button";derive.textContent="Use progression as notes";derive.dataset.progressionNotes="";derive.onclick=()=>{try{box.querySelector("[data-notes]").value=progressionNotes(box.querySelector("[data-key]").value,box.querySelector("[data-prog]").value,box.querySelector('input[name="studio-mode"]:checked').value==="Minor").join(" ");box.querySelector("[data-notes]").dispatchEvent(new Event("input"));status.textContent="Progression converted to notes"}catch(e){status.textContent=e.message}};row.append(derive,play,stop);box.append(row,status)}}
+if(typeof document!=="undefined")bindAudio();
+"""
+
 
 
 def _example_cards() -> str:
@@ -5776,6 +6031,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article>'
             '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article>'
             '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article>'
+            '<article class="ui-card"><h2>Play studio</h2><p><a href="./play-studio.html">Counter garden and Irony quest</a>.</p></article>'
+            '<article class="ui-card"><h2>Timeline</h2><p><a href="./timeline.html">Dated events in UTC order</a>.</p></article>'
             '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article>'
             '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article></section>')
 
@@ -5810,6 +6067,8 @@ def example_pages() -> dict[str, str]:
         "examples/coordinates.html": coordinates_document(),
         "examples/photo-studio.html": photo_document(),
         "examples/composition-studio.html": studio_document(),
+        "examples/play-studio.html": play_document(),
+        "examples/timeline.html": timeline_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
