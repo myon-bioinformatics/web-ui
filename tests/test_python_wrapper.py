@@ -4612,6 +4612,27 @@ class ImageStudioTests(unittest.TestCase):
         self.assertEqual(web_ui.studio_words("Hello, world! can't stop 3.14"), ["Hello", ",", " ", "world", "!", " ", "can't", " ", "stop", " ", "3.14"])
         self.assertEqual(web_ui.studio_graphemes("é🇯🇵👨‍👩‍👧x"), ["é", "🇯🇵", "👨‍👩‍👧", "x"])
 
+    def test_a_line_may_be_exactly_as_wide_as_the_box(self):
+        measure = lambda text: len(text) * 10
+        layer = {**web_ui.studio_text_layer("abcd efgh ij", "t", 0, 0, wrap=True), "fontSize": 10}
+        for width, want in ((40, ["abcd", "efgh", "ij"]), (39, ["abc", "d", "efg", "h", "ij"]), (50, ["abcd", "efgh", "ij"]), (90, ["abcd efgh", "ij"]), (89, ["abcd", "efgh ij"]), (110, ["abcd efgh", "ij"]),
+                           (120, ["abcd efgh ij"]), (119, ["abcd efgh", "ij"])):
+            self.assertEqual(web_ui.studio_text_layout({**layer, "w": width}, measure), [want], width)
+        # a word longer than the box is cut between characters, and a character exactly filling the box stays
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "abcdefghij", "w": 30}, measure), [["abc", "def", "ghi", "j"]])
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "abcdefghij", "w": 25}, measure), [["ab", "cd", "ef", "gh", "ij"]])
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "ab", "w": 5}, measure), [["a", "b"]], "a glyph wider than the box is never squeezed")
+
+    def test_the_workspace_writer_stops_at_exactly_32_mib(self):
+        limit = web_ui.STUDIO_WORKSPACE_MAX_BYTES
+        scene = self.blank(source="")
+        empty = len(web_ui.studio_workspace_text(web_ui.StudioHistory(scene)).encode("utf-8"))
+        fits = web_ui.StudioHistory(self.blank(source="x" * (limit - empty)))
+        self.assertEqual(len(web_ui.studio_workspace_text(fits).encode("utf-8")), limit)
+        over = web_ui.StudioHistory(self.blank(source="x" * (limit - empty + 1)))
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_text(over)
+
     def test_clock_hands_use_the_fdlibm_sin_and_cos_of_node(self):
         # Node 22's Math.sin and Math.cos; glibc gives -0.5984721441039565 for sin(-2.5), one bit away, and other engines and versions differ in the last bit too
         for x, sin, cos in ((0.5, 0.479425538604203, 0.8775825618903728), (1, 0.8414709848078965, 0.5403023058681398), (-2.5, -0.5984721441039564, -0.8011436155469337),

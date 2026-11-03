@@ -12150,7 +12150,7 @@ function mount(root){
  const report=e=>say(e.message||String(e),true);
  function change(fn){const next=copy(scene);fn(next);validate(next);history.commit(next);scene=next;dirty=true;if(!current())selected=null;render().catch(report)}
  function add(layer){if(scene.layers.length>=100)throw new StudioError("レイヤーは100件までです");selected=layer.id;change(doc=>doc.layers.push(layer));say(`Added ${layer.name||layer.kind}`)}
- function setTool(value){tool=value;for(const r of radios)r.checked=r.value===value;root.dataset.tool=value;el.board.toggleAttribute("data-capture",tool!=="select"||selected!==null)}
+ function setTool(value){tool=value;for(const r of radios)r.checked=r.value===value;root.dataset.tool=value}
  const options=()=>({fill:el.fill.value,stroke:el.stroke.value,outline:el.outline.checked,text:el.text.value,font:el.fontfamily.value,arrowStyle:el.arrowstyle.value,arrowPlacement:el.arrowplacement.value,clockTime:el.clock.value||"10:10"});
  function put(x,y){
   if(tool==="stamp"&&template){const l=copy(template);l.id=uid();l.x=x-l.w/2;l.y=y-l.h/2;add(l)}

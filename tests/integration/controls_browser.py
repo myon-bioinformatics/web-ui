@@ -4340,6 +4340,7 @@ STUDIO_CALL = """jobs => { const S = webUiImageStudio; S.useCanvasMetrics(false)
   case 'place': return S.place(arg[0], arg[1], arg[2], arg[3], arg[4]); case 'textLayer': return S.textLayer(...arg); case 'matrixLayer': return S.matrixLayer(...arg); case 'imageLayer': return S.imageLayer(...arg);
   case 'demo': return S.demoScene(); case 'stampDemo': return S.stampDemoScene(); case 'heatmapScene': return S.heatmapScene(arg); case 'blank': return S.blank();
   case 'sincos': return [S.sin(arg), S.cos(arg)];
+  case 'textLayoutM': return S.textLayout(arg[0], t => Array.from(t).length * arg[1]);
   case 'historyRun': { const h = new S.History(arg[0]), seen = []; for (const [op, scene] of arg.slice(1)) { if (op === 'commit') h.commit(scene); else if (op === 'undo') h.undo(); else if (op === 'redo') h.redo(); else if (op === 'trim') { h.items = h.items.slice(-1); h.index = 0 } seen.push([h.index, h.items.length, JSON.stringify(h.current)]) } return seen }
   case 'workspace': { const h = new S.History(arg[0]); for (const s of arg.slice(1)) h.commit(s); return S.workspaceText(h) }
   default: throw new Error('unknown ' + fn) } })() } } catch (e) { return {error: e.message} } }) }"""
@@ -4435,13 +4436,13 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
         self.assertEqual(self.external, [])
 
-    def page(self, size=None):
+    def page(self, size=None, accept=True):
         page = self.context.new_page()
         if size:
             page.set_viewport_size(size)
         page.on('pageerror', lambda error: self.errors.append(str(error)))
         page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
-        page.on('dialog', lambda dialog: dialog.accept())
+        page.on('dialog', lambda dialog: dialog.accept() if accept else dialog.dismiss())
         page.goto(self.origin + '/image-studio.html')
         page.wait_for_selector('[data-ui-imagestudio][data-ready]')
         return page
@@ -4575,6 +4576,12 @@ class ImageStudioBrowserTests(unittest.TestCase):
             expect.append(w.studio_words(text))
             jobs.append(['graphemes', text])
             expect.append(w.studio_graphemes(text))
+        for _ in range(300):
+            layer = w.studio_text_layer(r.choice(STUDIO_TEXTS + ['abcd efgh ij', 'abcdefghij', 'ab cd ef gh']), 't', 0, 0, wrap=True)
+            per = r.choice([1, 5, 10])
+            layer.update(w=per * r.choice([1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 20, 40]) + r.choice([0, 0, -1, 1]))
+            jobs.append(['textLayoutM', [layer, per]])
+            expect.append(w.studio_text_layout(layer, lambda text, per=per: len(text) * per))
         got = self.call(page, jobs)
         for job, want, out in zip(jobs, expect, got):
             self.assertEqual(out.get('ok'), want, job)
@@ -4592,6 +4599,11 @@ class ImageStudioBrowserTests(unittest.TestCase):
             camel = {'arrowStyle': opts['arrow_style'], 'arrowPlacement': opts['arrow_placement'], 'clockTime': opts['clock_time'], **{k: v for k, v in opts.items() if k not in ('arrow_style', 'arrow_placement', 'clock_time')}}
             jobs.append(['place', [tool, f'id{_}', x, y, camel]])
             expect.append(w.studio_place(tool, f'id{_}', x, y, **opts))
+        for tool in ('rect', 'ellipse', 'triangle', 'text', 'stamp', 'arrow', 'clock'):
+            jobs.append(['place', [tool, 'd', 3, 4, {}]])
+            expect.append(w.studio_place(tool, 'd', 3, 4))
+            jobs.append(['place', [tool, 'p', 3, 4, {'fill': '#112233', 'text': 'x', 'outline': True}]])
+            expect.append(w.studio_place(tool, 'p', 3, 4, fill='#112233', text='x', outline=True))
         jobs.append(['place', ['star', 'x', 0, 0, {}]])
         jobs += [['demo', None], ['stampDemo', None], ['blank', None], ['heatmapScene', [[1, None, 3]]], ['matrixLayer', [[[1, 2], [3, 4]], 'm', 640, 480]], ['matrixLayer', [{'data': [{'type': 'heatmap', 'z': [[0, 1]]}]}, 'm']],
                  ['imageLayer', ['data:image/png;base64,AAAA', 40, 30, 'i', 640]], ['imageLayer', ['data:image/png;base64,AAAA', 1, 3, 'i']], ['textLayer', ['hi\nthere', 't', 5, 6]]]
@@ -4718,12 +4730,17 @@ class ImageStudioBrowserTests(unittest.TestCase):
             const scene = {...blank, layers: [S.imageLayer('data:image/png;base64,' + 'A'.repeat(8000000 - 22), 1, 1, 'img', 64)]}; scene.layers[0].w = 1; scene.layers[0].h = 1;
             const h5 = new S.History(scene); h5.items = Array(5).fill(scene); h5.index = 2;
             out.repeated = [tried(() => S.workspaceText(h5)).error, h5.items.length, tried(() => S.workspaceText(new S.History(h5.current))).ok !== undefined];
+            out.metrics = [S.useCanvasMetrics(true), S.useCanvasMetrics(false)];
+            const emptyLength = new TextEncoder().encode(S.workspaceText(new S.History({...blank, source: ''}))).length;
+            out.writer = [limit - emptyLength, limit - emptyLength + 1].map(n => { const r = tried(() => S.workspaceText(new S.History({...blank, source: 'x'.repeat(n)}))); return r.ok ? new TextEncoder().encode(r.ok).length : r.error });
             return out }""")
         self.assertEqual(heavy['states'], [1, 40, '作業履歴の形式が不正です'])
         self.assertEqual(heavy['read'], ['作業履歴の形式が不正です', 1, 40, '作業履歴の形式が不正です'])
         self.assertEqual(heavy['bytes'], ['ok', '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
         self.assertEqual(heavy['utf8'], [True, True, '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
         self.assertEqual(heavy['repeated'], ['作業履歴は32MiB以下にしてください。履歴を整理して再保存できます', 5, True])
+        self.assertEqual(heavy['metrics'], [True, False])
+        self.assertEqual(heavy['writer'], [32 * 1024 * 1024, '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
         self.assertEqual(heavy['payload'], [32 * 1024 * 1024, '32MiB以下のPNGが必要です', 8, '32MiB以下のPNGが必要です'])
 
     def test_random_histories_step_the_same_in_python_and_the_page(self):
@@ -4882,6 +4899,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         scale = self.at(page, 1, 0)[0] - self.at(page, 0, 0)[0]
         self.assertAlmostEqual(bigger['w'] - moved['w'], 80 / scale, delta=2)
         self.assertAlmostEqual(bigger['h'] - moved['h'], 48 / scale, delta=2)
+        self.assertEqual((bigger['x'], bigger['y']), (moved['x'], moved['y']), 'an unrotated layer grows from its top left corner')
         self.paint(page, lambda: page.click('[data-is="undo"]'))
         self.assertEqual(self.scene(page)['layers'][0]['w'], moved['w'])
         self.paint(page, lambda: page.click('[data-is="redo"]'))
@@ -4889,6 +4907,53 @@ class ImageStudioBrowserTests(unittest.TestCase):
         # pressing empty canvas deselects
         self.paint(page, lambda: page.mouse.click(*self.at(page, 1200, 40)))
         self.assertEqual(self.data(page, 'selected'), '')
+
+    def test_resizing_a_rotated_layer_keeps_its_top_left_corner_and_a_text_layer_scales_its_font(self):
+        import math
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 300, 200)
+        self.tool(page, 'select')
+        for angle in (45, 90, -30):
+            self.paint(page, lambda: page.fill('[data-is="rotation"]', str(angle)) or page.dispatch_event('[data-is="rotation"]', 'change'))
+            layer = self.scene(page)['layers'][0]
+            corner = lambda l: (l['x'] + l['w'] / 2 + math.cos(math.radians(l['rotation'])) * (-l['w'] / 2) - math.sin(math.radians(l['rotation'])) * (-l['h'] / 2),
+                                l['y'] + l['h'] / 2 + math.sin(math.radians(l['rotation'])) * (-l['w'] / 2) + math.cos(math.radians(l['rotation'])) * (-l['h'] / 2))
+            handle = (layer['w'], layer['h'])
+            hx = layer['x'] + layer['w'] / 2 + math.cos(math.radians(angle)) * (handle[0] / 2) - math.sin(math.radians(angle)) * (handle[1] / 2)
+            hy = layer['y'] + layer['h'] / 2 + math.sin(math.radians(angle)) * (handle[0] / 2) + math.cos(math.radians(angle)) * (handle[1] / 2)
+            sx, sy = self.at(page, hx, hy)
+            scale = self.at(page, 1, 0)[0] - self.at(page, 0, 0)[0]
+            page.mouse.move(sx, sy)
+            page.mouse.down()
+            page.mouse.move(sx + 20, sy + 12)
+            page.mouse.move(sx + 40, sy + 24)
+            page.mouse.up()
+            page.wait_for_function('l => webUiImageStudio.app.scene.layers[0].w !== l', arg=layer['w'])
+            after = self.scene(page)['layers'][0]
+            self.assertNotEqual((after['w'], after['h']), (layer['w'], layer['h']), angle)
+            before_corner, after_corner = corner(layer), corner(after)
+            self.assertAlmostEqual(before_corner[0], after_corner[0], delta=0.5, msg=angle)
+            self.assertAlmostEqual(before_corner[1], after_corner[1], delta=0.5, msg=angle)
+        self.blank(page)
+        self.tool(page, 'text')
+        page.fill('[data-is="text"]', 'Resize me')
+        self.press(page, 200, 200)
+        self.tool(page, 'select')
+        text = self.scene(page)['layers'][0]
+        hx, hy = self.at(page, text['x'] + text['w'], text['y'] + text['h'])
+        page.mouse.move(hx, hy)
+        page.mouse.down()
+        page.mouse.move(hx - 60, hy - 30)
+        page.mouse.move(hx - 120, hy - 60)
+        page.mouse.up()
+        page.wait_for_function('s => webUiImageStudio.app.scene.layers[0].fontSize !== s', arg=text['fontSize'])
+        grown = self.scene(page)['layers'][0]
+        ratio = min(grown['w'] / text['w'], grown['h'] / text['h'])
+        self.assertAlmostEqual(grown['fontSize'], max(4, min(512, text['fontSize'] * ratio)), places=6)
+        self.assertLess(grown['fontSize'], text['fontSize'])
+        self.assertGreaterEqual(grown['fontSize'], 4)
 
     def test_keyboard_nudges_deletes_and_undoes(self):
         page = self.page()
@@ -4926,6 +4991,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertEqual(names(), ids[::-1], 'the top layer is listed first')
         self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[0]}"]'))
         self.assertEqual(self.data(page, 'selected'), ids[0])
+        self.assertEqual([b.get_attribute('aria-pressed') for b in page.query_selector_all('[data-is="layers"] button')], ['false', 'false', 'true'], 'the selected layer is the pressed button')
         self.paint(page, lambda: page.click('[data-is="front"]'))
         self.assertEqual([l['id'] for l in self.scene(page)['layers']], [ids[1], ids[0], ids[2]])
         self.paint(page, lambda: page.click('[data-is="back"]'))
@@ -4995,6 +5061,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         heat = self.scene(page)['layers'][-1]
         self.assertEqual((heat['kind'], heat['z'], heat['levels'], heat['labels']), ('heatmap', [[0, 1, 2, 3], [3, 2, 1, 0], [1, None, 2, 3]], 0, True))
         self.assertEqual(page.inner_text('[data-is="levelsout"]'), 'continuous')
+        self.assertEqual(page.input_value('[data-is="levels"]'), '256', 'a continuous heatmap shows the slider at its far end')
         page.evaluate('() => { const l = document.querySelector("[data-is=levels]"); l.value = 4; l.dispatchEvent(new Event("change")) }')
         page.wait_for_function('() => webUiImageStudio.app.scene.layers.at(-1).levels === 4')
         self.paint(page, lambda: page.uncheck('[data-is="labels"]'))
@@ -5055,6 +5122,8 @@ class ImageStudioBrowserTests(unittest.TestCase):
             self.assertEqual(got, bytes(w.studio_mosaic_rgba(rgba, 16, 12, cell, levels)), (cell, levels))
             self.assertEqual(w.studio_png_decode(base64.b64decode(source.split(',', 1)[1]))[2], got, 'the Python decoder reads what the browser wrote')
         self.assertEqual(self.scene(page)['layers'][0]['src'], layer['src'], 'the original is never rewritten')
+        plain = page.evaluate('async src => { const s = webUiImageStudio.app.scene; s.layers[0].cell = 1; s.layers[0].levels = 256; return (await webUiImageStudio.app.imageSource(s))(s.layers[0]) }', layer['src'])
+        self.assertEqual(plain, layer['src'], 'a layer that keeps every pixel passes its own image through')
         self.paint(page, lambda: page.select_option('[data-is="sampling"]', 'smooth'))
         self.assertEqual(self.scene(page)['layers'][0]['sampling'], 'smooth')
         page.set_input_files('[data-is="file"]', files=[{'name': 'x.png', 'mimeType': 'image/png', 'buffer': b'not an image at all'}])
@@ -5119,6 +5188,14 @@ class ImageStudioBrowserTests(unittest.TestCase):
         page.select_option('[data-is="scale"]', '2')
         scene['background'] = 'none'
         page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        scene['background'] = '#FFFFFF'
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        edge = self.pixels(self.download(page, '[data-is="png"]')[1])
+        for point, colour in (((0, 0), (255, 0, 0, 255)), ((127, 95), (255, 0, 0, 255)), ((128, 95), (255, 255, 255, 255)), ((127, 96), (255, 255, 255, 255)), ((128, 96), (0, 0, 255, 255)),
+                              ((255, 191), (0, 0, 255, 255)), ((254, 190), (0, 0, 255, 255)), ((255, 0), (255, 255, 255, 255)), ((0, 191), (255, 255, 255, 255))):
+            self.assertTrue(near(edge.getpixel(point), colour), (point, edge.getpixel(point), colour))
+        scene['background'] = 'none'
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
         self.assertEqual(self.pixels(self.download(page, '[data-is="png"]')[1]).getpixel((200, 20)), (0, 0, 0, 0), 'a transparent background stays transparent')
         page.click('[data-is="base64"]')
         page.wait_for_function('() => document.querySelector("[data-is=b64panel]").open')
@@ -5173,6 +5250,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         page.click('details:has([data-is="history"]) > summary')
         self.paint(page, lambda: page.click('[data-is="trim"]'))
         self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), 1)
+        self.assertTrue(page.evaluate('() => webUiImageStudio.app.dirty'), 'trimming is an edit of the history')
         self.assertEqual(self.scene(page), before)
 
     def test_unsaved_work_is_flagged_for_leaving_the_page(self):
@@ -5184,6 +5262,133 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertTrue(page.evaluate('() => webUiImageStudio.app.dirty'))
         flagged = page.evaluate('() => { const e = new Event("beforeunload", {cancelable: true}); window.dispatchEvent(e); return e.defaultPrevented }')
         self.assertTrue(flagged)
+
+    def test_every_edit_marks_the_work_unsaved_and_saving_clears_it(self):
+        page = self.page()
+        dirty = lambda: page.evaluate('() => webUiImageStudio.app.dirty')
+        self.assertFalse(dirty())
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.assertTrue(dirty())
+        for action in ('undo', 'redo'):
+            page.click('[data-is="jsonsave"]')
+            self.assertFalse(dirty())
+            self.paint(page, lambda: page.click(f'[data-is="{action}"]'))
+            self.assertTrue(dirty(), action)
+        page.click('[data-is="jsonsave"]')
+        self.tool(page, 'select')
+        self.paint(page, lambda: page.mouse.click(*self.at(page, 300, 260)))
+        sx, sy = self.at(page, 300, 260)
+        page.mouse.move(sx, sy)
+        page.mouse.down()
+        page.mouse.move(sx + 30, sy + 20)
+        page.mouse.up()
+        page.wait_for_function('() => webUiImageStudio.app.dirty')
+        page.click('[data-is="jsonsave"]')
+        self.assertFalse(dirty())
+        page.click('details:has([data-is="history"]) > summary')
+        self.paint(page, lambda: page.click('[data-is="history"] li button'))
+        self.assertTrue(dirty(), 'going to an older state is an edit too')
+        page.click('[data-is="jsonsave"]')
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', self.scene(page))
+        self.assertTrue(dirty())
+
+    def test_a_layer_moves_one_place_backward_and_forward(self):
+        page = self.page()
+        self.blank(page)
+        for i, tool in enumerate(['rect', 'ellipse', 'triangle']):
+            self.tool(page, tool)
+            self.press(page, 100 + 100 * i, 100)
+        ids = [l['id'] for l in self.scene(page)['layers']]
+        order = lambda: [l['id'] for l in self.scene(page)['layers']]
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[0], ids[2], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[2], ids[0], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[2], ids[0], ids[1]], 'the bottom layer stays at the bottom')
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.assertEqual(order(), [ids[0], ids[2], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.assertEqual(order(), [ids[0], ids[1], ids[2]], 'the top layer stays at the top')
+
+    def test_an_image_that_cannot_be_drawn_is_reported_in_the_status_line(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        def attempt(png, cell):
+            src = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+            scene = w.studio_blank()
+            scene['layers'] = [w.studio_image_layer(src, 1, 1, 'img', 1280)]
+            page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+            self.paint(page, lambda: page.mouse.click(*self.at(page, 100, 100)))
+            page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+            page.evaluate('c => { const e = document.querySelector("[data-is=cell]"); e.value = c; e.dispatchEvent(new Event("change")) }', cell)
+        attempt(b'\x89PNG\r\n\x1a\nnot really a png', 2)
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像を読み込めません')
+        big = w.studio_png_encode(2049, 2048, bytes(2049 * 2048 * 4))
+        attempt(big, 2)
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像は4MP以下にしてください')
+        fits = w.studio_png_encode(2048, 2048, bytes(2048 * 2048 * 4))
+        attempt(fits, 2)
+        page.wait_for_function('() => webUiImageStudio.app.scene.layers[0].cell === 2')
+        page.wait_for_timeout(300)
+        self.assertEqual(self.data(page, 'error'), '', '4 MP exactly is drawn')
+
+    def test_files_of_exactly_32_mib_are_read_and_one_byte_more_is_refused(self):
+        import web_ui as w
+        limit = 32 * 1024 * 1024
+        page = self.page()
+        self.blank(page)
+        png = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+        page.set_input_files('[data-is="file"]', files=[{'name': 'big.png', 'mimeType': 'image/png', 'buffer': png + bytes(limit - 8)}])
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像を読み込めません', 'exactly 32 MiB is read, and then cannot be decoded')
+        page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'big.png', 'mimeType': 'image/png', 'buffer': png + bytes(limit - 7)}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "画像は32MiB以下にしてください"')
+        page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+        page.evaluate('() => { document.querySelector("[data-is=status]").textContent = "" }')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'empty.png', 'mimeType': 'image/png', 'buffer': b''}])
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像は32MiB以下にしてください', 'an empty file is refused with the same words')
+        scene_text = w.js_json(w.studio_demo_scene())
+        padded = scene_text + ' ' * (20000000 - len(scene_text.encode('utf-8')))
+        self.paint(page, lambda: page.set_input_files('[data-is="jsonopen"]', files=[{'name': 's.json', 'mimeType': 'application/json', 'buffer': padded.encode('utf-8')}]))
+        self.assertEqual(self.data(page, 'layers'), '8', 'a scene file of exactly 20,000,000 bytes is read')
+        page.set_input_files('[data-is="jsonopen"]', files=[{'name': 's.json', 'mimeType': 'application/json', 'buffer': (padded + ' ').encode('utf-8')}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "JSONは20MB以下にしてください"')
+        history = w.StudioHistory(w.studio_blank())
+        text = w.studio_workspace_text(history)
+        fits = text + ' ' * (limit - len(text.encode('utf-8')))
+        self.paint(page, lambda: page.set_input_files('[data-is="wsopen"]', files=[{'name': 'w.json', 'mimeType': 'application/json', 'buffer': fits.encode('utf-8')}]))
+        self.assertEqual(self.status(page), 'Restored the history')
+        page.set_input_files('[data-is="wsopen"]', files=[{'name': 'w.json', 'mimeType': 'application/json', 'buffer': (fits + ' ').encode('utf-8')}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "作業履歴は32MiB以下にしてください"')
+
+    def test_trimming_the_history_asks_first_and_the_heading_names_the_layer(self):
+        page = self.page(accept=False)
+        self.blank(page)
+        self.assertEqual(page.inner_text('[data-is="selection"]'), 'Select a layer')
+        self.assertTrue(page.is_checked('[data-is="labels"]') and page.is_disabled('[data-is="labels"]'))
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.assertEqual(page.inner_text('[data-is="selection"]'), '四角')
+        self.assertTrue(page.is_checked('[data-is="labels"]'), 'the number labels box stays ticked for a layer without labels')
+        before = page.evaluate('() => webUiImageStudio.app.history.items.length')
+        page.click('details:has([data-is="history"]) > summary')
+        page.click('[data-is="trim"]')
+        page.wait_for_timeout(200)
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), before, 'a dismissed question keeps the history')
+        accepting = self.page()
+        self.blank(accepting)
+        accepting.click('details:has([data-is="history"]) > summary')
+        self.paint(accepting, lambda: accepting.click('[data-is="trim"]'))
+        self.assertEqual(accepting.evaluate('() => webUiImageStudio.app.history.items.length'), 1)
 
     def test_the_examples_and_text_measuring(self):
         import web_ui as w
