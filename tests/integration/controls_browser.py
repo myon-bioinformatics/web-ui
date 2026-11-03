@@ -2061,6 +2061,17 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.page.click('[data-undo]')                                                      # undo brings the photo back, from history
         self.assertEqual(self.page.evaluate("() => document.querySelector('[data-ui-photo]').photo.studio.state.image !== null"), True)
 
+    def test_the_stage_follows_the_window_width_without_observer_loops(self):
+        """Fitting the canvas changes the page's height; the resize observer must not be notified again in the same frame (WebKit reports that loop as a page error, which tearDown rejects)."""
+        self.assertEqual(self.pick('png_markers_64x32'), ['success', 'supported'])
+        for width in (800, 520, 1000, 360, 800):
+            self.page.set_viewport_size({'width': width, 'height': 900})
+            self.page.wait_for_function("w => { const s = document.querySelector('[data-stage]'); return Math.abs(s.getBoundingClientRect().width - s.parentElement.clientWidth) < 1 }", arg=width)
+            self.page.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+            box = self.stage()
+            self.assertAlmostEqual(box['height'] / box['width'], 21 / 43, delta=0.01)             # the picture's shape (the stored 43 x 21)
+        self.assertEqual(self.page.evaluate("() => { const s = document.querySelector('[data-stage]'); return Math.round(s.width / parseFloat(s.style.width)) }"), self.page.evaluate('() => Math.round(devicePixelRatio)'))
+
     def test_touch_drags_draw_a_frame_and_do_not_scroll_the_page(self):
         """On a phone the finger must edit the canvas, not scroll the page: pointer events plus ``touch-action: none`` (Chromium's Pixel emulation drags with CDP; WebKit's iPhone
         emulation taps; a device is a separate claim)."""

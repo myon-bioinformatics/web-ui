@@ -5744,7 +5744,9 @@ export function bindPhoto(root=document){return[...root.querySelectorAll("[data-
   const ev=evidence({userAgent:navigator.userAgent,outcomes,features,verifiedAt:new Date().toISOString().slice(0,10),exifAppliedByEngine:applied});
   checkOut.textContent=JSON.stringify(ev,null,2);box.dataset.check=JSON.stringify(ev);return ev}
  $("[data-check]").addEventListener("click",check);
- if(typeof ResizeObserver==="function")new ResizeObserver(()=>{fit();render()}).observe(stage.parentElement);else window.addEventListener("resize",()=>{fit();render()});
+ let seenWidth=Math.round(stage.parentElement.clientWidth),queued=false;const refit=()=>{queued=false;seenWidth=Math.round(stage.parentElement.clientWidth);fit();render()};
+ /* Only a change of width refits, and later in the frame: fitting changes the height, which would notify the observer again in the same frame (WebKit reports that loop as an error). */
+ if(typeof ResizeObserver==="function")new ResizeObserver(entries=>{if(Math.round(entries[0].contentRect.width)===seenWidth||queued)return;queued=true;requestAnimationFrame(refit)}).observe(stage.parentElement);else window.addEventListener("resize",refit);
  box.photo={studio,docs,importBytes,check,fit,render,sync};fit();setStatus("idle",MESSAGES.idle);after();return box})}
 globalThis.webUiPhoto={fixed,sniff,pngComplete,neutralizeOrientation,headerSize,orientationOp,orientedSize,orientationMatrix,rejectBytes,rejectSize,documentSize,failure,decide,rect,rectFromDiagonal,rectSanitized,rectTranslated,rectResized,rectText,rectCsv,
  rectEdgeMidpoints,circle,triangle,triangleMidpoints,shapeContains,segmentIntersection,describe,hitHandle,hitFrame,hitStamp,exportSize,containRect,stampPx,same,PhotoHistory,PhotoStudio,loadImage,evidence,paint,bindPhoto,MESSAGES,OUTCOMES,STAMPS,COLORS};
