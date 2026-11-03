@@ -64,6 +64,12 @@ and shown **on that page view only**: no storage, cookie, cache or request, and 
 this). It is not shared with other visitors. All rules (`gauge_state`, `clock_label`, `utc_offset_label`, `travel_seconds`, ...) live in Python and
 the page's script is tested to give identical results.
 
+curl import: `parse_curl(text)` reads a curl command (the editor's subset: `-X -H -d --data-urlencode -u -G -I -A -e --url`, quoting, line continuations,
+full-width characters) into method, URL, headers, query, body mode and form fields, with credentials marked `sensitive`; `mask_curl` shows them
+as `***`. It never runs curl or sends anything, and error codes never contain the input. The page's `curl.js` (front page, "Request draft")
+reads it the same way: Chromium checks it against Python on flutter_navigation_basic's 47 golden cases (`tests/fixtures/curl_request_cases.json`,
+copied from its `python/fixtures/` at 39d659e) and 1,500 seeded inputs.
+
 `ui.js` (`js_source("ui.js")`) is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
 clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
 (click-to-enlarge in a `<dialog>`). Import only what a page needs.

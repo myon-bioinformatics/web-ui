@@ -32,7 +32,7 @@ from typing import Any
 import urllib.error
 import urllib.request
 import zlib
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.
@@ -2666,9 +2666,315 @@ def theme_wall_document(count: int) -> str:
 # MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
+# --- curl import: the editor's curl subset, parsed without running curl or touching the network ---------------------------
+# Ported from flutter_navigation_basic python/curl_request.py @39d659e (the Flutter editor's lexer and rules; tests/fixtures/curl_request_cases.json
+# is its golden file). Python is the reference; the page's ``curl.js`` must give identical results.
+
+CURL_MAX_BYTES, CURL_MAX_TOKENS = 65_536, 4_096
+_CURL_PREFIX = "httpDraft.curl."
+_CURL_ASCII = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)} | {0x3000: 0x20, 0x2212: 0x2D}   # full-width forms, ideographic space, minus
+_CURL_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+_CURL_OPTIONS = {"-X": "method", "--request": "method", "--url": "url", "-H": "header", "--header": "header", "-d": "data", "--data": "data",
+                 "--data-raw": "data", "--data-binary": "data", "--data-urlencode": "urlencode", "-u": "user", "--user": "user",
+                 "-A": "agent", "--user-agent": "agent", "-e": "referer", "--referer": "referer"}
+_CURL_IGNORED = frozenset({"-s", "-S", "-i", "-v", "-k", "--silent", "--show-error", "--include", "--verbose", "--insecure"})
+_CURL_SECRET_NAMES = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key", "x-auth-token",
+                                "key", "sig", "sas"})
+_CURL_SECRET_PARTS = ("api-key", "api_key", "token", "secret", "password", "signature", "credential", "access_key", "access-key",
+                      "sharedaccesssignature")
+
+
+class CurlParseError(ValueError):
+    """A stable diagnostic code (``httpDraft.curl.error.*``); never contains the input, which may hold credentials."""
+
+
+def _curl_fail(name: str) -> None:
+    raise CurlParseError(_CURL_PREFIX + "error." + name)
+
+
+def curl_tokenize(raw: str) -> list[str]:
+    """Split like the editor's lexer: quotes group, ``\\`` before a newline continues the line, shell metacharacters are refused,
+    nothing is expanded. (``shlex`` is not used: it eats unquoted backslashes that the editor keeps.)"""
+    if not isinstance(raw, str):
+        _curl_fail("inputType")
+    try:
+        size = len(raw.encode("utf-8"))
+    except UnicodeEncodeError:
+        _curl_fail("encoding")
+    if size > CURL_MAX_BYTES:
+        _curl_fail("inputTooLarge")
+    if "\x00" in raw:
+        _curl_fail("nul")
+    text = raw.translate(_CURL_ASCII).strip()
+    if not text:
+        _curl_fail("empty")
+    text = re.sub(r"\\\r?\n", " ", text)
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote, started, index = "", False, 0
+
+    def flush() -> None:
+        nonlocal started
+        if started:
+            tokens.append("".join(buf))
+            if len(tokens) > CURL_MAX_TOKENS:
+                _curl_fail("tooManyTokens")
+            buf.clear()
+            started = False
+
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif quote == '"' and char == "\\" and index + 1 < len(text):
+                index += 1
+                following = text[index]
+                if following not in '$`"\\\n':
+                    buf.append("\\")
+                buf.append(following)
+            else:
+                buf.append(char)
+        elif char in "'\"":
+            quote, started = char, True
+        elif char in "`$|;<>":
+            _curl_fail("shellMeta")
+        elif char in " \t\r\n":
+            flush()
+        else:
+            started = True
+            buf.append(char)
+        index += 1
+    if quote:
+        _curl_fail("unbalancedQuotes")
+    flush()
+    return tokens
+
+
+def _curl_field(name: str, value: str, sensitive: bool = False) -> dict[str, Any]:
+    return {"name": name, "value": value, "sensitive": sensitive}
+
+
+def _curl_sensitive(name: str) -> bool:
+    name = name.translate(_CURL_ASCII).strip().lower()
+    return name in _CURL_SECRET_NAMES or name.endswith(("_key", "-key")) or any(part in name for part in _CURL_SECRET_PARTS)
+
+
+def _curl_pairs(raw: str) -> list[dict[str, Any]]:
+    # urllib would replace malformed UTF-8 and tolerate bad escapes; neither may silently change what the editor was given.
+    if re.search(r"%(?![0-9a-fA-F]{2})", raw):
+        _curl_fail("queryEncoding")
+    try:
+        return [_curl_field(name, value) for name, value in parse_qsl(raw, keep_blank_values=True, errors="strict", separator="&")]
+    except UnicodeError:
+        _curl_fail("queryEncoding")
+
+
+def parse_curl(raw: str) -> dict[str, Any]:
+    """``{"ok", "draft", "errors", "warnings"}`` for a curl command: method, url, headers, query, body mode and form fields.
+    Fields carry ``sensitive`` (credentials by name or a masked ``***`` value); see ``mask_curl``. Nothing is sent."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    try:
+        tokens = curl_tokenize(raw)
+        if not tokens or tokens[0].lower() != "curl":
+            _curl_fail("notCurl")
+        method, explicit_method, url = "GET", False, None
+        headers: list[dict[str, Any]] = []
+        chunks: list[str] = []
+        encoded: list[dict[str, Any]] = []
+        use_get, index = False, 1
+        while index < len(tokens):
+            token = tokens[index]
+            index += 1
+            flag, sep, inline = token.partition("=") if token.startswith("--") else (token, "", "")
+            kind = _CURL_OPTIONS.get(flag)
+            if kind:
+                if sep:
+                    value = inline
+                elif index < len(tokens):
+                    value = tokens[index]
+                    index += 1
+                else:
+                    errors.append(_CURL_PREFIX + "error.missingArg")
+                    break
+                if kind == "method":
+                    candidate = value.strip().upper()
+                    if candidate not in _CURL_METHODS:
+                        errors.append(_CURL_PREFIX + "error.badMethod")
+                    else:
+                        method, explicit_method = candidate, True
+                elif kind == "url":
+                    url = value
+                elif kind == "header":
+                    name, colon, content = value.strip().partition(":")
+                    name, content = name.strip(), content.strip()
+                    if not colon or not name or any(c in name + content for c in "\r\n"):
+                        errors.append(_CURL_PREFIX + "error.badHeader")
+                    else:
+                        headers.append(_curl_field(name, content, _curl_sensitive(name) or "***" in content))
+                elif kind in ("data", "urlencode"):
+                    at, eq = value.find("@"), value.find("=")
+                    if value.startswith("@") or (kind == "urlencode" and at >= 0 and (eq < 0 or at < eq)):
+                        errors.append(_CURL_PREFIX + "error.fileBody")
+                    elif kind == "data":
+                        chunks.append(value)
+                    else:
+                        name, _, content = value.partition("=")
+                        encoded.append(_curl_field(name, content))
+                elif kind == "user":
+                    headers.append(_curl_field("Authorization", "Basic " + base64.b64encode(value.encode("utf-8")).decode("ascii"), True))
+                    warnings.append(_CURL_PREFIX + "warn.basicAuthMapped")
+                else:
+                    headers.append(_curl_field("User-Agent" if kind == "agent" else "Referer", value))
+            elif flag in ("-G", "--get"):
+                use_get = True
+            elif flag in ("-I", "--head"):
+                method, explicit_method = "HEAD", True
+            elif flag in ("-L", "--location"):
+                warnings.append(_CURL_PREFIX + "warn.ignoredRedirect")
+            elif flag in _CURL_IGNORED:
+                warnings.append(_CURL_PREFIX + "warn.ignoredFlag")
+            elif token.startswith("-") and len(token) > 1:
+                errors.append(_CURL_PREFIX + "error.unsupportedFlag")
+            elif url is not None:
+                errors.append(_CURL_PREFIX + "error.extraPositional")
+            else:
+                url = token
+        if errors:
+            return {"ok": False, "draft": None, "errors": errors, "warnings": warnings}
+        if url is None or not url.strip():
+            _curl_fail("urlRequired")
+        body_mode, raw_body, query, form = "none", "", [], []
+        if encoded:
+            if use_get:
+                query = encoded
+            else:
+                body_mode, form = "formUrlEncoded", encoded
+                method = method if explicit_method else "POST"
+        elif chunks:
+            joined = "&".join(chunks)
+            if use_get:
+                query = _curl_pairs(joined)
+            else:
+                method = method if explicit_method else "POST"
+                content_type = next((h["value"].lower() for h in headers if h["name"].lower() == "content-type"), "")
+                if "application/json" in content_type:
+                    body_mode, raw_body = "json", joined
+                elif "application/x-www-form-urlencoded" in content_type:
+                    body_mode, form = "formUrlEncoded", _curl_pairs(joined)
+                elif joined.lstrip().startswith(("{", "[")):
+                    body_mode, raw_body = "json", joined
+                elif "=" in joined:
+                    body_mode, form = "formUrlEncoded", _curl_pairs(joined)
+                else:
+                    body_mode, raw_body = "raw", joined
+        rows = lambda items: [item for item in items if item["name"] or item["value"]]
+        return {"ok": True, "draft": {"method": method, "url": url.strip(), "headers": rows(headers), "query": rows(query),
+                                      "bodyMode": body_mode, "rawBody": raw_body, "formFields": rows(form)},
+                "errors": [], "warnings": warnings}
+    except CurlParseError as error:
+        return {"ok": False, "draft": None, "errors": [str(error)], "warnings": warnings}
+
+
+def mask_curl(result: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``parse_curl``'s result with every ``sensitive`` field's value replaced by ``***``, safe to show or copy.
+    The raw body is not inspected: it may hold secrets that nothing marks, so do not paste real credentials."""
+    masked = json.loads(json.dumps(result))
+    for group in ("headers", "query", "formFields"):
+        for field in (masked["draft"] or {}).get(group, []):
+            if field["sensitive"]:
+                field["value"] = "***"
+    return masked
+
+
 STUB_SCHEMA = "web-ui-stub/1"
 # stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
 EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
+
+_JS["curl.js"] = r"""/* web-ui curl: the editor's curl subset, read in the page and never run or sent. Python (web_ui.parse_curl) is the reference; this must agree with it. */
+const P="httpDraft.curl.",MAX_BYTES=65536,MAX_TOKENS=4096;
+const fail=n=>{throw new Error(P+"error."+n)};
+const OPTIONS=new Map(Object.entries({"-X":"method","--request":"method","--url":"url","-H":"header","--header":"header","-d":"data","--data":"data","--data-raw":"data","--data-binary":"data","--data-urlencode":"urlencode","-u":"user","--user":"user","-A":"agent","--user-agent":"agent","-e":"referer","--referer":"referer"}));
+const IGNORED=new Set(["-s","-S","-i","-v","-k","--silent","--show-error","--include","--verbose","--insecure"]),METHODS=new Set(["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"]);
+const SECRET_NAMES=new Set(["authorization","proxy-authorization","cookie","set-cookie","x-api-key","api-key","x-auth-token","key","sig","sas"]);
+const SECRET_PARTS=["api-key","api_key","token","secret","password","signature","credential","access_key","access-key","sharedaccesssignature"];
+const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const strip=s=>s.replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),""),lstrip=s=>s.replace(new RegExp("^["+SPACE+"]+"),"");
+const ascii=s=>{let o="";for(const c of s){const n=c.codePointAt(0);o+=n>=0xFF01&&n<=0xFF5E?String.fromCodePoint(n-0xFEE0):n===0x3000?" ":n===0x2212?"-":c}return o};
+export function curlTokenize(raw){
+ if(typeof raw!=="string")fail("inputType");
+ if(!raw.isWellFormed())fail("encoding");
+ if(new TextEncoder().encode(raw).length>MAX_BYTES)fail("inputTooLarge");
+ if(raw.includes("\0"))fail("nul");
+ let text=strip(ascii(raw));if(!text)fail("empty");
+ text=text.replace(/\\\r?\n/g," ");
+ const tokens=[];let buf="",quote="",started=false;
+ const flush=()=>{if(started){tokens.push(buf);if(tokens.length>MAX_TOKENS)fail("tooManyTokens");buf="";started=false}};
+ for(let i=0;i<text.length;i++){const c=text[i];
+  if(quote){if(c===quote)quote="";else if(quote==='"'&&c==="\\"&&i+1<text.length){i++;const f=text[i];if(!'$`"\\\n'.includes(f))buf+="\\";buf+=f}else buf+=c}
+  else if(c==="'"||c==='"'){quote=c;started=true}
+  else if("`$|;<>".includes(c))fail("shellMeta");
+  else if(" \t\r\n".includes(c))flush();
+  else{started=true;buf+=c}}
+ if(quote)fail("unbalancedQuotes");
+ flush();return tokens}
+const field=(name,value,sensitive=false)=>({name,value,sensitive});
+const isSensitive=name=>{name=strip(ascii(name)).toLowerCase();return SECRET_NAMES.has(name)||name.endsWith("_key")||name.endsWith("-key")||SECRET_PARTS.some(p=>name.includes(p))};
+const pairs=raw=>{if(/%(?![0-9a-fA-F]{2})/.test(raw))fail("queryEncoding");const out=[];
+ for(const part of raw.split("&")){if(!part)continue;const i=part.indexOf("="),n=i<0?part:part.slice(0,i),v=i<0?"":part.slice(i+1);
+  try{out.push(field(decodeURIComponent(n.replace(/\+/g," ")),decodeURIComponent(v.replace(/\+/g," "))))}catch(e){fail("queryEncoding")}}
+ return out};
+const base64=text=>{let b="";for(const x of new TextEncoder().encode(text))b+=String.fromCharCode(x);return btoa(b)};
+export function parseCurl(raw){
+ const errors=[],warnings=[];
+ try{
+  const tokens=curlTokenize(raw);if(!tokens.length||tokens[0].toLowerCase()!=="curl")fail("notCurl");
+  let method="GET",explicit=false,url=null,useGet=false,index=1;const headers=[],chunks=[],encoded=[];
+  while(index<tokens.length){const token=tokens[index++];
+   let flag=token,sep=false,inline="";if(token.startsWith("--")){const i=token.indexOf("=");if(i>=0){flag=token.slice(0,i);sep=true;inline=token.slice(i+1)}}
+   const kind=OPTIONS.get(flag);
+   if(kind){let value;
+    if(sep)value=inline;else if(index<tokens.length)value=tokens[index++];else{errors.push(P+"error.missingArg");break}
+    if(kind==="method"){const m=strip(value).toUpperCase();if(!METHODS.has(m))errors.push(P+"error.badMethod");else{method=m;explicit=true}}
+    else if(kind==="url")url=value;
+    else if(kind==="header"){const v=strip(value),i=v.indexOf(":"),name=strip(i<0?v:v.slice(0,i)),content=strip(i<0?"":v.slice(i+1));
+     if(i<0||!name||/[\r\n]/.test(name+content))errors.push(P+"error.badHeader");else headers.push(field(name,content,isSensitive(name)||content.includes("***")))}
+    else if(kind==="data"||kind==="urlencode"){const at=value.indexOf("@"),eq=value.indexOf("=");
+     if(value.startsWith("@")||(kind==="urlencode"&&at>=0&&(eq<0||at<eq)))errors.push(P+"error.fileBody");
+     else if(kind==="data")chunks.push(value);
+     else{const i=value.indexOf("=");encoded.push(field(i<0?value:value.slice(0,i),i<0?"":value.slice(i+1)))}}
+    else if(kind==="user"){headers.push(field("Authorization","Basic "+base64(value),true));warnings.push(P+"warn.basicAuthMapped")}
+    else headers.push(field(kind==="agent"?"User-Agent":"Referer",value))}
+   else if(flag==="-G"||flag==="--get")useGet=true;
+   else if(flag==="-I"||flag==="--head"){method="HEAD";explicit=true}
+   else if(flag==="-L"||flag==="--location")warnings.push(P+"warn.ignoredRedirect");
+   else if(IGNORED.has(flag))warnings.push(P+"warn.ignoredFlag");
+   else if(token.startsWith("-")&&token.length>1)errors.push(P+"error.unsupportedFlag");
+   else if(url!==null)errors.push(P+"error.extraPositional");
+   else url=token}
+  if(errors.length)return{ok:false,draft:null,errors,warnings};
+  if(url===null||!strip(url))fail("urlRequired");
+  let mode="none",rawBody="",query=[],form=[];
+  if(encoded.length){if(useGet)query=encoded;else{mode="formUrlEncoded";form=encoded;if(!explicit)method="POST"}}
+  else if(chunks.length){const joined=chunks.join("&");
+   if(useGet)query=pairs(joined);
+   else{if(!explicit)method="POST";const h=headers.find(h=>h.name.toLowerCase()==="content-type"),type=h?h.value.toLowerCase():"";
+    if(type.includes("application/json")){mode="json";rawBody=joined}
+    else if(type.includes("application/x-www-form-urlencoded")){mode="formUrlEncoded";form=pairs(joined)}
+    else if(/^[{\[]/.test(lstrip(joined))){mode="json";rawBody=joined}
+    else if(joined.includes("=")){mode="formUrlEncoded";form=pairs(joined)}
+    else{mode="raw";rawBody=joined}}}
+  const rows=items=>items.filter(i=>i.name||i.value);
+  return{ok:true,draft:{method,url:strip(url),headers:rows(headers),query:rows(query),bodyMode:mode,rawBody,formFields:rows(form)},errors:[],warnings}
+ }catch(e){if(e instanceof Error&&e.message.startsWith(P+"error."))return{ok:false,draft:null,errors:[e.message],warnings};throw e}}
+export function maskCurl(result){const out=JSON.parse(JSON.stringify(result));for(const g of["headers","query","formFields"])for(const f of(out.draft||{})[g]||[])if(f.sensitive)f.value="***";return out}
+export function bindCurl(root=document){return[...root.querySelectorAll("[data-ui-curl]")].map(box=>{
+ const input=box.querySelector("[data-curl-input]"),output=box.querySelector("[data-curl-output]"),run=()=>{output.textContent=JSON.stringify(maskCurl(parseCurl(input.value)),null,2)};
+ box.querySelector("[data-curl-run]").addEventListener("click",run);input.addEventListener("input",run);run();return box})}
+globalThis.webUiCurl={curlTokenize,parseCurl,maskCurl,bindCurl};
+if(typeof document!=="undefined")bindCurl();
+"""
 _STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
                  't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
 
@@ -3045,12 +3351,18 @@ def _index_page() -> str:
         f'{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'
         f'<section>{stub_html(EXAMPLE_STUBS["mcp"], heading_level=2)}</section>'
         f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
+        '<section class="ui-panel" id="curl" data-ui-curl><h2>Request draft (curl)</h2><p class="ui-muted">Paste a curl command: it is read in this '
+        'page and never run or sent. Credentials show as <code>***</code>; the body is shown as written, so do not paste real secrets. '
+        'Python reads it the same way (<code>web_ui.parse_curl</code>).</p>'
+        '<textarea class="ui-input" data-curl-input rows="4" aria-label="curl command">curl -X POST https://api.example.com/items -H '
+        '"Authorization: Bearer abc" -H "Content-Type: application/json" -d \'{"name":"demo"}\'</textarea> '
+        '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>'
         '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
         'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
         f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'
         '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
         f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
-        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(WORLD_JS))
+        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
     return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
             '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
             '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>web-ui — static UI contract</title>\n'
@@ -3059,7 +3371,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

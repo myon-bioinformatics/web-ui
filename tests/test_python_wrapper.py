@@ -644,6 +644,91 @@ class StubTests(unittest.TestCase):
         self.assertIn('bindStub({input:"#mcp-query"', page)
 
 
+CURL_CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "curl_request_cases.json").read_text(encoding="utf-8"))["cases"]
+
+
+def curl_fuzz_inputs(count: int = 1500, seed: int = 20261103) -> list[str]:
+    """Seeded curl-ish inputs: real options, quoting, continuations, odd whitespace, full-width forms, bad escapes and shell characters,
+    so that Python and the page can be compared on exactly the same text."""
+    rng = random.Random(seed)
+    words = ["curl", "curl", "CURL", "-X", "POST", "get", "put", "BOGUS", "-H", "--header", "'Content-Type: application/json'", '"X-Api-Key: abc"',
+             "'Accept: */*'", "'Bad Header'", '"X-Note: a\\"b"', "-d", "--data-raw", "--data-binary", "--data-urlencode", "'{\"a\":1}'", "'[1,2]'",
+             "a=1&b=2", "a=%E3%81%82&b=%2B", "a+b=c+d", "%ZZ", "a=%FF", "a=%C0%80", "@file.json", "name@file", "x=y=z", "&&", "-u", "me:pw",
+             "--user=a:b", "--url=http://u.test/", "https://example.com/a?b=c", "http://x", "-G", "--get", "-I", "-L", "-s", "-k", "--insecure",
+             "-A", "agent/1", "-e", "https://ref/", "--proxy=x", "-Xpost", "--request=PUT", "-", "--", "\\\n", "|", "$HOME", "`x`", "'unbalanced",
+             '"unbalanced', "\uff35\uff32\uff2c", "\u3000", "\u2212X", "\u0085", "\x1f", "\ufeff", "\x0b", "\U0001f600", "\\", "''", '""',
+             "'a'\"b\"c", "\\x", "\"\\$\"", "Authorization: Bearer ***", "-H", "'X-Token: ***'", "-H", "'Cookie: s=1'", "-H", "'My-Key: v'"]
+    separators = [" ", " ", " ", "\t", "\n", "  ", " \\\n ", " \\\r\n "] * 6 + ["\u00a0", "\u2028"]   # now and then a space the lexer does not split on
+    headers = ["'Content-Type: application/json'", "'Content-Type: application/x-www-form-urlencoded'", '"X-Api-Key: abc"', "'Accept: */*'", "'Cookie: s=1'"]
+    bodies = ["'{\"a\":1}'", "'[1,2]'", "a=1&b=2", "a=%E3%81%82&b=%2B", "a+b=c+d", "'plain text'", "'x=y=z'"]
+    pieces = lambda: rng.choice([["-X", rng.choice(["POST", "put", "DELETE", "bogus"])], ["-H", rng.choice(headers)], ["-d", rng.choice(bodies)],
+                                 ["--data-urlencode", rng.choice(["'q=a b'", "n=é", "x"])], ["-u", "me:pw"], ["-A", "agent/1"], ["-s"], ["-L"], ["-G"], ["-I"]])
+    out = []
+    for _ in range(count):
+        if rng.random() < 0.6:                                  # mostly valid commands, some then spoiled by one odd word
+            groups = [pieces() for _ in range(rng.randint(0, 4))]
+            groups.insert(rng.randint(0, len(groups)), [rng.choice(["https://example.com/a?b=c", "http://x"])])
+            if rng.random() < 0.25:
+                groups.insert(rng.randint(0, len(groups)), [rng.choice(words)])
+            parts = ["curl"] + [word for group in groups for word in group]
+        else:
+            parts = ["curl"] if rng.random() < 0.8 else []
+            parts += [rng.choice(words) for _ in range(rng.randint(0, 11))]
+        text = "".join(part + rng.choice(separators) for part in parts)
+        if rng.random() < 0.15:
+            text = text[: rng.randint(0, len(text))]
+        out.append(text if rng.random() < 0.9 else rng.choice([" ", "\t"]) + text)
+    return out
+
+
+class CurlTests(unittest.TestCase):
+    """The curl import is read by Python and by the page the same way; the golden file is flutter_navigation_basic's own (47 cases)."""
+
+    def test_golden_cases_from_the_flutter_editor(self):
+        self.assertEqual(len(CURL_CASES), 47)
+        for case in CURL_CASES:
+            with self.subTest(case["id"]):
+                self.assertEqual(web_ui.parse_curl(case["input"]), case["expected"])
+
+    def test_limits_and_errors_never_echo_the_input(self):
+        secret = "SECRETXYZ-0123456789"
+        fail = lambda text: web_ui.parse_curl(text)["errors"]
+        edge = "curl http://x/" + "a" * (web_ui.CURL_MAX_BYTES - len("curl http://x/"))
+        self.assertTrue(web_ui.parse_curl(edge)["ok"])                                       # exactly 64 KiB is fine,
+        self.assertEqual(fail(edge + "a"), ["httpDraft.curl.error.inputTooLarge"])             # one byte more is not
+        self.assertEqual(fail("curl http://x/" + "\u3042" * web_ui.CURL_MAX_BYTES), ["httpDraft.curl.error.inputTooLarge"])   # bytes, not characters
+        many = lambda n: "curl " + " ".join(f"-s" for _ in range(n - 1))
+        self.assertTrue(web_ui.parse_curl(many(web_ui.CURL_MAX_TOKENS) + " http://x")["errors"] == ["httpDraft.curl.error.tooManyTokens"])
+        self.assertEqual(fail("curl http://x/\x00"), ["httpDraft.curl.error.nul"])
+        self.assertEqual(fail("curl http://x/\ud800"), ["httpDraft.curl.error.encoding"])
+        self.assertEqual(fail(5), ["httpDraft.curl.error.inputType"])
+        for text in (f"curl http://x/ | sh {secret}", f"curl -H 'Authorization: Bearer {secret}' $(x)", f"curl -d '{secret}", f"wget {secret}",
+                     f"curl -X {secret} http://x", f"curl --{secret} http://x", f"curl http://x/ extra-{secret}", f"curl -d @{secret} http://x"):
+            with self.subTest(text[:30]):
+                self.assertNotIn(secret, json.dumps(web_ui.parse_curl(text)))
+
+    def test_masking_hides_marked_credentials_and_nothing_else(self):
+        result = web_ui.parse_curl("curl -u me:pw -H 'X-Api-Key: k1' -H 'Cookie: s=2' -H 'Accept: json' -H 'Note: ***' -d 'token=t&a=1' http://x/")
+        shown = web_ui.mask_curl(result)
+        self.assertEqual({h["name"]: h["value"] for h in shown["draft"]["headers"]},
+                         {"Authorization": "***", "X-Api-Key": "***", "Cookie": "***", "Accept": "json", "Note": "***"})
+        self.assertEqual({f["name"]: (f["value"], f["sensitive"]) for f in shown["draft"]["formFields"]}, {"token": ("t", False), "a": ("1", False)})
+        self.assertEqual(result["draft"]["headers"][0]["value"][:6], "Basic ")                      # the original is untouched
+        self.assertNotIn("bWU6cHc=", json.dumps(shown))
+        self.assertEqual(web_ui.mask_curl(web_ui.parse_curl("nope"))["draft"], None)
+        for name, sensitive in {"Authorization": True, "x-API-KEY": True, "client_secret": True, "My-Key": True, "X_Token": True,
+                                "Accept": False, "Keyboard": False, "Content-Type": False, "\uff21uthorization": True}.items():
+            self.assertEqual(web_ui._curl_sensitive(name), sensitive, name)
+
+    def test_the_fuzz_corpus_is_varied_and_reproducible(self):
+        inputs = curl_fuzz_inputs()
+        self.assertEqual(inputs, curl_fuzz_inputs())
+        results = [web_ui.parse_curl(text) for text in inputs]
+        self.assertGreater(sum(r["ok"] for r in results), 400)                                   # plenty of successful parses ...
+        self.assertGreater(len({e for r in results for e in r["errors"]}), 8)                    # ... and many different failures
+        self.assertGreater(len({r["draft"]["bodyMode"] for r in results if r["ok"]}), 3)
+
+
 class RepairRegressionTests(unittest.TestCase):
     def test_all_category_has_unique_ids(self):
         import copy

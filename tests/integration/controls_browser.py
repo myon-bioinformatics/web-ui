@@ -703,6 +703,61 @@ class StubBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+    def test_curl_in_the_page_reads_exactly_like_python_and_masks_credentials(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import CURL_CASES, curl_fuzz_inputs
+        from web_ui import mask_curl, parse_curl
+        server, origin = WorldBrowserTests.serve({'index.html': (ROOT / 'index.html').read_text(encoding='utf-8')})
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 900})
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    requests = []
+                    page.goto(origin + '/index.html')
+                    page.on('request', lambda request: requests.append(request.url))
+                    # The flutter editor's 47 golden cases, then 1500 seeded inputs (odd whitespace, bad escapes, shell characters ...):
+                    # the page's answer equals Python's, errors included.
+                    golden = [case['input'] for case in CURL_CASES]
+                    got = page.evaluate('inputs => inputs.map(t => webUiCurl.parseCurl(t))', golden)
+                    self.assertEqual(got, [case['expected'] for case in CURL_CASES])
+                    fuzz = curl_fuzz_inputs()
+                    got = page.evaluate('inputs => inputs.map(t => webUiCurl.parseCurl(t))', fuzz)
+                    for text, result in zip(fuzz, got):
+                        self.assertEqual(result, parse_curl(text), repr(text))
+                    masked = page.evaluate('inputs => inputs.map(t => webUiCurl.maskCurl(webUiCurl.parseCurl(t)))', fuzz[:300])
+                    self.assertEqual(masked, [mask_curl(parse_curl(t)) for t in fuzz[:300]])
+                    # Limits and unusual text agree as well.
+                    edge = ['curl http://x/' + 'a' * 65522, 'curl http://x/' + 'a' * 65523, 'curl http://x/' + '\u3042' * 65536, 'curl http://x/\u0000',
+                            'curl http://x/\ud800', 'curl ' + ' '.join(['-s'] * 4095) + ' http://x', 'curl ' + ' '.join(['-s'] * 4096) + ' http://x',
+                            '\u0085curl\u0085http://x\u0085', '\ufeffcurl http://x', 'curl http://x -d a=%F0%9F%98%80&b=%ED%A0%80', 'curl -G -d "a=%E3%81" http://x',
+                            'curl http://x -H "X-Api-Key:"', 'curl -H "constructor: 1" -H "__proto__: 2" http://x']
+                    got = page.evaluate('inputs => inputs.map(t => webUiCurl.parseCurl(t))', edge)
+                    self.assertEqual(got, [parse_curl(t) for t in edge])
+                    # The card on the front page: typing parses live, credentials are shown as ***, and nothing is sent.
+                    box = page.locator('[data-ui-curl]')
+                    out = box.locator('[data-curl-output]')
+                    self.assertIn('"method": "POST"', out.text_content())
+                    self.assertIn('"bodyMode": "json"', out.text_content())
+                    self.assertNotIn('Bearer abc', out.text_content())
+                    self.assertIn('"value": "***"', out.text_content())
+                    box.locator('[data-curl-input]').fill("curl -u me:pw 'http://x/?a=1' | sh")
+                    self.assertIn('httpDraft.curl.error.shellMeta', out.text_content())
+                    self.assertNotIn('me:pw', out.text_content())
+                    box.locator('[data-curl-input]').fill('curl -H "X-Token: s3cr3t" -d "a=1" http://x/')
+                    box.locator('[data-curl-run]').click()
+                    self.assertNotIn('s3cr3t', out.text_content())
+                    self.assertEqual(requests, [])
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class GeneratedSiteBrowserTests(unittest.TestCase):
     def test_generated_front_page_works_offline_without_external_modules(self):
         from web_ui import write_site
