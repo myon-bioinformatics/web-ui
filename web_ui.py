@@ -2879,6 +2879,197 @@ def theme_wall_document(count: int) -> str:
 # MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
+# --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
+# Absorbs flutter_navigation_basic's Clipboard Shelf and prompt workbench (lib/shared/widgets/clipboard_shelf.dart, clipboard_prompt_workbench.dart,
+# lib/shared/clipboard/base64_image_bridge.dart). The image rules are checked against Ironmate's 19 Base64 cases
+# (tests/fixtures/base64_bridge_cases.json, Ironmate@56020aef). Python is the reference; the page's ``shelf.js`` must give identical results.
+# Deliberate differences from the Dart code: line-based Markdown rules (Dart's \s could run across lines) and ASCII-only whitespace.
+
+SHELF_MAX_IMAGE_BYTES = 32 * 1024 * 1024
+SHELF_KINDS = ("text", "url", "markdown", "image")
+_SHELF_WS = " \t\r\n\f\v"
+_SHELF_B64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+_SHELF_DATA_URL = re.compile(r"data:([a-z0-9.+-]+/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,", re.I | re.A)
+_SHELF_LINE_MD = re.compile(r"[ \t]{0,3}(?:#{1,6}[ \t]|[-*+][ \t]|>[ \t]|```)")
+_SHELF_LINK_MD = re.compile(r"\[[^\]]+\]\([^)]+\)")
+_SHELF_URL = re.compile(r"https?://[^ \t\r\n\f\v<>\"]+", re.I | re.A)
+
+
+def _shelf_strip(text: str) -> str:
+    """Strip one leading BOM, then Unicode whitespace (what ``str.strip`` and JavaScript's ``trim`` share, plus U+0085 and the file separators)."""
+    return (text[1:] if text.startswith("﻿") else text).strip(" \t\n\r\f\v\x1c\x1d\x1e\x1f\x85\xa0        "
+                                                                  "        　")
+
+
+def _shelf_lines(text: str) -> list[str]:
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def shelf_classify(text: str) -> str:
+    """``url`` for one http(s) address, ``markdown`` when a line starts like Markdown (heading, list, quote, fence) or a link appears,
+    otherwise ``text``."""
+    trimmed = _shelf_strip(text)
+    if _SHELF_URL.fullmatch(trimmed):
+        return "url"
+    if any(_SHELF_LINE_MD.match(line) for line in _shelf_lines(text)) or _SHELF_LINK_MD.search(text):
+        return "markdown"
+    return "text"
+
+
+def markdown_plain(text: str) -> str:
+    """Markdown as plain text: markers dropped line by line, links as ``text (url)``, inline code, bold and strikethrough unwrapped."""
+    out = []
+    for line in _shelf_lines(text):
+        line = re.sub(r"^[ \t]{0,3}#{1,6}[ \t]+", "", line)
+        line = re.sub(r"^[ \t]{0,3}>[ \t]?", "", line)
+        line = re.sub(r"^[ \t]*[-*+][ \t]+", "", line)
+        line = re.sub(r"^[ \t]*\d+[.)][ \t]+", "", line)
+        out.append("" if re.fullmatch(r"[ \t]*```[^\n]*", line) else line)
+    text = "\n".join(out)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
+    text = re.sub(r"~~([^~\n]+)~~", r"\1", text)
+    return _shelf_strip(text)
+
+
+def shelf_max_chars(max_bytes: int) -> int:
+    """The most Base64 characters ``max_bytes`` decoded bytes can need, ``=`` padding included."""
+    return 4 * ((max_bytes + 2) // 3)
+
+
+def looks_like_image(text: str, min_chars: int = 80) -> bool:
+    """Whether pasted text should be tried as an image: an ``image`` data URL (any letter case) or standard Base64, possibly wrapped."""
+    text = _shelf_strip(text)
+    if text[:11].lower() == "data:image/":
+        return True
+    compact = re.sub(r"[ \t\r\n\f\v]+", "", text)
+    return len(compact) >= min_chars and len(compact) % 4 == 0 and _SHELF_B64.fullmatch(compact) is not None
+
+
+def decode_image_text(text: str, max_bytes: int = SHELF_MAX_IMAGE_BYTES) -> dict[str, Any]:
+    """Strictly read raw Base64 or a ``data:image/...;base64,`` URL as a PNG, JPEG or WebP.
+    ``{"ok": True, "format", "mime", "bytes", "data"}`` or ``{"ok": False, "category"}`` with a category from: ``empty``, ``bad_data_uri``,
+    ``unsupported_type`` (declared), ``too_large``, ``bad_base64`` (URL-safe, ``%3D`` and missing or extra padding are refused),
+    ``unsupported_format`` (the bytes are not PNG/JPEG/WebP) and ``mismatch`` (declared type differs from the bytes)."""
+    fail = lambda category: {"ok": False, "category": category}
+    text = _shelf_strip(text)
+    if not text:
+        return fail("empty")
+    declared = None
+    match = _SHELF_DATA_URL.match(text)
+    if match:
+        declared = (match.group(1) or "").lower() or None
+        declared = "image/jpeg" if declared == "image/jpg" else declared
+        text = text[match.end():]
+    elif text[:5].lower() == "data:":
+        return fail("bad_data_uri")
+    if declared is not None and declared not in ("image/png", "image/jpeg", "image/webp"):
+        return fail("unsupported_type")
+    encoded = re.sub(r"[ \t\r\n\f\v]+", "", text)
+    if not encoded:
+        return fail("empty")
+    if len(encoded) > shelf_max_chars(max_bytes):
+        return fail("too_large")
+    if len(encoded) % 4 or _SHELF_B64.fullmatch(encoded) is None:
+        return fail("bad_base64")
+    raw = base64.b64decode(encoded, validate=True)
+    if not raw:
+        return fail("empty")
+    if len(raw) > max_bytes:
+        return fail("too_large")
+    sniffed = ("image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if raw.startswith(b"\xff\xd8\xff")
+               else "image/webp" if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP" else None)
+    if sniffed is None:
+        return fail("unsupported_format")
+    if declared is not None and declared != sniffed:
+        return fail("mismatch")
+    return {"ok": True, "format": sniffed[6:], "mime": sniffed, "bytes": len(raw), "data": encoded}
+
+
+def build_prompt(fields: dict[str, str], image: dict[str, Any] | None = None) -> str:
+    """The workbench's system-prompt draft: a title, then each filled field as a section (``goal``, ``context``, ``must``, ``avoid``, ``format``,
+    ``raw``), then a note about an attached image (``{"mime", "bytes"}``)."""
+    parts = ["# System Prompt Draft\n\n"]
+    for key, title in (("goal", "Goal"), ("context", "Context / reference material"), ("must", "Must include"),
+                       ("avoid", "Constraints / avoid"), ("format", "Output format"), ("raw", "Raw source")):
+        value = _shelf_strip(str(fields.get(key, "")))
+        if value:
+            parts.append(f"## {title}\n{value}\n\n")
+    if image:
+        parts.append(f"## Visual reference\nAn image reference is attached in the workbench ({image.get('mime') or 'image'}, {image['bytes']} bytes).\n"
+                     "Use its layout/content as visual context when the receiving system supports image input.\n\n")
+    return "".join(parts).rstrip(_SHELF_WS)
+
+
+def shelf_bundle(items: list[dict[str, Any]]) -> str:
+    """Shelf items (``{"kind", "text"}`` or ``{"kind": "image", "mime", "data"}``) as one Markdown context bundle, in the order given."""
+    labels = {"text": "Text", "url": "URL", "markdown": "Markdown", "image": "Image"}
+    parts = ["# Context Bundle\n\n"]
+    for number, item in enumerate(items, 1):
+        body = f"data:{item['mime']};base64,{item['data']}" if item["kind"] == "image" else item.get("text", "")
+        parts.append(f"## {number}. {labels[item['kind']]}\n{body}\n\n")
+    return "".join(parts).rstrip(_SHELF_WS)
+
+
+def _shelf_css() -> str:
+    """Filter and order are radio buttons, so the rules are CSS: which kind shows, how items are ordered, which control looks selected."""
+    rules = [".ui-shelf-radio{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}",
+             ".ui-shelf-bar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;padding:0;border:0}.ui-shelf-bar legend{padding:0 0 4px}",
+             ".ui-shelf-bar label{padding:4px 16px;border:1px solid var(--ui-border);border-radius:var(--ui-radius);cursor:pointer}",
+             ".ui-shelf-actions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-shelf textarea{width:100%;box-sizing:border-box}",
+             ".ui-shelf-items{display:flex;flex-direction:column;gap:8px;margin:16px 0 0;padding:0;list-style:none}",
+             ".ui-shelf-item{order:calc(var(--n,0) * -1);display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px 16px;align-items:start;padding:16px;"
+             "border:1px solid var(--ui-border);background:var(--ui-panel);border-radius:var(--ui-radius)}",
+             ".ui-shelf-body{min-width:0}.ui-shelf-body pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}",
+             ".ui-shelf-body a{overflow-wrap:anywhere}.ui-shelf-body img{display:block;max-width:100%;max-height:256px;height:auto}",
+             ".ui-shelf-tools{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px}.ui-shelf-workbench{display:grid;gap:8px;margin-top:16px}",
+             ".ui-shelf-workbench textarea{min-height:64px}",
+             ".ui-shelf:has(#shelf-sort-oldest:checked) .ui-shelf-item{order:var(--n,0)}.ui-shelf:has(#shelf-sort-manual:checked) .ui-shelf-item{order:var(--pos,0)}"]
+    for kind in SHELF_KINDS:
+        rules.append(f'.ui-shelf:has(#shelf-kind-{kind}:checked) .ui-shelf-item:not([data-kind="{kind}"]){{display:none}}')
+    for group, names in (("kind", ("all", *SHELF_KINDS)), ("sort", ("newest", "oldest", "manual"))):
+        for name in names:
+            rules.append(f'.ui-shelf:has(#shelf-{group}-{name}:checked) label[for="shelf-{group}-{name}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
+            rules.append(f'.ui-shelf:has(#shelf-{group}-{name}:focus-visible) label[for="shelf-{group}-{name}"]{{outline:2px solid var(--ui-fg);outline-offset:2px}}')
+    return "@layer components{" + "".join(rules) + "}"
+
+
+_CSS["shelf.css"] = _shelf_css()
+
+
+def shelf_html() -> str:
+    """The shelf and prompt workbench as semantic HTML: one text box, radio filters and order, a list the page fills, a prompt preview."""
+    radio = lambda group, name, label, checked=False: (f'<input class="ui-shelf-radio" type="radio" name="shelf-{group}" id="shelf-{group}-{name}" value="{name}"'
+                                                       f'{" checked" if checked else ""}><label for="shelf-{group}-{name}">{label}</label>')
+    kinds = radio("kind", "all", "All", True) + "".join(radio("kind", k, label) for k, label in zip(SHELF_KINDS, ("Text", "URL", "Markdown", "Image")))
+    sorts = radio("sort", "newest", "Newest first", True) + radio("sort", "oldest", "Oldest first") + radio("sort", "manual", "Manual")
+    fields = "".join(f'<label for="shelf-f-{k}">{label}</label><textarea class="ui-input" id="shelf-f-{k}" name="{k}" rows="2" data-shelf-field></textarea>'
+                     for k, label in (("goal", "Goal"), ("context", "Context / reference material"), ("must", "Must include"),
+                                      ("avoid", "Constraints / avoid"), ("format", "Output format"), ("raw", "Raw source")))
+    return ('<section class="ui-panel ui-shelf" id="shelf" data-ui-shelf><h2>Clipboard shelf</h2>'
+            '<p class="ui-muted">Paste text, a URL, Markdown or a Base64 image (PNG, JPEG, WebP). Everything stays in this page: nothing is saved or sent, '
+            'and a reload empties the shelf.</p>'
+            '<label for="shelf-input">Add to the shelf</label><textarea class="ui-input" id="shelf-input" rows="3" data-shelf-input></textarea>'
+            '<div class="ui-shelf-actions"><button class="ui-button" type="button" data-shelf-add>Add</button>'
+            '<button class="ui-button" type="button" data-shelf-paste>Paste from clipboard</button>'
+            '<button class="ui-button" type="button" data-shelf-bundle>Copy bundle</button>'
+            '<button class="ui-button" type="button" data-shelf-clear>Clear</button></div>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-shelf-status>Nothing on the shelf yet.</p>'
+            f'<fieldset class="ui-shelf-bar"><legend>Show</legend>{kinds}</fieldset><fieldset class="ui-shelf-bar"><legend>Order</legend>{sorts}</fieldset>'
+            '<ul class="ui-shelf-items" data-shelf-items></ul>'
+            f'<details class="ui-shelf-workbench"><summary>Prompt workbench</summary>{fields}'
+            '<div class="ui-shelf-actions"><button class="ui-button" type="button" data-shelf-attach>Attach an image from the shelf</button>'
+            '<button class="ui-button" type="button" data-shelf-copy-prompt>Copy prompt</button></div>'
+            '<pre class="ui-output" data-shelf-prompt aria-live="polite"></pre></details></section>')
+
+
+def shelf_document(*, theme: str = "modern") -> str:
+    """A single-file page for the clipboard shelf."""
+    return render_document(trusted_html='<main class="ui-page">' + shelf_html() + "</main>" + module_script(_JS["shelf.js"]), title="Clipboard shelf",
+                           theme=theme, css=bundled_css())
+
+
 # --- curl import: the editor's curl subset, parsed without running curl or touching the network ---------------------------
 # Ported from flutter_navigation_basic python/curl_request.py @39d659e (the Flutter editor's lexer and rules; tests/fixtures/curl_request_cases.json
 # is its golden file). Python is the reference; the page's ``curl.js`` must give identical results.
@@ -3105,6 +3296,88 @@ STUB_SCHEMA = "web-ui-stub/1"
 # stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
 EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
 
+_JS["shelf.js"] = r"""/* web-ui shelf: a clipboard shelf in the page (memory only). The rules are Python's (web_ui.shelf_classify, decode_image_text, ...); this must agree. */
+const MAX_IMAGE=32*1024*1024;
+const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+export const strip=s=>(s.startsWith("﻿")?s.slice(1):s).replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+const lines=t=>t.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+const URLRE=/^https?:\/\/[^ \t\r\n\f\v<>"]+$/i,LINE_MD=/^[ \t]{0,3}(?:#{1,6}[ \t]|[-*+][ \t]|>[ \t]|```)/,LINK_MD=/\[[^\]]+\]\([^)]+\)/;
+const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
+export function shelfClassify(text){if(URLRE.test(strip(text)))return"url";return lines(text).some(l=>LINE_MD.test(l))||LINK_MD.test(text)?"markdown":"text"}
+export function markdownPlain(text){
+ let out=lines(text).map(l=>{l=l.replace(/^[ \t]{0,3}#{1,6}[ \t]+/,"").replace(/^[ \t]{0,3}>[ \t]?/,"").replace(/^[ \t]*[-*+][ \t]+/,"").replace(/^[ \t]*\d+[.)][ \t]+/,"");return/^[ \t]*```[^\n]*$/.test(l)?"":l}).join("\n");
+ out=out.replace(/\[([^\]]+)\]\(([^)]+)\)/g,"$1 ($2)").replace(/`([^`\n]+)`/g,"$1").replace(/\*\*([^*\n]+)\*\*/g,"$1").replace(/~~([^~\n]+)~~/g,"$1");
+ return strip(out)}
+export const shelfMaxChars=n=>4*Math.floor((n+2)/3);
+export function looksLikeImage(text,minChars=80){text=strip(text);if(text.slice(0,11).toLowerCase()==="data:image/")return true;const c=text.replace(/[ \t\r\n\f\v]+/g,"");return c.length>=minChars&&c.length%4===0&&B64.test(c)}
+export function decodeImageText(input,maxBytes=MAX_IMAGE){
+ const fail=category=>({ok:false,category});let text=strip(input);if(!text)return fail("empty");
+ let declared=null;const m=DATA.exec(text);
+ if(m){declared=(m[1]||"").toLowerCase()||null;if(declared==="image/jpg")declared="image/jpeg";text=text.slice(m[0].length)}
+ else if(text.slice(0,5).toLowerCase()==="data:")return fail("bad_data_uri");
+ if(declared!==null&&!["image/png","image/jpeg","image/webp"].includes(declared))return fail("unsupported_type");
+ const encoded=text.replace(/[ \t\r\n\f\v]+/g,"");if(!encoded)return fail("empty");
+ if(encoded.length>shelfMaxChars(maxBytes))return fail("too_large");
+ if(encoded.length%4||!B64.test(encoded))return fail("bad_base64");
+ const pad=encoded.endsWith("==")?2:encoded.endsWith("=")?1:0,n=encoded.length/4*3-pad;
+ if(n<=0)return fail("empty");if(n>maxBytes)return fail("too_large");
+ const head=atob(encoded.slice(0,16)),at=i=>head.charCodeAt(i);
+ const mime=head.length>=8&&[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((v,i)=>at(i)===v)?"image/png":head.length>=3&&at(0)===0xff&&at(1)===0xd8&&at(2)===0xff?"image/jpeg":head.length>=12&&head.slice(0,4)==="RIFF"&&head.slice(8,12)==="WEBP"?"image/webp":null;
+ if(mime===null)return fail("unsupported_format");if(declared!==null&&declared!==mime)return fail("mismatch");
+ return{ok:true,format:mime.slice(6),mime,bytes:n,data:encoded}}
+export function buildPrompt(fields,image=null){
+ let out="# System Prompt Draft\n\n";
+ for(const[key,title]of[["goal","Goal"],["context","Context / reference material"],["must","Must include"],["avoid","Constraints / avoid"],["format","Output format"],["raw","Raw source"]]){const v=strip(String(fields[key]??""));if(v)out+="## "+title+"\n"+v+"\n\n"}
+ if(image)out+="## Visual reference\nAn image reference is attached in the workbench ("+(image.mime||"image")+", "+image.bytes+" bytes).\nUse its layout/content as visual context when the receiving system supports image input.\n\n";
+ return out.replace(/[ \t\r\n\f\v]+$/,"")}
+export function shelfBundle(items){const labels={text:"Text",url:"URL",markdown:"Markdown",image:"Image"};let out="# Context Bundle\n\n";
+ items.forEach((it,i)=>{out+="## "+(i+1)+". "+labels[it.kind]+"\n"+(it.kind==="image"?"data:"+it.mime+";base64,"+it.data:(it.text??""))+"\n\n"});return out.replace(/[ \t\r\n\f\v]+$/,"")}
+export function bindShelf(root=document){return[...root.querySelectorAll("[data-ui-shelf]")].map(box=>{
+ const $=s=>box.querySelector(s),input=$("[data-shelf-input]"),list=$("[data-shelf-items]"),status=$("[data-shelf-status]"),prompt=$("[data-shelf-prompt]");
+ const items=[];let next=1,image=null,manual=[];const say=t=>{status.textContent=t};
+ const checked=name=>box.querySelector('input[name="'+name+'"]:checked').value;
+ const display=()=>{const kind=checked("shelf-kind"),sort=checked("shelf-sort");const vis=items.filter(i=>kind==="all"||i.kind===kind);
+  return sort==="oldest"?[...vis].sort((a,b)=>a.n-b.n):sort==="manual"?[...vis].sort((a,b)=>manual.indexOf(a.id)-manual.indexOf(b.id)):[...vis].sort((a,b)=>b.n-a.n)};
+ const draw=()=>{list.replaceChildren(...items.map(it=>{const li=document.createElement("li");li.className="ui-shelf-item";li.dataset.kind=it.kind;li.dataset.id=it.id;li.style.setProperty("--n",it.n);li.style.setProperty("--pos",manual.indexOf(it.id));
+  const tag=document.createElement("span");tag.className="ui-tag";tag.textContent={text:"Text",url:"URL",markdown:"Markdown",image:"Image"}[it.kind];
+  const pick=document.createElement("input");pick.type="checkbox";pick.checked=!!it.picked;pick.setAttribute("aria-label","Select item "+it.id);pick.addEventListener("change",()=>{it.picked=pick.checked});
+  const body=document.createElement("div");body.className="ui-shelf-body";
+  if(it.kind==="image"){const img=document.createElement("img");img.alt="Pasted "+it.format+" image, "+it.bytes+" bytes";img.src="data:"+it.mime+";base64,"+it.data;body.append(img)}
+  else if(it.kind==="url"){const a=document.createElement("a");a.textContent=it.text;a.href=it.text;a.target="_blank";a.rel="noopener noreferrer";body.append(a)}
+  else{const p=document.createElement("pre");p.textContent=it.text;body.append(p)}
+  const tools=document.createElement("div");tools.className="ui-shelf-tools";
+  const btn=(label,act)=>{const b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=label;b.dataset.act=act;tools.append(b)};
+  btn("Copy","copy");if(it.kind==="markdown")btn("Copy plain","plain");btn("Up","up");btn("Down","down");btn("Remove","remove");
+  li.append(pick,tag,body,tools);return li}));
+  const none=items.length===0;if(none)say("Nothing on the shelf yet.")};
+ const add=it=>{it.id=next;it.n=next++;items.unshift(it);manual.unshift(it.id);draw()};
+ const addText=raw=>{const text=strip(raw);if(!text){say("Nothing to add.");return false}
+  if(looksLikeImage(text)){const r=decodeImageText(text);if(r.ok){add({kind:"image",...r});say("Image added ("+r.format+", "+r.bytes+" bytes).");return true}
+   add({kind:shelfClassify(text),text});say("Added as text: it looked like an image but was refused ("+r.category+").");return true}
+  add({kind:shelfClassify(text),text});say("Added.");return true};
+ const copy=async t=>{try{await navigator.clipboard.writeText(t);return true}catch(e){return false}};
+ $("[data-shelf-add]").addEventListener("click",()=>{if(addText(input.value))input.value=""});
+ $("[data-shelf-paste]").addEventListener("click",async()=>{let t="";try{t=await navigator.clipboard.readText()}catch(e){say("The browser did not allow reading the clipboard: paste into the box instead.");return}addText(t)});
+ $("[data-shelf-clear]").addEventListener("click",()=>{items.length=0;manual=[];draw();say("Shelf cleared.")});
+ $("[data-shelf-bundle]").addEventListener("click",async()=>{const picked=items.filter(i=>i.picked),shown=display(),use=picked.length?display().filter(i=>i.picked):shown;
+  if(!items.length){say("The shelf is empty.");return}const text=shelfBundle(use);say(await copy(text)?"Copied a bundle of "+use.length+" item(s), "+text.length+" characters.":"The browser did not allow copying.")});
+ list.addEventListener("click",async e=>{const b=e.target.closest("button[data-act]");if(!b)return;const id=Number(b.closest("li").dataset.id),it=items.find(i=>i.id===id);
+  if(b.dataset.act==="remove"){items.splice(items.indexOf(it),1);manual=manual.filter(x=>x!==id);draw();say("Removed.")}
+  else if(b.dataset.act==="copy"){say(await copy(it.kind==="image"?"data:"+it.mime+";base64,"+it.data:it.text)?"Copied.":"The browser did not allow copying.")}
+  else if(b.dataset.act==="plain"){say(await copy(markdownPlain(it.text))?"Copied as plain text.":"The browser did not allow copying.")}
+  else{const shown=display(),at=shown.indexOf(it),to=at+(b.dataset.act==="up"?-1:1);if(to<0||to>=shown.length)return;
+   if(checked("shelf-sort")!=="manual"){manual=[...items].sort((a,c)=>checked("shelf-sort")==="oldest"?a.n-c.n:c.n-a.n).map(i=>i.id)}
+   const a=manual.indexOf(id),c=manual.indexOf(shown[to].id);[manual[a],manual[c]]=[manual[c],manual[a]];box.querySelector("#shelf-sort-manual").checked=true;draw();say("Order is now manual.")}});
+ const fields=()=>({goal:$("[name=goal]").value,context:$("[name=context]").value,must:$("[name=must]").value,avoid:$("[name=avoid]").value,format:$("[name=format]").value,raw:$("[name=raw]").value});
+ const render=()=>{prompt.textContent=buildPrompt(fields(),image)};
+ for(const f of box.querySelectorAll("[data-shelf-field]"))f.addEventListener("input",render);
+ $("[data-shelf-attach]").addEventListener("click",()=>{const picked=items.find(i=>i.kind==="image"&&i.picked)||items.find(i=>i.kind==="image");image=picked?{mime:picked.mime,bytes:picked.bytes}:null;say(image?"Image attached to the prompt.":"No image on the shelf to attach.");render()});
+ $("[data-shelf-copy-prompt]").addEventListener("click",async()=>{const t=buildPrompt(fields(),image);say(await copy(t)?"Copied the prompt ("+t.length+" characters).":"The browser did not allow copying.")});
+ draw();render();return box})}
+globalThis.webUiShelf={shelfClassify,markdownPlain,looksLikeImage,decodeImageText,buildPrompt,shelfBundle,shelfMaxChars,bindShelf};
+if(typeof document!=="undefined")bindShelf();
+"""
+
 _JS["curl.js"] = r"""/* web-ui curl: the editor's curl subset, read in the page and never run or sent. Python (web_ui.parse_curl) is the reference; this must agree with it. */
 const P="httpDraft.curl.",MAX_BYTES=65536,MAX_TOKENS=4096;
 const fail=n=>{throw new Error(P+"error."+n)};
@@ -3298,7 +3571,8 @@ def _example_cards() -> str:
             '<span class="ui-tag">modern</span> <span class="ui-tag">static</span></article>'
             '<article class="ui-card"><h2>Stub examples</h2><p><a href="./mcp-stub.html">MCP Stub</a> · <a href="./api-stub.html">API Stub</a></p></article>'
             '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article>'
-            '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article></section>')
+            '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article>'
+            '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -3327,6 +3601,7 @@ def example_pages() -> dict[str, str]:
         "examples/api-stub.html": stub_document(EXAMPLE_STUBS["api"]),
         "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
         "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
+        "examples/clipboard-shelf.html": shelf_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -3627,7 +3902,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

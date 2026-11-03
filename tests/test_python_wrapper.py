@@ -1,3 +1,4 @@
+import base64
 import os
 import random
 import re
@@ -697,6 +698,101 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in same["floors"][0]["spots"]], ["screen-1", "screen-1-2", "x"])   # ids stay unique
         long = web_ui.catalogue_world([{"id": "a", "label": "L" * 80, "emoji": "🌍", "group": "g"}])
         self.assertEqual(len(long["floors"][0]["spots"][0]["label"]), 40)
+
+
+BASE64_CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "base64_bridge_cases.json").read_text(encoding="utf-8"))
+PNG_B64 = BASE64_CASES["cases"][0]["text"]                                                       # a real 2x1 PNG, raw Base64
+
+
+def shelf_fuzz_texts(count: int = 1200, seed: int = 20261103) -> list[str]:
+    """Seeded pasted texts: Markdown-ish lines, URLs, image text with wrapping, odd whitespace, bad padding, wrong labels, case tricks."""
+    rng = random.Random(seed)
+    spaces = [" ", " ", "\t", "\n", "\r\n", "\r", "\u00a0", "\u3000", "\x85", "\ufeff", "\x1f", "\u2028"]
+    words = ["# Title", "## sub", "- item", "* item", "+ item", "> quote", "1. one", "2) two", "```py", "```", "plain words", "**bold**", "~~gone~~", "`code`",
+             "[link](http://x.test/a)", "[bad](", "see https://example.com/a?b=c", "https://example.com/a?b=c", "HTTPS://X.TEST/", "http://", "https://a b",
+             "\u017fttps://x", "ftp://x/y", "data:image/png;base64," + PNG_B64, "DATA:IMAGE/PNG;BASE64," + PNG_B64, PNG_B64, PNG_B64[:40], "data:text/plain,hi", "####### seven",
+             "\u212a", "    indented", "  # two spaces", "#nospace", "-x", "日本語のメモ", "😀", "<b>x</b>", '"quoted"', "a" * 90, "A" * 88]
+    out = []
+    for _ in range(count):
+        parts = [rng.choice(words) for _ in range(rng.randint(1, 6))]
+        text = "".join(part + rng.choice(spaces) for part in parts)
+        roll = rng.random()
+        if roll < 0.12:
+            text = " " * rng.randint(1, 3) + text
+        elif roll < 0.2:
+            text = text.replace("=", "", 1)
+        elif roll < 0.25:
+            text = text.replace("+", "-").replace("/", "_")
+        elif roll < 0.3:
+            text = PNG_B64[: rng.randint(1, len(PNG_B64))]
+        elif roll < 0.35:
+            text = "data:image/" + rng.choice(["png", "jpeg", "jpg", "webp", "gif", "x", ""]) + rng.choice([";base64,", ",", ";charset=utf-8;base64,", ";a=\"b\";base64,"]) + PNG_B64
+        out.append(text)
+    return out
+
+
+class ShelfTests(unittest.TestCase):
+    """The clipboard shelf's rules: Ironmate's Base64 cases are the golden file for the image reading."""
+
+    def test_ironmate_base64_cases(self):
+        self.assertEqual(len(BASE64_CASES["cases"]), 19)
+        limit = BASE64_CASES["limits"]["maxInputBytes"]
+        self.assertEqual((limit, web_ui.shelf_max_chars(limit)), (web_ui.SHELF_MAX_IMAGE_BYTES, BASE64_CASES["limits"]["maxBase64Chars"]))
+        for case in BASE64_CASES["cases"]:
+            with self.subTest(case["id"]):
+                got = web_ui.decode_image_text(case["text"], limit)
+                self.assertEqual(got["ok"], case["expect"] == "ok")
+                self.assertEqual(got["format"] if got["ok"] else got["category"], case["result"])
+
+    def test_image_limits_and_text_that_only_looks_like_an_image(self):
+        png = web_ui.decode_image_text(PNG_B64)
+        self.assertEqual((png["format"], png["mime"]), ("png", "image/png"))
+        self.assertEqual(png["bytes"], len(base64.b64decode(PNG_B64)))
+        self.assertEqual(web_ui.decode_image_text(PNG_B64, png["bytes"] - 1), {"ok": False, "category": "too_large"})   # the byte limit is exact
+        self.assertTrue(web_ui.decode_image_text(PNG_B64, png["bytes"])["ok"])
+        self.assertEqual(web_ui.decode_image_text("A" * 100, 10), {"ok": False, "category": "too_large"})
+        jpeg = base64.b64encode(b"\xff\xd8\xff\xe0" + bytes(20)).decode()
+        webp = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPVP8 " + bytes(8)).decode()
+        self.assertEqual([web_ui.decode_image_text(x)["format"] for x in (jpeg, webp, "data:image/jpg;base64," + jpeg)], ["jpeg", "webp", "jpeg"])
+        self.assertEqual(web_ui.decode_image_text("data:image/png;base64," + jpeg), {"ok": False, "category": "mismatch"})
+        self.assertEqual(web_ui.decode_image_text("data:;base64," + png["data"])["ok"], True)           # no declared type: the bytes decide
+        self.assertTrue(web_ui.looks_like_image(PNG_B64) and web_ui.looks_like_image("data:image/x"))
+        self.assertFalse(web_ui.looks_like_image("hello world, this is just a sentence that is long enough to look suspicious at first glance!"))
+        self.assertFalse(web_ui.looks_like_image("A" * 79))
+        self.assertEqual(web_ui.decode_image_text("\u017fttps"), {"ok": False, "category": "bad_base64"})
+
+    def test_classify_markdown_prompt_and_bundle(self):
+        classify = web_ui.shelf_classify
+        self.assertEqual([classify(t) for t in ("https://example.com/a?b=c", "  HTTP://X.TEST/  ", "https://a b", "http://", "ftp://x/y", "plain", "")],
+                         ["url", "url", "text", "text", "text", "text", "text"])
+        self.assertEqual([classify(t) for t in ("# T", "  ## T", "    # four spaces", "- a", "> q", "```py", "x\n* y", "[a](b)", "#nospace", "-x", "a [b](c) d")],
+                         ["markdown", "markdown", "text", "markdown", "markdown", "markdown", "markdown", "markdown", "text", "text", "markdown"])
+        self.assertEqual(web_ui.markdown_plain("# T\n> q\n- i\n1. n\n```py\nc `x` **b** ~~s~~ [l](u)\n```"), "T\nq\ni\nn\n\nc x b s l (u)")
+        self.assertEqual(web_ui.build_prompt({}), "# System Prompt Draft")
+        self.assertEqual(web_ui.build_prompt({"goal": " G ", "raw": "r", "must": "  "}, {"mime": "image/png", "bytes": 5}),
+                         "# System Prompt Draft\n\n## Goal\nG\n\n## Raw source\nr\n\n## Visual reference\nAn image reference is attached in the workbench "
+                         "(image/png, 5 bytes).\nUse its layout/content as visual context when the receiving system supports image input.")
+        self.assertEqual(web_ui.shelf_bundle([{"kind": "text", "text": "a"}, {"kind": "image", "mime": "image/png", "data": "QQ=="}, {"kind": "url", "text": "https://x/"}]),
+                         "# Context Bundle\n\n## 1. Text\na\n\n## 2. Image\ndata:image/png;base64,QQ==\n\n## 3. URL\nhttps://x/")
+
+    def test_the_fuzz_corpus_is_varied_and_reproducible(self):
+        texts = shelf_fuzz_texts()
+        self.assertEqual(texts, shelf_fuzz_texts())
+        kinds = {web_ui.shelf_classify(t) for t in texts}
+        outcomes = {r["format"] if r["ok"] else r["category"] for r in map(web_ui.decode_image_text, texts)}
+        self.assertEqual(kinds, {"text", "url", "markdown"})
+        self.assertGreaterEqual(len(outcomes), 6, outcomes)
+        self.assertGreater(sum(map(web_ui.looks_like_image, texts)), 100)
+
+    def test_the_page_is_one_file_with_the_filters_in_css(self):
+        css = web_ui.css_source("shelf.css")
+        for kind in web_ui.SHELF_KINDS:
+            self.assertIn(f'#shelf-kind-{kind}:checked) .ui-shelf-item:not([data-kind="{kind}"]){{display:none}}', css)
+        page = web_ui.shelf_document()
+        self.assertEqual(page.count("<script"), 1)
+        for needle in ("data-shelf-add", "shelf-sort-manual", "data-shelf-prompt"):
+            self.assertIn(needle, page)
+        self.assertNotIn("<link", page)
 
 
 SHOWCASE = web_ui.example_data("showcase")

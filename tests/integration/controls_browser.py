@@ -954,5 +954,186 @@ class CatalogueBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class ShelfBrowserTests(unittest.TestCase):
+    """The clipboard shelf in Chromium: its rules equal Python's, and the shelf works and keeps nothing."""
+
+    def serve_page(self):
+        from web_ui import shelf_document
+        return WorldBrowserTests.serve({'shelf.html': shelf_document()})
+
+    def test_the_pages_rules_equal_pythons_on_ironmates_cases_and_a_seeded_fuzz(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import BASE64_CASES, PNG_B64, shelf_fuzz_texts
+        import random
+        import web_ui
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/shelf.html')
+                    limit = BASE64_CASES['limits']['maxInputBytes']
+                    texts = [c['text'] for c in BASE64_CASES['cases']]
+                    got = page.evaluate('([texts, limit]) => texts.map(t => webUiShelf.decodeImageText(t, limit))', [texts, limit])
+                    self.assertEqual(got, [web_ui.decode_image_text(t, limit) for t in texts])
+                    fuzz = shelf_fuzz_texts()
+                    for name, py in (('shelfClassify', web_ui.shelf_classify), ('markdownPlain', web_ui.markdown_plain), ('looksLikeImage', web_ui.looks_like_image),
+                                     ('decodeImageText', web_ui.decode_image_text)):
+                        got = page.evaluate(f'texts => texts.map(t => webUiShelf.{name}(t))', fuzz)
+                        for text, result in zip(fuzz, got):
+                            self.assertEqual(result, py(text), (name, text))
+                    # Byte limits: the same answer at every limit around the PNG's size, and for text that only looks like an image.
+                    size = len(__import__('base64').b64decode(PNG_B64))
+                    limits = [1, size - 1, size, size + 1, 3, 4, 5]
+                    got = page.evaluate('([t, limits]) => limits.map(n => webUiShelf.decodeImageText(t, n))', [PNG_B64, limits])
+                    self.assertEqual(got, [web_ui.decode_image_text(PNG_B64, n) for n in limits])
+                    # Prompts and bundles from random fields and items.
+                    rng = random.Random(7)
+                    pool = ['', ' ', 'Goal \u3000', '\ufeffx', 'line1\nline2', '  pad  ', '\t\n', 'あ', '## h']
+                    fields = [{k: rng.choice(pool) for k in ('goal', 'context', 'must', 'avoid', 'format', 'raw') if rng.random() < 0.7} for _ in range(300)]
+                    images = [None if rng.random() < 0.5 else {'mime': rng.choice(['image/png', '', 'image/webp']), 'bytes': rng.randint(1, 10 ** 6)} for _ in fields]
+                    got = page.evaluate('pairs => pairs.map(([f, i]) => webUiShelf.buildPrompt(f, i))', [[f, i] for f, i in zip(fields, images)])
+                    self.assertEqual(got, [web_ui.build_prompt(f, i) for f, i in zip(fields, images)])
+                    bundles = [[rng.choice([{'kind': 'text', 'text': 'a\nb'}, {'kind': 'url', 'text': 'https://x/'}, {'kind': 'markdown', 'text': '# h'},
+                                            {'kind': 'image', 'mime': 'image/png', 'data': 'QQ=='}]) for _ in range(rng.randint(0, 4))] for _ in range(100)]
+                    got = page.evaluate('lists => lists.map(l => webUiShelf.shelfBundle(l))', bundles)
+                    self.assertEqual(got, [web_ui.shelf_bundle(b) for b in bundles])
+                    self.assertEqual(page.evaluate('webUiShelf.shelfMaxChars(33554432)'), web_ui.shelf_max_chars(33554432))
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_adding_filtering_ordering_copying_and_forgetting(self):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import PNG_B64
+        import base64
+        import web_ui
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    context = browser.new_context(viewport={'width': 900, 'height': 1000})
+                    context.add_init_script("""window.__copied = []; window.__paste = '';
+                        Object.defineProperty(navigator, 'clipboard', {value: {writeText: async t => { window.__copied.push(t) }, readText: async () => window.__paste}});""")
+                    page = context.new_page()
+                    errors, requests = [], []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/shelf.html')
+                    page.on('request', lambda request: requests.append(request.url))
+                    box, status = page.locator('[data-shelf-input]'), page.locator('[data-shelf-status]')
+                    add = lambda text: (box.fill(text), page.locator('[data-shelf-add]').click())
+                    add('   ')
+                    self.assertIn('Nothing to add', status.text_content())
+                    for text in ('first note', 'https://example.com/a', '# Heading\n- point [l](http://u)', PNG_B64):
+                        add(text)
+                    self.assertEqual(box.input_value(), '')
+                    kinds = lambda: [li.get_attribute('data-kind') for li in page.locator('.ui-shelf-item').all()]
+                    visible = lambda: [li.get_attribute('data-kind') for li in page.locator('.ui-shelf-item').all() if li.is_visible()]
+                    self.assertEqual(sorted(kinds()), ['image', 'markdown', 'text', 'url'])
+                    img = page.locator('.ui-shelf-item[data-kind="image"] img')
+                    img.wait_for()
+                    self.assertEqual(page.evaluate("document.querySelector('.ui-shelf-item img').naturalWidth"), 2)
+                    # A GIF is refused as an image and kept as text, saying why.
+                    gif = base64.b64encode(b'GIF89a\x01\x00\x01\x00' + bytes(80)).decode()      # long enough to look like an image, but a GIF
+                    add(gif)
+                    self.assertIn('unsupported_format', status.text_content())
+                    self.assertEqual(visible().count('text'), 2)
+                    # Filters are radios drawn by CSS only.
+                    page.locator('label[for="shelf-kind-url"]').click()
+                    self.assertEqual(visible(), ['url'])
+                    page.locator('label[for="shelf-kind-markdown"]').click()
+                    self.assertEqual(visible(), ['markdown'])
+                    page.locator('label[for="shelf-kind-all"]').click()
+                    self.assertEqual(len(visible()), 5)
+                    # Order: newest first by default; oldest first reverses it; the layout follows the order.
+                    top = lambda: [li.get_attribute('data-id') for li in sorted(page.locator('.ui-shelf-item').all(), key=lambda li: li.bounding_box()['y'])]
+                    self.assertEqual(top(), ['5', '4', '3', '2', '1'])
+                    page.locator('label[for="shelf-sort-oldest"]').click()
+                    self.assertEqual(top(), ['1', '2', '3', '4', '5'])
+                    # Manual: Up/Down swap neighbours among the visible items and switch to manual order.
+                    page.locator('.ui-shelf-item[data-id="1"] [data-act="down"]').click()
+                    self.assertEqual(top(), ['2', '1', '3', '4', '5'])
+                    self.assertTrue(page.locator('#shelf-sort-manual').is_checked())
+                    page.locator('.ui-shelf-item[data-id="3"] [data-act="up"]').click()
+                    self.assertEqual(top(), ['2', '3', '1', '4', '5'])
+                    page.locator('.ui-shelf-item[data-id="2"] [data-act="up"]').click()      # already first: nothing moves
+                    self.assertEqual(top(), ['2', '3', '1', '4', '5'])
+                    # Copying: one item, the plain form of Markdown, and a bundle of the picked items in the shown order.
+                    copied = lambda: page.evaluate('window.__copied')
+                    page.locator('.ui-shelf-item[data-id="3"] [data-act="copy"]').click()
+                    page.locator('.ui-shelf-item[data-id="3"] [data-act="plain"]').click()
+                    page.wait_for_function('window.__copied.length === 2')
+                    self.assertEqual(copied(), ['# Heading\n- point [l](http://u)', web_ui.markdown_plain('# Heading\n- point [l](http://u)')])
+                    page.locator('.ui-shelf-item[data-id="1"] input[type=checkbox]').check()
+                    page.locator('.ui-shelf-item[data-id="3"] input[type=checkbox]').check()
+                    page.locator('[data-shelf-bundle]').click()
+                    page.wait_for_function('window.__copied.length === 3')
+                    self.assertEqual(copied()[2], web_ui.shelf_bundle([{'kind': 'markdown', 'text': '# Heading\n- point [l](http://u)'}, {'kind': 'text', 'text': 'first note'}]))
+                    # Pasting from the clipboard goes through the same rules.
+                    page.evaluate("window.__paste = 'https://example.org/pasted'")
+                    page.locator('[data-shelf-paste]').click()
+                    page.wait_for_function("document.querySelectorAll('.ui-shelf-item').length === 6")
+                    # The prompt workbench previews and copies what Python builds, with the image attached on request.
+                    page.locator('summary', has_text='Prompt workbench').click()
+                    page.locator('[name=goal]').fill('  Summarize  ')
+                    page.locator('[name=raw]').fill('raw text')
+                    self.assertEqual(page.locator('[data-shelf-prompt]').text_content(), web_ui.build_prompt({'goal': 'Summarize', 'raw': 'raw text'}))
+                    page.locator('[data-shelf-attach]').click()
+                    size = len(base64.b64decode(PNG_B64))
+                    self.assertEqual(page.locator('[data-shelf-prompt]').text_content(),
+                                     web_ui.build_prompt({'goal': 'Summarize', 'raw': 'raw text'}, {'mime': 'image/png', 'bytes': size}))
+                    page.locator('[data-shelf-copy-prompt]').click()
+                    page.wait_for_function('window.__copied.length === 4')
+                    self.assertTrue(copied()[3].startswith('# System Prompt Draft'))
+                    # Removing and clearing; and nothing is stored or sent anywhere.
+                    page.locator('.ui-shelf-item[data-id="2"] [data-act="remove"]').click()
+                    self.assertEqual(page.locator('.ui-shelf-item').count(), 5)
+                    state = page.evaluate("""async () => ({local: localStorage.length, session: sessionStorage.length, cookie: document.cookie,
+                        databases: (await indexedDB.databases()).length, caches: (await caches.keys()).length})""")
+                    self.assertEqual(state, {'local': 0, 'session': 0, 'cookie': '', 'databases': 0, 'caches': 0})
+                    self.assertEqual([r for r in requests if not r.startswith('data:')], [])
+                    page.locator('[data-shelf-clear]').click()
+                    self.assertEqual(page.locator('.ui-shelf-item').count(), 0)
+                    page.locator('[data-shelf-add]').click()
+                    box.fill('kept?'); page.locator('[data-shelf-add]').click()
+                    page.reload()
+                    self.assertEqual(page.locator('.ui-shelf-item').count(), 0)               # a reload empties the shelf
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_shelf_reads_in_every_theme_and_fits_a_phone(self):
+        from test_python_wrapper import PNG_B64
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    for width in (320, 390, 900):
+                        with self.subTest(width=width):
+                            page = browser.new_page(viewport={'width': width, 'height': 800})
+                            page.goto(origin + '/shelf.html')
+                            for text in ('x' * 300, 'https://example.com/' + 'a' * 200, '# H\n- ' + 'word ' * 40, PNG_B64):
+                                page.locator('[data-shelf-input]').fill(text)
+                                page.locator('[data-shelf-add]').click()
+                            self.assertEqual(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), True)
+                            page.close()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()
