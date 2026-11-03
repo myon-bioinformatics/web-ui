@@ -152,7 +152,7 @@ Use `write_js(output_dir)` when only browser modules are needed; source checkout
 Run the static contract checks locally:
 
 ```sh
-python -m unittest discover -s tests -v
+python -S -m unittest discover -s tests -p test_static_contract.py -v
 ```
 
 Pytest lanes, including those contract modules, run with uv:
@@ -359,3 +359,9 @@ unit tests alone do not establish browser execution.
 explicitly loaded `controls.js` binds section selection to text output; native
 controls and disclosure work without JS. See [one-liners and the Markdown
 boundary](docs/python-controls.md).
+
+## Focused test discovery
+
+See [standard-library discovery commands](docs/unittest-discovery.md) for
+validated `python -S -m unittest discover` recipes, filename/name filtering,
+and the boundary with the full pytest suite.
