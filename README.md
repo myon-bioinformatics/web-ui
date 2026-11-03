@@ -52,6 +52,129 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 [Motion and clock ownership](docs/world-motion.md) explains Python-generated plans, the browser
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 
+Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a
+`player` that walks to the spot you tap, and an info `board`. The board has a clock (`"offset_label": true` adds the UTC offset such as
+`UTC+9`, never a place name), optional **zone clocks** (`"zones": [{"id": "tokyo", "label": "Tokyo", "tz": "Asia/Tokyo"}]`, up to 6;
+Python builds each zone's offset table from the system tz database with `zoneinfo`, so DST is never hand-written, and the page only looks it
+up; the table covers 2020-2040, `zone_rows` / `zone_offset`), items with `"at": "HH:MM"` ("in N min"), and **gauges**: `{"text": "Open", "gauge": {"from": "09:00", "to": "18:00",
+"cells": 10, "glyphs": "hourglass"}}` fills `cells` glyphs as the window passes (`from` after `to` runs past midnight). `glyphs` is a preset
+(`GAUGE_GLYPHS`: hourglass, moon, heart, square, dot, block, star) or any two short symbols `["🔥", "🪵"]` (elapsed, remaining); the
+hourglass is just one choice. An item with `"zone": "tokyo"` (an `at` or a `gauge`) counts in that zone's local time instead of the viewer's. `"post": true` adds a one-line form: what a visitor writes is cleaned (`clean_message`), stamped `HH:MM`
+and shown **on that page view only**: no storage, cookie, cache or request, and a reload clears it (Python and Chromium tests check
+this). It is not shared with other visitors. All rules (`gauge_state`, `clock_label`, `utc_offset_label`, `travel_seconds`, ...) live in Python and
+the page's script is tested to give identical results.
+
+Catalogue as a map: `catalogue_world(items)` turns a flat list `{id, label, group, emoji?, category?, body?}` into a world: one floor per group
+(more than 64 in a group continue on another floor, at most 8 floors), a spot per item on a grid of multiples of 8, filter chips from
+`category`, and an info sheet from `body`; 198 screens fit five floors. Map your own fields first (see its docstring for flutter_navigation_basic's
+`screens.json`); the data stays with its owner.
+
+App shell: `showcase_document(spec)` (`web-ui-showcase/1`, example in `EXAMPLES["showcase"]`, generated as `examples/showcase.html`) builds a header, a
+rail (256 px at 1200+, 80 px from 900) or bottom bar (narrower) and sections that switch through radio buttons: no reload, and no script for
+switching. Classes `ui-shell*`, `ui-rail*`, `ui-bottom-*`, `ui-icon-button`; the optional favorite button uses `bindToggles` from ui.js (memory only)
+and the theme list uses `bindTheme`. It replaces the pinned CSS copy in flutter_navigation_basic's `experiments/ui-showcase-html`.
+
+Coordinates (`examples/coordinates.html`): `parse_coordinate` (full-width digits are read; hex is refused), `try_parse_maps_url` (`ll=`, `query=`/`q=`, the `!3d..!4d..`
+place pin before the `@` viewport centre; tried as written, decoded once and decoded repeatedly), `to_dms` with the rounding carry, `tolerance_area` (the box around a
+radius, date-line and pole cases), `zoom_for_radius`, `xyz_tile`, `maps_urls` and `area_texts` (JSON, bbox, Google Maps and MapKit snippets, area links), from
+flutter_navigation_basic's coordinate tool. Its Dart tests and shared golden vectors (`tests/fixtures/coordinate_area_cases.json`) are the oracle; `coordinates.js` equals
+Python on 500+ random areas (every copyable text byte for byte), zooms, tiles and 800 Maps-URL variants. Short-link expansion needs a network and stays out.
+
+Photo studio (`examples/photo-studio.html`): frames and stamps on a photo, all in the page and in memory. Python is the reference: `photo_sniff` (PNG, JPEG, WebP, GIF, AVIF, HEIC
+from the magic bytes; JPEG progressive and EXIF Orientation 1-8 with the marker scan that skips an XMP block and fill bytes), `photo_header_size` (the width and height a PNG, GIF,
+JPEG or WebP header declares, read without decoding, so the 40-megapixel budget is checked before any engine decode), `photo_decide` (Flutter's order: a declared type that is not
+`image/*`, empty or over 32 MiB, the budget, the engine decode, the budget again; HEIC that cannot be decoded says so), `photo_document_size` (two thirds, long side at most 4096),
+rectangles and shapes (`photo_rect_*`, `photo_shape_contains`, `photo_describe`, hit targets), `PhotoHistory` (20 steps, gestures as one step) and `PhotoStudio` (drag to create,
+move, resize, stamps, spray, undo) as one state machine, from flutter_navigation_basic's `lib/features/photo_studio`. Its Dart tests and `import_compat` fixtures are the golden
+values (`tests/fixtures/photo_import_cases.json`, bytes copied unchanged with their sha256 and the outcome Flutter measured for each), and Pillow is the independent oracle for sizes,
+orientation and progressive flags. `photo.js` equals Python exactly on 1,500+ damaged and generated files, 1,500 import decisions, 600 random rectangles and 90-step random
+edit sessions (about 10,000 steps compared state by state); a mutation in any rule fails those tests.
+**Platform differences absorbed.** EXIF Orientation is neutralised in the bytes (two bytes) and the page turns the picture itself with `photo_orientation_matrix`, so engines that turn
+EXIF pictures on their own and engines that do not draw the same upright pixels (the page's pixels equal Pillow's `exif_transpose`); the blob is given the type the bytes show, not the
+one the file claims; pointer events with `touch-action: none` and a pointer capture, so a finger edits the canvas instead of scrolling the page; the canvas is kept under 16 million
+pixels; the PNG is saved with `a[download]` (opened in a tab where that is missing) and shared where `navigator.canShare` allows. **What is not claimed.** "Check this browser" decodes
+nine tiny pictures and reports, as JSON shaped like the Flutter app's `evidence/*.json`, what *this* browser decodes (`loader_browser_canvas_adapter`) and whether it turns EXIF pictures
+itself. Chromium results are measured here; Firefox and WebKit run in CI; iOS Safari (HEIC, camera, Share, `download`) is **not verified** until the page is opened on a device and
+its JSON is kept; a browser emulation is not a device (see the platform notes below).
+
+Composition studio (`examples/composition-studio.html`): chord theory (`scale`, `diatonic_chord`, `convert_progression` for Roman numerals, `chord_tones`,
+`chord_with_inversion`, `transpose_key`, `fifth_neighbor`), metronome timing from elapsed time (`metronome_position`, `beat_micros`, `duration_label`), `tap_tempo`,
+`parse_notes` / `note_bars` and a reproducible `song_seed(seed)`, from flutter_navigation_basic's composition_generator. Its Dart tests are the golden values;
+`composition.js` is checked against Python on every key, mode, chord quality and inversion, 1,500 metronome positions and random progressions, tap trains, notes
+and seeds. Deliberate differences: separators are ASCII whitespace and commas, rounding is half up on integers, and seeds use `mulberry32`.
+
+Door-to-Door and emoji transitions (`examples/door.html`): `door_validate` keeps one emoji per page (variation selectors and spaces do not count, so `🗺️` and
+`🗺` collide) and only safe targets (a relative path or an http(s) address); `emoji_path("🏠 → 🗺️ → 🌍 ↔ 🕶️", pages)` expands `A → B` (go) and `A ↔ B` (go and come
+back) into the hrefs visited, and an unknown emoji returns nothing at all; `door_options` orders the pull-down as Home, the drawn discoveries, then the rest.
+The draw is seeded (`mulberry32`, `door_draw`): the same seed draws the same pages in Python and in the page (`door.js`), checked bit for bit in Chromium.
+A listener on `ui-door-leave` can cancel a trip (a "really leave?" guard) without a dialog.
+
+Clipboard shelf (`examples/clipboard-shelf.html`): paste text, a URL, Markdown or a Base64 image into a shelf that lives in the page only (no storage, no
+requests; a reload empties it). Python is the reference: `shelf_classify`, `markdown_plain`, `looks_like_image`, `decode_image_text` (strict: PNG, JPEG,
+WebP by their first bytes, a declared type must agree, URL-safe Base64, `%3D` and missing padding are refused, 32 MiB cap), `build_prompt` (the prompt
+workbench) and `shelf_bundle`. `shelf.js` gives identical answers; Chromium checks it on Ironmate's 19 Base64 cases
+(`tests/fixtures/base64_bridge_cases.json`, Ironmate@56020aef) and on seeded fuzz. Filtering and ordering are radio buttons, so they are CSS.
+
+Clipboard loops (cut, paste, copy back, repeat), on the shelf page and the photo studio: the shelf takes text, images from a file, a drop, a paste or Base64, keeps at most 20
+items and 32 MiB (Ironmate's budget; Flutter had none; the page checks again when a slow read finishes) and drops a read that a Clear overtook. `clipboard_pick` reads the
+system clipboard in Ironmate's order, with injected `read_text` / `read` so every case is testable: image text first (an invalid `data:image` or an image signature is an
+error, never a stale older image), then the first PNG, JPEG or WebP item (a denied text read does not stop it; an oversized item is never read), then (shelf only) plain text;
+the failure is one of `clipboard-unsupported`, `-denied`, `-invalid-image`, `-read-failed`, `-no-image`. Ironmate's 35 scenarios (`tests/studio_clipboard.cjs`) are the golden
+values, and the same code in `shelf.js` and `photo.js` equals Python on them, on damaged texts and on the 32 MiB boundary (raw, URL, binary, over by one byte). The
+temporary clipboard (`session_clip_save`, from Flutter's `SessionTextClipboard` and its Dart tests): 30 entries, 100,000 UTF-16 units each (an emoji counts 2), a repeat moves
+to the top. It lives in the page, so a reload empties it and, with no storage, it does not follow you to another page (Flutter kept it while you navigated). The photo studio's
+`Paste photo` uses the same reading order, and `Copy as Base64` hands the exported PNG back as `data:image/png;base64,...` or plain Base64, which the shelf reads back byte for
+byte (`png_base64_text`). Ironmate's image studio (layers, text, JSON scenes, SVG, CLI) is a separate editor and is not absorbed.
+
+Playground (`examples/playground.html`): the Counter Playground, its hold-to-repeat button and the Irony generator, from flutter_navigation_basic's `counter_playground`,
+`hold_repeating_button` and `irony_generator`. `counter_apply(state, action, value)` is the controller as a pure function (clamped to -100..100, steps 1, 5 and 10, a history of the
+eight newest values, a move that changes nothing leaves the burst token alone, `undo` returns to the next value and records nothing); `counter_effect` / `counter_label` /
+`counter_status_key` are the orb strip (at most six), the line under it and the seven-step status text. `hold_repeat_count(held_ms, buttons=)` is the hold rule: nothing for 350 ms, then once,
+then every 70 ms, primary button only, and the click after a hold is swallowed once. The irony card: `irony_next` never returns the one on screen (Dart's pick among the other
+`n - 1`, skipping the current index), and `irony_drop(arena, card, handle)` decides what a drag does from three rectangles: the card entirely outside the arena (edges that only touch
+do not count as inside) spawns the next message, otherwise the whole handle plus 8 px of padding must be inside or the card moves by the least that brings it in (a handle as large
+as the arena is centred). The Dart tests are the golden values; `playground.js` equals Python on seeded action runs, 3,000 random drops and every counter from -105 to 105, and
+Chromium drives the page (mouse, a fake clock for the hold). Deliberate differences: the random pick uses the Door's seeded `mulberry32` (Dart's `Random(7)` cannot be reproduced),
+and a "New irony" button gives keyboard users what only the drag gave. The probe's two adapters are `web-ui-playground` (the counter) and `web-ui-irony`; the second opens at its
+heading because the probe wants everything on the first screen.
+
+Test reports (`examples/test-report.html`): the JUnit and test-runner tools of flutter_navigation_basic (`outcomes`, `flutter_machine_junit`, `validate_runner_junit`, `junit_history`,
+`failure_identity`, `multi_test_runner`, `node_test_runner`, `expected_child_failure`), in the one file. `junit_report(xml)` reads a JUnit report **failing closed** (missing or malformed XML,
+a root that is not a testsuite, no testcase, a testcase without a name, a DTD or entity declaration, over 1 MB), finds testcases at any depth (Node nests `describe()` blocks), and counts
+`passed / failed / skipped / xfailed / xpassed / error` (a `skipped` that says `known:` or `xfail:`, or has type `pytest.xfail`, is an xfail); a failure carries the SHA-256 of its message,
+not the message. `flutter_outcomes(events)` tallies the Flutter JSON reporter the same way and `flutter_machine_junit(events)` converts it to per-case JUnit (hidden loading tests dropped, a
+failed load kept, `classname` is the suite path, anything incomplete is an error). `junit_failure_records` / `junit_history` / `junit_diff` give a failure its identity (class, test with the
+parameter suffix removed, kind) and say what is new, recurring or resolved between two runs; `failure_ledger_update` and `attempt_history` keep fingerprints and the "a retry never masks
+the first failure" record; `runner_command`, `run_test_suite` and `node_test_run` are the allowlisted Deno / Playwright / Node runners (no shell, files inside the repository, stale reports
+removed first, a missing or all-skipped report fails closed); `expected_child_failure` runs a command that is *meant* to fail and keeps bounded evidence. The command line:
+`web_ui.py --junit FILE... [--previous FILE]`, `--flutter-events FILE [--to JUNIT.xml]`, `--run-tests RUNNER --test-file F`, `--expect-exit CODE --output-dir DIR -- command`.
+The Python tests of those eight tools are the golden values (ported case by case); `report.js` equals Python on 900 Flutter event streams (a third of them damaged), about 800 JUnit documents
+(generated, damaged and hand-picked: namespaces, CDATA, comments, entities, a DTD, the 1 MB edge, 250-emoji names) and seeded history and ledger runs; its SHA-256 is the page's own
+(no `crypto.subtle`, which needs a secure context) and equals `hashlib`. Deliberate differences: a failed, non-hidden `loading <file>` test is an `error` (the tally used to skip
+every loading test, so a compile error looked like zero tests); `ok` needs a passed test (nothing ran is not green); a boolean is never an ID and only JSON `true` is a flag (the page
+cannot tell `1.0` from `1`); only strings are names, reasons and error text; messages never contain the input; characters XML 1.0 cannot carry are written as U+FFFD; a missing class is
+`(none)` in an identity (the originals refused the whole report). The BTK adapter is `web-ui-test-report`.
+
+MCP lab (`examples/mcp-lab.html`): flutter_navigation_basic's `lib/shared/mcp` and the mock server's routes (`build_tools/src/mock_mcp.dart`), as an MCP server that lives in the page
+(nothing is sent). `McpFoundation` is the dual-era demo server as a state machine: legacy `2025-03-26` (`initialize` opens a session, `Mcp-Session-Id` after it) and current-official
+`2026-07-28` (`server/discover`, no session, `_meta` on every request, results carry `resultType` and lists `ttlMs` and `cacheScope`); `echo`, `demo://readme`, `greet`. `McpRoutes` is
+the HTTP layer with its status rules (400/404 for a missing or unknown session, 400 for a request that does not match its `_meta`, 404 for an unknown current-era method but 200 for a legacy
+one, 202 for an accepted notification, 403 for an Origin that is not listed, 401 or 403 for a Bearer, 405 for a GET) and the OAuth discovery documents; `McpClient` checks everything it
+is told (well-formed JSON-RPC, the id it sent, a non-2xx is never success, no session is kept from a failure) and runs both echo demos; `mcp_validate_modern` is the header/body check in the
+Dart order. The helpers: `mcp_header_encode/decode` (a header name that is not printable ASCII travels as `=?base64?...?=`, checked strictly), `pkce_challenge_s256` (RFC 7636 Appendix B is
+the oracle), `oauth_server_metadata` / `oauth_resource_metadata` (a server's silence is never read as a promise), `bearer_inspect` (expired is reported before a wrong audience; the signature
+is not checked), `rpc_response_parse`. The Dart tests are the golden values (ported case by case); `mcp.js` answers every request of 120 seeded scripts (8,400 requests with damaged
+envelopes, headers, Origins and Bearers) exactly as Python's server does, and equals it on the client's handling of 26 canned replies, 800 header names, PKCE, session ids, Bearer
+tokens and OAuth documents. Deliberate differences: ids and verifiers come from an injected random source (Dart's `Random(42)` cannot be reproduced; the default is the OS's), the
+Bearer clock is in seconds and `Authorization` splits on ASCII whitespace, and the page cannot tell `-32603.0` from `-32603`. The in-process transport of the Dart repo (session errors as
+400 and 404, no Origin, no Authorization) is `mcp_foundation_transport`. The Digest/HMAC auth matrix is a separate mock and is not part of this. BTK adapters: `web-ui-mcp-lab`, `web-ui-mcp-send`.
+
+curl import: `parse_curl(text)` reads a curl command (the editor's subset: `-X -H -d --data-urlencode -u -G -I -A -e --url`, quoting, line continuations,
+full-width characters) into method, URL, headers, query, body mode and form fields, with credentials marked `sensitive`; `mask_curl` shows them
+as `***`. It never runs curl or sends anything, and error codes never contain the input. The page's `curl.js` (front page, "Request draft")
+reads it the same way: Chromium checks it against Python on flutter_navigation_basic's 47 golden cases (`tests/fixtures/curl_request_cases.json`,
+copied from its `python/fixtures/` at 39d659e) and 1,500 seeded inputs.
+
 `ui.js` (`js_source("ui.js")`) is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
 clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
 (click-to-enlarge in a `<dialog>`). Import only what a page needs.
@@ -229,6 +352,24 @@ wrong hashes, stale run IDs and failed receipts. These are integrity/run checks;
 they add no screen-content or pixel-regression assertions.
 
 Public source placement and automatic Python CI updates: [vendor automation](docs/vendor-automation.md).
+
+## Platform differences: what is claimed, and where it is checked
+
+Python and JavaScript run everywhere; what differs is the engine, the device and the input. The doctrine is browser-test-kit's (`docs/platform-doctrine.md`), applied here:
+
+- **Layer 1, the rules**: Python is the reference and the page's module gives identical answers (Chromium compares them on seeded fuzz; a one-character change in a rule fails a test).
+  Engine and OS do not enter, so this layer is the same everywhere by construction.
+- **Layer 2, the page in an engine**: the photo studio's page tests (upright pixels equal Pillow, drawing, history, export, import outcomes) and browser-test-kit's probe
+  (`python web_ui.py --btk-adapter list`, one `btk-platform-adapter/1` per page that has state, built from Python; key elements fit without overflow, overlap or clipping at
+  320-1280 px and a real click or tap changes what the page promises). `.github/workflows/platform-matrix.yml` runs both on Chromium, Firefox, WebKit, a Pixel 7 profile and an
+  iPhone 13 profile on Linux runners and keeps each engine's own decode report (`Check this browser`) as an artifact. Chromium and its Pixel profile also run locally.
+- **Layer 3, a real device**: not run. Pixel and iPhone profiles are emulation; Playwright's WebKit is not Safari. iOS Safari (HEIC, camera, Share, `download`, the paste bubble)
+  is **not verified** until the page's JSON is kept from a device. Nothing here says otherwise.
+
+Running the probe against the local pages: `python -S web_ui.py --site build/site`, serve it on port 8000, then
+`python -S web_ui.py --btk-adapter web-ui-photo-studio > adapter.json` and `python browser-test-kit/tools/platform_probe.py collect --browser chromium --profile pixel --adapter adapter.json
+--widths 320 384 --out out`. It found a real defect while this was written: the showcase title was clipped at 320 px (it now wraps). The examples are generated, not published, so the probe
+uses `http://127.0.0.1:8000/examples/...` (`--url` overrides it); the page viewer for multi-browser captures needs https pages and stays Flutter-only for now.
 
 ## Multi-browser captures of Flutter pages
 

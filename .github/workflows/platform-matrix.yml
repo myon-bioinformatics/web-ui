@@ -1,0 +1,146 @@
+name: Platform matrix
+
+# Where the pages are tried on other engines and emulated devices (Linux runners; the lab for Firefox and WebKit).
+#
+# Layer 1 (the rules are the same everywhere) is proved by the parity tests: Python is the reference, the page's JavaScript must give identical answers.
+# Layer 2 (the page works in this engine) is the photo studio's and clipboard loops' page tests plus browser-test-kit's probe: key elements fit the screen at several widths without
+# overflow, overlap or clipping, and a real click (a tap on touch profiles) changes what the page promises.
+# Layer 3 (a real device) is NOT run here. Pixel and iPhone profiles are emulation, and Playwright's WebKit is not Safari: iOS Safari (HEIC, camera, Share, download)
+# stays "not verified" until the page's "Check this browser" JSON is kept from a device.
+on:
+  pull_request:
+    paths:
+      - 'web_ui.py'
+      - 'tests/integration/controls_browser.py'
+      - 'tests/fixtures/photo_import_cases.json'
+      - '.github/workflows/platform-matrix.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  lane:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
+          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
+          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests'}
+          - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
+          - {name: webkit / iPhone 13 (emulation), browser: webkit, profile: iphone, device: 'iPhone 13', tests: 'PhotoPageBrowserTests'}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check out pinned browser-test-kit (the platform probe)
+        uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/browser-test-kit
+          ref: cc7322bc2e0a7c8c28f43380f6417c9e00a819f0
+          path: .browser-test-kit
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: 'latest'
+          python-version: "3.15"
+          enable-cache: false
+      - name: System libraries and the browser (bounded; WebKit needs many packages)
+        timeout-minutes: 20
+        run: uv run --locked --group gradio python -m playwright install --with-deps --only-shell "${{ matrix.browser }}"
+      - name: Photo studio in this engine (rules equal Python, upright pixels equal Pillow, drawing, history, export)
+        env:
+          WEBUI_BROWSER: ${{ matrix.browser }}
+          WEBUI_DEVICE: ${{ matrix.device }}
+          WEBUI_EVIDENCE_DIR: build/platform/photo-evidence
+          TESTS: ${{ matrix.tests }}
+        run: |
+          read -ra names <<< "$TESTS"
+          args=()
+          for name in "${names[@]}"; do args+=("tests.integration.controls_browser.$name"); done
+          uv run --locked --group gradio python -m unittest -v "${args[@]}"
+      - name: Build and serve the example pages
+        run: |
+          python3 -S web_ui.py --site build/site
+          python3 -m http.server 8000 --directory build/site > /tmp/web-ui-http.log 2>&1 &
+          python3 - <<'PY'
+          import time
+          import urllib.request
+
+          for attempt in range(50):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:8000/examples/index.html", timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  if attempt == 49:
+                      raise
+                  time.sleep(0.1)
+          PY
+      - name: browser-test-kit probe (layout at several widths and a real click, per page)
+        env:
+          BROWSER: ${{ matrix.browser }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          mkdir -p build/platform/adapters build/platform/app-results
+          status=0
+          mapfile -t ids < <(python3 -S web_ui.py --btk-adapter list)
+          for id in "${ids[@]}"; do
+            python3 -S web_ui.py --btk-adapter "$id" > "build/platform/adapters/$id.json"
+            uv run --locked --group gradio python .browser-test-kit/tools/platform_probe.py collect --browser "$BROWSER" --profile "$PROFILE" \
+              --adapter "build/platform/adapters/$id.json" --widths 320 384 --width-step 8 --out build/platform/app-results \
+              --evidence-dir "build/platform/app-results/$id/$RUNNER_OS-$BROWSER-$PROFILE" || status=1
+          done
+          python3 -S .browser-test-kit/tools/platform_probe.py summary build/platform/app-results > build/platform/summary.txt || status=1
+          { echo 'Local example pages; Pixel and iPhone profiles are emulation, not devices; Playwright WebKit is not Safari.'; echo '```text'; cat build/platform/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: platform-web-ui-${{ matrix.browser }}-${{ matrix.profile }}
+          path: build/platform
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    needs: lane
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check out pinned browser-test-kit (merge and render)
+        uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/browser-test-kit
+          ref: cc7322bc2e0a7c8c28f43380f6417c9e00a819f0
+          path: .browser-test-kit
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: platform-web-ui-*
+          path: collected
+      - name: One matrix page and the browsers' own evidence
+        run: |
+          mkdir -p matrix
+          python3 -S .browser-test-kit/tools/platform_probe.py merge collected --out matrix/dataset.json
+          python3 -S .browser-test-kit/tools/platform_probe.py render matrix/dataset.json --out matrix/index.html
+          python3 -S .browser-test-kit/tools/platform_probe.py summary matrix/dataset.json > matrix/summary.txt || true
+          cp -r collected matrix/collected
+          { echo '```text'; cat matrix/summary.txt; echo '```'; echo 'Per-engine decode evidence (what each engine said about nine tiny pictures): artifact platform-web-ui-matrix, collected/*/photo-evidence/*.json'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: platform-web-ui-matrix
+          path: matrix
+          if-no-files-found: error
+          retention-days: 30

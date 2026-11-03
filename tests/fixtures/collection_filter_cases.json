@@ -247,6 +247,623 @@
         "query": "unmatched"
       },
       "expected": []
+    },
+    {
+      "name": "range-min-only-drops-items-without-a-number",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "ranges": {
+          "score": {
+            "min": 2
+          }
+        }
+      },
+      "expected": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ]
+    },
+    {
+      "name": "range-both-bounds-inclusive",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "ranges": {
+          "score": {
+            "min": 1,
+            "max": 2.5
+          }
+        }
+      },
+      "expected": [
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ]
+    },
+    {
+      "name": "sort-descending-is-stable-and-puts-missing-last",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "sort": {
+          "key": "score",
+          "descending": true
+        }
+      },
+      "expected": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        }
+      ]
+    },
+    {
+      "name": "sort-ascending-puts-missing-last",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "sort": {
+          "key": "score"
+        }
+      },
+      "expected": [
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        },
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        }
+      ]
+    },
+    {
+      "name": "sort-by-two-keys-in-code-point-order",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "sort": [
+          {
+            "key": "group",
+            "descending": true
+          },
+          {
+            "key": "name"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        }
+      ]
+    },
+    {
+      "name": "window-after-sort",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "sort": {
+          "key": "name"
+        },
+        "offset": 1,
+        "limit": 2
+      },
+      "expected": [
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ]
+    },
+    {
+      "name": "filter-then-sort-then-window",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "query": "a",
+        "text_fields": [
+          "name"
+        ],
+        "ranges": {
+          "score": {
+            "min": 1
+          }
+        },
+        "sort": {
+          "key": "score"
+        },
+        "limit": 2
+      },
+      "expected": [
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        }
+      ]
+    },
+    {
+      "name": "group-by-keeps-first-seen-order",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "group_by": "group"
+      },
+      "expected": [
+        {
+          "value": "x",
+          "items": [
+            {
+              "id": "a",
+              "name": "Alpha",
+              "score": 3,
+              "group": "x"
+            },
+            {
+              "id": "c",
+              "name": "Gamma",
+              "score": 3,
+              "group": "x"
+            },
+            {
+              "id": "e",
+              "name": "Eps",
+              "score": 2.5,
+              "group": "x"
+            }
+          ]
+        },
+        {
+          "value": "y",
+          "items": [
+            {
+              "id": "b",
+              "name": "beta",
+              "score": 1,
+              "group": "y"
+            },
+            {
+              "id": "d",
+              "name": "Delta",
+              "group": "y"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "group-by-missing-value-is-null-and-types-stay-apart",
+      "request": {
+        "items": [
+          {
+            "id": "a",
+            "name": "Alpha",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "b",
+            "name": "beta",
+            "score": 1,
+            "group": "y"
+          },
+          {
+            "id": "c",
+            "name": "Gamma",
+            "score": 3,
+            "group": "x"
+          },
+          {
+            "id": "d",
+            "name": "Delta",
+            "group": "y"
+          },
+          {
+            "id": "e",
+            "name": "Eps",
+            "score": 2.5,
+            "group": "x"
+          }
+        ],
+        "group_by": "score"
+      },
+      "expected": [
+        {
+          "value": 3,
+          "items": [
+            {
+              "id": "a",
+              "name": "Alpha",
+              "score": 3,
+              "group": "x"
+            },
+            {
+              "id": "c",
+              "name": "Gamma",
+              "score": 3,
+              "group": "x"
+            }
+          ]
+        },
+        {
+          "value": 1,
+          "items": [
+            {
+              "id": "b",
+              "name": "beta",
+              "score": 1,
+              "group": "y"
+            }
+          ]
+        },
+        {
+          "value": null,
+          "items": [
+            {
+              "id": "d",
+              "name": "Delta",
+              "group": "y"
+            }
+          ]
+        },
+        {
+          "value": 2.5,
+          "items": [
+            {
+              "id": "e",
+              "name": "Eps",
+              "score": 2.5,
+              "group": "x"
+            }
+          ]
+        }
+      ]
     }
   ],
   "invalid": [
@@ -276,6 +893,619 @@
     {
       "items": [],
       "facets": null
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": []
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": {
+        "score": {}
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": {
+        "score": {
+          "min": "1"
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": {
+        "score": {
+          "min": 3,
+          "max": 1
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": {
+        "score": {
+          "min": true
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "ranges": {
+        "score": {
+          "low": 1
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "sort": "score"
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "sort": []
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "sort": {
+        "descending": true
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "sort": {
+        "key": "score",
+        "descending": "yes"
+      }
+    },
+    {
+      "items": [
+        {
+          "v": 1
+        },
+        {
+          "v": "a"
+        }
+      ],
+      "sort": {
+        "key": "v"
+      }
+    },
+    {
+      "items": [
+        {
+          "v": true
+        }
+      ],
+      "sort": {
+        "key": "v"
+      }
+    },
+    {
+      "items": [
+        {
+          "v": [
+            1
+          ]
+        }
+      ],
+      "sort": {
+        "key": "v"
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "offset": -1
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "limit": true
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "limit": 1.5
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "offset": "1"
+    },
+    {
+      "items": [
+        {
+          "t": [
+            "a"
+          ]
+        }
+      ],
+      "group_by": "t"
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "group_by": ""
+    },
+    {
+      "items": [
+        {
+          "id": "a",
+          "name": "Alpha",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "b",
+          "name": "beta",
+          "score": 1,
+          "group": "y"
+        },
+        {
+          "id": "c",
+          "name": "Gamma",
+          "score": 3,
+          "group": "x"
+        },
+        {
+          "id": "d",
+          "name": "Delta",
+          "group": "y"
+        },
+        {
+          "id": "e",
+          "name": "Eps",
+          "score": 2.5,
+          "group": "x"
+        }
+      ],
+      "group_by": 5
     }
   ]
 }
