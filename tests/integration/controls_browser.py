@@ -4955,6 +4955,35 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertLess(grown['fontSize'], text['fontSize'])
         self.assertGreaterEqual(grown['fontSize'], 4)
 
+    def test_a_cancelled_drag_puts_the_layer_back_and_the_list_shows_a_text_layer_in_the_box(self):
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.tool(page, 'select')
+        start = self.scene(page)['layers'][0]
+        before = page.evaluate('() => webUiImageStudio.app.history.items.length')
+        sx, sy = self.at(page, 260, 250)
+        page.mouse.move(sx, sy)
+        page.mouse.down()
+        page.mouse.move(sx + 40, sy + 30)
+        page.mouse.move(sx + 80, sy + 60)
+        page.wait_for_function('x => webUiImageStudio.app.scene.layers[0].x !== x', arg=start['x'])
+        page.evaluate('() => document.querySelector("[data-is=board]").dispatchEvent(new PointerEvent("pointercancel", {bubbles: true}))')
+        page.wait_for_function('x => webUiImageStudio.app.scene.layers[0].x === x', arg=start['x'])
+        page.mouse.up()
+        self.assertEqual((self.scene(page)['layers'][0]['x'], self.scene(page)['layers'][0]['y']), (start['x'], start['y']))
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), before, 'nothing was recorded')
+        self.tool(page, 'text')
+        page.fill('[data-is="text"]', 'First words')
+        self.press(page, 500, 400)
+        page.fill('[data-is="text"]', 'something else')
+        ids = [l['id'] for l in self.scene(page)['layers']]
+        self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[0]}"]'))
+        self.assertEqual(page.input_value('[data-is="text"]'), 'something else', 'a layer without text leaves the box alone')
+        self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[1]}"]'))
+        self.assertEqual(page.input_value('[data-is="text"]'), 'First words', 'a text layer puts its text in the box')
+
     def test_keyboard_nudges_deletes_and_undoes(self):
         page = self.page()
         self.blank(page)
