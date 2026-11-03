@@ -1,0 +1,64 @@
+name: Successor studios
+on:
+  pull_request:
+    paths:
+      - web_ui.py
+      - 'tool/studio-audio/**'
+      - tool/flutter_migration_inventory.py
+      - tests/test_successor_tools.py
+      - tests/integration/successor_browser.py
+      - .github/workflows/successor-studios.yml
+  push:
+    branches: [main]
+concurrency:
+  group: successor-studios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  successor:
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: latest
+          python-version: '3.15'
+          activate-environment: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - run: uv pip install pytest playwright==1.63.0
+      - run: python -m pytest -q tests/test_successor_tools.py
+      - run: npm ci --prefix tool/studio-audio --ignore-scripts
+      - run: node tool/studio-audio/build.mjs build/site/vendor
+      - name: Verify two builds produce identical audio bytes
+        run: |
+          node tool/studio-audio/build.mjs build/repeat/vendor
+          cmp build/site/vendor/tone-studio.min.js build/repeat/vendor/tone-studio.min.js
+          cmp build/site/vendor/tone-studio.LICENSE.txt build/repeat/vendor/tone-studio.LICENSE.txt
+      - run: python -m playwright install --with-deps ${{ matrix.browser }}
+      - name: Start a virtual audio output for headless browser signal tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=studio_test
+          pactl set-default-sink studio_test
+          pactl load-module module-native-protocol-tcp listen=127.0.0.1 port=4714 auth-ip-acl=127.0.0.1
+          pactl info
+      - run: python tests/integration/successor_browser.py -v
+        env:
+          WEBUI_BROWSER: ${{ matrix.browser }}
+          PULSE_SERVER: tcp:127.0.0.1:4714
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: studio-audio-measurement-${{ matrix.browser }}
+          path: build/site/vendor/
+          retention-days: 14
