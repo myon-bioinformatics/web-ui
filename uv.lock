@@ -1666,6 +1666,7 @@ source = { editable = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "pillow" },
     { name = "pytest" },
     { name = "pyyaml" },
 ]
@@ -1682,6 +1683,7 @@ stagehand = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
 ]

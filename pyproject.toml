@@ -12,6 +12,7 @@ dependencies = []
 [dependency-groups]
 # Default sync: pytest and PyYAML only. Stagehand is browser tooling, opt-in via --group stagehand.
 dev = [
+    "pillow>=13.0.0",
     "pytest>=8",
     "PyYAML>=6",
 ]
