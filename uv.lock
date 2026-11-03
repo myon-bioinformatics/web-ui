@@ -1678,6 +1678,10 @@ gradio = [
 stagehand = [
     { name = "stagehand" },
 ]
+world-test = [
+    { name = "anyio" },
+    { name = "pytest" },
+]
 
 [package.metadata]
 
@@ -1693,6 +1697,10 @@ gradio = [
     { name = "pytest", specifier = ">=9.1.1" },
 ]
 stagehand = [{ name = "stagehand", specifier = ">=4" }]
+world-test = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "websockets"
