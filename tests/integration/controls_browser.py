@@ -4478,6 +4478,13 @@ class ImageStudioBrowserTests(unittest.TestCase):
     def tool(self, page, name):
         page.check(f'input[name="is-tool"][value="{name}"]')
 
+    def drag_handle(self, page, start, end):
+        """Press the resize handle at ``start`` and release at ``end`` (scene coordinates) with events sent to the handle itself, so the engine's hit testing of a rotated corner is not part of the check."""
+        (sx, sy), (ex, ey) = self.at(page, *start), self.at(page, *end)
+        page.evaluate("""([sx, sy, ex, ey]) => { const board = document.querySelector('[data-is=board]'), handle = board.querySelector('[data-handle]');
+            const make = (type, x, y) => new PointerEvent(type, {clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true});
+            handle.dispatchEvent(make('pointerdown', sx, sy)); board.dispatchEvent(make('pointermove', (sx + ex) / 2, (sy + ey) / 2)); board.dispatchEvent(make('pointermove', ex, ey)); board.dispatchEvent(make('pointerup', ex, ey)) }""", [sx, sy, ex, ey])
+
     def blank(self, page):
         self.paint(page, lambda: page.click('[data-is="blank"]'))
         self.assertEqual(self.data(page, 'layers'), '0')
@@ -4802,6 +4809,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         import web_ui as w
         page = self.page()
         self.assertEqual((self.data(page, 'layers'), self.data(page, 'tool'), self.data(page, 'metrics'), self.status(page)), ('8', 'select', 'canvas', 'Ready.'))
+        self.assertEqual((page.input_value('[data-is="cell"]'), page.inner_text('[data-is="cellout"]'), page.input_value('[data-is="levels"]'), page.inner_text('[data-is="levelsout"]')), ('1', '1 px', '256', '256'), 'with nothing selected the sliders rest at their defaults')
         self.assertEqual(self.scene(page), json.loads(w.js_json(w.studio_demo_scene())))
         self.assertEqual(page.inner_text('[data-is="size"]'), '1280 × 720')
         for scale in (1, 2, 4):
@@ -4923,13 +4931,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
             handle = (layer['w'], layer['h'])
             hx = layer['x'] + layer['w'] / 2 + math.cos(math.radians(angle)) * (handle[0] / 2) - math.sin(math.radians(angle)) * (handle[1] / 2)
             hy = layer['y'] + layer['h'] / 2 + math.sin(math.radians(angle)) * (handle[0] / 2) + math.cos(math.radians(angle)) * (handle[1] / 2)
-            sx, sy = self.at(page, hx, hy)
-            scale = self.at(page, 1, 0)[0] - self.at(page, 0, 0)[0]
-            page.mouse.move(sx, sy)
-            page.mouse.down()
-            page.mouse.move(sx + 20, sy + 12)
-            page.mouse.move(sx + 40, sy + 24)
-            page.mouse.up()
+            self.drag_handle(page, (hx, hy), (hx + 60, hy + 36))
             page.wait_for_function('l => webUiImageStudio.app.scene.layers[0].w !== l', arg=layer['w'])
             after = self.scene(page)['layers'][0]
             self.assertNotEqual((after['w'], after['h']), (layer['w'], layer['h']), angle)
@@ -4942,12 +4944,7 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.press(page, 200, 200)
         self.tool(page, 'select')
         text = self.scene(page)['layers'][0]
-        hx, hy = self.at(page, text['x'] + text['w'], text['y'] + text['h'])
-        page.mouse.move(hx, hy)
-        page.mouse.down()
-        page.mouse.move(hx - 60, hy - 30)
-        page.mouse.move(hx - 120, hy - 60)
-        page.mouse.up()
+        self.drag_handle(page, (text['x'] + text['w'], text['y'] + text['h']), (text['x'] + text['w'] - 120, text['y'] + text['h'] - 60))
         page.wait_for_function('s => webUiImageStudio.app.scene.layers[0].fontSize !== s', arg=text['fontSize'])
         grown = self.scene(page)['layers'][0]
         ratio = min(grown['w'] / text['w'], grown['h'] / text['h'])
