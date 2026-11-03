@@ -6257,7 +6257,7 @@ def mcp_html() -> str:
             '<label id="mcp-method-label" for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
             '<label for="mcp-path">Path</label><input class="ui-input" id="mcp-path" data-mcp-path value="/mcp" autocomplete="off">'
             '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="3"></textarea>'
-            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="8"></textarea>'
+            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="6"></textarea>'
             '<p><button class="ui-button" type="button" data-mcp-send>Send</button> <button class="ui-button" type="button" data-mcp-reset>Reset the server</button></p>'
             '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-http-status>Nothing sent yet.</p><pre data-mcp-out-headers></pre><pre data-mcp-out-body></pre>'
             '<h3>Run a demo</h3><label for="mcp-demo-text">Text to echo</label><input class="ui-input" id="mcp-demo-text" data-mcp-demo-text value="hello" autocomplete="off">'
