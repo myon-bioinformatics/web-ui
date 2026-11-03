@@ -1455,5 +1455,135 @@ class StudioBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class CoordinatesBrowserTests(unittest.TestCase):
+    """The coordinate tool in Chromium: every rule equals Python's (and so the Dart tests'), and the page works."""
+
+    def serve_page(self):
+        from web_ui import coordinates_document
+        return WorldBrowserTests.serve({'coord.html': coordinates_document()})
+
+    def test_every_rule_in_the_page_equals_pythons(self):
+        import random
+        import web_ui as w
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from test_python_wrapper import AREA_CASES, coordinate_fuzz_urls
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/coord.html')
+                    def agree(name, py, calls, close=False):
+                        got = page.evaluate(f"""calls => calls.map(a => {{ try {{ return {{ok: webUiCoordinates.{name}(...a)}} }} catch (e) {{ return {{error: true}} }} }})""", calls)
+                        for call, result in zip(calls, got):
+                            try:
+                                expected = {'ok': py(*call)}
+                            except ValueError:
+                                expected = {'error': True}
+                            if isinstance(expected.get('ok'), tuple):
+                                expected = {'ok': list(expected['ok'])}
+                            if isinstance(expected.get('ok'), dict) and close:                                  # floats: the same up to the last digit or two
+                                self.assertEqual(result.keys(), expected.keys())
+                                for key, value in expected['ok'].items():
+                                    other = result['ok'][key]
+                                    if isinstance(value, float):
+                                        self.assertAlmostEqual(other, value, delta=1e-9 * max(1, abs(value)), msg=(name, call, key))
+                                    else:
+                                        self.assertEqual(other, value, (name, call, key))
+                            else:
+                                self.assertEqual(result, expected, (name, call))
+                        return got
+                    rng = random.Random(9)
+                    numbers = ['35.681236', '-0', '0', '90', '-90', '90.0000001', '180', '-180.5', '.5', '5.', '+1e1', '1e999', '-1e-5', '٣', '0x10', '1_0', ' 12 ', '３５．５', '－１３９', 'NaN', 'Infinity', '-Infinity',
+                               '', 'north', '1e', 'e1', '--1', '1.2.3', '12\u00a0', '\ufeff7', '1,5']
+                    agree('parseCoordinate', w.parse_coordinate, [[a, b] for a in numbers for b in numbers])
+                    texts = coordinate_fuzz_urls() + ['https://www.google.com/maps/place/Tokyo+Station/@35.680000,139.760000,17z/data=!3d35.681236!4d139.767125', 'https://x/?q=91,0&ll=1,2', '', '  ',
+                                                      'https://maps.apple.com/?q=Tokyo', 'https://x/?ll=1,2%', 'https://x/?ll=%25252C1', 'https://x/?q=1%2C2%2C3', '@1,2', '@1,2z', '@1,2\n']
+                    agree('tryParseMapsUrl', w.try_parse_maps_url, [[t] for t in texts])
+                    values = [0, -0.0, 1e-12, 0.5, 35.681236, -33.8688, 89.99999999, 90, -90, 179.999999999996, -179.5, 180, 59.99999, 0.99999999, 12.345678] + [rng.uniform(-180, 180) for _ in range(400)]
+                    agree('toDms', lambda v, lat: w.to_dms(v, is_latitude=lat), [[v, lat] for v in values for lat in (True, False)])
+                    seconds_edge = [d + m / 60 + sec / 3600 for d in (0, 35, 179) for m in (0, 59) for sec in (0, 59.99, 59.994999, 59.995, 59.9951, 59.999999)]
+                    agree('toDms', lambda v, lat: w.to_dms(v, is_latitude=lat), [[v, True] for v in seconds_edge])
+                    agree('fixed', w.fixed, [[v, n] for v in [0.0078125, 2.5, 0.125, -0.125, 1.005, -1e-9, 0.5, 35.681236] + [rng.uniform(-200, 200) for _ in range(200)] + [k / 128 for k in range(-40, 40)] for n in (0, 2, 6)])
+                    points = [(rng.uniform(-90, 90), rng.uniform(-180, 180), rng.choice([1, 25, 100, 350, 1000, 3000, 12.5, 100000, 5e6, rng.uniform(1, 2e6)])) for _ in range(500)]
+                    points += [(la, lo, r) for la in (0, 89.9999, -89.9999, 90, -90, 80, 85, 35.681236) for lo in (0, 179.999, -179.999, 180, -180, 20) for r in (1, 100, 1000, 1e6)]
+                    points += [(case['latitude'], case['longitude'], case['radius_m']) for case in AREA_CASES]
+                    agree('toleranceArea', w.tolerance_area, [list(p) for p in points], close=True)
+                    texts_got = page.evaluate('points => points.map(p => webUiCoordinates.areaTexts(webUiCoordinates.toleranceArea(...p)))', [list(p) for p in points])
+                    for point, got in zip(points, texts_got):
+                        self.assertEqual(got, w.area_texts(w.tolerance_area(*point)), point)                 # every copyable text, byte for byte
+                    zooms = [(r, lat) for r in (1, 3, 10, 25, 100, 350, 1000, 3000, 1e5, 1e7, 0, -5, float('nan')) for lat in (0, 35.681236, 60, 80, 85, 89.9999, 90, -45)] + [(rng.uniform(1, 3e5), rng.uniform(-90, 90)) for _ in range(500)]
+                    agree('zoomForRadius', w.zoom_for_radius, [list(z) for z in zooms])
+                    steps = [(40075016.686 / (4 * 2 ** k), 0) for k in range(0, 22)]                          # radii at exact powers of two
+                    agree('zoomForRadius', w.zoom_for_radius, [list(z) for z in steps])
+                    tiles = [(rng.uniform(-90, 90), rng.uniform(-180, 180), rng.randint(0, 22)) for _ in range(800)] + [(la, lo, z) for la in (-90, -85.05112878, 0, 85.06, 90) for lo in (-180, 0, 180) for z in (0, 1, 22, 23, -1)]
+                    agree('xyzTile', w.xyz_tile, [list(t) for t in tiles])
+                    agree('mapsUrls', w.maps_urls, [[la, lo] for la, lo in [(p[0], p[1]) for p in points[:200]]])
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_page_checks_formats_and_reads_urls(self):
+        import web_ui as w
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 1200})
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/coord.html')
+                    out = lambda: {dt.text_content(): dd.text_content() for dt, dd in zip(page.locator('[data-out] dt').all(), page.locator('[data-out] dd').all())}
+                    self.assertEqual(page.locator('[data-status]').text_content(), 'Valid.')
+                    first = out()
+                    self.assertEqual(first['Decimal degrees'], '35.681236, 139.767125')
+                    self.assertEqual(first['Degrees, minutes, seconds'], '35° 40′ 52.45″ N, 139° 46′ 01.65″ E')
+                    self.assertEqual(first['XYZ tile'], '16/58211/25806')
+                    self.assertEqual(first['Google Maps area link'], 'https://www.google.com/maps/@35.681236,139.767125,16z')
+                    self.assertEqual(first['Tolerance: JSON'], w.area_texts(w.tolerance_area(*w.parse_coordinate('35.681236', '139.767125'), 100))['json'])
+                    # A bad value says so and shows no results; fixing it brings them back.
+                    page.locator('[data-lat]').fill('95')
+                    self.assertEqual(page.locator('[data-status]').text_content(), 'Latitude must be between -90 and 90.')
+                    self.assertEqual(out(), {})
+                    page.locator('[data-lat]').fill('３５．５')                                                  # full-width digits are read
+                    page.locator('[data-lon]').fill('170')
+                    self.assertEqual(page.locator('[data-status]').text_content(), 'Valid.')
+                    # Presets and a custom radius change the area; a date-line box says so and offers no Apple span.
+                    page.locator('input[name="coord-preset"][value="1000"]').check()
+                    self.assertIn('radius_m: 1000', out()['Tolerance: centre and radius'])
+                    self.assertIn('wraps_antimeridian: false', out()['Tolerance: bounds'])
+                    page.locator('[data-lat]').fill('0')
+                    page.locator('[data-lon]').fill('179.999')
+                    self.assertIn('wraps_antimeridian: true', out()['Tolerance: bounds'])
+                    self.assertNotIn('spn=', out()['Apple Maps area link'])
+                    page.locator('input[name="coord-preset"][value="custom"]').check()
+                    page.locator('[data-radius]').fill('12.5')
+                    self.assertIn('radius_m: 12.50', out()['Tolerance: centre and radius'])
+                    page.locator('[data-radius]').fill('0')
+                    self.assertEqual(out()['Tolerance'], 'Tolerance radius must be greater than zero.')
+                    page.locator('[data-zoom]').fill('23')
+                    self.assertEqual(out()['XYZ tile'], 'XYZ tile zoom must be between 0 and 22.')
+                    # Reading a Maps URL fills both fields and refreshes every result.
+                    page.locator('[data-url]').fill('https://www.google.com/maps/place/Tokyo+Station/@35.680000,139.760000,17z/data=!3d35.681236!4d139.767125')
+                    page.locator('[data-use-url]').click()
+                    self.assertEqual((page.locator('[data-lat]').input_value(), page.locator('[data-lon]').input_value()), ('35.681236', '139.767125'))
+                    page.locator('[data-url]').fill('https://maps.apple.com/?q=Tokyo')
+                    page.locator('[data-use-url]').click()
+                    self.assertEqual(page.locator('[data-status]').text_content(), 'Could not find latitude/longitude in that Maps URL.')
+                    self.assertEqual((page.evaluate('localStorage.length + sessionStorage.length'), errors), (0, []))
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2879,6 +2879,244 @@ def theme_wall_document(count: int) -> str:
 # MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
+# --- Coordinates: validate and format a point, read it from a Maps URL, frame a tolerance area, find its XYZ tile --------------------
+# Absorbs flutter_navigation_basic's coordinate tool (lib/features/coordinate_tool/domain/coordinate_formatter.dart). Its Dart tests and the shared golden
+# vectors (tests/fixtures/coordinate_area_cases.json, python/fixtures/ at 39d659e) are the oracle. Python is the reference; ``coordinates.js`` must agree.
+# Short-link expansion (maps.app.goo.gl) needs a network and stays out: paste the expanded URL. Hexadecimal numbers are refused (Dart's parser takes them).
+
+EARTH_RADIUS_M = 6371008.8
+_COORD_NUMBER = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_COORD_FULLWIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)} | {0x3000: 0x20, 0x2212: 0x2D}
+_MAPS_PATTERNS = tuple(re.compile(pattern, flags) for pattern, flags in (
+    (r"[?&#]ll=(-?[0-9]+(?:\.[0-9]+)?)[ \t\r\n\f\v]*,[ \t\r\n\f\v]*(-?[0-9]+(?:\.[0-9]+)?)", re.I | re.A),
+    (r"[?&#](?:query|q)=(-?[0-9]+(?:\.[0-9]+)?)[ \t\r\n\f\v]*,[ \t\r\n\f\v]*(-?[0-9]+(?:\.[0-9]+)?)", re.I | re.A),
+    (r"!3d(-?[0-9]+(?:\.[0-9]+)?)!4d(-?[0-9]+(?:\.[0-9]+)?)", 0),
+    (r"@(-?[0-9]+(?:\.[0-9]+)?)[ \t\r\n\f\v]*,[ \t\r\n\f\v]*(-?[0-9]+(?:\.[0-9]+)?)(?:,|/|z|\?|#|\Z)", 0)))
+
+
+def fixed(value: float, digits: int) -> str:
+    """Like JavaScript's ``toFixed`` and Dart's ``toStringAsFixed``: the exact value rounded half away from zero (Python's ``%.2f`` rounds ties to even)."""
+    import decimal
+    if value == 0:
+        value = 0.0                                              # no "-0.00" for negative zero
+    return format(decimal.Decimal(value).quantize(decimal.Decimal(1).scaleb(-digits), rounding=decimal.ROUND_HALF_UP), "f")
+
+
+def parse_coordinate(latitude: str, longitude: str) -> tuple[float, float]:
+    """A checked ``(latitude, longitude)`` from two texts (full-width digits are fine); ``ValueError`` says what is wrong."""
+    values = []
+    for text in (latitude, longitude):
+        text = _shelf_strip(str(text).translate(_COORD_FULLWIDTH))
+        if text in ("NaN", "Infinity", "-Infinity", "+Infinity"):
+            raise ValueError("Latitude and longitude must be finite numbers.")
+        if not _COORD_NUMBER.fullmatch(text):
+            raise ValueError("Latitude and longitude must be numbers.")
+        values.append(float(text))
+    lat, lon = values
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        raise ValueError("Latitude and longitude must be finite numbers.")
+    if not -90 <= lat <= 90:
+        raise ValueError("Latitude must be between -90 and 90.")
+    if not -180 <= lon <= 180:
+        raise ValueError("Longitude must be between -180 and 180.")
+    return lat, lon
+
+
+def _percent_decode(text: str) -> str:
+    """Strict percent-decoding like Dart's ``Uri.decodeComponent`` and JavaScript's ``decodeURIComponent``: a bad escape or bad UTF-8 is a ``ValueError``."""
+    out, i = bytearray(), 0
+    while i < len(text):
+        if text[i] == "%":
+            if not re.fullmatch(r"[0-9a-fA-F]{2}", text[i + 1:i + 3]):
+                raise ValueError("malformed percent escape")
+            out.append(int(text[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out += text[i].encode("utf-8", "surrogatepass")
+            i += 1
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("invalid UTF-8 in a percent escape") from error
+
+
+def try_parse_maps_url(text: str) -> tuple[float, float] | None:
+    """A point from a Google or Apple Maps URL or share text: ``ll=``, ``query=``/``q=``, a ``!3d..!4d..`` place pin (preferred over ``@``, often only the
+    viewport centre), then ``@lat,lng``. Text is tried as written, decoded once, and decoded repeatedly (up to 8 times). ``None`` if nothing usable."""
+    raw = _shelf_strip(text.translate(_COORD_FULLWIDTH))
+    if not raw:
+        return None
+    plus = raw.replace("+", " ")
+    candidates = [plus]
+    try:
+        candidates.append(_percent_decode(plus))
+    except ValueError:
+        pass
+    again = plus
+    for _ in range(8):
+        try:
+            following = _percent_decode(again)
+        except ValueError:
+            break
+        if following == again:
+            break
+        again = following
+    candidates.append(again)
+    for candidate in candidates:
+        for pattern in _MAPS_PATTERNS:
+            match = pattern.search(candidate)
+            if match:
+                try:
+                    return parse_coordinate(match.group(1), match.group(2))
+                except ValueError:
+                    continue
+    return None
+
+
+def to_dms(value: float, *, is_latitude: bool) -> str:
+    """``35° 40′ 52.45″ N``: seconds rounded to two places with the carry into minutes and degrees (``179.999999999996`` is ``180° 00′ 00.00″ E``)."""
+    absolute = abs(value)
+    degrees = math.floor(absolute)
+    minute_value = (absolute - degrees) * 60
+    minutes = math.floor(minute_value)
+    seconds = float(fixed((minute_value - minutes) * 60, 2))
+    if seconds >= 60:
+        seconds, minutes = 0.0, minutes + 1
+        if minutes >= 60:
+            minutes, degrees = 0, degrees + 1
+    hemisphere = ("S" if value < 0 else "N") if is_latitude else ("W" if value < 0 else "E")
+    return f"{degrees}° {minutes:02d}′ {fixed(seconds, 2).rjust(5, '0')}″ {hemisphere}"
+
+
+def coordinate_text(lat: float, lon: float) -> str:
+    return f"{fixed(lat, 6)}, {fixed(lon, 6)}"
+
+
+def dms_text(lat: float, lon: float) -> str:
+    return f"{to_dms(lat, is_latitude=True)}, {to_dms(lon, is_latitude=False)}"
+
+
+def _normalize_longitude(value: float) -> float:
+    while value < -180:
+        value += 360
+    while value > 180:
+        value -= 360
+    return value
+
+
+def tolerance_area(lat: float, lon: float, radius_m: float) -> dict[str, Any]:
+    """The box around a point that holds a circle of ``radius_m`` metres: ``south``, ``west``, ``north``, ``east`` and flags for a box that wraps the date line
+    (``wraps``) or covers every longitude (``full_longitude``, near a pole). Apple Maps can only take a span (``apple_span``) when neither flag is set."""
+    if not math.isfinite(radius_m) or radius_m <= 0:
+        raise ValueError("Tolerance radius must be greater than zero.")
+    angular = radius_m / EARTH_RADIUS_M
+    lat_delta = angular * 180 / math.pi
+    south, north = max(-90.0, lat - lat_delta), min(90.0, lat + lat_delta)
+    cosine = abs(math.cos(lat * math.pi / 180))
+    lon_delta = 180.0 if south <= -90 or north >= 90 or cosine < 1e-12 else min(180, angular / cosine * 180 / math.pi)
+    raw_west, raw_east = lon - lon_delta, lon + lon_delta
+    full = lon_delta >= 180
+    west, east = (-180.0, 180.0) if full else (_normalize_longitude(raw_west), _normalize_longitude(raw_east))
+    wraps = not full and (raw_west < -180 or raw_east > 180)
+    span = 360.0 if full else (180 - west) + (east + 180) if wraps else abs(east - west)
+    return {"lat": lat, "lon": lon, "radius_m": radius_m, "south": south, "west": west, "north": north, "east": east, "wraps": wraps,
+            "full_longitude": full, "apple_span": not wraps and not full, "lat_span": abs(north - south), "lon_span": span}
+
+
+def zoom_for_radius(radius_m: float, latitude: float = 0.0) -> int:
+    """A Google Maps zoom (3..20) that roughly frames the radius, about four radii across the viewport at this latitude."""
+    if not math.isfinite(radius_m) or radius_m <= 0:
+        return 16
+    cosine = min(max(abs(math.cos(latitude * math.pi / 180)), 1e-6), 1.0)
+    return min(max(math.floor(math.log(40075016.686 * cosine / (radius_m * 4)) / math.log(2)), 3), 20)
+
+
+def xyz_tile(lat: float, lon: float, zoom: int) -> dict[str, Any]:
+    """The Web Mercator (slippy map) tile holding a point at ``zoom`` 0..22; latitudes are held to ±85.05112878."""
+    if type(zoom) is not int or not 0 <= zoom <= 22:
+        raise ValueError("XYZ tile zoom must be between 0 and 22.")
+    lat = min(max(lat, -85.05112878), 85.05112878)
+    n = 2.0 ** zoom
+    x = min(max(math.floor((lon + 180) / 360 * n), 0), int(n) - 1)
+    mercator = math.log(math.tan(math.pi / 4 + lat * math.pi / 180 / 2))
+    y = min(max(math.floor((1 - mercator / math.pi) / 2 * n), 0), int(n) - 1)
+    return {"zoom": zoom, "x": x, "y": y, "path": f"{zoom}/{x}/{y}"}
+
+
+def _query(params: dict[str, str]) -> str:
+    from urllib.parse import urlencode
+    return urlencode(params)
+
+
+def maps_urls(lat: float, lon: float) -> dict[str, str]:
+    """Google, Apple and OpenStreetMap static-preview links for a point (Dart's ``Uri.https`` encoding: ``,`` is ``%2C``, a space is ``+``)."""
+    point = coordinate_text(lat, lon).replace(" ", "")
+    return {"google": "https://www.google.com/maps/search/?" + _query({"api": "1", "query": point}),
+            "apple": "https://maps.apple.com/?" + _query({"ll": point, "q": "Coordinates"}),
+            "osm_preview": "https://staticmap.openstreetmap.de/staticmap.php?" + _query(
+                {"center": point, "zoom": "16", "size": "600x400", "maptype": "mapnik", "markers": point + ",lightblue1"})}
+
+
+def _radius_text(value: float) -> str:
+    return str(int(value)) if value == int(value) else fixed(value, 2)
+
+
+def area_texts(area: dict[str, Any]) -> dict[str, str]:
+    """What the tool offers to copy for a tolerance area: plain text, bounds, bbox, JSON, Google Maps and MapKit snippets, and the two viewport links."""
+    lat, lon, f = area["lat"], area["lon"], lambda v: fixed(v, 6)
+    radius = _radius_text(area["radius_m"])
+    wraps = "true" if area["wraps"] else "false"
+    zoom = zoom_for_radius(area["radius_m"], lat)
+    apple = {"ll": f"{f(lat)},{f(lon)}", "q": "Tolerance area"}
+    if area["apple_span"] and area["lat_span"] > 0 and area["lon_span"] > 0:
+        apple["spn"] = f"{f(area['lat_span'])},{f(area['lon_span'])}"
+    return {
+        "center_radius": f"center: {f(lat)}, {f(lon)}\nradius_m: {radius}",
+        "bounds": f"south: {f(area['south'])}\nwest: {f(area['west'])}\nnorth: {f(area['north'])}\neast: {f(area['east'])}\nwraps_antimeridian: {wraps}",
+        "bbox": f"[{f(area['west'])}, {f(area['south'])}, {f(area['east'])}, {f(area['north'])}]",
+        "json": ('{\n  "center": {\n    "latitude": ' + f(lat) + ',\n    "longitude": ' + f(lon) + '\n  },\n  "radius_m": ' + radius + ',\n  "bounds": {\n    "south": '
+                 + f(area["south"]) + ',\n    "west": ' + f(area["west"]) + ',\n    "north": ' + f(area["north"]) + ',\n    "east": ' + f(area["east"])
+                 + ',\n    "wraps_antimeridian": ' + wraps + '\n  }\n}'),
+        "google_circle": "new google.maps.Circle({\n  center: {\n    lat: " + f(lat) + ",\n    lng: " + f(lon) + "\n  },\n  radius: " + radius + "\n});",
+        "mapkit_circle": ("MKCircle(\n  center: CLLocationCoordinate2D(\n    latitude: " + f(lat) + ",\n    longitude: " + f(lon) + "\n  ),\n  radius: " + radius + "\n)"),
+        "google_rectangle": ("new google.maps.Rectangle({\n  bounds: {\n    south: " + f(area["south"]) + ",\n    west: " + f(area["west"]) + ",\n    north: "
+                             + f(area["north"]) + ",\n    east: " + f(area["east"]) + "\n  }\n});"),
+        "mapkit_region": ("MKCoordinateRegion(\n  center: CLLocationCoordinate2D(\n    latitude: " + f(lat) + ",\n    longitude: " + f(lon) + "\n  ),\n  span: MKCoordinateSpan(\n"
+                          "    latitudeDelta: " + f(area["lat_span"]) + ",\n    longitudeDelta: " + f(area["lon_span"]) + "\n  )\n)"),
+        "google_area_url": f"https://www.google.com/maps/@{f(lat)},{f(lon)},{zoom}z",
+        "apple_area_url": "https://maps.apple.com/?" + _query(apple),
+    }
+
+
+_CSS["coordinates.css"] = ("@layer components{.ui-coord label{display:block;margin:8px 0 4px}.ui-coord .ui-input{width:100%;box-sizing:border-box}"
+                           ".ui-coord-bar{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-coord-bar label{display:inline-block;margin:0}"
+                           ".ui-coord dt{margin:16px 0 4px}.ui-coord dd{margin:0}.ui-coord dd pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}}")
+
+
+def coordinates_html() -> str:
+    """The coordinate tool as semantic HTML: a point (typed or read from a Maps URL), a tolerance radius, a tile zoom, and the results the page fills in."""
+    presets = ((25, "Exact / GPS"), (100, "Building / facility"), (350, "Station / campus"), (1000, "Park / large facility"), (3000, "District / loose area"), ("custom", "Custom"))
+    radios = "".join(f'<label><input type="radio" name="coord-preset" value="{v}"{" checked" if v == 100 else ""}> {label}{"" if v == "custom" else f" ({v} m)"}</label>' for v, label in presets)
+    return ('<section class="ui-panel ui-coord" id="coord" data-ui-coord><h2>Coordinates</h2>'
+            '<p class="ui-muted">Check a point, read it from a Google or Apple Maps URL, and frame a tolerance area around it. Everything is computed in this page; '
+            'short links (maps.app.goo.gl) are not expanded: paste the full address.</p>'
+            '<label for="coord-lat">Latitude</label><input class="ui-input" id="coord-lat" data-lat value="35.681236" inputmode="decimal" autocomplete="off">'
+            '<label for="coord-lon">Longitude</label><input class="ui-input" id="coord-lon" data-lon value="139.767125" inputmode="decimal" autocomplete="off">'
+            '<label for="coord-url">Or paste a Maps URL</label><input class="ui-input" id="coord-url" data-url autocomplete="off">'
+            '<p><button class="ui-button" type="button" data-use-url>Use this URL</button></p>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-status></p>'
+            f'<fieldset class="ui-coord-bar"><legend>Tolerance</legend>{radios}</fieldset>'
+            '<label for="coord-radius">Custom radius (metres)</label><input class="ui-input" id="coord-radius" data-radius type="number" min="1" step="any" value="500">'
+            '<label for="coord-zoom">Tile zoom (0 to 22)</label><input class="ui-input" id="coord-zoom" data-zoom type="number" min="0" max="22" step="1" value="16">'
+            '<dl data-out></dl></section>')
+
+
+def coordinates_document(*, theme: str = "modern") -> str:
+    """A single-file page for the coordinate tool."""
+    return render_document(trusted_html='<main class="ui-page">' + coordinates_html() + "</main>" + module_script(_JS["coordinates.js"]), title="Coordinates",
+                           theme=theme, css=bundled_css())
+
+
 # --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
 # Absorbs flutter_navigation_basic's lib/features/composition_generator/domain (chord_theory.dart, metronome_timing.dart, note_sequence.dart,
 # song_seed_generator.dart) and lib/data/composer.dart. Its Dart tests are the golden values below. Python is the reference; ``composition.js`` must agree.
@@ -3716,6 +3954,72 @@ STUB_SCHEMA = "web-ui-stub/1"
 # stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
 EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
 
+_JS["coordinates.js"] = r"""/* web-ui coordinates: validate and format a point, read it from a Maps URL, frame a tolerance area, find its XYZ tile. Python (web_ui.parse_coordinate, tolerance_area, ...) is the reference. */
+const SPACE="\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const strip=s=>(s.startsWith("﻿")?s.slice(1):s).replace(new RegExp("^["+SPACE+"]+|["+SPACE+"]+$","g"),"");
+const ascii=s=>{let o="";for(const c of s){const n=c.codePointAt(0);o+=n>=0xFF01&&n<=0xFF5E?String.fromCodePoint(n-0xFEE0):n===0x3000?" ":n===0x2212?"-":c}return o};
+const NUMBER=/^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/,WS="[ \\t\\r\\n\\f\\v]",N="(-?[0-9]+(?:\\.[0-9]+)?)";
+const PATTERNS=[new RegExp("[?&#]ll="+N+WS+"*,"+WS+"*"+N,"i"),new RegExp("[?&#](?:query|q)="+N+WS+"*,"+WS+"*"+N,"i"),new RegExp("!3d"+N+"!4d"+N),new RegExp("@"+N+WS+"*,"+WS+"*"+N+"(?:,|/|z|\\?|#|$)")];
+export const fixed=(v,n)=>v.toFixed(n);
+export function parseCoordinate(latitude,longitude){const v=[];for(const raw of[latitude,longitude]){const t=strip(ascii(String(raw)));
+  if(["NaN","Infinity","-Infinity","+Infinity"].includes(t))throw new Error("Latitude and longitude must be finite numbers.");
+  if(!NUMBER.test(t))throw new Error("Latitude and longitude must be numbers.");v.push(Number(t))}
+ const[lat,lon]=v;if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error("Latitude and longitude must be finite numbers.");
+ if(!(lat>=-90&&lat<=90))throw new Error("Latitude must be between -90 and 90.");if(!(lon>=-180&&lon<=180))throw new Error("Longitude must be between -180 and 180.");return[lat,lon]}
+const decode=t=>{try{return decodeURIComponent(t)}catch(e){throw new Error("malformed percent escape")}};
+export function tryParseMapsUrl(text){const raw=strip(ascii(text));if(!raw)return null;const plus=raw.split("+").join(" "),candidates=[plus];
+ try{candidates.push(decode(plus))}catch(e){}
+ let again=plus;for(let i=0;i<8;i++){let next;try{next=decode(again)}catch(e){break}if(next===again)break;again=next}candidates.push(again);
+ for(const c of candidates)for(const p of PATTERNS){const m=p.exec(c);if(m){try{return parseCoordinate(m[1],m[2])}catch(e){}}}return null}
+export function toDms(value,isLat){const abs=Math.abs(value);let degrees=Math.floor(abs);const mv=(abs-degrees)*60;let minutes=Math.floor(mv),seconds=Number(((mv-minutes)*60).toFixed(2));
+ if(seconds>=60){seconds=0;minutes+=1;if(minutes>=60){minutes=0;degrees+=1}}
+ const h=isLat?(value<0?"S":"N"):(value<0?"W":"E");return degrees+"° "+String(minutes).padStart(2,"0")+"′ "+seconds.toFixed(2).padStart(5,"0")+"″ "+h}
+export const coordinateText=(lat,lon)=>fixed(lat,6)+", "+fixed(lon,6),dmsText=(lat,lon)=>toDms(lat,true)+", "+toDms(lon,false);
+const normLon=v=>{while(v<-180)v+=360;while(v>180)v-=360;return v};
+export function toleranceArea(lat,lon,radius){if(!Number.isFinite(radius)||radius<=0)throw new Error("Tolerance radius must be greater than zero.");
+ const angular=radius/6371008.8,latDelta=angular*180/Math.PI,south=Math.max(-90,lat-latDelta),north=Math.min(90,lat+latDelta),cosine=Math.abs(Math.cos(lat*Math.PI/180));
+ const lonDelta=south<=-90||north>=90||cosine<1e-12?180:Math.min(180,angular/cosine*180/Math.PI),rawWest=lon-lonDelta,rawEast=lon+lonDelta,full=lonDelta>=180;
+ const west=full?-180:normLon(rawWest),east=full?180:normLon(rawEast),wraps=!full&&(rawWest<-180||rawEast>180),span=full?360:wraps?(180-west)+(east+180):Math.abs(east-west);
+ return{lat,lon,radius_m:radius,south,west,north,east,wraps,full_longitude:full,apple_span:!wraps&&!full,lat_span:Math.abs(north-south),lon_span:span}}
+export function zoomForRadius(radius,latitude=0){if(!Number.isFinite(radius)||radius<=0)return 16;const cosine=Math.min(Math.max(Math.abs(Math.cos(latitude*Math.PI/180)),1e-6),1);
+ return Math.min(Math.max(Math.floor(Math.log(40075016.686*cosine/(radius*4))/Math.log(2)),3),20)}
+export function xyzTile(lat,lon,zoom){if(!Number.isInteger(zoom)||zoom<0||zoom>22)throw new Error("XYZ tile zoom must be between 0 and 22.");lat=Math.min(Math.max(lat,-85.05112878),85.05112878);
+ const n=2**zoom,x=Math.min(Math.max(Math.floor((lon+180)/360*n),0),n-1),mercator=Math.log(Math.tan(Math.PI/4+lat*Math.PI/180/2)),y=Math.min(Math.max(Math.floor((1-mercator/Math.PI)/2*n),0),n-1);
+ return{zoom,x,y,path:zoom+"/"+x+"/"+y}}
+const query=o=>new URLSearchParams(o).toString();
+export function mapsUrls(lat,lon){const point=coordinateText(lat,lon).split(" ").join("");
+ return{google:"https://www.google.com/maps/search/?"+query({api:"1",query:point}),apple:"https://maps.apple.com/?"+query({ll:point,q:"Coordinates"}),
+  osm_preview:"https://staticmap.openstreetmap.de/staticmap.php?"+query({center:point,zoom:"16",size:"600x400",maptype:"mapnik",markers:point+",lightblue1"})}}
+const radiusText=v=>Number.isInteger(v)?String(v):fixed(v,2);
+export function areaTexts(a){const f=v=>fixed(v,6),lat=a.lat,lon=a.lon,radius=radiusText(a.radius_m),wraps=a.wraps?"true":"false",zoom=zoomForRadius(a.radius_m,lat),apple={ll:f(lat)+","+f(lon),q:"Tolerance area"};
+ if(a.apple_span&&a.lat_span>0&&a.lon_span>0)apple.spn=f(a.lat_span)+","+f(a.lon_span);
+ return{center_radius:"center: "+f(lat)+", "+f(lon)+"\nradius_m: "+radius,
+  bounds:"south: "+f(a.south)+"\nwest: "+f(a.west)+"\nnorth: "+f(a.north)+"\neast: "+f(a.east)+"\nwraps_antimeridian: "+wraps,
+  bbox:"["+f(a.west)+", "+f(a.south)+", "+f(a.east)+", "+f(a.north)+"]",
+  json:'{\n  "center": {\n    "latitude": '+f(lat)+',\n    "longitude": '+f(lon)+'\n  },\n  "radius_m": '+radius+',\n  "bounds": {\n    "south": '+f(a.south)+',\n    "west": '+f(a.west)+',\n    "north": '+f(a.north)+',\n    "east": '+f(a.east)+',\n    "wraps_antimeridian": '+wraps+'\n  }\n}',
+  google_circle:"new google.maps.Circle({\n  center: {\n    lat: "+f(lat)+",\n    lng: "+f(lon)+"\n  },\n  radius: "+radius+"\n});",
+  mapkit_circle:"MKCircle(\n  center: CLLocationCoordinate2D(\n    latitude: "+f(lat)+",\n    longitude: "+f(lon)+"\n  ),\n  radius: "+radius+"\n)",
+  google_rectangle:"new google.maps.Rectangle({\n  bounds: {\n    south: "+f(a.south)+",\n    west: "+f(a.west)+",\n    north: "+f(a.north)+",\n    east: "+f(a.east)+"\n  }\n});",
+  mapkit_region:"MKCoordinateRegion(\n  center: CLLocationCoordinate2D(\n    latitude: "+f(lat)+",\n    longitude: "+f(lon)+"\n  ),\n  span: MKCoordinateSpan(\n    latitudeDelta: "+f(a.lat_span)+",\n    longitudeDelta: "+f(a.lon_span)+"\n  )\n)",
+  google_area_url:"https://www.google.com/maps/@"+f(lat)+","+f(lon)+","+zoom+"z",apple_area_url:"https://maps.apple.com/?"+query(apple)}}
+export function bindCoordinates(root=document){return[...root.querySelectorAll("[data-ui-coord]")].map(box=>{
+ const $=s=>box.querySelector(s),lat=$("[data-lat]"),lon=$("[data-lon]"),url=$("[data-url]"),status=$("[data-status]"),out=$("[data-out]"),radius=$("[data-radius]"),zoom=$("[data-zoom]"),preset=()=>box.querySelector('input[name="coord-preset"]:checked').value;
+ const add=(label,text)=>{const dt=document.createElement("dt"),dd=document.createElement("dd"),pre=document.createElement("pre");dt.textContent=label;pre.textContent=text;dd.append(pre);out.append(dt,dd)};
+ const show=()=>{out.replaceChildren();try{const[la,lo]=parseCoordinate(lat.value,lon.value);status.textContent="Valid.";
+   add("Decimal degrees",coordinateText(la,lo));add("Degrees, minutes, seconds",dmsText(la,lo));const u=mapsUrls(la,lo);add("Google Maps",u.google);add("Apple Maps",u.apple);add("OpenStreetMap static preview",u.osm_preview);
+   const r=preset()==="custom"?Number(radius.value):Number(preset());try{const area=toleranceArea(la,lo,r),t=areaTexts(area);
+    add("Tolerance: centre and radius",t.center_radius);add("Tolerance: bounds",t.bounds);add("Tolerance: bbox [west, south, east, north]",t.bbox);add("Tolerance: JSON",t.json);
+    add("Google Maps circle",t.google_circle);add("MapKit circle",t.mapkit_circle);add("Google Maps rectangle",t.google_rectangle);add("MapKit region",t.mapkit_region);add("Google Maps area link",t.google_area_url);add("Apple Maps area link",t.apple_area_url)}
+   catch(e){add("Tolerance",e.message)}
+   try{const tile=xyzTile(la,lo,Number(zoom.value));add("XYZ tile",tile.path)}catch(e){add("XYZ tile",e.message)}
+  }catch(e){status.textContent=e.message}};
+ for(const el of[lat,lon,radius,zoom])el.addEventListener("input",show);for(const r of box.querySelectorAll('input[name="coord-preset"]'))r.addEventListener("change",show);
+ $("[data-use-url]").addEventListener("click",()=>{const p=tryParseMapsUrl(url.value);if(!p){status.textContent="Could not find latitude/longitude in that Maps URL.";return}lat.value=String(p[0]);lon.value=String(p[1]);show()});
+ show();return box})}
+globalThis.webUiCoordinates={fixed,parseCoordinate,tryParseMapsUrl,toDms,coordinateText,dmsText,toleranceArea,zoomForRadius,xyzTile,mapsUrls,areaTexts,bindCoordinates};
+if(typeof document!=="undefined")bindCoordinates();
+"""
+
 _JS["composition.js"] = r"""/* web-ui composition: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed. Python (web_ui.chord_with_inversion, metronome_position, ...) is the reference. */
 export const FLAT_KEYS=["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"],SHARP_KEYS=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
 export const SELECTABLE_KEYS=["C","C♯","D♭","D","D♯","E♭","E","F","F♯","G♭","G","G♯","A♭","A","A♯","B♭","B"];
@@ -4101,7 +4405,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article>'
             '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article>'
             '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article>'
-            '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article></section>')
+            '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article>'
+            '<article class="ui-card"><h2>Coordinates</h2><p><a href="./coordinates.html">Check a point, read a Maps URL, frame an area</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -4131,6 +4436,7 @@ def example_pages() -> dict[str, str]:
         "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
         "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
         "examples/clipboard-shelf.html": shelf_document(),
+        "examples/coordinates.html": coordinates_document(),
         "examples/composition-studio.html": studio_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
@@ -4451,7 +4757,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, composition.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, composition.js, coordinates.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

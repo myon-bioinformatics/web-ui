@@ -700,6 +700,136 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(len(long["floors"][0]["spots"][0]["label"]), 40)
 
 
+AREA_CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "coordinate_area_cases.json").read_text(encoding="utf-8"))["cases"]
+TOKYO = (35.681236, 139.767125)
+
+
+def coordinate_fuzz_urls(count: int = 800, seed: int = 20261103) -> list[str]:
+    """Seeded Maps-ish text: the real URL shapes with random points, percent-encoding (once, twice, bad), full-width digits, odd whitespace and noise."""
+    rng = random.Random(seed)
+    point = lambda: (f"{rng.uniform(-95, 95):.{rng.randint(0, 7)}f}", f"{rng.uniform(-185, 185):.{rng.randint(0, 7)}f}")
+    shapes = ["https://www.google.com/maps/search/?api=1&query={a},{b}", "https://www.google.com/maps/@{a},{b},16z", "https://www.google.com/maps/@{a},{b}",
+              "https://www.google.com/maps/place/X/@{c},{d},17z/data=!3d{a}!4d{b}", "https://maps.apple.com/?ll={a},{b}&q=Coordinates", "https://maps.apple.com/?q={a}, {b}",
+              "https://example.com/?q={a}%2C{b}", "https://x/#ll={a} , {b}", "no coordinates here", "https://maps.apple.com/?q=Tokyo", "@{a},{b}z", "?LL={a},{b}", "?QUERY={a},{b}"]
+    out = []
+    for _ in range(count):
+        a, b = point()
+        c, d = point()
+        text = rng.choice(shapes).format(a=a, b=b, c=c, d=d)
+        roll = rng.random()
+        if roll < 0.2:
+            text = text.replace(",", "%2C")
+        elif roll < 0.3:
+            text = text.replace("%", "%25").replace(",", "%252C")
+        elif roll < 0.35:
+            text = text.replace(",", "%ZZ", 1)
+        elif roll < 0.4:
+            text = text.replace(",", "%E3%81%82%FF", 1)
+        elif roll < 0.5:
+            text = text.translate({ord(ch): ord(ch) + 0xFEE0 for ch in "0123456789,.-"})
+        elif roll < 0.55:
+            text = "  \n" + text + "\u3000 "
+        elif roll < 0.6:
+            text = text.replace("+", "%2B").replace("/", "%2F")
+        elif roll < 0.65:
+            text = text.replace(" ", "+")
+        out.append(text)
+    return out
+
+
+class CoordinatesTests(unittest.TestCase):
+    """The coordinate tool's rules, with flutter_navigation_basic's Dart tests and golden vectors as the oracle."""
+
+    def test_the_dart_tests_for_points_dms_and_urls(self):
+        w = web_ui
+        lat, lon = w.parse_coordinate("35.681236", "139.767125")
+        self.assertEqual((w.coordinate_text(lat, lon), w.dms_text(lat, lon)), ("35.681236, 139.767125", "35° 40′ 52.45″ N, 139° 46′ 01.65″ E"))
+        self.assertIn("S", w.dms_text(*w.parse_coordinate("-33.8688", "-70.6693")))
+        self.assertIn("W", w.dms_text(*w.parse_coordinate("-33.8688", "-70.6693")))
+        w.parse_coordinate("90", "180"); w.parse_coordinate("-90", "-180")
+        self.assertEqual(w.to_dms(179.999999999996, is_latitude=False), "180° 00′ 00.00″ E")                  # the rounding carry
+        for bad in (("90.1", "0"), ("0", "180.1"), ("north", "east"), ("NaN", "0"), ("0", "Infinity"), ("", "0"), ("1e999", "0"), ("0x10", "0"), ("1_0", "0"), ("٣", "0")):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                w.parse_coordinate(*bad)
+        self.assertEqual(w.parse_coordinate("３５．５", "－１３９"), (35.5, -139.0))                           # full-width digits, point and minus
+        self.assertEqual(w.parse_coordinate(" +1e1 ", ".5"), (10.0, 0.5))
+        urls = {"https://www.google.com/maps/search/?api=1&query=35.681236,139.767125": TOKYO,
+                "https://www.google.com/maps/@35.681236,139.767125,16z": TOKYO,
+                "https://maps.apple.com/?ll=35.681236,139.767125&q=Coordinates": TOKYO,
+                "https://www.google.com/maps/place/Tokyo+Station/@35.680000,139.760000,17z/data=!3d35.681236!4d139.767125": TOKYO,   # the pin, not the viewport
+                "https://www.google.com/maps/place/Example/@-33.870000,-70.670000,15z/data=!3d-33.868800!4d-70.669300": (-33.8688, -70.6693),
+                "https://www.google.com/maps/search/?api=1&query=35.681236%2C139.767125": TOKYO,
+                "https://www.google.com/maps/search/?api=1&query=35.681236%ZZ139.767125": None,                                # a bad escape never throws
+                "https://maps.apple.com/?q=Tokyo": None, "not a maps url": None, "": None, "   ": None,
+                "https://x/?q=91,0": None, "https://x/?q=91,0&ll=1,2": (1.0, 2.0)}                                           # an out-of-range pair falls through to the next rule
+        for text, expected in urls.items():
+            with self.subTest(text=text[:60]):
+                self.assertEqual(w.try_parse_maps_url(text), expected)
+        built = w.maps_urls(*TOKYO)                                                                                          # what the tool builds, it can read back
+        area = w.tolerance_area(*TOKYO, 100)
+        texts = w.area_texts(area)
+        for url in (built["google"], built["apple"], texts["google_area_url"], texts["apple_area_url"]):
+            self.assertEqual(w.try_parse_maps_url(url), TOKYO, url)
+        self.assertIn("query=35.681236%2C139.767125", built["google"])
+        self.assertIn("ll=35.681236%2C139.767125", built["apple"])
+        self.assertIn("center=35.681236%2C139.767125&zoom=16", built["osm_preview"])
+
+    def test_tolerance_areas_zoom_and_tiles_as_the_dart_tests_say(self):
+        w = web_ui
+        area = w.tolerance_area(*TOKYO, 100)
+        self.assertTrue(area["south"] < TOKYO[0] < area["north"] and area["west"] < TOKYO[1] < area["east"] and not area["wraps"])
+        self.assertAlmostEqual(area["north"] - TOKYO[0], 0.000899, delta=0.00001)
+        self.assertGreater(area["east"] - TOKYO[1], area["north"] - TOKYO[0])
+        t = w.area_texts(area)
+        self.assertIn("radius_m: 100", t["center_radius"])
+        self.assertIn('"wraps_antimeridian": false', t["json"])
+        self.assertEqual(t["google_area_url"], "https://www.google.com/maps/@35.681236,139.767125,16z")
+        self.assertTrue(t["apple_area_url"].startswith("https://maps.apple.com/?ll=35.681236%2C139.767125&q=Tolerance+area&spn="))
+        self.assertEqual(w.area_texts(w.tolerance_area(*TOKYO, 350))["google_circle"], "new google.maps.Circle({\n  center: {\n    lat: 35.681236,\n    lng: 139.767125\n  },\n  radius: 350\n});")
+        self.assertEqual(w.area_texts(w.tolerance_area(*TOKYO, 350))["mapkit_circle"], "MKCircle(\n  center: CLLocationCoordinate2D(\n    latitude: 35.681236,\n    longitude: 139.767125\n  ),\n  radius: 350\n)")
+        self.assertIn("south: " + w.fixed(area["south"], 6), t["google_rectangle"])
+        self.assertIn("latitudeDelta: " + w.fixed(abs(area["north"] - area["south"]), 6), t["mapkit_region"])
+        self.assertEqual(w.area_texts(w.tolerance_area(*TOKYO, 12.5))["center_radius"].splitlines()[1], "radius_m: 12.50")
+        near_date_line = w.tolerance_area(0, 179.999, 1000)
+        self.assertTrue(near_date_line["wraps"] and not near_date_line["apple_span"] and near_date_line["west"] < 180 and near_date_line["east"] < 0)
+        self.assertNotIn("spn=", w.area_texts(near_date_line)["apple_area_url"])
+        pole = w.tolerance_area(89.9999, 20, 1000)
+        self.assertEqual((pole["north"], pole["west"], pole["east"], pole["wraps"], pole["full_longitude"], pole["apple_span"], pole["lon_span"]), (90, -180, 180, False, True, False, 360))
+        self.assertEqual((w.zoom_for_radius(1000, 89.9999), w.zoom_for_radius(100, 85), w.zoom_for_radius(100, 80)), (3, 13, 14))
+        self.assertGreater(w.zoom_for_radius(100, 0), w.zoom_for_radius(100, 80))
+        self.assertTrue(w.area_texts(w.tolerance_area(80, 0, 100))["google_area_url"].endswith(",14z"))
+        for case in AREA_CASES:                                                                                               # the shared golden vectors
+            with self.subTest(case["coordinateAreaCaseId"]):
+                a = w.tolerance_area(case["latitude"], case["longitude"], case["radius_m"])
+                self.assertEqual((w.zoom_for_radius(case["radius_m"], case["latitude"]), a["wraps"], a["full_longitude"], a["apple_span"]),
+                                 (case["expected_zoom"], case["expect_antimeridian"], case["expect_full_longitude"], case["expect_apple_spn"]))
+                self.assertEqual("spn=" in w.area_texts(a)["apple_area_url"], case["expect_apple_spn"])
+        for bad in (0, -1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                w.tolerance_area(*TOKYO, bad)
+        self.assertEqual(w.zoom_for_radius(0), 16)
+        tile = w.xyz_tile(*TOKYO, 16)
+        self.assertEqual((tile["zoom"], tile["x"], tile["y"], tile["path"]), (16, 58211, 25806, "16/58211/25806"))
+        north = w.xyz_tile(90, 0, 2)
+        self.assertTrue(0 <= north["x"] <= 3 and north["y"] == 0)
+        for zoom in (-1, 23, 1.5, True):
+            with self.subTest(zoom=zoom), self.assertRaises(ValueError):
+                w.xyz_tile(*TOKYO, zoom)
+        self.assertEqual((w.xyz_tile(0, 0, 0)["path"], w.xyz_tile(-90, 180, 3)["path"]), ("0/0/0", "3/7/7"))                # both edges stay inside the grid
+
+    def test_fixed_rounds_like_javascript_and_dart(self):
+        w = web_ui
+        self.assertEqual([w.fixed(v, n) for v, n in ((0.0078125, 6), (2.5, 0), (0.125, 2), (-0.125, 2), (1.005, 2), (-1e-9, 6), (-0.0, 2), (35.681236, 6), (0.5, 0), (179.999999999996, 2))],
+                         ["0.007813", "3", "0.13", "-0.13", "1.00", "-0.000000", "0.00", "35.681236", "1", "180.00"])      # ties go away from zero; 1.005 is really 1.00499999...
+
+    def test_the_fuzz_corpus_is_varied_and_reproducible(self):
+        texts = coordinate_fuzz_urls()
+        self.assertEqual(texts, coordinate_fuzz_urls())
+        found = [web_ui.try_parse_maps_url(t) for t in texts]
+        self.assertGreater(sum(f is not None for f in found), 300)
+        self.assertGreater(sum(f is None for f in found), 100)
+
+
 class CompositionTests(unittest.TestCase):
     """The studio's rules. Expected values are the ones in flutter_navigation_basic's Dart tests (chord_theory, metronome_timing, note_sequence)."""
 
