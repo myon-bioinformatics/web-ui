@@ -14,6 +14,7 @@ import colorsys
 import errno
 import functools
 import hashlib
+import heapq
 import hmac
 import http.client
 import importlib.util
@@ -21,6 +22,8 @@ import json
 import math
 import base64
 import os
+from collections import Counter, defaultdict
+from datetime import date
 from html import escape
 from pathlib import Path
 import random
@@ -4174,8 +4177,14 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-mcp-lab": {"page": "mcp-lab.html", "elements": ["#mcp h2", "#mcp [data-mcp-sessions]", "#mcp [data-mcp-template=\"initialize\"]"],
                        "click": {"target": "#mcp [data-mcp-template=\"initialize\"]", "observe": "#mcp", "attribute": "data-template", "before": None, "after": "initialize"}},
     # The request form is lower on the page, so this one opens at it (#mcp-method) to keep everything on the first screen.
-    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method", "elements": ["#mcp-method", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
+    "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method", "elements": ["#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
                         "click": {"target": "#mcp [data-mcp-send]", "observe": "#mcp", "attribute": "data-http-status", "before": None, "after": "400"}},
+    "web-ui-patterns": {"page": "patterns.html", "elements": ["#patterns h2", "#patterns [data-patterns-query]", "#patterns [data-patterns-count]", "#patterns [data-patterns-more]"],
+                        "click": {"target": "#patterns [data-patterns-more]", "observe": "#patterns", "attribute": "data-shown", "before": "48", "after": "96"}},
+    # The runner is lower on the page, so this one opens at its heading (#patterns-run-title) to keep everything on the first screen.
+    "web-ui-pattern-run": {"page": "patterns.html", "fragment": "patterns-run-title",
+                           "elements": ["#patterns-run-title", "#patterns [data-patterns-request]", "#patterns [data-patterns-run]", "#patterns [data-patterns-example]"],
+                           "click": {"target": "#patterns [data-patterns-run]", "observe": "#patterns", "attribute": "data-runs", "before": "1", "after": "2"}},
     "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
                            "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
                                      "after": "Nothing to read: paste a report first."}},
@@ -5510,11 +5519,11 @@ def report_html() -> str:
     return ('<section class="ui-panel ui-report" id="report" data-ui-report><h2>Test report</h2>'
             '<p class="ui-muted">Paste a JUnit XML report or Flutter test events (one JSON object per line), or choose a file. Read in this page; nothing is sent.</p>'
             '<label for="report-input">Current run</label><textarea class="ui-input" id="report-input" data-report-input spellcheck="false" autocomplete="off" rows="4"></textarea>'
-            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
             '<p><button class="ui-button" type="button" data-report-run>Read the report</button> <button class="ui-button" type="button" data-report-copy>Copy summary</button> '
             '<button class="ui-button" type="button" data-report-convert hidden>Copy as JUnit XML</button> <label class="ui-report-check"><input type="checkbox" data-report-messages> Show failure messages</label></p>'
             '<p class="ui-report-status ui-muted" role="status" aria-live="polite" data-report-status>Nothing read yet.</p>'
             '<p class="ui-report-line" data-report-line></p>'
+            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
             '<details class="ui-report-more"><summary>Compare with a previous run</summary><label for="report-previous">Previous run (JUnit XML): what is new, recurring or resolved</label>'
             '<textarea class="ui-input" id="report-previous" data-report-previous spellcheck="false" autocomplete="off" rows="4"></textarea></details>'
             '<div data-report-out></div></section>')
@@ -6249,15 +6258,14 @@ def mcp_html() -> str:
     buttons = "".join(f'<button class="ui-button" type="button" data-mcp-template="{key}">{escape(label)}</button> ' for key, label in templates)
     sample = escape(json.dumps(_MCP_SAMPLE_SERVER_DOC, indent=2), quote=False)
     return ('<section class="ui-panel ui-mcp" id="mcp" data-ui-mcp><h2>MCP lab</h2>'
-            '<p class="ui-muted">A small MCP server that lives in this page (nothing is sent anywhere): send it requests, run a demo, and try the helpers. It speaks the legacy 2025-03-26 '
-            'protocol (initialize and Mcp-Session-Id) and the current 2026-07-28 one (server/discover and per-request _meta).</p>'
+            '<p class="ui-muted">An MCP server that lives in this page (nothing is sent): the legacy 2025-03-26 protocol and the current 2026-07-28 one.</p>'
             '<p class="ui-muted" role="status" aria-live="polite" data-mcp-sessions></p>'
-            '<h3>Send a request</h3><p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
-            f'<div class="ui-mcp-row">{buttons}</div>'
+            f'<h3>Send a request</h3><div class="ui-mcp-row">{buttons}</div>'
+            '<p class="ui-muted">Pick a template, change what you like, send. Legacy requests after initialize need the session id (the template fills the last one).</p>'
             '<label for="mcp-method">Method</label><select class="ui-input" id="mcp-method" data-mcp-method><option>POST</option><option>GET</option></select>'
             '<label for="mcp-path">Path</label><input class="ui-input" id="mcp-path" data-mcp-path value="/mcp" autocomplete="off">'
-            '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="3"></textarea>'
-            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="8"></textarea>'
+            '<label for="mcp-headers">Headers (name: value, one per line)</label><textarea class="ui-input" id="mcp-headers" data-mcp-headers spellcheck="false" rows="2"></textarea>'
+            '<label for="mcp-body">Body</label><textarea class="ui-input" id="mcp-body" data-mcp-body spellcheck="false" rows="6"></textarea>'
             '<p><button class="ui-button" type="button" data-mcp-send>Send</button> <button class="ui-button" type="button" data-mcp-reset>Reset the server</button></p>'
             '<p class="ui-mcp-status" role="status" aria-live="polite" data-mcp-http-status>Nothing sent yet.</p><pre data-mcp-out-headers></pre><pre data-mcp-out-body></pre>'
             '<h3>Run a demo</h3><label for="mcp-demo-text">Text to echo</label><input class="ui-input" id="mcp-demo-text" data-mcp-demo-text value="hello" autocomplete="off">'
@@ -6281,6 +6289,1738 @@ def mcp_html() -> str:
 def mcp_document(*, theme: str = "modern") -> str:
     """A single-file page for the MCP lab."""
     return render_document(trusted_html='<main class="ui-page">' + mcp_html() + "</main>" + module_script(_JS["mcp.js"]), title="MCP lab", theme=theme, css=bundled_css())
+
+
+# --- Pattern references: the portable processing behind flutter_navigation_basic's 792-pattern catalogue ---------------------------------------
+# Absorbs the Python producers that stand behind the catalogue's data-processing patterns (python/collection_query_patterns.py, search_patterns.py, pagination_patterns.py,
+# scoring_heap_patterns.py, state_reducer.py, conversion_patterns.py, validation_patterns.py, workflow_patterns.py, collection_transform.py, list_selection.py, list_ordering.py,
+# text_processing.py, collection_window.py, collection_structure.py). Their Python tests (python/tests/test_*) are the golden values, and the 34 files of assets/data_processing/ that
+# the Dart app displays are their checked-in outputs (tests/fixtures/pattern_assets.json). Each takes a JSON request and returns a JSON result or raises ``ValueError``; nothing is
+# evaluated, nothing is persisted. Python is the reference; ``patterns.js`` equals it for the families that need no Python-only behaviour (see the README for which).
+# Differences from the originals: none of behaviour on any request they accept or refuse with ValueError; where they crashed with a TypeError (an unhashable ``operation``, say) these raise ValueError too.
+# Their command-line wrappers became ``web_ui.py --pattern FAMILY``, reading one JSON request from stdin.
+PATTERN_MAX_INPUT = 2_000_000
+_PAT_MISSING = object()
+_PAT_TYPES = {"null": lambda x: x is None, "boolean": lambda x: type(x) is bool, "integer": lambda x: type(x) is int, "number": lambda x: type(x) in (int, float),
+              "string": lambda x: isinstance(x, str), "array": lambda x: isinstance(x, list), "object": lambda x: isinstance(x, dict)}
+_PAT_FLOAT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_PAT_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_PAT_NAMED_REGEX = {"ascii_identifier": r"[A-Za-z_][A-Za-z_0-9]*", "hex_color": r"#[0-9a-fA-F]{6}", "digits": r"[0-9]+"}
+
+
+def _pat_need(condition: Any, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def _pat_finite(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def pattern_query(req: Any) -> Any:
+    """Pure collection operations (catalogue 011, 012, 014-018): ``stable_sort``, ``custom_sort`` (a named comparator, never code), ``group_by``, ``facet``, ``tag``, ``range`` and ``geo``
+    (haversine, in km). Sorting is stable; mixed key types are refused."""
+    _pat_need(isinstance(req, dict) and isinstance(req.get("items"), list), "items must be a list")
+    items = req["items"]
+    op = req.get("operation")
+    if op in ("stable_sort", "custom_sort"):
+        key = req.get("key")
+        _pat_need(isinstance(key, str) and key, "sort key required")
+        _pat_need(not any(not isinstance(row, dict) or key not in row for row in items), "missing sort key")
+        values = [row[key] for row in items]
+        _pat_need(not any(type(v) not in (str, int, float) or (type(v) is float and not math.isfinite(v)) for v in values), "unsupported sort key")
+        _pat_need(len({type(v) for v in values}) <= 1, "mixed sort key types")
+        descending = req.get("descending", False)
+        _pat_need(type(descending) is bool, "descending must be boolean")
+        if op == "custom_sort":
+            comparator = req.get("comparator")      # a named comparator, not executable input or arbitrary eval
+            _pat_need(comparator in ("ascending", "descending"), "unsupported comparator")
+            descending = comparator == "descending"
+        return sorted(items, key=lambda row: row[key], reverse=descending)
+    if op == "group_by":
+        key = req.get("key")
+        _pat_need(isinstance(key, str) and key, "group key required")
+        groups: list[dict[str, Any]] = []
+        for item in items:
+            _pat_need(isinstance(item, dict) and key in item, "missing group key")
+            value = item[key]
+            _pat_need(type(value) in (str, int, float, bool, type(None)), "group key must be scalar")
+            group = next((g for g in groups if type(g["value"]) is type(value) and g["value"] == value), None)
+            if group is None:
+                group = {"value": value, "items": []}
+                groups.append(group)
+            group["items"].append(item)
+        return groups
+    if op in ("facet", "tag"):
+        key, selected = req.get("key"), req.get("selected")
+        _pat_need(isinstance(key, str) and isinstance(selected, list), "key and selected list required")
+        _pat_need(not any(type(v) not in (str, int, float, bool) for v in selected), "invalid selected value")
+        def matches(item: Any) -> bool:
+            _pat_need(isinstance(item, dict) and key in item, "missing filter key")
+            value = item[key]
+            if op == "tag":
+                _pat_need(isinstance(value, list), "tags must be a list")
+                return any(tag in value for tag in selected)
+            return value in selected
+        return [item for item in items if matches(item)]
+    if op == "range":
+        key, low, high = req.get("key"), req.get("minimum"), req.get("maximum")
+        _pat_need(isinstance(key, str) and _pat_finite(low) and _pat_finite(high) and low <= high, "invalid numeric range")
+        result = []
+        for item in items:
+            _pat_need(isinstance(item, dict) and key in item, "missing range key")
+            _pat_need(_pat_finite(item[key]), "invalid range value")
+            if low <= item[key] <= high:
+                result.append(item)
+        return result
+    if op == "geo":
+        lat, lon, radius = (req.get(k) for k in ("latitude", "longitude", "radius_km"))
+        _pat_need(all(_pat_finite(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
+        def distance(row: Any) -> float:
+            _pat_need(isinstance(row, dict), "invalid point")
+            a, b = row.get("latitude"), row.get("longitude")
+            _pat_need(_pat_finite(a) and _pat_finite(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
+            p1, p2 = math.radians(lat), math.radians(a)
+            dp, dl = p2 - p1, math.radians(b - lon)
+            h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+            return 6371.0088 * 2 * math.asin(min(1, math.sqrt(h)))
+        return [row for row in items if distance(row) <= radius]
+    raise ValueError("unsupported operation")
+
+
+def _pat_normalized(text: Any) -> str:
+    _pat_need(isinstance(text, str), "expected string")
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def _pat_distance(a: str, b: str) -> int:
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        nxt = [i]
+        for j, cb in enumerate(b, 1):
+            nxt.append(min(nxt[-1] + 1, row[j] + 1, row[j - 1] + (ca != cb)))
+        row = nxt
+    return row[-1]
+
+
+def _pat_stem(token: str) -> str:
+    token = _pat_normalized(token)
+    if not token.isascii() or not token.isalpha():
+        return token
+    for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[:-len(suffix)]
+    return token
+
+
+def pattern_search(request: Any) -> Any:
+    """Pure search helpers (006-008, 021-023): ``tokenize``, ``stem`` (a limited English suffix heuristic, not a linguistic stemmer), ``history`` (newest first, de-duplicated),
+    ``fuzzy`` (normalized edit distance), ``autocomplete`` and ``highlight`` (match status, not offsets into normalized text)."""
+    _pat_need(isinstance(request, dict), "expected request object")
+    op = request.get("operation")
+    if op in ("tokenize", "stem"):
+        text = request.get("text")
+        _pat_need(isinstance(text, str), "text required")
+        tokens = re.findall(r"\w+", _pat_normalized(text), flags=re.UNICODE)
+        return [_pat_stem(t) for t in tokens] if op == "stem" else tokens
+    if op == "history":
+        events = request.get("events")
+        _pat_need(isinstance(events, list) and all(isinstance(e, str) for e in events), "events must be strings")
+        limit = request.get("limit", 20)
+        _pat_need(type(limit) is int and 1 <= limit <= 1000, "invalid history limit")
+        result, seen = [], set()
+        for value in reversed(events):
+            key = _pat_normalized(value)
+            if key and key not in seen:
+                result.append(value)
+                seen.add(key)
+                if len(result) == limit:
+                    break
+        return result
+    if op in ("fuzzy", "autocomplete", "highlight"):
+        query = _pat_normalized(request.get("query"))
+        if op == "highlight":
+            text = request.get("text")
+            _pat_need(isinstance(text, str) and query, "text and query required")
+            return {"matched": query in _pat_normalized(text), "text": text}
+        values = request.get("values")
+        _pat_need(isinstance(values, list) and all(isinstance(v, str) for v in values), "values must be strings")
+        if not query:
+            return []
+        limit = request.get("limit", 10)
+        _pat_need(type(limit) is int and 1 <= limit <= 1000, "invalid result limit")
+        if op == "autocomplete":
+            return [v for v in values if _pat_normalized(v).startswith(query)][:limit]
+        max_distance = request.get("max_distance", 2)
+        _pat_need(type(max_distance) is int and 0 <= max_distance <= 10, "invalid edit distance")
+        ranked = [(_pat_distance(query, _pat_normalized(v)), i, v) for i, v in enumerate(values)]
+        return [v for d, i, v in sorted(ranked) if d <= max_distance][:limit]
+    raise ValueError("unsupported search operation")
+
+
+def _pat_check_int(value: Any, name: str, minimum: int = 0) -> int:
+    _pat_need(type(value) is int and value >= minimum, f"{name} must be an integer >= {minimum}")
+    return value
+
+
+def _pat_digest(items: list[Any]) -> str:
+    payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _pat_cursor_encode(index: int, digest: str) -> str:
+    return base64.urlsafe_b64encode(json.dumps({"v": 1, "i": index, "h": digest}, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _pat_cursor_decode(cursor: Any, digest: str) -> int:
+    _pat_need(isinstance(cursor, str) and cursor and len(cursor) <= 512, "invalid cursor")
+    try:
+        obj = json.loads(base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("invalid cursor") from exc
+    _pat_need(isinstance(obj, dict) and set(obj) == {"v", "i", "h"} and type(obj["v"]) is int and obj["v"] == 1 and obj["h"] == digest, "cursor does not match dataset")
+    return _pat_check_int(obj["i"], "cursor index")
+
+
+def pattern_page(request: Any) -> dict[str, Any]:
+    """Deterministic, stateless pagination (031-033): ``offset``, ``cursor`` and ``infinite``. A cursor is an opaque position token bound to the exact dataset (a SHA-256
+    fingerprint), so a changed dataset is refused; infinite scrolling consumes successive pages, it does not imply scrolling."""
+    _pat_need(isinstance(request, dict) and not (set(request) - {"operation", "items", "limit", "offset", "cursor"}), "invalid request fields")
+    mode = request.get("operation")
+    _pat_need(mode in ("offset", "cursor", "infinite"), "invalid pagination operation")
+    items = request.get("items")
+    _pat_need(isinstance(items, list), "items must be a list")
+    limit = _pat_check_int(request.get("limit"), "limit", 1)
+    _pat_need(limit <= 1000, "limit too large")
+    if mode == "offset":
+        _pat_need("cursor" not in request, "offset mode does not accept cursor")
+        start = _pat_check_int(request.get("offset", 0), "offset")
+    else:
+        _pat_need("offset" not in request, "cursor mode does not accept offset")
+        digest = _pat_digest(items)
+        start = _pat_cursor_decode(request["cursor"], digest) if request.get("cursor") is not None else 0
+    _pat_need(start <= len(items), "page position beyond dataset")
+    end = min(start + limit, len(items))
+    result: dict[str, Any] = {"items": items[start:end], "has_more": end < len(items)}
+    if mode == "offset":
+        result["next_offset"] = end if end < len(items) else None
+    else:
+        result["next_cursor"] = _pat_cursor_encode(end, digest) if end < len(items) else None
+    return result
+
+
+def pattern_score(payload: Any) -> Any:
+    """TF-IDF (025) and a minimum heap (028). TF-IDF is ``tf * (ln((n + 1) / (df + 1)) + 1)`` over lower-cased ``\\w+`` tokens; the heap keeps duplicates and never changes its input."""
+    _pat_need(isinstance(payload, dict), "request must be object")
+    operation = payload.get("operation")
+    if operation == "tfidf":
+        _pat_need(set(payload) == {"operation", "documents"}, "unexpected TF-IDF fields")
+        documents = payload["documents"]
+        _pat_need(isinstance(documents, list) and all(isinstance(d, str) for d in documents), "documents must be strings")
+        tokens = [re.findall(r"\w+", d.casefold()) for d in documents]
+        count = len(tokens)
+        df = Counter(word for doc in tokens for word in set(doc))
+        return [{word: (freq / len(doc)) * (math.log((count + 1) / (df[word] + 1)) + 1) for word, freq in sorted(Counter(doc).items())} for doc in tokens]
+    if operation == "minheap":
+        _pat_need(not (set(payload) - {"operation", "values", "pops"}), "unexpected heap fields")
+        values, pops = payload.get("values"), payload.get("pops", 0)
+        _pat_need(isinstance(values, list) and all(_pat_finite(x) for x in values), "heap values must be finite numbers")
+        _pat_need(type(pops) is int and 0 <= pops <= len(values), "invalid pop count")
+        heap = values.copy()
+        heapq.heapify(heap)
+        removed = [heapq.heappop(heap) for _ in range(pops)]
+        return {"popped": removed, "remaining_sorted": sorted(heap)}
+    raise ValueError("unsupported operation")
+
+
+def _pat_state_int(value: Any, label: str) -> int:
+    _pat_need(type(value) is int, f"{label} must be integer")
+    _pat_need(abs(value) <= 1_000_000_000, f"{label} out of bounds")
+    return value
+
+
+def pattern_reduce(payload: Any) -> dict[str, Any]:
+    """A pure JSON state transition / event reduction (164-165): ``set``, ``increment``, ``decrement`` and ``reset`` over an integer, in order, with the whole history. No lifecycle,
+    GetX or Redux middleware is implied; ``mode`` (``event_state`` or ``redux``) is only echoed."""
+    _pat_need(isinstance(payload, dict) and set(payload) == {"mode", "initial", "actions"}, "expected mode, initial and actions")
+    mode = payload["mode"]
+    _pat_need(mode in ("event_state", "redux"), "unsupported mode")
+    state = initial = _pat_state_int(payload["initial"], "initial")
+    actions = payload["actions"]
+    _pat_need(isinstance(actions, list) and len(actions) <= 1000, "actions must be array of at most 1000")
+    history = [state]
+    for raw in actions:
+        _pat_need(isinstance(raw, dict) and raw.get("type") in ("set", "increment", "decrement", "reset"), "action requires known type")
+        op = raw["type"]
+        _pat_need(set(raw) == ({"type", "value"} if op != "reset" else {"type"}), "action fields do not match type")
+        if op == "reset":
+            state = initial
+        else:
+            value = _pat_state_int(raw["value"], "action value")
+            state = _pat_state_int(value if op == "set" else state + value if op == "increment" else state - value, "result")
+        history.append(state)
+    return {"schema": "state-reducer/1", "mode": mode, "state": state, "history": history}
+
+
+def pattern_convert(req: Any) -> dict[str, Any]:
+    """Safe data conversion (103-105, 107, 109-110): ``normalize`` (NFC/NFKC, case), ``coerce`` (int, float, bool, ASCII notation only), ``date`` (ISO or compact, a real calendar date),
+    ``unit`` (length and mass, overflow and underflow refused), ``encoding`` (UTF-8 <-> strict Base64) and ``mask`` (keep the last characters; never reveal a value that is not longer)."""
+    _pat_need(isinstance(req, dict), "request must be object")
+    op, value = req.get("operation"), req.get("value")
+    if op == "normalize":
+        _pat_need(isinstance(value, str), "normalize expects string")
+        form = req.get("form", "NFKC")
+        _pat_need(form in ("NFC", "NFKC"), "unsupported normalization form")
+        result = unicodedata.normalize(form, value.strip())
+        case = req.get("case", "preserve")
+        if case == "lower":
+            result = result.casefold()
+        elif case == "upper":
+            result = result.upper()
+        else:
+            _pat_need(case == "preserve", "unsupported case mode")
+        return {"value": result}
+    if op == "coerce":
+        target = req.get("target")
+        if target == "int":
+            _pat_need(not isinstance(value, bool) and isinstance(value, (str, int)), "unsafe integer coercion")
+            text = str(value)
+            _pat_need(re.fullmatch(r"[+-]?[0-9]+", text), "invalid integer")
+            try:     # CPython caps int(str) at 4300 digits; keep our own message
+                return {"value": int(text)}
+            except ValueError as exc:
+                raise ValueError("invalid integer") from exc
+        if target == "float":
+            _pat_need(not isinstance(value, bool) and isinstance(value, (str, int, float)), "unsafe float coercion")
+            _pat_need(not isinstance(value, str) or _PAT_FLOAT.fullmatch(value), "invalid float")
+            try:
+                result = float(value)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError("invalid float") from exc
+            _pat_need(math.isfinite(result), "non-finite float")
+            return {"value": result}
+        if target == "bool":      # exact types only: 1.0 == 1 and must not count as a boolean
+            if value is True or value in ("true", "1") or (type(value) is int and value == 1):
+                return {"value": True}
+            if value is False or value in ("false", "0") or (type(value) is int and value == 0):
+                return {"value": False}
+            raise ValueError("invalid boolean")
+        raise ValueError("unsupported target")
+    if op == "date":
+        _pat_need(isinstance(value, str), "date expects string")
+        source = req.get("source", "iso")
+        if source == "iso":
+            _pat_need(_PAT_ISO_DATE.fullmatch(value), "invalid iso date")      # fromisoformat also takes week dates and YYYYMMDD
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError("invalid iso date") from exc
+        elif source == "compact":
+            _pat_need(re.fullmatch(r"[0-9]{8}", value), "invalid compact date")
+            try:
+                parsed = date(int(value[:4]), int(value[4:6]), int(value[6:]))
+            except ValueError as exc:
+                raise ValueError("invalid compact date") from exc
+        else:
+            raise ValueError("unsupported date format")
+        target = req.get("target", "iso")
+        if target == "iso":
+            out = parsed.isoformat()
+        elif target == "compact":
+            out = f"{parsed.year:04d}{parsed.month:02d}{parsed.day:02d}"
+        else:
+            raise ValueError("unsupported target format")
+        return {"value": out}
+    if op == "unit":
+        unit_from, unit_to = req.get("from"), req.get("to")
+        try:      # math.isfinite converts ints to float: huge ints raise OverflowError
+            finite = type(value) in (int, float) and math.isfinite(value)
+        except OverflowError:
+            finite = False
+        _pat_need(finite, "unit value must be finite number")
+        factors = {"m": 1.0, "km": 1000.0, "cm": 0.01, "kg": 1.0, "g": 0.001}
+        groups = [{"m", "km", "cm"}, {"kg", "g"}]
+        _pat_need(unit_from in factors and unit_to in factors and any({unit_from, unit_to} <= g for g in groups), "incompatible units")
+        result = value * factors[unit_from] / factors[unit_to]      # an int too large for a float was refused above, so this cannot raise
+        _pat_need(math.isfinite(result), "unit conversion overflow")
+        _pat_need(not (value != 0 and result == 0), "unit conversion underflow")
+        return {"value": result}
+    if op == "encoding":
+        _pat_need(isinstance(value, str), "encoding expects string")
+        mode = req.get("mode")
+        if mode == "utf8_to_base64":
+            try:      # lone surrogates cannot be UTF-8 encoded
+                raw = value.encode("utf-8")
+            except UnicodeError as exc:
+                raise ValueError("invalid utf8 input") from exc
+            return {"value": base64.b64encode(raw).decode("ascii")}
+        if mode == "base64_to_utf8":
+            try:
+                return {"value": base64.b64decode(value, validate=True).decode("utf-8")}
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("invalid base64 utf8") from exc
+        raise ValueError("unsupported encoding mode")
+    if op == "mask":
+        _pat_need(isinstance(value, str), "mask expects string")
+        keep = req.get("keep_last", 4)
+        _pat_need(type(keep) is int and 0 <= keep <= 32, "invalid keep_last")
+        if len(value) <= keep:      # never reveal a value shorter than the suffix
+            return {"value": "*" * len(value)}
+        return {"value": "*" * (len(value) - keep) + (value[-keep:] if keep else "")}
+    raise ValueError("unsupported operation")
+
+
+def _pat_validate_one(operation: Any, value: Any, options: Any = None) -> bool:
+    options = options or {}
+    _pat_need(isinstance(options, dict), "options must be an object")
+    number = lambda v: type(v) is int or (type(v) is float and math.isfinite(v))     # exact for huge ints, never a float conversion
+    if operation == "required":
+        return value is not None and (not isinstance(value, str) or bool(value.strip()))
+    if operation == "email":
+        return isinstance(value, str) and len(value) <= 254 and bool(re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", value))
+    if operation == "password":      # a heuristic only: never a claim of resistance to leaked or common passwords
+        return isinstance(value, str) and 12 <= len(value) <= 1024 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+    if operation == "phone":
+        return isinstance(value, str) and bool(re.fullmatch(r"\+?[0-9]{8,15}", value))
+    if operation == "url":
+        if not isinstance(value, str) or len(value) > 2048 or any(c.isspace() for c in value):
+            return False
+        try:
+            parts = urlsplit(value)
+            return parts.scheme in ("http", "https") and bool(parts.hostname) and not parts.username and not parts.password and parts.port != 0
+        except ValueError:
+            return False
+    if operation == "date":
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return False
+        try:
+            return date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            return False
+    if operation == "range":
+        low, high = options.get("minimum"), options.get("maximum")
+        _pat_need(number(low) and number(high) and low <= high, "invalid numeric range")
+        return number(value) and low <= value <= high
+    if operation == "regex":
+        name = options.get("pattern")
+        _pat_need(name in _PAT_NAMED_REGEX, "unknown named regex")      # a fixed allowlist, never a user-provided pattern
+        return isinstance(value, str) and len(value) <= 4096 and bool(re.fullmatch(_PAT_NAMED_REGEX[name], value))
+    raise ValueError("unsupported validation operation")
+
+
+def pattern_validate(request: Any) -> dict[str, Any]:
+    """Small, deterministic validation (091-099): ``required``, ``email``, ``password``, ``phone``, ``url``, ``date``, ``range`` and a named ``regex``; ``form`` checks several fields and
+    reports each. Not a security-grade verifier."""
+    _pat_need(isinstance(request, dict), "request must be an object")
+    operation = request.get("operation")
+    if operation == "form":
+        fields = request.get("fields")
+        _pat_need(isinstance(fields, list) and fields, "form requires fields")
+        results = []
+        for field in fields:
+            _pat_need(isinstance(field, dict) and isinstance(field.get("name"), str) and field["name"], "invalid form field")
+            results.append({"name": field["name"], "valid": _pat_validate_one(field.get("rule"), field.get("value"), field.get("options"))})
+        return {"valid": all(r["valid"] for r in results), "fields": results}
+    return {"valid": _pat_validate_one(operation, request.get("value"), request.get("options"))}
+
+
+_PAT_WORKFLOW_OPS = {"swap", "move_top", "move_bottom", "insert_sorted", "undo_redo", "command", "memento", "position_swap", "batch", "transaction", "event_driven", "pubsub", "queue",
+                     "saga", "outbox", "event_sourcing", "cqrs", "scheduler", "worker", "checkpoint", "pipeline"}
+
+
+def _pat_keys(req: dict[str, Any], permitted: Any, required: Any = ()) -> None:
+    _pat_need(set(req) <= set(permitted) and set(required) <= set(req), "invalid keys")
+
+
+def _pat_index(value: Any, size: int, allow_end: bool = False) -> int:
+    _pat_need(type(value) is int and 0 <= value < size + int(allow_end), "index out of range")
+    return value
+
+
+def _pat_mutate(xs: list[Any], command: Any) -> list[Any]:
+    _pat_need(isinstance(command, dict), "request must be object")
+    kind = command.get("type")
+    if kind == "append":
+        _pat_keys(command, ("type", "value"), ("type", "value"))
+        xs.append(command["value"])
+    elif kind == "remove_last":
+        _pat_keys(command, ("type",), ("type",))
+        _pat_need(bool(xs), "empty list")
+        xs.pop()
+    elif kind == "replace":
+        _pat_keys(command, ("type", "index", "value"), ("type", "index", "value"))
+        xs[_pat_index(command["index"], len(xs))] = command["value"]
+    else:
+        raise ValueError("unknown command")
+    _pat_need(len(xs) <= 1000, "list too large")
+    return xs
+
+
+def pattern_workflow(request: Any) -> dict[str, Any]:
+    """Bounded JSON list operations and in-memory workflow references (176-182, 185-198): swap, move, sorted insert, undo/redo (also as command and memento), batch, worker, scheduler, checkpoint,
+    transaction/saga/pipeline with a controlled failure and rollback, and event-driven/pubsub/queue/outbox/event-sourcing/CQRS projections. Deterministic and single-process: not a
+    database, a broker, a distributed transaction engine or a scheduler."""
+    r = request
+    _pat_need(isinstance(r, dict), "request must be object")
+    operation = r.get("operation")
+    _pat_need(type(operation) is str and operation in _PAT_WORKFLOW_OPS, "unknown operation")
+    _pat_keys(r, ("operation", "values", "a", "b", "index", "value", "commands", "batch_size", "subscribers", "events", "fail_at", "checkpoint", "schedule"))
+    xs: list[Any] = []
+    values = r.get("values")
+    _pat_need(isinstance(values, list) and len(values) <= 1000, "values must be array <=1000")
+    xs = list(values)
+    if operation in ("swap", "position_swap"):
+        _pat_keys(r, ("operation", "values", "a", "b"), ("operation", "values", "a", "b"))
+        a, b = _pat_index(r["a"], len(xs)), _pat_index(r["b"], len(xs))
+        xs[a], xs[b] = xs[b], xs[a]
+        result: Any = xs
+    elif operation in ("move_top", "move_bottom"):
+        _pat_keys(r, ("operation", "values", "index"), ("operation", "values", "index"))
+        v = xs.pop(_pat_index(r["index"], len(xs)))
+        xs.insert(0 if operation == "move_top" else len(xs), v)
+        result = xs
+    elif operation == "insert_sorted":
+        _pat_keys(r, ("operation", "values", "value"), ("operation", "values", "value"))
+        _pat_need(all(type(x) in (int, float) for x in xs + [r["value"]]), "numeric sort only")
+        _pat_need(all(xs[i] <= xs[i + 1] for i in range(len(xs) - 1)), "input not sorted")
+        xs.append(r["value"])
+        xs.sort()
+        result = xs
+    elif operation in ("undo_redo", "command", "memento"):
+        _pat_keys(r, ("operation", "values", "commands"), ("operation", "values", "commands"))
+        history, cursor = [list(xs)], 0
+        commands = r["commands"]
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands must be array <=1000")
+        for cmd in commands:
+            if isinstance(cmd, dict) and cmd.get("type") == "undo":
+                _pat_keys(cmd, ("type",), ("type",))
+                _pat_need(cursor > 0, "cannot undo")
+                cursor -= 1
+            elif isinstance(cmd, dict) and cmd.get("type") == "redo":
+                _pat_keys(cmd, ("type",), ("type",))
+                _pat_need(cursor + 1 < len(history), "cannot redo")
+                cursor += 1
+            else:
+                history = history[:cursor + 1]
+                history.append(list(_pat_mutate(list(history[-1]), cmd)))
+                cursor += 1
+        result = {"values": history[cursor], "history": history, "cursor": cursor}
+    elif operation in ("batch", "worker", "scheduler"):
+        _pat_keys(r, ("operation", "values", "batch_size", "schedule"))
+        size = r.get("batch_size", 2)
+        _pat_need(type(size) is int and 1 <= size <= 1000, "invalid batch size")
+        if operation == "scheduler":
+            schedule = r.get("schedule", [])
+            _pat_need(isinstance(schedule, list) and len(schedule) <= 1000 and all(type(t) is int and 0 <= t <= 60000 for t in schedule), "invalid schedule")
+            result = [{"at_ms": t, "values": list(xs)} for t in schedule]
+        else:
+            result = [xs[i:i + size] for i in range(0, len(xs), size)]
+    elif operation in ("transaction", "saga", "pipeline"):
+        _pat_keys(r, ("operation", "values", "commands", "fail_at"), ("operation", "values", "commands"))
+        commands = r["commands"]
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands must be array <=1000")
+        failed = r.get("fail_at")
+        _pat_need(failed is None or (type(failed) is int and 0 <= failed < len(commands)), "invalid fail_at")
+        original, log = list(xs), []
+        for i, c in enumerate(commands):
+            if i == failed:
+                xs = list(original)
+                result = {"committed": False, "values": xs, "applied": log, "rolled_back": True}
+                break
+            _pat_mutate(xs, c)
+            log.append(i)
+        else:
+            result = {"committed": True, "values": xs, "applied": log, "rolled_back": False}
+    elif operation in ("event_driven", "pubsub", "queue", "outbox", "event_sourcing", "cqrs"):
+        _pat_keys(r, ("operation", "values", "events", "subscribers"), ("operation", "values", "events"))
+        events = r["events"]
+        _pat_need(isinstance(events, list) and len(events) <= 1000, "events must be array <=1000")
+        for e in events:
+            _pat_need(isinstance(e, dict) and set(e) == {"type", "value"} and e["type"] == "append", "invalid event")
+        log, current = list(events), list(xs)
+        for event in events:
+            current.append(event["value"])
+        _pat_need(len(current) <= 1000, "result too large")
+        if operation == "pubsub":
+            n = r.get("subscribers", 1)
+            _pat_need(type(n) is int and 1 <= n <= 16, "invalid subscribers")
+            result = {"subscribers": [list(log) for _ in range(n)], "state": current}
+        elif operation in ("outbox", "queue"):
+            result = {"pending": log, "state": current}
+        elif operation == "cqrs":
+            result = {"write_state": current, "read_projection": list(current)}
+        else:
+            result = {"log": log, "state": current}
+    else:
+        _pat_keys(r, ("operation", "values", "checkpoint"), ("operation", "values", "checkpoint"))
+        cursor = r.get("checkpoint", 0)
+        _pat_need(type(cursor) is int and 0 <= cursor <= len(xs), "invalid checkpoint")
+        result = {"processed": xs[:cursor], "remaining": xs[cursor:], "checkpoint": cursor}
+    return {"schema": "workflow-patterns/1", "operation": operation, "result": result}
+
+
+def _pat_type(value: Any, name: Any) -> bool:
+    _pat_need(isinstance(name, str) and name in _PAT_TYPES, "invalid JSON type")
+    return _PAT_TYPES[name](value)
+
+
+_PAT_SCHEMA_KEYS = {"required", "properties", "items", "additional_properties"}
+
+
+def _pat_object_keys(obj: Any, required: set[str], optional: Any = frozenset()) -> dict[str, Any]:
+    _pat_need(isinstance(obj, dict), "expected JSON object")
+    _pat_need(required <= obj.keys(), f"missing keys: {sorted(required - obj.keys())}")
+    _pat_need(not (obj.keys() - required - set(optional)), "unknown keys")
+    return obj
+
+
+def _pat_schema_spec(spec: Any) -> None:
+    _pat_need(isinstance(spec, dict) and "type" in spec, "invalid schema definition")
+    _pat_type(None, spec["type"])
+    _pat_object_keys(spec, {"type"}, _PAT_SCHEMA_KEYS)
+    if "properties" in spec:
+        _pat_need(isinstance(spec["properties"], dict), "invalid properties")
+        for child in spec["properties"].values():
+            _pat_schema_spec(child)
+    if "items" in spec:
+        _pat_schema_spec(spec["items"])
+
+
+def _pat_schema(value: Any, definition: Any) -> bool:
+    spec = _pat_object_keys(definition, {"type"}, _PAT_SCHEMA_KEYS)
+    if not _pat_type(value, spec["type"]):
+        return False
+    if spec["type"] == "object":
+        props, required, additional = spec.get("properties", {}), spec.get("required", []), spec.get("additional_properties", True)
+        _pat_need(isinstance(props, dict) and all(isinstance(k, str) for k in props), "invalid properties")
+        _pat_need(isinstance(required, list) and all(isinstance(k, str) for k in required) and len(set(required)) == len(required), "invalid required")
+        _pat_need(type(additional) is bool, "invalid additional_properties")
+        for child in props.values():
+            _pat_schema_spec(child)
+        if not set(required) <= value.keys():
+            return False
+        if not additional and set(value) - set(props):
+            return False
+        return all(_pat_schema(v, props[k]) for k, v in value.items() if k in props)
+    if spec["type"] == "array" and "items" in spec:
+        _pat_schema_spec(spec["items"])
+        return all(_pat_schema(v, spec["items"]) for v in value)
+    _pat_need("properties" not in spec and "required" not in spec and "additional_properties" not in spec or spec["type"] == "object", "object options require object type")
+    _pat_need("items" not in spec or spec["type"] == "array", "items requires array type")
+    return True
+
+
+def _pat_condition(condition: Any) -> dict[str, Any]:
+    """Validate the predicate contract even when there are no input values."""
+    spec = _pat_object_keys(condition, {"operator"}, {"value", "type"})
+    op = spec["operator"]
+    _pat_need(isinstance(op, str) and op in {"equals", "not_equals", "greater_than", "less_than", "type", "not_null"}, "unknown constraint")
+    if op == "not_null":
+        _pat_need(set(spec) == {"operator"}, "not_null accepts no operand")
+    elif op == "type":
+        _pat_need("type" in spec and "value" not in spec, "type requires type")
+        _pat_need(isinstance(spec["type"], str) and spec["type"] in _PAT_TYPES, "invalid JSON type")
+    else:
+        _pat_need("value" in spec and "type" not in spec, "missing constraint value")
+        if op in ("greater_than", "less_than"):
+            _pat_need(type(spec["value"]) in (int, float), "ordered comparisons require numbers")
+    return spec
+
+
+def _pat_predicate(value: Any, condition: Any) -> bool:
+    spec = _pat_condition(condition)
+    op = spec["operator"]
+    if op == "not_null":
+        return value is not None
+    if op == "type":
+        return _pat_type(value, spec["type"])
+    other = spec["value"]
+    if op in ("equals", "not_equals"):
+        same = json.dumps(value, sort_keys=True, allow_nan=False) == json.dumps(other, sort_keys=True, allow_nan=False)
+        return same if op == "equals" else not same
+    _pat_need(type(value) in (int, float) and type(other) in (int, float), "ordered comparisons require numbers")
+    return value > other if op == "greater_than" else value < other
+
+
+def _pat_flatten(values: list[Any], depth: int = 0) -> list[Any]:
+    _pat_need(depth <= 100, "nested arrays exceed 100 levels")
+    out: list[Any] = []
+    for value in values:
+        out.extend(_pat_flatten(value, depth + 1) if isinstance(value, list) else [value])
+    return out
+
+
+def pattern_transform(payload: Any) -> dict[str, Any]:
+    """Stdlib JSON transformations (114-120): ``schema_validation`` (a small typed schema), ``constraint`` (a named predicate per value), ``pipeline`` (strip, lower, upper, add, multiply),
+    ``map_reduce`` (count or sum by key), ``flatten``, ``partition`` and ``zip``. JSON types stay distinct: ``true``, ``1`` and ``1.0`` are three different values."""
+    obj = _pat_object_keys(payload, {"operation"}, {"values", "schema", "condition", "steps", "key", "reducer", "other", "strict"})
+    op = obj["operation"]
+    _pat_need(op in {"schema_validation", "constraint", "pipeline", "map_reduce", "flatten", "partition", "zip"}, "unsupported operation")
+    _pat_need("values" in obj and isinstance(obj["values"], list), "values must be array")
+    allowed = {"schema_validation": {"operation", "values", "schema"}, "constraint": {"operation", "values", "condition"}, "pipeline": {"operation", "values", "steps"},
+               "map_reduce": {"operation", "values", "key", "reducer"}, "flatten": {"operation", "values"}, "partition": {"operation", "values", "condition"},
+               "zip": {"operation", "values", "other", "strict"}}
+    _pat_need(set(obj) <= allowed[op], "unexpected fields for operation")
+    values = obj["values"]
+    if op == "schema_validation":
+        _pat_need("schema" in obj, "schema is required")
+        _pat_schema_spec(obj["schema"])
+        result: Any = [_pat_schema(x, obj["schema"]) for x in values]
+    elif op == "constraint":
+        _pat_need("condition" in obj, "condition is required")
+        _pat_condition(obj["condition"])
+        result = [_pat_predicate(x, obj["condition"]) for x in values]
+    elif op == "pipeline":
+        steps = obj.get("steps", _PAT_MISSING)
+        _pat_need(steps is not _PAT_MISSING, "steps is required")
+        _pat_need(isinstance(steps, list) and steps, "steps must be nonempty list")
+        result = list(values)
+        for spec in steps:
+            step = _pat_object_keys(spec, {"operation"}, {"value"})
+            kind = step["operation"]
+            _pat_need(kind in {"strip", "lower", "upper", "add", "multiply"}, "unsupported pipeline step")
+            if kind in {"strip", "lower", "upper"}:
+                _pat_need(set(step) == {"operation"} and all(isinstance(x, str) for x in result), "text step requires strings")
+                result = [getattr(x, kind)() for x in result]
+            else:
+                _pat_need("value" in step and type(step["value"]) in (int, float) and all(type(x) in (int, float) for x in result), "numeric step requires numbers")
+                result = [x + step["value"] if kind == "add" else x * step["value"] for x in result]
+    elif op == "map_reduce":
+        _pat_need(obj.get("reducer") in ("count", "sum"), "reducer must be count or sum")
+        key = obj.get("key")
+        _pat_need(isinstance(key, str) and key, "key must be a nonempty field")
+        grouped: dict[str, dict[str, Any]] = {}
+        for x in values:
+            _pat_need(isinstance(x, dict) and key in x, "rows must contain group key")
+            value = x[key]
+            _pat_need(type(value) in (str, int, float, bool) or value is None, "group key must be scalar")
+            token = json.dumps(value, sort_keys=True)
+            if token not in grouped:
+                grouped[token] = {"key": value, "value": 0}
+            if obj["reducer"] == "sum":
+                amount = x.get("value", _PAT_MISSING)
+                _pat_need(type(amount) in (int, float), "sum rows require numeric value")
+                grouped[token]["value"] += amount
+            else:
+                grouped[token]["value"] += 1
+        result = list(grouped.values())
+    elif op == "flatten":
+        result = _pat_flatten(values)
+    elif op == "partition":
+        _pat_need("condition" in obj, "condition is required")
+        _pat_condition(obj["condition"])
+        yes: list[Any] = []
+        no: list[Any] = []
+        for item in values:
+            (yes if _pat_predicate(item, obj["condition"]) else no).append(item)
+        result = {"matched": yes, "unmatched": no}
+    else:
+        other = obj.get("other")
+        _pat_need(isinstance(other, list), "other must be array")
+        strict = obj.get("strict", False)
+        _pat_need(type(strict) is bool, "strict must be boolean")
+        _pat_need(not strict or len(values) == len(other), "strict zip lengths differ")
+        result = [[a, b] for a, b in zip(values, other)]
+    return {"schema": "collection-transform/1", "operation": op, "values": result}
+
+
+def _pat_distinct(values: list[Any]) -> list[Any]:
+    """First occurrences by canonical JSON (object key order is ignored; ``true``, ``1`` and ``1.0`` stay distinct; arrays are ordered). Full keys, not hashes, so nothing is lost to a collision."""
+    seen: set[str] = set()
+    result = []
+    for value in values:
+        key = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
+
+
+def pattern_select(payload: Any) -> dict[str, Any]:
+    """Select JSON values (001-003, 030, 086, 113): an equality ``filter`` (one ``equals`` or several ``conditions`` on a literal path, ``match`` all or any), a stable ``distinct`` and a
+    ``deduplicate_report``. A path is literal keys and indices, never an expression."""
+    _pat_need(isinstance(payload, dict), "input must be a JSON object")
+    values = payload.get("values")
+    _pat_need(isinstance(values, list), "values must be a JSON list")
+    operation = payload.get("operation", "filter")
+    if operation in ("distinct", "deduplicate_report"):
+        _pat_need(not (set(payload) - {"operation", "values"}), f"{operation} accepts only operation and values")
+        if operation == "distinct":
+            return {"values": _pat_distinct(values)}
+        unique = _pat_distinct(values)
+        duplicates = len(values) - len(unique)
+        return {"values": [{"input_count": len(values), "unique_count": len(unique), "duplicate_count": duplicates, "has_duplicates": duplicates > 0}]}
+    _pat_need(operation == "filter", "operation must be filter, distinct or deduplicate_report")
+    if "conditions" not in payload:
+        _pat_need("equals" in payload, "equals is required")
+        _pat_need("match" not in payload, "match requires conditions")
+        return {"values": [value for value in values if value == payload["equals"]]}
+    _pat_need("equals" not in payload, "use equals or conditions, not both")
+    conditions = payload["conditions"]
+    _pat_need(isinstance(conditions, list) and conditions, "conditions must be a non-empty list")
+    match = payload.get("match", "all")
+    _pat_need(match in ("all", "any"), "match must be all or any")
+    for condition in conditions:      # every condition is validated before filtering, even with no input values
+        _pat_need(isinstance(condition, dict) and "equals" in condition and not (set(condition) - {"path", "equals"}), "each condition accepts only path and required equals")
+        path = condition.get("path", [])
+        _pat_need(isinstance(path, list) and all(isinstance(p, str) or (type(p) is int and p >= 0) for p in path), "path must contain literal keys or non-negative integer indices")
+    def found(value: Any, condition: dict[str, Any]) -> bool:
+        for part in condition.get("path", []):
+            if isinstance(part, str) and isinstance(value, dict):
+                value = value.get(part, _PAT_MISSING)
+            elif type(part) is int and isinstance(value, list) and part < len(value):
+                value = value[part]
+            else:
+                return False
+        return value is not _PAT_MISSING and value == condition["equals"]
+    combine = all if match == "all" else any
+    return {"values": [value for value in values if combine(found(value, c) for c in conditions)]}
+
+
+PATTERN_ORDER_EXAMPLES: dict[str, list[Any]] = {
+    "basic": [9, 2, 5, 1, 3], "reverse": [9, 2, 5, 1, 3],
+    "multi": [{"group": "b", "score": 2, "name": "B2"}, {"group": "a", "score": 1, "name": "A1"}, {"group": "b", "score": 1, "name": "B1"}, {"group": "a", "score": 3, "name": "A3"}],
+    "sorted-set": [5, 2, 5, 1, 3, 2],
+    "priority": [{"priority": 2, "name": "normal"}, {"priority": 1, "name": "urgent"}, {"priority": 3, "name": "later"}, {"priority": 1, "name": "critical"}],
+    "top-n": [7, 1, 9, 3, 8, 2],
+}
+
+
+def pattern_order(mode: str, values: list[Any] | None = None) -> dict[str, Any]:
+    """Ordering (009, 010, 013, 026, 027, 029): ``basic``, ``reverse``, ``multi`` (group ascending, score descending), ``sorted-set``, ``priority`` and ``top-n`` (the three largest).
+    Without ``values`` the pattern's own example is used."""
+    if mode not in PATTERN_ORDER_EXAMPLES:
+        raise ValueError("unsupported ordering mode")
+    values = PATTERN_ORDER_EXAMPLES[mode] if values is None else values
+    _pat_need(isinstance(values, list), "values must be a list")
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    if mode in ("basic", "reverse", "sorted-set", "top-n"):
+        _pat_need(all(num(v) for v in values), {"basic": "basic ordering requires numbers", "reverse": "reverse ordering requires numbers", "sorted-set": "sorted-set requires numbers", "top-n": "top-n requires numbers"}[mode])
+        out = sorted(values) if mode == "basic" else sorted(values, reverse=True) if mode == "reverse" else sorted(set(values)) if mode == "sorted-set" else sorted(values, reverse=True)[:3]
+    elif mode == "multi":
+        _pat_need(all(isinstance(v, dict) and isinstance(v.get("group"), str) and num(v.get("score")) for v in values), "multi ordering requires group/score records")
+        out = sorted(values, key=lambda v: (v["group"], -v["score"]))
+    else:
+        _pat_need(all(isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("priority"), int) and not isinstance(v.get("priority"), bool) for v in values),
+                  "priority ordering requires name/priority records")
+        out = sorted(values, key=lambda v: (v["priority"], v["name"]))
+    return {"schema": "list-ordering/1", "mode": mode, "values": out}
+
+
+PATTERN_TEXT_DOCUMENTS = [{"id": "doc-1", "text": "Flutter renders portable user interfaces"}, {"id": "doc-2", "text": "Python processes portable data and search indexes"},
+                          {"id": "doc-3", "text": "Search indexes make repeated search fast"}]
+_PAT_STOP_WORDS = {"and", "the", "a", "an"}
+_PAT_TOKEN = re.compile(r"[0-9A-Za-z]+", re.ASCII)
+
+
+def pattern_tokens(text: Any) -> list[str]:
+    """ASCII alphanumeric tokens, lower-cased; stop words (and, the, a, an) removed by ``pattern_without_stop_words``."""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return [match.group(0).lower() for match in _PAT_TOKEN.finditer(text)]
+
+
+def pattern_without_stop_words(tokens: list[str]) -> list[str]:
+    if not all(isinstance(token, str) for token in tokens):
+        raise TypeError("tokens must contain strings")
+    return [token for token in tokens if token not in _PAT_STOP_WORDS]
+
+
+def pattern_inverted_index(documents: list[dict[str, str]]) -> dict[str, list[str]]:
+    index: dict[str, set[str]] = defaultdict(set)
+    for document in documents:
+        doc_id, text = document.get("id"), document.get("text")
+        if not isinstance(doc_id, str) or not doc_id or not isinstance(text, str):
+            raise ValueError("documents require non-empty id and text")
+        for token in pattern_without_stop_words(pattern_tokens(text)):
+            index[token].add(doc_id)
+    return {token: sorted(ids) for token, ids in sorted(index.items())}
+
+
+def pattern_text_search(documents: list[dict[str, str]], query: str) -> list[str]:
+    """Documents that contain every non-stop-word term of the query (an AND search over the inverted index)."""
+    terms = pattern_without_stop_words(pattern_tokens(query))
+    if not terms:
+        return []
+    index = pattern_inverted_index(documents)
+    matches = set(index.get(terms[0], []))
+    for term in terms[1:]:
+        matches.intersection_update(index.get(term, []))
+    return sorted(matches)
+
+
+def pattern_text(mode: str) -> dict[str, Any]:
+    """The text-search examples (005, 019, 020, 024: ``search``, ``tokens``, ``text-index``, ``inverted-index``) over three fixed documents."""
+    if mode == "search":
+        values: Any = pattern_text_search(PATTERN_TEXT_DOCUMENTS, "portable search")
+    elif mode == "tokens":
+        values = pattern_without_stop_words(pattern_tokens("Python and Flutter search the data"))
+    elif mode == "text-index":
+        values = [{"id": d["id"], "tokens": pattern_without_stop_words(pattern_tokens(d["text"]))} for d in PATTERN_TEXT_DOCUMENTS]
+    elif mode == "inverted-index":
+        values = [{"term": term, "documents": ids} for term, ids in pattern_inverted_index(PATTERN_TEXT_DOCUMENTS).items()]
+    else:
+        raise ValueError("unsupported text-processing mode")
+    return {"schema": "text-processing/1", "mode": mode, "values": values}
+
+
+PATTERN_WINDOW_MODES = ("load-more", "lazy-list", "prefetch", "page-indicator", "page-size", "offset-limit", "keyset", "window", "bidirectional")
+PATTERN_COLLECTION_MODES = ("selectable", "swipe-delete", "reorderable", "checklist")
+PATTERN_WINDOW_ITEMS = [f"item-{index:02d}" for index in range(1, 13)]
+
+
+def pattern_window_initial(mode: str) -> dict[str, Any]:
+    if mode not in PATTERN_WINDOW_MODES:
+        raise ValueError("unsupported mode")
+    state: dict[str, Any] = {"mode": mode, "offset": 0, "limit": 4, "total": len(PATTERN_WINDOW_ITEMS)}
+    if mode == "keyset":
+        state["cursor"] = None
+    return state
+
+
+def pattern_window_step(state: Any, command: str) -> dict[str, Any]:
+    """One transition of a collection window (034, 036-044): ``next``/``load-more``/``prefetch``, ``previous``, ``page-size-3``, ``offset-6``, ``refresh`` (bumps ``revision``) and ``reset``."""
+    if not isinstance(state, dict):
+        raise TypeError("state must be an object")
+    mode = state.get("mode")
+    offset, limit, total = state.get("offset"), state.get("limit"), state.get("total")
+    _pat_need(mode in PATTERN_WINDOW_MODES, "invalid mode")
+    _pat_need(all(isinstance(v, int) and not isinstance(v, bool) for v in (offset, limit, total)), "invalid bounds")
+    _pat_need(offset >= 0 and limit > 0 and total >= 0, "invalid bounds")
+    result = dict(state)
+    if command in ("next", "load-more", "prefetch"):
+        result["offset"] = min(offset + limit, max(0, total - limit))
+        if mode == "keyset":
+            result["cursor"] = PATTERN_WINDOW_ITEMS[result["offset"] - 1] if result["offset"] else None
+    elif command == "page-size-3":
+        result["limit"] = 3
+        result["offset"] = min((offset // 3) * 3, max(0, total - 3))
+    elif command == "offset-6":
+        result["offset"] = min(6, max(0, total - limit))
+    elif command == "refresh":
+        result["offset"] = 0
+        result["revision"] = state.get("revision", 0) + 1
+    elif command == "previous":
+        result["offset"] = max(0, offset - limit)
+    elif command == "reset":
+        result["offset"] = 0
+    else:
+        raise ValueError("unsupported command")
+    return result
+
+
+def pattern_window_render(state: dict[str, Any]) -> dict[str, Any]:
+    offset, limit, total = state["offset"], state["limit"], state["total"]
+    return {"schema": "collection-window/1", "mode": state["mode"], "state": state, "page": offset // limit + 1 if total else 0, "pages": (total + limit - 1) // limit if total else 0,
+            "values": PATTERN_WINDOW_ITEMS[offset:min(offset + limit, total)]}
+
+
+def pattern_collection_initial(mode: str) -> dict[str, Any]:
+    if mode not in PATTERN_COLLECTION_MODES:
+        raise ValueError("unsupported collection mode")
+    return {"mode": mode, "items": ["a", "b", "c", "d"], "selected": []}
+
+
+def pattern_collection_step(state: Any, command: str, item: str = "b") -> dict[str, Any]:
+    """One command on a list (051-054: selectable, swipe-delete, reorderable, checklist): ``select``/``toggle`` flips selection, ``delete`` removes the item (and its selection), ``move-first``."""
+    _pat_need(isinstance(state, dict) and state.get("mode") in PATTERN_COLLECTION_MODES, "invalid collection state")
+    items, selected = state.get("items"), state.get("selected")
+    _pat_need(isinstance(items, list) and isinstance(selected, list) and all(isinstance(x, str) for x in items + selected) and len(items) == len(set(items)) and set(selected).issubset(items),
+              "invalid collection items")
+    _pat_need(item in items, "unknown item")
+    result = {"mode": state["mode"], "items": items.copy(), "selected": selected.copy()}
+    if command in ("select", "toggle"):
+        if item in result["selected"]:
+            result["selected"].remove(item)
+        else:
+            result["selected"].append(item)
+    elif command == "delete":
+        result["items"].remove(item)
+        if item in result["selected"]:
+            result["selected"].remove(item)
+    elif command == "move-first":
+        result["items"].remove(item)
+        result["items"].insert(0, item)
+    else:
+        raise ValueError("unsupported collection command")
+    return result
+
+
+def pattern_collection_render(state: dict[str, Any]) -> dict[str, Any]:
+    return {"schema": "collection-command/1", "mode": state["mode"], "state": state, "values": [{"id": item, "selected": item in state["selected"]} for item in state["items"]]}
+
+
+_PAT_STRUCTURE_ROWS = [{"id": "a1", "group": "A", "label": "Alpha"}, {"id": "a2", "group": "A", "label": "Amber"}, {"id": "b1", "group": "B", "label": "Beta"}, {"id": "b2", "group": "B", "label": "Blue"}]
+_PAT_STRUCTURE_TREE = [{"id": "root", "label": "Root", "children": [{"id": "left", "label": "Left", "children": []},
+                                                                      {"id": "right", "label": "Right", "children": [{"id": "leaf", "label": "Leaf", "children": []}]}]}]
+
+
+def pattern_structure(mode: str) -> dict[str, Any]:
+    """Portable collection structures (045-049): sections for ``sticky``/``section``/``grouped``, a depth-first list for ``tree``/``flat``."""
+    def flatten(nodes: list[dict[str, Any]], depth: int = 0) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for node in nodes:
+            out.append({"id": node["id"], "label": node["label"], "depth": depth})
+            out.extend(flatten(node.get("children", []), depth + 1))
+        return out
+    if mode in ("sticky", "section", "grouped"):
+        sections: list[dict[str, Any]] = []
+        for row in _PAT_STRUCTURE_ROWS:
+            if not sections or sections[-1]["header"] != row["group"]:
+                sections.append({"header": row["group"], "items": []})
+            sections[-1]["items"].append({"id": row["id"], "label": row["label"]})
+        values: Any = sections
+    elif mode in ("tree", "flat"):
+        values = flatten(_PAT_STRUCTURE_TREE)
+    else:
+        raise ValueError("unsupported mode")
+    return {"schema": "collection-structure/1", "mode": mode, "values": values}
+
+
+# --- The JavaScript references of the catalogue (patterns 4, 35 and 121-150), as deterministic models ------------------------------------------------
+# flutter_navigation_basic keeps these in javascript/*.mjs (future_patterns, stream_patterns, concurrency_patterns, event_loop_patterns, interaction_patterns) because their subject is
+# the JavaScript event loop; each takes one JSON request and answers one JSON result. Python models them without a clock: a task has a delay in milliseconds, and what finishes first is
+# a sort on (delay, creation order), which is what Node's timers do (a timer of 0 ms is 1 ms, so 0 and 1 tie and the earlier created wins). The originals are the golden values:
+# they were run on thousands of seeded requests (``tests/fixtures/pattern_golden.json`` holds a recorded sample) and every answer and refusal text is the same. Numbers follow
+# JavaScript, as the originals read them from JSON: ``1.0`` is the integer 1. A refusal is a ``ValueError`` with the original's ``TypeError``/``RangeError`` text.
+_PAT_JS_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
+
+
+def _pat_js_int(value: Any) -> bool:
+    """Number.isInteger for a JSON number."""
+    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
+
+
+def _pat_js_num(value: Any) -> bool:
+    """typeof value === "number" && Number.isFinite(value)."""
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _pat_js_json(value: Any) -> str:
+    """JSON.stringify(value): key order kept, an integral number written as an int."""
+    def plain(v: Any) -> Any:
+        if type(v) is float and math.isfinite(v) and v.is_integer():
+            return int(v)
+        if isinstance(v, list):
+            return [plain(x) for x in v]
+        if isinstance(v, dict):
+            return {k: plain(x) for k, x in v.items()}
+        return v
+    return json.dumps(plain(value), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _pat_js_keys_of(obj: dict[str, Any]) -> list[str]:
+    """Object.keys order: array-index keys ascending first, then the rest as written."""
+    indexes = sorted((k for k in obj if _PAT_JS_INDEX.fullmatch(k) and int(k) < 2 ** 32 - 1), key=int)
+    return indexes + [k for k in obj if k not in indexes]
+
+
+def _pat_js_object(value: Any, name: str) -> dict[str, Any]:
+    _pat_need(isinstance(value, dict), name + " must be an object")
+    return value
+
+
+def _pat_js_fields(obj: dict[str, Any], allowed: Any, required: Any = ()) -> None:
+    for key in _pat_js_keys_of(obj):
+        _pat_need(key in allowed, "unknown field " + key)
+    for key in required:
+        _pat_need(key in obj, "missing field " + key)
+
+
+def _pat_future_task(raw: Any, index: int) -> dict[str, Any]:
+    task = _pat_js_object(raw, "task")
+    _pat_js_fields(task, ("value", "delay_ms", "reject"), ("value",))
+    delay = task.get("delay_ms")
+    delay = 0 if delay is None else delay
+    _pat_need(_pat_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
+    _pat_need("reject" not in task or (isinstance(task["reject"], str) and task["reject"] != ""), "reject must be a nonempty string")
+    return {"value": task["value"], "at": max(1, int(delay)), "reject": task.get("reject"), "rejects": "reject" in task, "index": index}
+
+
+def _pat_future_settle(job: dict[str, Any]) -> Any:
+    if job["rejects"]:
+        raise ValueError(job["reject"])
+    return job["value"]
+
+
+def pattern_future(request: Any) -> dict[str, Any]:
+    """Promise basics (121-126): ``basic``, ``chain`` (add, multiply, uppercase), ``error`` (a rejection caught into a fallback), ``wait`` (Promise.all: values in input order, else the
+    first rejection in time), ``any`` (Promise.race: the first to settle, a rejection included) and ``timeout`` (a race against a timer that does not cancel the task)."""
+    req = _pat_js_object(request, "request")
+    _pat_js_fields(req, ("mode", "task", "tasks", "steps", "timeout_ms", "fallback"), ("mode",))
+    mode = req["mode"]
+    _pat_need(mode in ("basic", "chain", "error", "wait", "any", "timeout"), "unsupported mode")
+    if mode in ("wait", "any"):
+        _pat_js_fields(req, ("mode", "tasks"), ("tasks",))
+        _pat_need(isinstance(req["tasks"], list) and 1 <= len(req["tasks"]) <= 32, "tasks must contain 1..32 tasks")
+        jobs = [_pat_future_task(raw, i) for i, raw in enumerate(req["tasks"])]
+        first = min(jobs, key=lambda j: (j["at"], j["index"]))
+        if mode == "any":
+            return {"schema": "future-patterns/1", "mode": mode, "value": _pat_future_settle(first)}
+        rejected = [j for j in jobs if j["rejects"]]
+        if rejected:
+            raise ValueError(min(rejected, key=lambda j: (j["at"], j["index"]))["reject"])
+        return {"schema": "future-patterns/1", "mode": mode, "value": [j["value"] for j in jobs]}
+    allowed = ("mode", "task", "steps") if mode == "chain" else ("mode", "task", "fallback") if mode == "error" else ("mode", "task", "timeout_ms") if mode == "timeout" else ("mode", "task")
+    _pat_js_fields(req, allowed, ("task",))
+    job = _pat_future_task(req["task"], 0)
+    steps: list[dict[str, Any]] = []
+    if mode == "chain":
+        _pat_need(isinstance(req.get("steps"), list) and 1 <= len(req["steps"]) <= 32, "steps must contain 1..32 steps")
+        for raw in req["steps"]:
+            step = _pat_js_object(raw, "step")
+            _pat_js_fields(step, ("op", "by"), ("op",))
+            if step["op"] in ("add", "multiply"):
+                _pat_need(_pat_js_num(step.get("by")), "numeric by required")
+            elif step["op"] == "uppercase":
+                _pat_js_fields(step, ("op",))
+            else:
+                raise ValueError("unsupported step")
+            steps.append(step)
+    if mode == "error":
+        _pat_need("fallback" in req, "fallback required")
+        try:
+            return {"schema": "future-patterns/1", "mode": mode, "value": _pat_future_settle(job)}
+        except ValueError as error:
+            return {"schema": "future-patterns/1", "mode": mode, "value": {"caught": str(error), "fallback": req["fallback"]}}
+    if mode == "timeout":
+        timeout = req.get("timeout_ms")
+        _pat_need(_pat_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
+        _pat_need(job["at"] <= timeout, "timeout")      # a tie goes to the task: its timer was created first
+    value = _pat_future_settle(job)
+    for step in steps:
+        if step["op"] == "uppercase":
+            _pat_need(isinstance(value, str), "string input required")
+            value = value.upper()
+        else:
+            _pat_need(_pat_js_num(value), "numeric input required")
+            value = value + step["by"] if step["op"] == "add" else value * step["by"]
+    return {"schema": "future-patterns/1", "mode": mode, "value": value}
+
+
+def _pat_stream_events(raw: Any) -> list[dict[str, Any]]:
+    _pat_need(isinstance(raw, list) and len(raw) <= 1000, "events must be array <=1000")
+    last = -1
+    for event in raw:
+        _pat_need(isinstance(event, dict) and sorted(event) == ["at_ms", "value"], "event shape")
+        _pat_need(_pat_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
+        last = event["at_ms"]
+    return raw
+
+
+def pattern_stream(request: Any) -> dict[str, Any]:
+    """Stream shapes over events with a time in milliseconds (127-135, 144, 145): ``basic``, ``controller`` (add and close commands), ``broadcast``, ``transform`` (where_equals, expand,
+    map_add), ``merge`` (by time, then stream, then position), ``debounce`` (an event is kept when the next one is later than the duration), ``throttle`` (one per duration), ``buffer`` and
+    ``window`` (sizes and steps). ``where_equals`` compares the JSON text, so key order matters."""
+    _pat_need(isinstance(request, dict) and request.get("mode") in ("basic", "controller", "broadcast", "transform", "merge", "debounce", "throttle", "buffer", "window"), "mode")
+    mode = request["mode"]
+    xs: list[dict[str, Any]] = []
+    if mode == "controller":
+        commands = request.get("commands")
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands")
+        closed = False
+        for command in commands:
+            _pat_need(isinstance(command, (dict, list)) and command is not None, "command")
+            op = command.get("op") if isinstance(command, dict) else None
+            if op == "close":
+                _pat_need(not closed, "closed twice")
+                closed = True
+            else:
+                _pat_need(op == "add" and not closed and "value" in command, "invalid add")
+                xs.append({"at_ms": len(xs), "value": command["value"]})
+        _pat_need(closed, "close required")
+    elif mode == "merge":
+        streams = request.get("streams")
+        _pat_need(isinstance(streams, list) and 0 < len(streams) <= 16, "streams")
+        tagged = [{**event, "source": i, "index": j} for i, s in enumerate(streams) for j, event in enumerate(_pat_stream_events(s))]
+        tagged.sort(key=lambda e: (e["at_ms"], e["source"], e["index"]))
+        xs = [{k: v for k, v in e.items() if k != "index"} for e in tagged]
+    else:
+        xs = list(_pat_stream_events(request.get("events")))
+    if mode == "transform":
+        steps = request.get("steps")
+        _pat_need(isinstance(steps, list) and 0 < len(steps) <= 16, "steps")
+        for step in steps:
+            _pat_need(isinstance(step, (dict, list)), "step")
+            op = step.get("op") if isinstance(step, dict) else None
+            if op == "where_equals":
+                wanted = _pat_js_json(step["value"]) if "value" in step else None
+                xs = [x for x in xs if wanted is not None and _pat_js_json(x["value"]) == wanted]
+            elif op == "expand":
+                grown = []
+                for x in xs:
+                    _pat_need(isinstance(x["value"], list), "expand array")
+                    grown.extend({**x, "value": value} for value in x["value"])
+                xs = grown
+            elif op == "map_add":
+                moved = []
+                for x in xs:
+                    _pat_need(_pat_js_num(x["value"]) and _pat_js_num(step.get("value")), "map_add numbers")
+                    moved.append({**x, "value": x["value"] + step["value"]})
+                xs = moved
+            else:
+                raise ValueError("step operation")
+    if mode in ("debounce", "throttle"):
+        ms = request.get("duration_ms")
+        _pat_need(_pat_js_int(ms) and 0 < ms <= 60000, "duration")
+        if mode == "debounce":
+            xs = [x for i, x in enumerate(xs) if i + 1 >= len(xs) or xs[i + 1]["at_ms"] - x["at_ms"] > ms]
+        else:
+            last = -math.inf
+            kept = []
+            for x in xs:
+                if x["at_ms"] - last >= ms:
+                    kept.append(x)
+                    last = x["at_ms"]
+            xs = kept
+    if mode in ("buffer", "window"):
+        size = request.get("size")
+        _pat_need(_pat_js_int(size) and 0 < size <= 1000, "size")
+        step = size if mode == "buffer" else (1 if request.get("step") is None else request["step"])
+        _pat_need(_pat_js_int(step) and 0 < step <= 1000, "step")
+        size, step = int(size), int(step)
+        out = []
+        for i in range(0, len(xs), step):
+            part = xs[i:i + size]
+            if (mode == "window" and len(part) < size) or not part:
+                break
+            out.append({"at_ms": part[-1]["at_ms"], "value": [x["value"] for x in part]})
+        xs = out
+    if mode == "broadcast":
+        count = request.get("subscribers")
+        _pat_need(_pat_js_int(count) and 1 <= count <= 16, "subscribers")
+        return {"schema": "stream-patterns/1", "mode": mode, "subscribers": [[dict(x) for x in xs] for _ in range(int(count))]}
+    return {"schema": "stream-patterns/1", "mode": mode, "events": xs}
+
+
+def _pat_concurrency_tasks(raw: Any) -> list[dict[str, Any]]:
+    _pat_need(isinstance(raw, list) and len(raw) <= 32, "tasks must be an array (max 32)")
+    jobs = []
+    for index, item in enumerate(raw):
+        _pat_need(isinstance(item, dict), "task object required")
+        _pat_need(all(k in ("value", "delay_ms") for k in item) and "value" in item, "task keys")
+        delay = item.get("delay_ms")
+        delay = 0 if delay is None else delay
+        _pat_need(_pat_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
+        jobs.append({"value": item["value"], "delay": int(delay), "index": index})
+    return jobs
+
+
+def _pat_safe_int(value: Any) -> bool:
+    return _pat_js_int(value) and abs(value) <= 2 ** 53 - 1
+
+
+def pattern_concurrency(request: Any) -> dict[str, Any]:
+    """Bounded concurrency (138-143): ``work_queue`` (one at a time), ``semaphore`` and ``parallel_map`` (at most ``concurrency`` at once, results in input order, ``max_active`` the
+    most that ran together), ``mutex`` (increments applied one after another), ``cancelable`` (a task and a cancel flag) and ``progress`` (completed/total after each task)."""
+    _pat_need(isinstance(request, dict), "request object")
+    mode = request.get("mode")
+    _pat_need(mode in ("work_queue", "semaphore", "mutex", "cancelable", "parallel_map", "progress"), "unsupported mode")
+    allowed = ("mode", "task", "cancel") if mode == "cancelable" else ("mode", "increments") if mode == "mutex" else ("mode", "tasks") + (("concurrency",) if mode in ("semaphore", "parallel_map") else ())
+    _pat_need(all(k in allowed for k in request), "unknown request keys")
+    if mode == "mutex":
+        increments = request.get("increments")
+        _pat_need(isinstance(increments, list) and len(increments) <= 32 and all(_pat_safe_int(x) for x in increments), "increments")
+        state, history = 0, []
+        for n in increments:
+            state += n
+            _pat_need(_pat_safe_int(state), "overflow")
+            history.append(state)
+        result: Any = {"value": state, "history": history}
+    elif mode == "cancelable":
+        job = _pat_concurrency_tasks([request.get("task")])[0]
+        _pat_need(isinstance(request.get("cancel"), bool), "cancel flag required")
+        result = {"status": "cancelled"} if request["cancel"] else {"status": "completed", "value": job["value"]}
+    else:
+        jobs = _pat_concurrency_tasks(request.get("tasks"))
+        limit = 1 if mode in ("work_queue", "progress") else request.get("concurrency")
+        _pat_need(_pat_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
+        metrics = {"values": [j["value"] for j in jobs], "max_active": min(int(limit), len(jobs))}
+        result = {"values": metrics["values"], "progress": [{"completed": i + 1, "total": len(jobs)} for i in range(len(jobs))]} if mode == "progress" else metrics
+    return {"schema": "concurrency-patterns/1", "mode": mode, "result": result}
+
+
+def _pat_event_fields(obj: Any, allowed: Any, required: Any = ()) -> dict[str, Any]:
+    _pat_need(isinstance(obj, dict), "object required")
+    _pat_need(all(k in allowed for k in obj), "unknown field")
+    _pat_need(all(k in obj for k in required), "missing field")
+    return obj
+
+
+def pattern_event_loop(request: Any) -> dict[str, Any]:
+    """Event-loop shapes (146-150): ``reactive`` (map_add and where_equals over values), ``event_loop`` (the phases sync, microtask, timer), ``microtask`` (sync, microtask, promise,
+    timer), ``suspend_resume`` (a pause after N values leaves the order alone) and ``async_generator`` (values in order)."""
+    req = _pat_event_fields(request, ("mode", "values", "pause_after", "steps"), ("mode", "values"))
+    mode, values = req["mode"], req["values"]
+    _pat_need(isinstance(values, list) and len(values) <= 1000, "values must be array <=1000")
+    _pat_need(mode in ("reactive", "event_loop", "microtask", "suspend_resume", "async_generator"), "unsupported mode")
+    if mode == "reactive":
+        _pat_event_fields(req, ("mode", "values", "steps"), ("mode", "values", "steps"))
+        steps = req["steps"]
+        _pat_need(isinstance(steps, list) and 0 < len(steps) <= 16, "steps")
+        out = list(values)
+        for raw in steps:
+            step = _pat_event_fields(raw, ("op", "value"), ("op", "value"))
+            if step["op"] == "map_add":
+                _pat_need(_pat_js_num(step["value"]) and all(_pat_js_num(x) for x in out), "numbers required")
+                out = [x + step["value"] for x in out]
+            elif step["op"] == "where_equals":
+                out = [x for x in out if _pat_js_json(x) == _pat_js_json(step["value"])]
+            else:
+                raise ValueError("unsupported reactive step")
+        result: Any = out
+    elif mode == "event_loop":
+        _pat_event_fields(req, ("mode", "values"))
+        result = [{"phase": phase, "values": values} for phase in ("sync", "microtask", "timer")]
+    elif mode == "microtask":
+        _pat_event_fields(req, ("mode", "values"))
+        result = ["sync", "microtask", "promise", "timer"]
+    elif mode == "suspend_resume":
+        _pat_event_fields(req, ("mode", "values", "pause_after"), ("mode", "values", "pause_after"))
+        pause = req["pause_after"]
+        _pat_need(_pat_js_int(pause) and 0 <= pause <= len(values), "pause_after")
+        result = {"values": list(values), "trace": ["paused", "resumed"]}
+    else:
+        _pat_event_fields(req, ("mode", "values"))
+        result = list(values)
+    return {"schema": "event-loop-patterns/1", "mode": mode, "result": result}
+
+
+class PatternDebouncer:
+    """The trailing-edge debounce of interaction_patterns.mjs with injected timers: every call replaces the pending one, ``cancel`` drops it. ``set_timeout(fn, ms)`` returns a handle
+    that ``clear_timeout(handle)`` accepts."""
+
+    def __init__(self, callback: Any, delay_ms: Any, set_timeout: Any, clear_timeout: Any) -> None:
+        if not callable(callback) or not _pat_js_num(delay_ms) or delay_ms < 0:
+            raise TypeError("invalid debounce arguments")
+        self.callback, self.delay_ms, self.set_timeout, self.clear_timeout = callback, delay_ms, set_timeout, clear_timeout
+        self.timer: Any = None
+
+    def __call__(self, *args: Any) -> None:
+        if self.timer is not None:
+            self.clear_timeout(self.timer)
+
+        def fire() -> None:
+            self.timer = None
+            self.callback(*args)
+        self.timer = self.set_timeout(fire, self.delay_ms)
+
+    def cancel(self) -> None:
+        if self.timer is not None:
+            self.clear_timeout(self.timer)
+        self.timer = None
+
+
+def pattern_virtual_window(params: Any) -> dict[str, Any]:
+    """The rows to draw in a scrolled list: ``start`` and ``end`` (visible rows plus ``overscan``, clamped to the list) and the padding that stands for the rows left out. A bad number
+    is a ``ValueError`` whose text is JavaScript's RangeError text."""
+    _pat_need(isinstance(params, dict), "invalid viewport number")
+    count, height, top, viewport = (params.get(k) for k in ("count", "itemHeight", "scrollTop", "viewportHeight"))
+    overscan = params["overscan"] if "overscan" in params else 2
+    for value in (count, height, top, viewport, overscan):
+        _pat_need(_pat_js_num(value) and value >= 0, "invalid viewport number")
+    _pat_need(_pat_js_int(count) and _pat_js_int(overscan) and height != 0, "invalid viewport configuration")
+    count, overscan = int(count), int(overscan)
+    start = max(0, min(count, math.floor(top / height) - overscan))
+    end = max(start, min(count, math.ceil((top + viewport) / height) + overscan))
+    return {"start": start, "end": end, "topPadding": start * height, "bottomPadding": (count - end) * height}
+
+
+def pattern_interaction(request: Any) -> dict[str, Any]:
+    """Interaction contracts (4, 35): ``virtual_window`` (the fields of ``pattern_virtual_window``) and ``debounce`` (calls and cancels at given times through a virtual clock: a timer
+    due before the next call fires first, one due at the same time does not)."""
+    _pat_need(isinstance(request, dict), "request object")
+    op = request.get("operation")
+    if op == "virtual_window":
+        _pat_need(all(k in ("operation", "count", "itemHeight", "scrollTop", "viewportHeight", "overscan") for k in request), "unknown request keys")
+        return {"schema": "interaction-patterns/1", "operation": op, "result": pattern_virtual_window({k: v for k, v in request.items() if k != "operation"})}
+    _pat_need(op == "debounce", "unsupported operation")
+    _pat_need(all(k in ("operation", "delay_ms", "calls") for k in request), "unknown request keys")
+    delay, calls = request.get("delay_ms"), request.get("calls")
+    _pat_need(_pat_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
+    _pat_need(isinstance(calls, list) and len(calls) <= 1000, "calls must be array <=1000")
+    last = 0
+    for call in calls:
+        _pat_need(isinstance(call, dict) and "at_ms" in call and (call.keys() == {"at_ms", "value"} or call.keys() == {"at_ms", "cancel"}), "call shape")
+        _pat_need(_pat_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
+        _pat_need("value" in call or call["cancel"] is True, "call shape")
+        last = call["at_ms"]
+    clock = [0]
+    timers: dict[int, tuple[int, Any]] = {}
+    delivered: list[dict[str, Any]] = []
+    handles = [0]
+
+    def set_timeout(fn: Any, ms: Any) -> int:
+        handles[0] += 1
+        timers[handles[0]] = (clock[0] + int(ms), fn)
+        return handles[0]
+
+    def run_due(limit: float) -> None:
+        while True:
+            due = [(at, key) for key, (at, _) in timers.items() if at < limit]
+            if not due:
+                return
+            at, key = min(due)
+            _, fn = timers.pop(key)
+            clock[0] = at
+            fn()
+
+    debounced = PatternDebouncer(lambda value: delivered.append({"at_ms": clock[0], "value": value}), int(delay), set_timeout, lambda key: timers.pop(key, None))
+    for call in calls:
+        run_due(call["at_ms"])
+        clock[0] = call["at_ms"]
+        if "value" in call:
+            debounced(call["value"])
+        else:
+            debounced.cancel()
+    run_due(math.inf)
+    return {"schema": "interaction-patterns/1", "operation": op, "result": delivered}
+
+
+def _pat_run_order(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    return pattern_order(request["mode"], request.get("values"))
+
+
+def _pat_run_window(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    commands = request.get("commands", [])
+    _pat_need(isinstance(commands, list) and len(commands) <= 1000 and all(isinstance(c, str) for c in commands), "commands must be strings")
+    state = pattern_window_initial(request["mode"])
+    for command in commands:
+        state = pattern_window_step(state, command)
+    return pattern_window_render(state)
+
+
+def _pat_run_collection(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    commands = request.get("commands", [])
+    _pat_need(isinstance(commands, list) and len(commands) <= 1000 and all(isinstance(c, list) and len(c) in (1, 2) and all(isinstance(p, str) for p in c) for c in commands),
+              "commands must be [command] or [command, item]")
+    state = pattern_collection_initial(request["mode"])
+    for command in commands:
+        state = pattern_collection_step(state, *command)
+    return pattern_collection_render(state)
+
+
+PATTERN_RUNNERS: dict[str, Any] = {
+    "query": pattern_query, "search": pattern_search, "page": pattern_page, "score": pattern_score, "reduce": pattern_reduce, "convert": pattern_convert, "validate": pattern_validate,
+    "workflow": pattern_workflow, "transform": pattern_transform, "select": pattern_select, "order": _pat_run_order,
+    "text": lambda r: pattern_text(r.get("mode") if isinstance(r, dict) else None), "window": _pat_run_window, "collection": _pat_run_collection,
+    "structure": lambda r: pattern_structure(r.get("mode") if isinstance(r, dict) else None), "future": pattern_future, "stream": pattern_stream, "concurrency": pattern_concurrency,
+    "event_loop": pattern_event_loop, "interaction": pattern_interaction}
+
+
+def pattern_run(family: str, request: Any) -> Any:
+    """Run one family of the pattern references on a JSON request (what ``--pattern FAMILY`` does); an unknown family or an invalid request is a ``ValueError``."""
+    if family not in PATTERN_RUNNERS:
+        raise ValueError(f"unknown pattern family: {family!r}; one of {', '.join(sorted(PATTERN_RUNNERS))}")
+    try:
+        return PATTERN_RUNNERS[family](request)
+    except (TypeError, OverflowError, KeyError) as error:
+        raise ValueError(f"invalid {family} request: {error}") from None
+
+
+def pattern_parse(text: str) -> Any:
+    """Strict JSON for a pattern request: NaN, Infinity and a number beyond the float range are refused, and so is nesting deeper than the interpreter can hold."""
+    def constant(name: str) -> Any:
+        raise ValueError(f"non-finite JSON constant: {name}")
+    def number(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("JSON number out of range")
+        return value
+    try:
+        return json.loads(text, parse_constant=constant, parse_float=number)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply") from None
+
+
+# --- Pattern catalogue: the 792 patterns of flutter_navigation_basic (titles from each pattern's README, themes from PATTERNS.md, producers from its responsibility audit) ---------
+# The catalogue is data: nothing here runs a pattern. ``pattern_family`` names which reference function above implements a data-processing pattern, ``pattern_owner`` says who owns the
+# rest in the original (python, javascript, flutter_native, ...), copied from python/pattern_responsibility_audit.py's rules so the page can show what moved and what did not.
+PATTERN_CATEGORIES = (("navigation", "A", "ナビゲーション画面遷移"), ("api", "B", "API連携"), ("ui", "C", "UI/テーマ"), ("data", "D", "データ処理"))
+PATTERN_THEMES: dict[str, tuple[tuple[int, int, str], ...]] = {
+    "navigation": (
+        (1, 20, "基本ナビゲーション (Push/Pop/Replace)"),
+        (21, 40, "名前付きルート (Named Routes)"),
+        (41, 60, "ディープリンク対応"),
+        (61, 80, "Bottom / Tab / Drawer Navigation"),
+        (81, 100, "Conditional Navigation (条件付き遷移)"),
+        (101, 120, "バックスタック管理・BackPress Handling"),
+        (121, 140, "Nested Navigation / 複数 Navigator"),
+        (141, 160, "Animated Transitions (カスタムアニメーション)"),
+        (161, 180, "Dialog / BottomSheet / Drawer モーダル"),
+        (181, 198, "Advanced Patterns (複合ナビゲーション・状態保持)"),
+    ),
+    "api": (
+        (1, 30, "REST API基本 (GET/POST/PUT/DELETE/PATCH)"),
+        (31, 60, "認証・セキュリティ (JWT/OAuth/API Key)"),
+        (61, 90, "WebSocket通信・Server-Sent Events (SSE)"),
+        (91, 120, "JSON/JSONL/YAML処理と変換"),
+        (121, 150, "エラーハンドリング・リトライ・タイムアウト"),
+        (151, 170, "キャッシング・CacheControl・ETag"),
+        (171, 190, "ファイルアップロード/ダウンロード・マルチパート"),
+        (191, 198, "画像・動画・音声の埋め込みと取得"),
+    ),
+    "ui": (
+        (1, 30, "Material Design基本"),
+        (31, 60, "Cupertino (iOS Style)"),
+        (61, 90, "カスタムテーマ・動的テーマ切り替え"),
+        (91, 120, "ライトモード/ダークモード・ダイナミックカラー"),
+        (121, 150, "レスポンシブデザイン (モバイル/タブレット/Web/Desktop)"),
+        (151, 175, "プラットフォーム固有 (iOS/Android/Web/macOS)"),
+        (176, 190, "アクセシビリティ (セマンティクス・フォントサイズ調整)"),
+        (191, 198, "アニメーション・トランジション・ジェスチャー応答"),
+    ),
+    "data": (
+        (1, 30, "フィルタリング・ソート・検索"),
+        (31, 60, "ページング・無限スクロール・仮想化"),
+        (61, 90, "キャッシング戦略・メモリ管理"),
+        (91, 120, "バリデーション・データ変換・正規化"),
+        (121, 150, "非同期処理 (async/await・Future・Stream)"),
+        (151, 170, "状態管理 (GetX・Provider・Riverpod等)"),
+        (171, 185, "並び替え・追加・入れ替え機能"),
+        (186, 198, "バッチ処理・トランザクション・イベント駆動"),
+    ),
+}
+PATTERN_TITLES: dict[str, str] = {
+    "navigation": (
+        "BasicPush BasicPop BasicReplace PushWithResult PushAndRemoveUntil PushNamed PopUntil OffAll PushWithArguments BackButtonHandler WillPopScope "
+        "NestedNavigator IndexedStack BottomNavBar TabBarView PageView HeroAnimation FadeTransition SlideTransition ScaleTransition NamedRouteBasic "
+        "NamedRouteArguments NamedRouteResult NamedRouteGuard NamedRouteMiddleware NamedRouteRedirect NamedRouteNested NamedRouteTabBar NamedRouteGroup "
+        "NamedRouteDynamic NamedRouteWildcard NamedRouteTransition NamedRouteBinding NamedRouteHistory NamedRouteModal NamedRouteTabIndex NamedRouteAnimation "
+        "NamedRouteObserver NamedRoutePreload NamedRouteLazy DeepLinkBasic DeepLinkArguments DeepLinkUniversal DeepLinkAppLink DeepLinkWebUrl "
+        "DeepLinkQueryParam DeepLinkAuthenticated DeepLinkFallback DeepLinkDynamic DeepLinkBranch DeepLinkNotification DeepLinkShare DeepLinkOnboarding "
+        "DeepLinkWeb DeepLinkDesktop DeepLinkHistory DeepLinkHash DeepLinkRestore DeepLinkAnalytics DeepLinkLocalized BottomNavBasic BottomNavBadge "
+        "BottomNavStatePreserve BottomNavHide BottomNavCustom TabBarFixed TabBarScrollable TabBarIcon TabBarDynamic TabBarNested DrawerBasic DrawerEndDrawer "
+        "DrawerCustom DrawerHeader DrawerPersistent DrawerModal NavigationRail NavigationRailExtended AdaptiveNav MultiLevelNav AuthGuard RoleBasedNav "
+        "OnboardingFlow WizardFlow ConditionalHome FeatureFlag AgeGate NetworkAware PermissionGuard SubscriptionGuard MaintenanceMode ForceUpdate KYC TwoFactor "
+        "ConsentFlow LocationGate DarkModeConditional LanguageRedirect ThemeConditional ProfileCompletion BackStackInspect PopCount ClearStack HomeToRoot "
+        "CustomBackButton BackGesture AndroidBackDouble BackInterceptor PopWithData StackDepth BreadcrumbNav HistoryView NavObserver RouterDelegate RouteInfo "
+        "PopResult ModalBarrier NavigationStack RouteLifecycle StackSnapshot NestedNavBasic NestedNavTab NestedNavBottom NestedNavDrawer MultiNavigatorKey "
+        "GlobalKey NestedNavDeepLink NestedNavState ShellRoute NestedNavGuard TabNestedNav ChildNavigator CrossNavigator NavigatorKey ModalStack "
+        "OverlayNavigator SidePanelNav SplitView NestedNavObserver PopScopeNested AnimatedPageRoute OpenContainer SharedAxisTransition FadeThroughTransition "
+        "MaterialMotion AnimatedSwitcher AnimatedCrossFade CustomSlide RotationTransition FlipTransition CurveAnimation ChainedAnimation StaggeredAnimation "
+        "ImplicitAnimation ExplicitAnimation PredictiveBackAnim ParallaxTransition ZoomTransition WaveTransition GlassTransition AlertDialogBasic CustomDialog "
+        "FullScreenDialog BottomSheetBasic ModalBottomSheet SnackBar Tooltip Popup ContextMenu DropdownMenu DatePicker TimePicker ColorPicker FilePicker "
+        "ConfirmDialog FormDialog SearchDelegate ActionSheet BannerWidget DrawerModal AuthFlow ShoppingCart Onboarding ProfileSetup Subscription MultiStepForm "
+        "StateRestorationNav DeeplinkToNested PinAuth QRScan InAppReview ShareContent PaymentFlow SocialLogin NotificationNav WidgetToRoute MultiWindowNav "
+        "ComprehensiveApp"
+    ),
+    "api": (
+        "HttpGet HttpPost HttpPut HttpDelete HttpPatch QueryParams PathParams JsonParse JsonSerialize NestedJson JsonList Pagination Cursor Filtering Sorting "
+        "Search BatchGet BatchPost BulkUpdate ConditionalGet HttpHead HttpOptions Versioning ContentNeg Accept Cors Redirect Compression Timeout BaseUrl "
+        "ApiKeyHeader BasicAuth BearerToken JwtLogin JwtRefresh JwtDecode OAuth2Code OAuth2Implicit OAuth2ClientCred ApiKeyQuery HmacSign RequestSigning "
+        "TokenStorage AutoRefresh SessionCookie CsrfToken MutualTls Pkce Scopes TokenIntrospect PermissionCheck RateLimitAware IpWhitelist EncryptPayload "
+        "HashPassword TlsVerify CertPin SecureHeaders SamlAssertion LogoutRevoke WebSocketBasic WebSocketSend WebSocketPing WebSocketReconnect WebSocketJson "
+        "WebSocketBinary WebSocketRoom WebSocketBroadcast WebSocketAuth WebSocketStream SseBasic SseReconnect SseEventType SseLastEventId SseJson LongPolling "
+        "ShortPolling HttpStream ChunkedTransfer EventBus WebSocketPool SocketIo Sse404Handling WebSocketCompress WebSocketSubprotocol RealTimeList "
+        "NotificationWs PresenceWs TypingIndicator LiveFeed JsonBasicParse JsonNested JsonList JsonNull JsonToModel ModelToJson JsonDiff JsonMerge JsonPath "
+        "JsonlParse JsonlWrite JsonlStream YamlRead YamlWrite YamlConfig YamlValidate JsonSchema JsonTransform CsvParse CsvWrite XmlParse XmlWrite ProtobufMock "
+        "MessagePack JsonNormalize JsonStringify JsonEncoding JsonStream JsonMask JsonVersioning ErrorHandlingBasic RetryLogic ExponentialBackoff "
+        "CircuitBreaker Fallback Timeout2 ErrorMapping GlobalErrorHandler ErrorBoundary UserFriendlyError ValidationError NetworkError ServerError AuthError "
+        "NotFoundError RateLimitError ConflictError DeadlineExceeded PartialSuccess MultiError ErrorLogging ErrorReporting GracefulDegradation OfflineMode "
+        "SyncRetry AsyncRetry RetryBudget Idempotency ErrorContext ErrorChain HttpCacheBasic EtagCache LastModified CacheControl MemoryCache DiskCache "
+        "CacheExpiry CacheInvalidate StaleWhileRevalidate CacheFirst NetworkFirst CacheOnly NetworkOnly CacheAndNetwork PrefetchCache CacheVersion RequestDedup "
+        "CacheStats NoCacheHeader CdnUrl FileUploadBasic MultipartUpload ChunkedUpload UploadProgress ResumeUpload FileDownload DownloadProgress "
+        "ParallelDownload StreamDownload ZipUpload FileValidation FilePreview DirectUpload TusProtocol S3Presigned BatchDownload CacheDownload SecureDownload "
+        "ContentType Metadata ImageEmbed VideoEmbed AudioEmbed Base64Image SvgEmbed LazyLoadImage ResponsiveImage MediaPlaylist"
+    ),
+    "ui": (
+        "MaterialAppBasic ElevatedButton TextButton OutlinedButton IconButton FloatingActionButton AppBar Card ListTile TextField CheckBox RadioButton Switch "
+        "Slider ProgressIndicator Chip Badge Divider ExpansionTile Stepper DataTable Tooltip2 PopupMenu SegmentedButton NavigationBar NavigationDrawer "
+        "BottomAppBar SearchBar DatePickerM3 TimePickerM3 CupertinoApp CupertinoNavBar CupertinoTabBar CupertinoButton CupertinoTextField CupertinoSwitch "
+        "CupertinoSlider CupertinoPicker CupertinoAlert CupertinoAction CupertinoPage CupertinoList CupertinoContext CupertinoFormRow CupertinoSearch "
+        "CupertinoSegment CupertinoProgress CupertinoDate CupertinoTimer CupertinoScaffold CupertinoTabScaffold CupertinoFullscreen CupertinoScrollbar "
+        "CupertinoRefresh CupertinoTheme AdaptiveWidget PlatformDetect AdaptiveTextField AdaptiveButton AdaptiveDialog CustomThemeBasic ThemeExtension "
+        "ColorScheme TypographyTheme ComponentTheme ThemeToggle AnimatedTheme MultiTheme ThemeProvider ThemePersist BrandTheme SeasonTheme GradientTheme "
+        "NeonTheme MinimalTheme RetroTheme NatureTheme HighContrastTheme M3Theme M2Theme FontFamily FontScale IconTheme DividerTheme CardTheme AppBarTheme "
+        "ButtonTheme InputTheme SnackBarTheme TooltipTheme DarkModeBasic SystemDarkMode ManualDarkMode DarkModeIcon DarkModeImage DarkModeColor DynamicColor "
+        "SystemAccent MaterialYou AMOLED ScheduledTheme LightSensor ColorBlind Sepia Monochrome EyeComfort PrintMode Dim ContrastRatio ColorToken SeedColor "
+        "TonalPalette RoleColor ColorHarmony NightShift SystemBrightness AutoTheme MultiAccent ThemePreview ThemeExport ResponsiveLayout BreakPoint "
+        "FlexibleLayout GridLayout WrapLayout ConstraintLayout AspectRatio FractionallySized LayoutBuilder MediaQuery OrientationLayout TabletLayout "
+        "DesktopLayout WebLayout FoldableLayout SliverList SliverGrid SliverAppBar NestedScroll Scrollbar SafeArea Padding Spacer IntrinsicHeight Stack "
+        "CustomScroll Responsive2Col Responsive3Col AdaptiveFont AdaptiveImage PlatformView IOSStatusBar AndroidBackColor WebScroll WebContextMenu MacOSMenu "
+        "WindowsTitle DesktopCursor MobileHaptic IOSBlur AndroidSplash IOSSplash WebFavicon DesktopIcon StatusBarTransparent FullScreen KeyboardPadding "
+        "SafeAreaPlatform MouseRegion GestureScale ScrollPhysics TextScaleFixed DisplayMode CameraAware SystemFont SemanticsBasic ExcludeSemantics "
+        "MergeSemantics SemanticsLabel FocusTraversal FocusNode AccessibleForm ContrastMode LargeText ReduceMotion ScreenReader InvertColor BoldText "
+        "TouchTarget AccessibilityInspect GestureDetect SwipeAction PinchZoom DragDrop LongPress DoubleTap ShakeDetect AnimatedFeedback"
+    ),
+    "data": (
+        "FilterBasic FilterMultiple FilterNested FilterDebounce SearchBasic SearchFuzzy SearchHighlight SearchHistory SortBasic SortMultiKey SortStable "
+        "SortCustom SortReverse GroupBy FacetFilter RangeFilter TagFilter GeoFilter TextIndex InvertedIndex Autocomplete Tokenize Stemming StopWord TfIdf "
+        "SortedSet PriorityQueue MinHeap TopN DistinctFilter PaginationBasic CursorPagination InfiniteScroll LoadMore VirtualList LazyList PullRefresh Prefetch "
+        "PageIndicator PageSize OffsetLimit KeysetPagination WindowPaging BidirectionalScroll StickyHeader SectionList TreeView FlatList GroupedList "
+        "ThumbnailList SelectableList SwipeToDelete Reorderable ChecklistView TimelineView MasonryGrid CalendarView KanbanBoard ChartData HeatmapData "
+        "MemoryCacheBasic LruCache TtlCache WeakRefCache MultiLevel WriteThrough WriteBack ReadAside RefreshAhead CacheWarmup CacheKey CacheShard CacheEviction "
+        "CacheStats2 CacheSerialization ImageCache ApiCache ComputeCache LazyInit ObjectPool MemoryLimit GcFriendly Dispose StreamBuffer DataCompression "
+        "Deduplication Denormalize SnapshotCache DeltaCache ReadThrough ValidationBasic EmailValidation PasswordStrength PhoneValidation UrlValidation "
+        "DateValidation RangeValidation RegexValidation FormValidation AsyncValidation CrossField SanitizeInput DataNormalize TypeCoercion DateConvert "
+        "CurrencyConvert UnitConvert TimeZone Encoding DataMasking DataEnrich DataClean DataDeduplicate SchemaValidation Constraint Pipeline MapReduce Flatten "
+        "Partition Zip FutureBasic FutureChain FutureError FutureWait FutureAny FutureTimeout StreamBasic StreamController BroadcastStream StreamTransform "
+        "StreamMerge StreamDebounce StreamThrottle StreamBuffer2 StreamWindow Isolate ComputeFunc WorkQueue Semaphore Mutex CancelableOp ParallelMap "
+        "ProgressStream Debounce Throttle RxLike EventLoop MicrotaskQueue SuspendResume AsyncGenerator GetxState GetxObservable GetxController GetxBinding "
+        "GetxWorker GetxService ProviderBasic ChangeNotifier ValueNotifier InheritedWidget InheritedModel StateNotifier Bloc EventState Redux MVC MVVM MVP "
+        "CleanArch AtomState SortableList ReorderList DndGrid InsertItem RemoveItem SwapItems MoveToTop MoveToBottom InsertSorted UndoRedo CommandPattern "
+        "MementoPattern MultiSelect DragReorder PositionSwap BatchProcess Transaction EventDriven PubSub MessageQueue Saga Outbox EventSourcing CQRS Scheduler "
+        "Worker Checkpoint FullPipeline"
+    ),
+}
+# (numbers, runtime in the original, family here): the first row that contains a number decides, as in the original audit. ``order`` and ``text`` have no row there; their
+# producers (list_ordering.py, text_processing.py) are proved by the checked-in assets of patterns 005, 009, 010, 013, 019, 020, 024, 026, 027 and 029.
+PATTERN_PRODUCERS: tuple[tuple[Any, str, str | None], ...] = (
+    ((103, 104, 105, 107, 109, 110), "python", "convert"),
+    (range(91, 100), "python", "validate"),
+    ((4, 35), "javascript", "interaction"),
+    ((25, 28), "python", "score"),
+    ((6, 7, 8, 21, 22, 23), "python", "search"),
+    ((11, 12, 14, 15, 16, 17, 18), "python", "query"),
+    ((31, 32, 33), "python", "page"),
+    ((1, 2, 3, 30, 86, 113), "python", "select"),
+    ((9, 10, 13, 26, 27, 29), "python", "order"),
+    ((5, 19, 20, 24), "python", "text"),
+    (range(34, 45), "python", "window"),
+    (range(45, 50), "python", "structure"),
+    (range(51, 55), "python", "collection"),
+    (range(114, 121), "python", "transform"),
+    (range(121, 127), "javascript", "future"),
+    (range(127, 136), "javascript", "stream"),
+    (range(138, 144), "javascript", "concurrency"),
+    (range(144, 146), "javascript", "stream"),
+    (range(146, 151), "javascript", "event_loop"),
+    (range(164, 166), "python", "reduce"),
+    (range(176, 183), "python", "workflow"),
+    (range(185, 199), "python", "workflow"),
+)
+PATTERN_NATIVE = frozenset(range(151, 164)) | frozenset(range(166, 171)) | frozenset((136, 137))
+PATTERN_GESTURES = frozenset((171, 172, 173, 174, 175, 183, 184))
+
+
+def pattern_theme(category: str, number: int) -> str:
+    """The PATTERNS.md theme of a pattern: the row of its category whose number range contains it."""
+    for low, high, name in PATTERN_THEMES[category]:
+        if low <= number <= high:
+            return name
+    raise ValueError(f"no theme for {category} {number}")
+
+
+def pattern_family(number: int) -> str | None:
+    """The reference function above that implements data-processing pattern ``number`` (None when the original keeps it elsewhere)."""
+    for numbers, _runtime, family in PATTERN_PRODUCERS:
+        if number in numbers:
+            return family
+    return None
+
+
+def pattern_owner(number: int) -> str:
+    """Who owns data-processing pattern ``number`` in the original: the producer's runtime, else the audit's range rule."""
+    for numbers, runtime, _family in PATTERN_PRODUCERS:
+        if number in numbers:
+            return runtime
+    if number in PATTERN_NATIVE or number in PATTERN_GESTURES:
+        return "flutter_native"
+    for limit, owner in ((44, "python_processing / flutter_interaction"), (60, "python_assets / flutter_layout"), (90, "python_cache / runtime_specific"), (113, "python_validation / flutter_form")):
+        if number <= limit:
+            return owner
+    return "undecided"
+
+
+def pattern_catalogue() -> list[dict[str, Any]]:
+    """All 792 patterns in catalogue order: id (A001 ... D198), category, number, title, theme, and for category D its ``family`` here and ``owner`` in the original."""
+    rows: list[dict[str, Any]] = []
+    for key, letter, _label in PATTERN_CATEGORIES:
+        names = PATTERN_TITLES[key].split()
+        if len(names) != 198:
+            raise ValueError(f"{key} must list 198 titles")
+        for number, title in enumerate(names, 1):
+            row: dict[str, Any] = {"id": f"{letter}{number:03d}", "category": key, "number": number, "title": title, "theme": pattern_theme(key, number)}
+            if key == "data":
+                row["family"] = pattern_family(number)
+                row["owner"] = pattern_owner(number)
+            rows.append(row)
+    return rows
+
+
+def pattern_find(rows: list[dict[str, Any]], query: str = "", category: str = "", family: str = "") -> list[dict[str, Any]]:
+    """Filter catalogue rows: every whitespace-separated word of ``query`` must occur (NFKC, case-folded) in the id, title or theme; ``category`` and ``family`` must equal."""
+    words = _pat_normalized(query).split()
+    result = []
+    for row in rows:
+        if category and row["category"] != category:
+            continue
+        if family and row.get("family") != family:
+            continue
+        haystack = _pat_normalized(f"{row['id']} {row['title']} {row['theme']}")
+        if all(word in haystack for word in words):
+            result.append(row)
+    return result
+
+
+
+# --- The patterns page: the catalogue to search and every reference to run ------------------------------------------------------------------------
+# ``PATTERN_TWINS`` are the families that ``patterns.js`` runs in the page (the rest stay in Python: search, convert and validate lean on CPython's Unicode case folding, int parsing and
+# urlsplit; the five JavaScript-born families run there as the originals do, on real promises and timers). ``PATTERN_EXAMPLES`` holds one request per family; the page shows what Python answers to it, computed when the page is made.
+PATTERN_TWINS = ("collection", "concurrency", "event_loop", "future", "interaction", "order", "page", "query", "reduce", "score", "select", "stream", "structure", "text", "transform", "window", "workflow")
+PATTERN_EXAMPLES: dict[str, Any] = {
+    "collection": {"mode": "selectable", "commands": [["select", "b"], ["select", "c"]]},
+    "concurrency": {"mode": "semaphore", "tasks": [{"value": "a", "delay_ms": 10}, {"value": "b"}, {"value": "c", "delay_ms": 5}], "concurrency": 2},
+    "event_loop": {"mode": "microtask", "values": []},
+    "future": {"mode": "wait", "tasks": [{"value": "slow", "delay_ms": 25}, {"value": "fast"}]},
+    "interaction": {"operation": "debounce", "delay_ms": 20, "calls": [{"at_ms": 0, "value": "first"}, {"at_ms": 5, "value": "last"}, {"at_ms": 60, "value": "x"}, {"at_ms": 61, "cancel": True}]},
+    "convert": {"operation": "mask", "value": "1234567890", "keep_last": 4},
+    "order": {"mode": "priority"},
+    "page": {"operation": "cursor", "items": [1, 2, 3, 4, 5], "limit": 2},
+    "query": {"operation": "stable_sort", "items": [{"name": "b", "n": 2}, {"name": "a", "n": 1}, {"name": "c", "n": 2}], "key": "n", "descending": True},
+    "reduce": {"mode": "redux", "initial": 10, "actions": [{"type": "increment", "value": 5}, {"type": "decrement", "value": 3}, {"type": "reset"}]},
+    "score": {"operation": "minheap", "values": [5, 1, 3, 1], "pops": 2},
+    "search": {"operation": "fuzzy", "query": "cat", "values": ["cats", "car", "dog", "cat"], "max_distance": 1},
+    "select": {"operation": "distinct", "values": [1, "1", True, 1, None, None]},
+    "stream": {"mode": "window", "events": [{"at_ms": 0, "value": 1}, {"at_ms": 10, "value": 2}, {"at_ms": 20, "value": 3}], "size": 2},
+    "structure": {"mode": "tree"},
+    "text": {"mode": "search"},
+    "transform": {"operation": "constraint", "values": [1, 5, 3], "condition": {"operator": "greater_than", "value": 2}},
+    "validate": {"operation": "form", "fields": [{"name": "mail", "rule": "email", "value": "a@b.co"}, {"name": "tel", "rule": "phone", "value": "12"}]},
+    "window": {"mode": "keyset", "commands": ["next", "next"]},
+    "workflow": {"operation": "saga", "values": [1], "commands": [{"type": "append", "value": 2}, {"type": "append", "value": 3}], "fail_at": 1},
+}
+
+
+def pattern_examples() -> dict[str, dict[str, Any]]:
+    """One request and Python's answer to it for every family (what the page shows for the families it does not run itself)."""
+    return {family: {"request": PATTERN_EXAMPLES[family], "result": pattern_run(family, PATTERN_EXAMPLES[family])} for family in sorted(PATTERN_RUNNERS)}
+
+
+_CSS["patterns.css"] = ("@layer components{.ui-patterns h3{margin:24px 0 8px}.ui-patterns label{display:block;margin:8px 0}.ui-patterns .ui-input{width:100%;box-sizing:border-box}"
+                        ".ui-patterns textarea{min-height:160px;font-family:var(--ui-font-mono,monospace)}.ui-patterns-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0}.ui-patterns-bar label{display:inline-block;margin:0}.ui-patterns-bar .ui-input{width:auto;min-width:0;flex:1 1 128px}"
+                        ".ui-patterns-list{margin:8px 0;padding-left:24px;max-height:480px;overflow:auto}.ui-patterns-list li{margin:8px 0;overflow-wrap:anywhere}"
+                        ".ui-patterns pre{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.ui-patterns-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}}")
+
+
+def patterns_html() -> str:
+    """The patterns page as semantic HTML: a search over the 792 patterns and a runner for the reference of each family."""
+    categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
+    families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns><h2>792 patterns</h2>'
+            '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
+            '<label for="patterns-query">Search (id, title or theme)</label>'
+            '<input class="ui-input" id="patterns-query" data-patterns-query type="search" autocomplete="off" placeholder="filter, D003, ページング">'
+            '<div class="ui-patterns-bar"><span role="status" aria-live="polite" data-patterns-count></span><button class="ui-button" type="button" data-patterns-more>Show more</button></div>'
+            f'<div class="ui-patterns-bar"><label for="patterns-category">Category</label><select class="ui-input" id="patterns-category" data-patterns-category><option value="">All four</option>{categories}</select>'
+            f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
+            '<ol class="ui-patterns-list" data-patterns-list></ol>'
+            '<h3 id="patterns-run-title">Run a reference</h3>'
+            f'<p class="ui-muted">{len(PATTERN_TWINS)} families run in this page. Search, convert and validate stay in Python: the page shows what Python answers to their example.</p>'
+            f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
+            '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
+            '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
+            '<p class="ui-patterns-status" role="status" aria-live="polite" data-patterns-status></p><pre data-patterns-result></pre></section>')
+
+
+def patterns_document(*, theme: str = "modern") -> str:
+    """A single-file page for the patterns."""
+    return render_document(trusted_html='<main class="ui-page">' + patterns_html() + "</main>" + module_script(_JS["patterns.js"]), title="792 patterns", theme=theme, css=bundled_css())
 
 
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
@@ -7504,6 +9244,690 @@ if(typeof document!=="undefined")bindMcp();
 """
 
 
+def _patterns_js_constants() -> str:
+    """The catalogue tables, the family lists and the examples as JS constants, taken from the Python values so the two cannot drift."""
+    data = {"PATTERN_CATEGORIES": PATTERN_CATEGORIES, "PATTERN_THEMES": PATTERN_THEMES, "PATTERN_TITLES": PATTERN_TITLES, "PATTERN_PRODUCERS": [[list(n), r, f] for n, r, f in PATTERN_PRODUCERS],
+            "PATTERN_NATIVE": sorted(PATTERN_NATIVE), "PATTERN_GESTURES": sorted(PATTERN_GESTURES), "PATTERN_FAMILIES": sorted(PATTERN_RUNNERS), "PATTERN_TWINS": list(PATTERN_TWINS),
+            "PATTERN_EXAMPLES": pattern_examples()}
+    return "".join(f"export const {name}=" + json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", chr(92) + "u003c") + ";\n" for name, value in data.items())
+
+
+_JS["patterns.js"] = "/* web-ui patterns: the pattern references of flutter_navigation_basic in the page (query, page, score's min-heap, reduce, workflow, transform, select, order, text, window, collection, structure) and the 792-pattern catalogue. Python (web_ui.pattern_*) is the reference; this must agree on every request, with the same refusal text. Three families (search, convert, validate) stay in Python: they lean on CPython's Unicode case folding, int parsing and urlsplit. JSON cannot tell 1 from 1.0 here: an integral number is an int, so a float written 1.0 reads as 1. */\n" + _SHA_JS + _TEXT_JS + _patterns_js_constants() + r"""export class PatternError extends Error{}
+const need=(c,m)=>{if(!c)throw new PatternError(m)};
+const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+const isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
+const isInt=v=>typeof v==="number"&&Number.isInteger(v);
+const finite=v=>typeof v==="number"&&Number.isFinite(v);
+const kind=v=>v===null?"null":typeof v==="boolean"?"bool":typeof v==="string"?"str":typeof v==="number"?(Number.isInteger(v)?"int":"float"):Array.isArray(v)?"list":"dict";
+const sameKeys=(o,keys)=>{const k=Object.keys(o);return k.length===keys.length&&keys.every(x=>has(o,x))};
+const pyList=names=>"['"+names.join("', '")+"']";
+const num=v=>typeof v==="number";
+/* strings compare by code point, as Python's do (UTF-16 order differs above the BMP) */
+export function cmpStr(a,b){const x=Array.from(a),y=Array.from(b),n=Math.min(x.length,y.length);for(let i=0;i<n;i++){const p=x[i].codePointAt(0),q=y[i].codePointAt(0);if(p!==q)return p<q?-1:1}return x.length<y.length?-1:x.length>y.length?1:0}
+const cmpNum=(a,b)=>a<b?-1:a>b?1:0;
+/* Python's == on JSON values: true == 1, false == 0, lists and objects by content, a string only equals a string */
+export function pyEq(a,b){
+ if(a===null||b===null)return a===b;
+ if(Array.isArray(a)||Array.isArray(b))return Array.isArray(a)&&Array.isArray(b)&&a.length===b.length&&a.every((x,i)=>pyEq(x,b[i]));
+ if(isObj(a)||isObj(b)){if(!(isObj(a)&&isObj(b)))return false;const k=Object.keys(a);return k.length===Object.keys(b).length&&k.every(x=>has(b,x)&&pyEq(a[x],b[x]))}
+ if(typeof a==="string"||typeof b==="string")return a===b;
+ return Number(a)===Number(b)}
+/* json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")); an integral number is written as an int */
+function pyNum(x){
+ need(Number.isFinite(x),"Out of range float values are not JSON compliant");
+ if(Number.isInteger(x))return Math.abs(x)<1e21?String(x):BigInt(x).toString();
+ const[m,e]=x.toExponential().split("e"),neg=m[0]==="-",digits=m.replace("-","").replace(".",""),exp=Number(e),decpt=exp+1;
+ const out=decpt<=-4||decpt>16?digits[0]+(digits.length>1?"."+digits.slice(1):"")+"e"+(exp<0?"-":"+")+String(Math.abs(exp)).padStart(2,"0"):decpt<=0?"0."+"0".repeat(-decpt)+digits:digits.slice(0,decpt)+"."+digits.slice(decpt);
+ return(neg?"-":"")+out}
+export function pyJson(v){
+ if(v===null)return"null";if(v===true)return"true";if(v===false)return"false";
+ if(typeof v==="number")return pyNum(v);if(typeof v==="string")return JSON.stringify(v);
+ if(Array.isArray(v))return"["+v.map(pyJson).join(",")+"]";
+ return"{"+Object.keys(v).sort(cmpStr).map(k=>JSON.stringify(k)+":"+pyJson(v[k])).join(",")+"}"}
+const checkInt=(value,name,minimum=0)=>{need(isInt(value)&&value>=minimum,name+" must be an integer >= "+minimum);return value};
+
+/* query */
+export function patternQuery(req){
+ need(isObj(req)&&Array.isArray(req.items),"items must be a list");
+ const items=req.items,op=req.operation;
+ if(op==="stable_sort"||op==="custom_sort"){
+  const key=req.key;need(typeof key==="string"&&key!=="","sort key required");
+  need(!items.some(r=>!isObj(r)||!has(r,key)),"missing sort key");
+  const values=items.map(r=>r[key]);
+  need(!values.some(v=>!(typeof v==="string"||finite(v))),"unsupported sort key");
+  need(new Set(values.map(kind)).size<=1,"mixed sort key types");
+  let desc=has(req,"descending")?req.descending:false;need(typeof desc==="boolean","descending must be boolean");
+  if(op==="custom_sort"){need(req.comparator==="ascending"||req.comparator==="descending","unsupported comparator");desc=req.comparator==="descending"}
+  const cmp=typeof values[0]==="string"?cmpStr:cmpNum;
+  return items.slice().sort((a,b)=>desc?cmp(b[key],a[key]):cmp(a[key],b[key]))}
+ if(op==="group_by"){
+  const key=req.key;need(typeof key==="string"&&key!=="","group key required");const groups=[];
+  for(const item of items){need(isObj(item)&&has(item,key),"missing group key");const value=item[key];
+   need(value===null||typeof value==="string"||num(value)||typeof value==="boolean","group key must be scalar");
+   let g=groups.find(g=>kind(g.value)===kind(value)&&g.value===value);if(!g){g={value,items:[]};groups.push(g)}g.items.push(item)}
+  return groups}
+ if(op==="facet"||op==="tag"){
+  const key=req.key,sel=req.selected;need(typeof key==="string"&&Array.isArray(sel),"key and selected list required");
+  need(!sel.some(v=>!(typeof v==="string"||num(v)||typeof v==="boolean")),"invalid selected value");
+  const matches=item=>{need(isObj(item)&&has(item,key),"missing filter key");const value=item[key];
+   if(op==="tag"){need(Array.isArray(value),"tags must be a list");return sel.some(t=>value.some(x=>pyEq(t,x)))}
+   return sel.some(s=>pyEq(value,s))};
+  return items.filter(matches)}
+ if(op==="range"){
+  const key=req.key,low=req.minimum,high=req.maximum;need(typeof key==="string"&&finite(low)&&finite(high)&&low<=high,"invalid numeric range");
+  const out=[];for(const item of items){need(isObj(item)&&has(item,key),"missing range key");need(finite(item[key]),"invalid range value");if(low<=item[key]&&item[key]<=high)out.push(item)}return out}
+ if(op==="geo"){
+  const lat=req.latitude,lon=req.longitude,radius=req.radius_km;
+  need(finite(lat)&&finite(lon)&&finite(radius)&&lat>=-90&&lat<=90&&lon>=-180&&lon<=180&&radius>=0,"invalid geographic search");
+  const R=Math.PI/180;
+  const distance=row=>{need(isObj(row),"invalid point");const a=row.latitude,b=row.longitude;need(finite(a)&&finite(b)&&a>=-90&&a<=90&&b>=-180&&b<=180,"invalid point coordinates");
+   const p1=lat*R,p2=a*R,dp=p2-p1,dl=(b-lon)*R,h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 6371.0088*2*Math.asin(Math.min(1,Math.sqrt(h)))};
+  return items.filter(row=>distance(row)<=radius)}
+ throw new PatternError("unsupported operation")}
+
+/* page */
+const digestOf=items=>sha256Hex(new TextEncoder().encode(pyJson(items))).slice(0,24);
+const cursorEncode=(index,digest)=>btoa('{"v":1,"i":'+index+',"h":"'+digest+'"}').replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function cursorDecode(cursor,digest){
+ need(typeof cursor==="string"&&cursor!==""&&cursor.length<=512,"invalid cursor");
+ let obj;
+ try{const s=cursor.replace(/-/g,"+").replace(/_/g,"/"),padded=s+"=".repeat((4-s.length%4)%4);
+  if(!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(padded))throw 0;
+  obj=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(atob(padded),c=>c.charCodeAt(0))))}catch{throw new PatternError("invalid cursor")}
+ need(isObj(obj)&&sameKeys(obj,["v","i","h"])&&obj.v===1&&obj.h===digest,"cursor does not match dataset");
+ return checkInt(obj.i,"cursor index")}
+export function patternPage(request){
+ need(isObj(request)&&Object.keys(request).every(k=>["operation","items","limit","offset","cursor"].includes(k)),"invalid request fields");
+ const mode=request.operation;need(mode==="offset"||mode==="cursor"||mode==="infinite","invalid pagination operation");
+ const items=request.items;need(Array.isArray(items),"items must be a list");
+ const limit=checkInt(request.limit,"limit",1);need(limit<=1000,"limit too large");
+ let start,digest;
+ if(mode==="offset"){need(!has(request,"cursor"),"offset mode does not accept cursor");start=checkInt(has(request,"offset")?request.offset:0,"offset")}
+ else{need(!has(request,"offset"),"cursor mode does not accept offset");digest=digestOf(items);start=has(request,"cursor")&&request.cursor!==null?cursorDecode(request.cursor,digest):0}
+ need(start<=items.length,"page position beyond dataset");
+ const end=Math.min(start+limit,items.length),result={items:items.slice(start,end),has_more:end<items.length};
+ if(mode==="offset")result.next_offset=end<items.length?end:null;else result.next_cursor=end<items.length?cursorEncode(end,digest):null;
+ return result}
+
+/* score: the min-heap (the TF-IDF stays in Python: it rests on Unicode \w and casefold and on libm's log) */
+export function patternScore(payload){
+ need(isObj(payload),"request must be object");const operation=payload.operation;
+ if(operation==="tfidf")throw new PatternError("tfidf runs in Python only");
+ if(operation==="minheap"){
+  need(Object.keys(payload).every(k=>["operation","values","pops"].includes(k)),"unexpected heap fields");
+  const values=payload.values,pops=has(payload,"pops")?payload.pops:0;
+  need(Array.isArray(values)&&values.every(finite),"heap values must be finite numbers");
+  need(isInt(pops)&&pops>=0&&pops<=values.length,"invalid pop count");
+  const sorted=values.slice().sort(cmpNum);return{popped:sorted.slice(0,pops),remaining_sorted:sorted.slice(pops)}}
+ throw new PatternError("unsupported operation")}
+
+/* reduce */
+function stateInt(value,label){need(isInt(value),label+" must be integer");need(Math.abs(value)<=1000000000,label+" out of bounds");return value}
+export function patternReduce(payload){
+ need(isObj(payload)&&sameKeys(payload,["mode","initial","actions"]),"expected mode, initial and actions");
+ const mode=payload.mode;need(mode==="event_state"||mode==="redux","unsupported mode");
+ let state=stateInt(payload.initial,"initial");const initial=state,actions=payload.actions;
+ need(Array.isArray(actions)&&actions.length<=1000,"actions must be array of at most 1000");
+ const history=[state];
+ for(const raw of actions){
+  need(isObj(raw)&&["set","increment","decrement","reset"].includes(raw.type),"action requires known type");
+  const op=raw.type;need(sameKeys(raw,op!=="reset"?["type","value"]:["type"]),"action fields do not match type");
+  if(op==="reset")state=initial;else{const value=stateInt(raw.value,"action value");state=stateInt(op==="set"?value:op==="increment"?state+value:state-value,"result")}
+  history.push(state)}
+ return{schema:"state-reducer/1",mode,state,history}}
+
+/* workflow */
+const WF_OPS=new Set(["swap","move_top","move_bottom","insert_sorted","undo_redo","command","memento","position_swap","batch","transaction","event_driven","pubsub","queue","saga","outbox","event_sourcing","cqrs","scheduler","worker","checkpoint","pipeline"]);
+function keysIn(req,permitted,required=[]){need(Object.keys(req).every(k=>permitted.includes(k))&&required.every(k=>has(req,k)),"invalid keys")}
+function wfIndex(value,size,allowEnd=false){need(isInt(value)&&value>=0&&value<size+(allowEnd?1:0),"index out of range");return value}
+function wfMutate(xs,command){
+ need(isObj(command),"request must be object");const k=command.type;
+ if(k==="append"){keysIn(command,["type","value"],["type","value"]);xs.push(command.value)}
+ else if(k==="remove_last"){keysIn(command,["type"],["type"]);need(xs.length>0,"empty list");xs.pop()}
+ else if(k==="replace"){keysIn(command,["type","index","value"],["type","index","value"]);xs[wfIndex(command.index,xs.length)]=command.value}
+ else throw new PatternError("unknown command");
+ need(xs.length<=1000,"list too large");return xs}
+export function patternWorkflow(r){
+ need(isObj(r),"request must be object");const operation=r.operation;
+ need(typeof operation==="string"&&WF_OPS.has(operation),"unknown operation");
+ keysIn(r,["operation","values","a","b","index","value","commands","batch_size","subscribers","events","fail_at","checkpoint","schedule"]);
+ const values=r.values;need(Array.isArray(values)&&values.length<=1000,"values must be array <=1000");
+ let xs=values.slice(),result;
+ if(operation==="swap"||operation==="position_swap"){
+  keysIn(r,["operation","values","a","b"],["operation","values","a","b"]);
+  const a=wfIndex(r.a,xs.length),b=wfIndex(r.b,xs.length);[xs[a],xs[b]]=[xs[b],xs[a]];result=xs}
+ else if(operation==="move_top"||operation==="move_bottom"){
+  keysIn(r,["operation","values","index"],["operation","values","index"]);
+  const v=xs.splice(wfIndex(r.index,xs.length),1)[0];xs.splice(operation==="move_top"?0:xs.length,0,v);result=xs}
+ else if(operation==="insert_sorted"){
+  keysIn(r,["operation","values","value"],["operation","values","value"]);
+  need(xs.concat([r.value]).every(num),"numeric sort only");
+  need(xs.every((x,i)=>i===xs.length-1||x<=xs[i+1]),"input not sorted");
+  xs.push(r.value);xs.sort(cmpNum);result=xs}
+ else if(operation==="undo_redo"||operation==="command"||operation==="memento"){
+  keysIn(r,["operation","values","commands"],["operation","values","commands"]);
+  let history=[xs.slice()],cursor=0;const commands=r.commands;
+  need(Array.isArray(commands)&&commands.length<=1000,"commands must be array <=1000");
+  for(const cmd of commands){
+   if(isObj(cmd)&&cmd.type==="undo"){keysIn(cmd,["type"],["type"]);need(cursor>0,"cannot undo");cursor--}
+   else if(isObj(cmd)&&cmd.type==="redo"){keysIn(cmd,["type"],["type"]);need(cursor+1<history.length,"cannot redo");cursor++}
+   else{history=history.slice(0,cursor+1);history.push(wfMutate(history[history.length-1].slice(),cmd).slice());cursor++}}
+  result={values:history[cursor],history,cursor}}
+ else if(operation==="batch"||operation==="worker"||operation==="scheduler"){
+  keysIn(r,["operation","values","batch_size","schedule"]);
+  const size=has(r,"batch_size")?r.batch_size:2;need(isInt(size)&&size>=1&&size<=1000,"invalid batch size");
+  if(operation==="scheduler"){
+   const schedule=has(r,"schedule")?r.schedule:[];
+   need(Array.isArray(schedule)&&schedule.length<=1000&&schedule.every(t=>isInt(t)&&t>=0&&t<=60000),"invalid schedule");
+   result=schedule.map(t=>({at_ms:t,values:xs.slice()}))}
+  else{result=[];for(let i=0;i<xs.length;i+=size)result.push(xs.slice(i,i+size))}}
+ else if(operation==="transaction"||operation==="saga"||operation==="pipeline"){
+  keysIn(r,["operation","values","commands","fail_at"],["operation","values","commands"]);
+  const commands=r.commands;need(Array.isArray(commands)&&commands.length<=1000,"commands must be array <=1000");
+  const failed=has(r,"fail_at")?r.fail_at:null;need(failed===null||(isInt(failed)&&failed>=0&&failed<commands.length),"invalid fail_at");
+  const original=xs.slice(),log=[];let done=true;
+  for(let i=0;i<commands.length;i++){
+   if(i===failed){xs=original.slice();result={committed:false,values:xs,applied:log,rolled_back:true};done=false;break}
+   wfMutate(xs,commands[i]);log.push(i)}
+  if(done)result={committed:true,values:xs,applied:log,rolled_back:false}}
+ else if(["event_driven","pubsub","queue","outbox","event_sourcing","cqrs"].includes(operation)){
+  keysIn(r,["operation","values","events","subscribers"],["operation","values","events"]);
+  const events=r.events;need(Array.isArray(events)&&events.length<=1000,"events must be array <=1000");
+  for(const e of events)need(isObj(e)&&sameKeys(e,["type","value"])&&e.type==="append","invalid event");
+  const log=events.slice(),current=xs.slice();for(const e of events)current.push(e.value);
+  need(current.length<=1000,"result too large");
+  if(operation==="pubsub"){
+   const n=has(r,"subscribers")?r.subscribers:1;need(isInt(n)&&n>=1&&n<=16,"invalid subscribers");
+   result={subscribers:Array.from({length:n},()=>log.slice()),state:current}}
+  else if(operation==="outbox"||operation==="queue")result={pending:log,state:current};
+  else if(operation==="cqrs")result={write_state:current,read_projection:current.slice()};
+  else result={log,state:current}}
+ else{
+  keysIn(r,["operation","values","checkpoint"],["operation","values","checkpoint"]);
+  const cursor=r.checkpoint;need(isInt(cursor)&&cursor>=0&&cursor<=xs.length,"invalid checkpoint");
+  result={processed:xs.slice(0,cursor),remaining:xs.slice(cursor),checkpoint:cursor}}
+ return{schema:"workflow-patterns/1",operation,result}}
+
+/* transform */
+const T_TYPES={null:v=>v===null,boolean:v=>typeof v==="boolean",integer:isInt,number:num,string:v=>typeof v==="string",array:Array.isArray,object:isObj};
+const T_SCHEMA_KEYS=["required","properties","items","additional_properties"];
+function patType(value,name){need(typeof name==="string"&&has(T_TYPES,name),"invalid JSON type");return T_TYPES[name](value)}
+function objectKeys(obj,required,optional=[]){
+ need(isObj(obj),"expected JSON object");
+ const missing=required.filter(k=>!has(obj,k)).sort(cmpStr);need(missing.length===0,"missing keys: "+pyList(missing));
+ need(Object.keys(obj).every(k=>required.includes(k)||optional.includes(k)),"unknown keys");return obj}
+function schemaSpec(spec){
+ need(isObj(spec)&&has(spec,"type"),"invalid schema definition");patType(null,spec.type);objectKeys(spec,["type"],T_SCHEMA_KEYS);
+ if(has(spec,"properties")){need(isObj(spec.properties),"invalid properties");for(const c of Object.values(spec.properties))schemaSpec(c)}
+ if(has(spec,"items"))schemaSpec(spec.items)}
+function patSchema(value,definition){
+ const spec=objectKeys(definition,["type"],T_SCHEMA_KEYS);if(!patType(value,spec.type))return false;
+ if(spec.type==="object"){
+  const props=has(spec,"properties")?spec.properties:{},required=has(spec,"required")?spec.required:[],additional=has(spec,"additional_properties")?spec.additional_properties:true;
+  need(isObj(props),"invalid properties");
+  need(Array.isArray(required)&&required.every(k=>typeof k==="string")&&new Set(required).size===required.length,"invalid required");
+  need(typeof additional==="boolean","invalid additional_properties");
+  for(const c of Object.values(props))schemaSpec(c);
+  if(!required.every(k=>has(value,k)))return false;
+  if(!additional&&Object.keys(value).some(k=>!has(props,k)))return false;
+  return Object.keys(value).every(k=>!has(props,k)||patSchema(value[k],props[k]))}
+ if(spec.type==="array"&&has(spec,"items")){schemaSpec(spec.items);return value.every(v=>patSchema(v,spec.items))}
+ need((!has(spec,"properties")&&!has(spec,"required")&&!has(spec,"additional_properties"))||spec.type==="object","object options require object type");
+ need(!has(spec,"items")||spec.type==="array","items requires array type");return true}
+function patCondition(condition){
+ const spec=objectKeys(condition,["operator"],["value","type"]),op=spec.operator;
+ need(typeof op==="string"&&["equals","not_equals","greater_than","less_than","type","not_null"].includes(op),"unknown constraint");
+ if(op==="not_null")need(Object.keys(spec).length===1,"not_null accepts no operand");
+ else if(op==="type"){need(has(spec,"type")&&!has(spec,"value"),"type requires type");need(typeof spec.type==="string"&&has(T_TYPES,spec.type),"invalid JSON type")}
+ else{need(has(spec,"value")&&!has(spec,"type"),"missing constraint value");if(op==="greater_than"||op==="less_than")need(num(spec.value),"ordered comparisons require numbers")}
+ return spec}
+function patPredicate(value,condition){
+ const spec=patCondition(condition),op=spec.operator;
+ if(op==="not_null")return value!==null;
+ if(op==="type")return patType(value,spec.type);
+ const other=spec.value;
+ if(op==="equals"||op==="not_equals"){const same=pyJson(value)===pyJson(other);return op==="equals"?same:!same}
+ need(num(value)&&num(other),"ordered comparisons require numbers");
+ return op==="greater_than"?value>other:value<other}
+function patFlatten(values,depth=0){
+ need(depth<=100,"nested arrays exceed 100 levels");const out=[];
+ for(const v of values){if(Array.isArray(v)){for(const x of patFlatten(v,depth+1))out.push(x)}else out.push(v)}return out}
+const T_ALLOWED={schema_validation:["operation","values","schema"],constraint:["operation","values","condition"],pipeline:["operation","values","steps"],map_reduce:["operation","values","key","reducer"],
+ flatten:["operation","values"],partition:["operation","values","condition"],zip:["operation","values","other","strict"]};
+export function patternTransform(payload){
+ const obj=objectKeys(payload,["operation"],["values","schema","condition","steps","key","reducer","other","strict"]),op=obj.operation;
+ need(typeof op==="string"&&has(T_ALLOWED,op),"unsupported operation");
+ need(has(obj,"values")&&Array.isArray(obj.values),"values must be array");
+ need(Object.keys(obj).every(k=>T_ALLOWED[op].includes(k)),"unexpected fields for operation");
+ const values=obj.values;let result;
+ if(op==="schema_validation"){need(has(obj,"schema"),"schema is required");schemaSpec(obj.schema);result=values.map(x=>patSchema(x,obj.schema))}
+ else if(op==="constraint"){need(has(obj,"condition"),"condition is required");patCondition(obj.condition);result=values.map(x=>patPredicate(x,obj.condition))}
+ else if(op==="pipeline"){
+  need(has(obj,"steps"),"steps is required");const steps=obj.steps;need(Array.isArray(steps)&&steps.length>0,"steps must be nonempty list");
+  result=values.slice();
+  for(const spec of steps){
+   const step=objectKeys(spec,["operation"],["value"]),k=step.operation;
+   need(typeof k==="string"&&["strip","lower","upper","add","multiply"].includes(k),"unsupported pipeline step");
+   if(k==="strip"||k==="lower"||k==="upper"){
+    need(Object.keys(step).length===1&&result.every(x=>typeof x==="string"),"text step requires strings");
+    result=result.map(x=>k==="strip"?pyStrip(x):k==="lower"?x.toLowerCase():x.toUpperCase())}
+   else{
+    need(has(step,"value")&&num(step.value)&&result.every(num),"numeric step requires numbers");
+    result=result.map(x=>k==="add"?x+step.value:x*step.value)}}}
+ else if(op==="map_reduce"){
+  need(obj.reducer==="count"||obj.reducer==="sum","reducer must be count or sum");
+  const key=obj.key;need(typeof key==="string"&&key!=="","key must be a nonempty field");
+  const grouped=new Map();
+  for(const x of values){
+   need(isObj(x)&&has(x,key),"rows must contain group key");const value=x[key];
+   need(value===null||typeof value==="string"||num(value)||typeof value==="boolean","group key must be scalar");
+   const token=pyJson(value);if(!grouped.has(token))grouped.set(token,{key:value,value:0});
+   if(obj.reducer==="sum"){need(has(x,"value")&&num(x.value),"sum rows require numeric value");grouped.get(token).value+=x.value}
+   else grouped.get(token).value+=1}
+  result=[...grouped.values()]}
+ else if(op==="flatten")result=patFlatten(values);
+ else if(op==="partition"){
+  need(has(obj,"condition"),"condition is required");patCondition(obj.condition);const matched=[],unmatched=[];
+  for(const item of values)(patPredicate(item,obj.condition)?matched:unmatched).push(item);result={matched,unmatched}}
+ else{
+  const other=obj.other;need(Array.isArray(other),"other must be array");
+  const strict=has(obj,"strict")?obj.strict:false;need(typeof strict==="boolean","strict must be boolean");
+  need(!strict||values.length===other.length,"strict zip lengths differ");
+  result=values.slice(0,Math.min(values.length,other.length)).map((a,i)=>[a,other[i]])}
+ return{schema:"collection-transform/1",operation:op,values:result}}
+
+/* select */
+const distinct=values=>{const seen=new Set(),out=[];for(const v of values){const k=pyJson(v);if(!seen.has(k)){seen.add(k);out.push(v)}}return out};
+export function patternSelect(payload){
+ need(isObj(payload),"input must be a JSON object");
+ const values=payload.values;need(Array.isArray(values),"values must be a JSON list");
+ const operation=has(payload,"operation")?payload.operation:"filter";
+ if(operation==="distinct"||operation==="deduplicate_report"){
+  need(Object.keys(payload).every(k=>k==="operation"||k==="values"),operation+" accepts only operation and values");
+  const unique=distinct(values);
+  if(operation==="distinct")return{values:unique};
+  const duplicates=values.length-unique.length;
+  return{values:[{input_count:values.length,unique_count:unique.length,duplicate_count:duplicates,has_duplicates:duplicates>0}]}}
+ need(operation==="filter","operation must be filter, distinct or deduplicate_report");
+ if(!has(payload,"conditions")){
+  need(has(payload,"equals"),"equals is required");need(!has(payload,"match"),"match requires conditions");
+  return{values:values.filter(v=>pyEq(v,payload.equals))}}
+ need(!has(payload,"equals"),"use equals or conditions, not both");
+ const conditions=payload.conditions;need(Array.isArray(conditions)&&conditions.length>0,"conditions must be a non-empty list");
+ const match=has(payload,"match")?payload.match:"all";need(match==="all"||match==="any","match must be all or any");
+ for(const c of conditions){
+  need(isObj(c)&&has(c,"equals")&&Object.keys(c).every(k=>k==="path"||k==="equals"),"each condition accepts only path and required equals");
+  const path=has(c,"path")?c.path:[];
+  need(Array.isArray(path)&&path.every(p=>typeof p==="string"||(isInt(p)&&p>=0)),"path must contain literal keys or non-negative integer indices")}
+ const MISSING=Symbol("missing");
+ const found=(value,c)=>{
+  for(const part of has(c,"path")?c.path:[]){
+   if(typeof part==="string"&&isObj(value))value=has(value,part)?value[part]:MISSING;
+   else if(isInt(part)&&Array.isArray(value)&&part<value.length)value=value[part];
+   else return false}
+  return value!==MISSING&&pyEq(value,c.equals)};
+ return{values:values.filter(v=>match==="all"?conditions.every(c=>found(v,c)):conditions.some(c=>found(v,c)))}}
+
+/* order */
+export const PATTERN_ORDER_EXAMPLES={basic:[9,2,5,1,3],reverse:[9,2,5,1,3],multi:[{group:"b",score:2,name:"B2"},{group:"a",score:1,name:"A1"},{group:"b",score:1,name:"B1"},{group:"a",score:3,name:"A3"}],
+ "sorted-set":[5,2,5,1,3,2],priority:[{priority:2,name:"normal"},{priority:1,name:"urgent"},{priority:3,name:"later"},{priority:1,name:"critical"}],"top-n":[7,1,9,3,8,2]};
+const ORDER_NEEDS={basic:"basic ordering requires numbers",reverse:"reverse ordering requires numbers","sorted-set":"sorted-set requires numbers","top-n":"top-n requires numbers"};
+export function patternOrder(mode,values=null){
+ need(typeof mode==="string"&&has(PATTERN_ORDER_EXAMPLES,mode),"unsupported ordering mode");
+ values=values===null?PATTERN_ORDER_EXAMPLES[mode]:values;need(Array.isArray(values),"values must be a list");
+ let out;
+ if(has(ORDER_NEEDS,mode)){
+  need(values.every(num),ORDER_NEEDS[mode]);
+  out=mode==="basic"?values.slice().sort(cmpNum):mode==="reverse"?values.slice().sort((a,b)=>cmpNum(b,a)):mode==="sorted-set"?[...new Set(values)].sort(cmpNum):values.slice().sort((a,b)=>cmpNum(b,a)).slice(0,3)}
+ else if(mode==="multi"){
+  need(values.every(v=>isObj(v)&&typeof v.group==="string"&&num(v.score)),"multi ordering requires group/score records");
+  out=values.slice().sort((a,b)=>cmpStr(a.group,b.group)||cmpNum(-a.score,-b.score))}
+ else{
+  need(values.every(v=>isObj(v)&&typeof v.name==="string"&&isInt(v.priority)),"priority ordering requires name/priority records");
+  out=values.slice().sort((a,b)=>cmpNum(a.priority,b.priority)||cmpStr(a.name,b.name))}
+ return{schema:"list-ordering/1",mode,values:out}}
+
+/* text */
+export const PATTERN_TEXT_DOCUMENTS=[{id:"doc-1",text:"Flutter renders portable user interfaces"},{id:"doc-2",text:"Python processes portable data and search indexes"},{id:"doc-3",text:"Search indexes make repeated search fast"}];
+const STOP_WORDS=["and","the","a","an"];
+export function patternTokens(text){if(typeof text!=="string")throw new TypeError("text must be a string");return(text.match(/[0-9A-Za-z]+/g)||[]).map(t=>t.toLowerCase())}
+export function patternWithoutStopWords(tokens){if(!tokens.every(t=>typeof t==="string"))throw new TypeError("tokens must contain strings");return tokens.filter(t=>!STOP_WORDS.includes(t))}
+export function patternInvertedIndex(documents){
+ const index=new Map();
+ for(const d of documents){
+  need(typeof d.id==="string"&&d.id!==""&&typeof d.text==="string","documents require non-empty id and text");
+  for(const t of patternWithoutStopWords(patternTokens(d.text))){if(!index.has(t))index.set(t,new Set());index.get(t).add(d.id)}}
+ return[...index.entries()].sort((a,b)=>cmpStr(a[0],b[0])).map(([t,ids])=>[t,[...ids].sort(cmpStr)])}
+export function patternTextSearch(documents,query){
+ const terms=patternWithoutStopWords(patternTokens(query));if(!terms.length)return[];
+ const index=new Map(patternInvertedIndex(documents));let matches=new Set(index.get(terms[0])||[]);
+ for(const t of terms.slice(1)){const ids=new Set(index.get(t)||[]);matches=new Set([...matches].filter(x=>ids.has(x)))}
+ return[...matches].sort(cmpStr)}
+export function patternText(mode){
+ let values;
+ if(mode==="search")values=patternTextSearch(PATTERN_TEXT_DOCUMENTS,"portable search");
+ else if(mode==="tokens")values=patternWithoutStopWords(patternTokens("Python and Flutter search the data"));
+ else if(mode==="text-index")values=PATTERN_TEXT_DOCUMENTS.map(d=>({id:d.id,tokens:patternWithoutStopWords(patternTokens(d.text))}));
+ else if(mode==="inverted-index")values=patternInvertedIndex(PATTERN_TEXT_DOCUMENTS).map(([term,documents])=>({term,documents}));
+ else throw new PatternError("unsupported text-processing mode");
+ return{schema:"text-processing/1",mode,values}}
+
+/* window, collection, structure */
+export const PATTERN_WINDOW_MODES=["load-more","lazy-list","prefetch","page-indicator","page-size","offset-limit","keyset","window","bidirectional"];
+export const PATTERN_COLLECTION_MODES=["selectable","swipe-delete","reorderable","checklist"];
+export const PATTERN_WINDOW_ITEMS=Array.from({length:12},(_,i)=>"item-"+String(i+1).padStart(2,"0"));
+export function patternWindowInitial(mode){
+ need(PATTERN_WINDOW_MODES.includes(mode),"unsupported mode");
+ const state={mode,offset:0,limit:4,total:PATTERN_WINDOW_ITEMS.length};if(mode==="keyset")state.cursor=null;return state}
+export function patternWindowStep(state,command){
+ if(!isObj(state))throw new TypeError("state must be an object");
+ const{mode,offset,limit,total}=state;
+ need(PATTERN_WINDOW_MODES.includes(mode),"invalid mode");
+ need(isInt(offset)&&isInt(limit)&&isInt(total),"invalid bounds");need(offset>=0&&limit>0&&total>=0,"invalid bounds");
+ const result={...state};
+ if(command==="next"||command==="load-more"||command==="prefetch"){
+  result.offset=Math.min(offset+limit,Math.max(0,total-limit));
+  if(mode==="keyset")result.cursor=result.offset?PATTERN_WINDOW_ITEMS[result.offset-1]:null}
+ else if(command==="page-size-3"){result.limit=3;result.offset=Math.min(Math.floor(offset/3)*3,Math.max(0,total-3))}
+ else if(command==="offset-6")result.offset=Math.min(6,Math.max(0,total-limit));
+ else if(command==="refresh"){result.offset=0;result.revision=(has(state,"revision")?state.revision:0)+1}
+ else if(command==="previous")result.offset=Math.max(0,offset-limit);
+ else if(command==="reset")result.offset=0;
+ else throw new PatternError("unsupported command");
+ return result}
+export function patternWindowRender(state){
+ const{offset,limit,total}=state;
+ return{schema:"collection-window/1",mode:state.mode,state,page:total?Math.floor(offset/limit)+1:0,pages:total?Math.floor((total+limit-1)/limit):0,values:PATTERN_WINDOW_ITEMS.slice(offset,Math.min(offset+limit,total))}}
+export function patternCollectionInitial(mode){need(PATTERN_COLLECTION_MODES.includes(mode),"unsupported collection mode");return{mode,items:["a","b","c","d"],selected:[]}}
+export function patternCollectionStep(state,command,item="b"){
+ need(isObj(state)&&PATTERN_COLLECTION_MODES.includes(state.mode),"invalid collection state");
+ const items=state.items,selected=state.selected;
+ need(Array.isArray(items)&&Array.isArray(selected)&&items.concat(selected).every(x=>typeof x==="string")&&new Set(items).size===items.length&&selected.every(x=>items.includes(x)),"invalid collection items");
+ need(items.includes(item),"unknown item");
+ const result={mode:state.mode,items:items.slice(),selected:selected.slice()};
+ if(command==="select"||command==="toggle"){const at=result.selected.indexOf(item);if(at>=0)result.selected.splice(at,1);else result.selected.push(item)}
+ else if(command==="delete"){result.items.splice(result.items.indexOf(item),1);const at=result.selected.indexOf(item);if(at>=0)result.selected.splice(at,1)}
+ else if(command==="move-first"){result.items.splice(result.items.indexOf(item),1);result.items.unshift(item)}
+ else throw new PatternError("unsupported collection command");
+ return result}
+export const patternCollectionRender=state=>({schema:"collection-command/1",mode:state.mode,state,values:state.items.map(id=>({id,selected:state.selected.includes(id)}))});
+const STRUCTURE_ROWS=[{id:"a1",group:"A",label:"Alpha"},{id:"a2",group:"A",label:"Amber"},{id:"b1",group:"B",label:"Beta"},{id:"b2",group:"B",label:"Blue"}];
+const STRUCTURE_TREE=[{id:"root",label:"Root",children:[{id:"left",label:"Left",children:[]},{id:"right",label:"Right",children:[{id:"leaf",label:"Leaf",children:[]}]}]}];
+export function patternStructure(mode){
+ const flatten=(nodes,depth=0)=>{const out=[];for(const n of nodes){out.push({id:n.id,label:n.label,depth});out.push(...flatten(n.children||[],depth+1))}return out};
+ let values;
+ if(mode==="sticky"||mode==="section"||mode==="grouped"){
+  values=[];for(const row of STRUCTURE_ROWS){if(!values.length||values[values.length-1].header!==row.group)values.push({header:row.group,items:[]});values[values.length-1].items.push({id:row.id,label:row.label})}}
+ else if(mode==="tree"||mode==="flat")values=flatten(STRUCTURE_TREE);
+ else throw new PatternError("unsupported mode");
+ return{schema:"collection-structure/1",mode,values}}
+
+/* the JavaScript references of the catalogue (patterns 4, 35 and 121-150): future, stream, concurrency, event loop and interaction. They are the originals' code (javascript/*.mjs of
+   flutter_navigation_basic) with PatternError for their TypeError/RangeError, and a task of 0 ms waits 1 ms as it does in Node; Python models them without a clock. */
+const jsObject=(v,name)=>{need(v!==null&&typeof v==="object"&&!Array.isArray(v),name+" must be an object");return v};
+const jsFields=(obj,allowed,required=[])=>{for(const key of Object.keys(obj))need(allowed.includes(key),"unknown field "+key);for(const key of required)need(has(obj,key),"missing field "+key)};
+const jsSettled=promise=>{promise.catch(()=>{});return promise};
+function futureTask(input){
+ const t=jsObject(input,"task");jsFields(t,["value","delay_ms","reject"],["value"]);
+ const delay=t.delay_ms??0;need(Number.isInteger(delay)&&delay>=0&&delay<=1000,"delay_ms must be an integer 0..1000");
+ need(t.reject===undefined||(typeof t.reject==="string"&&t.reject!==""),"reject must be a nonempty string");
+ return jsSettled(new Promise((resolve,reject)=>setTimeout(()=>t.reject===undefined?resolve(t.value):reject(new PatternError(t.reject)),Math.max(1,delay))))}
+export async function patternFuture(input){
+ const req=jsObject(input,"request");jsFields(req,["mode","task","tasks","steps","timeout_ms","fallback"],["mode"]);
+ const mode=req.mode;need(["basic","chain","error","wait","any","timeout"].includes(mode),"unsupported mode");
+ let value;
+ if(mode==="wait"||mode==="any"){
+  jsFields(req,["mode","tasks"],["tasks"]);need(Array.isArray(req.tasks)&&req.tasks.length>0&&req.tasks.length<=32,"tasks must contain 1..32 tasks");
+  const jobs=req.tasks.map(futureTask);value=mode==="wait"?await Promise.all(jobs):await Promise.race(jobs)}
+ else{
+  const allowed=mode==="chain"?["mode","task","steps"]:mode==="error"?["mode","task","fallback"]:mode==="timeout"?["mode","task","timeout_ms"]:["mode","task"];
+  jsFields(req,allowed,["task"]);let job=futureTask(req.task);
+  if(mode==="chain"){
+   need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=32,"steps must contain 1..32 steps");
+   for(const step of req.steps){
+    jsObject(step,"step");jsFields(step,["op","by"],["op"]);
+    if(step.op==="add"||step.op==="multiply"){
+     need(typeof step.by==="number"&&Number.isFinite(step.by),"numeric by required");const op=step.op;
+     job=jsSettled(job.then(x=>{need(typeof x==="number"&&Number.isFinite(x),"numeric input required");return op==="add"?x+step.by:x*step.by}))}
+    else if(step.op==="uppercase"){jsFields(step,["op"]);job=jsSettled(job.then(x=>{need(typeof x==="string","string input required");return x.toUpperCase()}))}
+    else need(false,"unsupported step")}}
+  if(mode==="error"){need(has(req,"fallback"),"fallback required");job=job.catch(error=>({caught:error.message,fallback:req.fallback}))}
+  if(mode==="timeout"){
+   need(Number.isInteger(req.timeout_ms)&&req.timeout_ms>=1&&req.timeout_ms<=1000,"timeout_ms must be 1..1000");
+   let timer;const timeout=jsSettled(new Promise((_,reject)=>{timer=setTimeout(()=>reject(new PatternError("timeout")),req.timeout_ms)}));
+   try{value=await Promise.race([job,timeout])}finally{clearTimeout(timer)}}
+  else value=await job}
+ return{schema:"future-patterns/1",mode,value}}
+
+const streamEvents=xs=>{
+ need(Array.isArray(xs)&&xs.length<=1000,"events must be array <=1000");let last=-1;
+ return xs.map(x=>{need(x&&typeof x==="object"&&!Array.isArray(x)&&Object.keys(x).sort().join()==="at_ms,value","event shape");need(Number.isInteger(x.at_ms)&&x.at_ms>=last&&x.at_ms<=60000,"sorted event time");last=x.at_ms;return x})};
+async function* streamOf(xs){for(const x of xs)yield x}
+async function streamCollect(xs){const a=[];for await(const x of streamOf(xs))a.push(x);return a}
+export async function patternStream(req){
+ need(req&&typeof req==="object"&&!Array.isArray(req)&&["basic","controller","broadcast","transform","merge","debounce","throttle","buffer","window"].includes(req.mode),"mode");
+ const mode=req.mode;let xs=[];
+ if(mode==="controller"){
+  need(Array.isArray(req.commands)&&req.commands.length<=1000,"commands");
+  let closed=false;
+  for(const cmd of req.commands){need(cmd&&typeof cmd==="object","command");if(cmd.op==="close"){need(!closed,"closed twice");closed=true}else{need(cmd.op==="add"&&!closed&&has(cmd,"value"),"invalid add");xs.push({at_ms:xs.length,value:cmd.value})}}
+  need(closed,"close required")}
+ else if(mode==="merge"){
+  need(Array.isArray(req.streams)&&req.streams.length>0&&req.streams.length<=16,"streams");
+  xs=req.streams.flatMap((s,i)=>streamEvents(s).map((x,j)=>({...x,source:i,index:j}))).sort((a,b)=>a.at_ms-b.at_ms||a.source-b.source||a.index-b.index).map(({index,...x})=>x)}
+ else xs=streamEvents(req.events);
+ if(mode==="transform"){
+  need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=16,"steps");
+  for(const step of req.steps){
+   need(step&&typeof step==="object","step");
+   if(step.op==="where_equals")xs=xs.filter(x=>JSON.stringify(x.value)===JSON.stringify(step.value));
+   else if(step.op==="expand")xs=xs.flatMap(x=>{need(Array.isArray(x.value),"expand array");return x.value.map(value=>({...x,value}))});
+   else if(step.op==="map_add")xs=xs.map(x=>{need(typeof x.value==="number"&&Number.isFinite(x.value)&&typeof step.value==="number"&&Number.isFinite(step.value),"map_add numbers");return{...x,value:x.value+step.value}});
+   else need(false,"step operation")}}
+ if(mode==="debounce"||mode==="throttle"){
+  const ms=req.duration_ms;need(Number.isInteger(ms)&&ms>0&&ms<=60000,"duration");
+  if(mode==="debounce")xs=xs.filter((x,i)=>!xs[i+1]||xs[i+1].at_ms-x.at_ms>ms);
+  else{let last=-Infinity;xs=xs.filter(x=>{if(x.at_ms-last<ms)return false;last=x.at_ms;return true})}}
+ if(mode==="buffer"||mode==="window"){
+  const n=req.size;need(Number.isInteger(n)&&n>0&&n<=1000,"size");
+  const step=mode==="buffer"?n:(req.step??1);need(Number.isInteger(step)&&step>0&&step<=1000,"step");
+  const out=[];for(let i=0;i<xs.length;i+=step){const part=xs.slice(i,i+n);if(mode==="window"&&part.length<n)break;if(!part.length)break;out.push({at_ms:part.at(-1).at_ms,value:part.map(x=>x.value)})}xs=out}
+ xs=await streamCollect(xs);
+ if(mode==="broadcast"){need(Number.isInteger(req.subscribers)&&req.subscribers>=1&&req.subscribers<=16,"subscribers");return{schema:"stream-patterns/1",mode,subscribers:Array.from({length:req.subscribers},()=>xs.map(x=>({...x})))}}
+ return{schema:"stream-patterns/1",mode,events:xs}}
+
+function concurrencyTasks(raw){
+ need(Array.isArray(raw)&&raw.length<=32,"tasks must be an array (max 32)");
+ return raw.map((item,i)=>{
+  need(item!==null&&typeof item==="object"&&!Array.isArray(item),"task object required");
+  need(Object.keys(item).every(k=>["value","delay_ms"].includes(k))&&has(item,"value"),"task keys");
+  const delay=item.delay_ms??0;need(Number.isInteger(delay)&&delay>=0&&delay<=50,"delay_ms must be 0..50");
+  return{value:item.value,delay,index:i}})}
+const concurrencyLatency=job=>new Promise(resolve=>setTimeout(()=>resolve(job.value),job.delay));
+async function concurrencyScheduled(jobs,limit){
+ need(Number.isInteger(limit)&&limit>=1&&limit<=32,"concurrency 1..32");
+ let next=0,active=0,peak=0;const results=new Array(jobs.length);
+ async function worker(){while(next<jobs.length){const j=jobs[next++];active++;peak=Math.max(peak,active);try{results[j.index]=await concurrencyLatency(j)}finally{active--}}}
+ await Promise.all(Array.from({length:Math.min(limit,jobs.length)},worker));
+ return{values:results,max_active:peak}}
+export async function patternConcurrency(request){
+ need(request&&typeof request==="object"&&!Array.isArray(request),"request object");
+ const mode=request.mode;need(["work_queue","semaphore","mutex","cancelable","parallel_map","progress"].includes(mode),"unsupported mode");
+ const allowed=mode==="cancelable"?["mode","task","cancel"]:mode==="mutex"?["mode","increments"]:["mode","tasks",...(mode==="semaphore"||mode==="parallel_map"?["concurrency"]:[])];
+ need(Object.keys(request).every(k=>allowed.includes(k)),"unknown request keys");
+ let result;
+ if(mode==="mutex"){
+  const inc=request.increments;need(Array.isArray(inc)&&inc.length<=32&&inc.every(x=>Number.isSafeInteger(x)),"increments");
+  let state=0;const history=[];for(const n of inc){state+=n;need(Number.isSafeInteger(state),"overflow");history.push(state)}
+  result={value:state,history}}
+ else if(mode==="cancelable"){
+  const list=concurrencyTasks([request.task]);need(typeof request.cancel==="boolean","cancel flag required");
+  const controller=new AbortController();if(request.cancel)controller.abort();const job=list[0];
+  result=await new Promise(resolve=>{
+   if(controller.signal.aborted){resolve({status:"cancelled"});return}
+   const timer=setTimeout(()=>resolve({status:"completed",value:job.value}),job.delay);
+   controller.signal.addEventListener("abort",()=>{clearTimeout(timer);resolve({status:"cancelled"})},{once:true})})}
+ else{
+  const jobs=concurrencyTasks(request.tasks),n=mode==="work_queue"||mode==="progress"?1:request.concurrency,metrics=await concurrencyScheduled(jobs,n);
+  result=mode==="progress"?{values:metrics.values,progress:jobs.map((_,i)=>({completed:i+1,total:jobs.length}))}:metrics}
+ return{schema:"concurrency-patterns/1",mode,result}}
+
+const eventFields=(obj,allowed,required=[])=>{need(obj!==null&&typeof obj==="object"&&!Array.isArray(obj),"object required");need(Object.keys(obj).every(k=>allowed.includes(k)),"unknown field");need(required.every(k=>has(obj,k)),"missing field")};
+async function* eventArray(values){for(const value of values)yield value}
+async function eventCollect(iter){const out=[];for await(const value of iter)out.push(value);return out}
+export async function patternEventLoop(req){
+ eventFields(req,["mode","values","pause_after","steps"],["mode","values"]);
+ const mode=req.mode,input=req.values;need(Array.isArray(input)&&input.length<=1000,"values must be array <=1000");
+ need(["reactive","event_loop","microtask","suspend_resume","async_generator"].includes(mode),"unsupported mode");
+ let result;
+ if(mode==="reactive"){
+  eventFields(req,["mode","values","steps"],["mode","values","steps"]);need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=16,"steps");
+  let values=input.slice();
+  for(const step of req.steps){
+   eventFields(step,["op","value"],["op","value"]);
+   if(step.op==="map_add"){need(typeof step.value==="number"&&Number.isFinite(step.value)&&values.every(x=>typeof x==="number"&&Number.isFinite(x)),"numbers required");values=values.map(x=>x+step.value)}
+   else if(step.op==="where_equals")values=values.filter(x=>JSON.stringify(x)===JSON.stringify(step.value));
+   else need(false,"unsupported reactive step")}
+  result=await eventCollect(eventArray(values))}
+ else if(mode==="event_loop"){
+  eventFields(req,["mode","values"]);const trace=[];
+  await new Promise(resolve=>{trace.push({phase:"sync",values:input});queueMicrotask(()=>trace.push({phase:"microtask",values:input}));setTimeout(()=>{trace.push({phase:"timer",values:input});resolve()},0)});
+  result=trace}
+ else if(mode==="microtask"){
+  eventFields(req,["mode","values"]);const trace=["sync"];
+  queueMicrotask(()=>trace.push("microtask"));Promise.resolve().then(()=>trace.push("promise"));
+  await new Promise(resolve=>setTimeout(()=>{trace.push("timer");resolve()},0));result=trace}
+ else if(mode==="suspend_resume"){
+  eventFields(req,["mode","values","pause_after"],["mode","values","pause_after"]);need(Number.isInteger(req.pause_after)&&req.pause_after>=0&&req.pause_after<=input.length,"pause_after");
+  const trace=[],values=[];let seen=0;
+  for await(const value of eventArray(input)){if(seen===req.pause_after)trace.push("paused","resumed");values.push(value);seen++}
+  if(seen===req.pause_after)trace.push("paused","resumed");
+  result={values,trace}}
+ else{eventFields(req,["mode","values"]);result=await eventCollect(eventArray(input))}
+ return{schema:"event-loop-patterns/1",mode,result}}
+
+export function debounce(callback,delayMs,{setTimeoutFn=setTimeout,clearTimeoutFn=clearTimeout}={}){
+ if(typeof callback!=="function"||!Number.isFinite(delayMs)||delayMs<0)throw new TypeError("invalid debounce arguments");
+ let timer;
+ const invoke=(...args)=>{if(timer!==undefined)clearTimeoutFn(timer);timer=setTimeoutFn(()=>{timer=undefined;callback(...args)},delayMs)};
+ invoke.cancel=()=>{if(timer!==undefined)clearTimeoutFn(timer);timer=undefined};
+ return invoke}
+export function virtualWindow({count,itemHeight,scrollTop,viewportHeight,overscan=2}){
+ for(const value of[count,itemHeight,scrollTop,viewportHeight,overscan])if(!Number.isFinite(value)||value<0)throw new PatternError("invalid viewport number");
+ if(!Number.isInteger(count)||!Number.isInteger(overscan)||itemHeight===0)throw new PatternError("invalid viewport configuration");
+ const start=Math.max(0,Math.min(count,Math.floor(scrollTop/itemHeight)-overscan)),end=Math.max(start,Math.min(count,Math.ceil((scrollTop+viewportHeight)/itemHeight)+overscan));
+ return{start,end,topPadding:start*itemHeight,bottomPadding:(count-end)*itemHeight}}
+export function patternInteraction(request){
+ need(request!==null&&typeof request==="object"&&!Array.isArray(request),"request object");const op=request.operation;
+ if(op==="virtual_window"){
+  need(Object.keys(request).every(k=>["operation","count","itemHeight","scrollTop","viewportHeight","overscan"].includes(k)),"unknown request keys");
+  const{operation,...params}=request;return{schema:"interaction-patterns/1",operation:op,result:virtualWindow(params)}}
+ need(op==="debounce","unsupported operation");
+ need(Object.keys(request).every(k=>["operation","delay_ms","calls"].includes(k)),"unknown request keys");
+ const delay=request.delay_ms,calls=request.calls;
+ need(Number.isInteger(delay)&&delay>=0&&delay<=60000,"delay_ms must be 0..60000");need(Array.isArray(calls)&&calls.length<=1000,"calls must be array <=1000");
+ let last=0;
+ for(const call of calls){
+  need(call!==null&&typeof call==="object"&&!Array.isArray(call)&&has(call,"at_ms"),"call shape");const keys=Object.keys(call).sort().join();
+  need(keys==="at_ms,value"||keys==="at_ms,cancel","call shape");
+  need(Number.isInteger(call.at_ms)&&call.at_ms>=last&&call.at_ms<=60000,"sorted call time");
+  need(has(call,"value")||call.cancel===true,"call shape");last=call.at_ms}
+ let clock=0,handles=0;const timers=new Map(),delivered=[];
+ const setTimeoutFn=(fn,ms)=>{timers.set(++handles,[clock+ms,fn]);return handles};
+ const runDue=limit=>{for(;;){let best=null;for(const[key,[at]]of timers)if(at<limit&&(best===null||at<best[0]||(at===best[0]&&key<best[1])))best=[at,key];if(best===null)return;const[,fn]=timers.get(best[1]);timers.delete(best[1]);clock=best[0];fn()}};
+ const debounced=debounce(value=>delivered.push({at_ms:clock,value}),delay,{setTimeoutFn,clearTimeoutFn:key=>timers.delete(key)});
+ for(const call of calls){runDue(call.at_ms);clock=call.at_ms;if(has(call,"value"))debounced(call.value);else debounced.cancel()}
+ runDue(Infinity);
+ return{schema:"interaction-patterns/1",operation:op,result:delivered}}
+
+/* the runner */
+const runOrder=r=>{need(isObj(r)&&typeof r.mode==="string","mode required");return patternOrder(r.mode,has(r,"values")?r.values:null)};
+const runWindow=r=>{
+ need(isObj(r)&&typeof r.mode==="string","mode required");const commands=has(r,"commands")?r.commands:[];
+ need(Array.isArray(commands)&&commands.length<=1000&&commands.every(c=>typeof c==="string"),"commands must be strings");
+ let state=patternWindowInitial(r.mode);for(const c of commands)state=patternWindowStep(state,c);return patternWindowRender(state)};
+const runCollection=r=>{
+ need(isObj(r)&&typeof r.mode==="string","mode required");const commands=has(r,"commands")?r.commands:[];
+ need(Array.isArray(commands)&&commands.length<=1000&&commands.every(c=>Array.isArray(c)&&(c.length===1||c.length===2)&&c.every(p=>typeof p==="string")),"commands must be [command] or [command, item]");
+ let state=patternCollectionInitial(r.mode);for(const c of commands)state=patternCollectionStep(state,...c);return patternCollectionRender(state)};
+export const PATTERN_RUNNERS={query:patternQuery,page:patternPage,score:patternScore,reduce:patternReduce,workflow:patternWorkflow,transform:patternTransform,select:patternSelect,order:runOrder,
+ text:r=>patternText(isObj(r)?r.mode:null),window:runWindow,collection:runCollection,structure:r=>patternStructure(isObj(r)?r.mode:null),future:patternFuture,stream:patternStream,concurrency:patternConcurrency,event_loop:patternEventLoop,interaction:patternInteraction};
+const pyRepr=s=>s.includes("'")&&!s.includes('"')?'"'+s.replace(/\\/g,"\\\\")+'"':"'"+s.replace(/\\/g,"\\\\").replace(/'/g,"\\'")+"'";
+export function patternRun(family,request){
+ if(!has(PATTERN_RUNNERS,family)){
+  if(PATTERN_FAMILIES.includes(family))throw new PatternError(family+" runs in Python only: python3 web_ui.py --pattern "+family);
+  throw new PatternError("unknown pattern family: "+pyRepr(String(family))+"; one of "+PATTERN_FAMILIES.join(", "))}
+ const wrap=e=>e instanceof PatternError?e:(e instanceof TypeError||e instanceof RangeError)?new PatternError("invalid "+family+" request: "+e.message):e;
+ try{const out=PATTERN_RUNNERS[family](request);return out instanceof Promise?out.catch(e=>{throw wrap(e)}):out}
+ catch(e){throw wrap(e)}}
+
+/* the catalogue */
+export function patternTheme(category,number){
+ for(const[low,high,name]of PATTERN_THEMES[category])if(low<=number&&number<=high)return name;
+ throw new PatternError("no theme for "+category+" "+number)}
+export function patternFamily(number){for(const[numbers,,family]of PATTERN_PRODUCERS)if(numbers.includes(number))return family;return null}
+export function patternOwner(number){
+ for(const[numbers,runtime]of PATTERN_PRODUCERS)if(numbers.includes(number))return runtime;
+ if(PATTERN_NATIVE.includes(number)||PATTERN_GESTURES.includes(number))return"flutter_native";
+ for(const[limit,owner]of[[44,"python_processing / flutter_interaction"],[60,"python_assets / flutter_layout"],[90,"python_cache / runtime_specific"],[113,"python_validation / flutter_form"]])if(number<=limit)return owner;
+ return"undecided"}
+export function patternCatalogue(){
+ const rows=[];
+ for(const[key,letter]of PATTERN_CATEGORIES){
+  const names=PATTERN_TITLES[key].split(/\s+/).filter(Boolean);need(names.length===198,key+" must list 198 titles");
+  names.forEach((title,i)=>{const number=i+1,row={id:letter+String(number).padStart(3,"0"),category:key,number,title,theme:patternTheme(key,number)};
+   if(key==="data"){row.family=patternFamily(number);row.owner=patternOwner(number)}rows.push(row)})}
+ return rows}
+/* lower-cased where Python case-folds: they differ for a few letters (a sharp s matches itself here, not "ss") */
+const normalized=s=>s.normalize("NFKC").toLowerCase();
+export function patternFind(rows,query="",category="",family=""){
+ const words=normalized(query).split(/\s+/).filter(Boolean);
+ return rows.filter(row=>{
+  if(category&&row.category!==category)return false;
+  if(family&&(row.family===undefined?null:row.family)!==family)return false;
+  const haystack=normalized(row.id+" "+row.title+" "+row.theme);return words.every(w=>haystack.includes(w))})}
+""" + r"""const api={PatternError,cmpStr,pyEq,pyJson,patternQuery,patternPage,patternScore,patternReduce,patternWorkflow,patternTransform,patternSelect,patternOrder,patternTokens,patternWithoutStopWords,patternInvertedIndex,patternTextSearch,patternText,
+ patternWindowInitial,patternWindowStep,patternWindowRender,patternCollectionInitial,patternCollectionStep,patternCollectionRender,patternStructure,patternFuture,patternStream,patternConcurrency,patternEventLoop,patternInteraction,virtualWindow,debounce,patternRun,patternTheme,patternFamily,patternOwner,patternCatalogue,patternFind,
+ PATTERN_RUNNERS,PATTERN_TWINS,PATTERN_FAMILIES,PATTERN_EXAMPLES,PATTERN_ORDER_EXAMPLES,PATTERN_TEXT_DOCUMENTS,PATTERN_WINDOW_MODES,PATTERN_COLLECTION_MODES,PATTERN_WINDOW_ITEMS,sha256Hex};
+globalThis.webUiPatterns=api;
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+const pretty=v=>JSON.stringify(v,null,2);
+const PAGE=48;
+export function bindPatterns(root=document){return[...root.querySelectorAll("[data-ui-patterns]")].map(box=>{
+ if(box.hasAttribute("data-patterns-ready"))return box;
+ const $=s=>box.querySelector(s);
+ const rows=patternCatalogue(),list=$("[data-patterns-list]"),count=$("[data-patterns-count]"),more=$("[data-patterns-more]"),q=$("[data-patterns-query]"),cat=$("[data-patterns-category]"),fam=$("[data-patterns-family]");
+ let shown=PAGE,found=rows;
+ const draw=()=>{
+  list.replaceChildren(...found.slice(0,shown).map(row=>el("li",{"data-id":row.id},el("b",{text:row.id}),el("span",{text:" "+row.title}),
+   el("span",{class:"ui-muted",text:" · "+row.theme+(row.category==="data"?" · "+(row.family||row.owner):"")}))));
+  count.textContent=found.length===rows.length?rows.length+" patterns":found.length+" of "+rows.length+" patterns";more.hidden=shown>=found.length;box.dataset.found=String(found.length);box.dataset.shown=String(Math.min(shown,found.length))};
+ const search=()=>{found=patternFind(rows,q.value,cat.value,fam.value);shown=PAGE;draw()};
+ q.addEventListener("input",search);cat.addEventListener("change",search);fam.addEventListener("change",search);more.addEventListener("click",()=>{shown+=PAGE;draw()});
+ let runs=0;
+ const runFam=$("[data-patterns-run-family]"),req=$("[data-patterns-request]"),out=$("[data-patterns-result]"),status=$("[data-patterns-status]");
+ const run=()=>{
+  const family=runFam.value;let request;
+  box.dataset.family=family;box.dataset.runs=String((Number(box.dataset.runs)||0)+1);
+  try{request=JSON.parse(req.value)}catch{status.textContent="Not JSON.";out.textContent="";box.dataset.run="invalid";return}
+  const example=PATTERN_EXAMPLES[family],pythonOnly=!PATTERN_TWINS.includes(family)||(family==="score"&&request!==null&&typeof request==="object"&&request.operation==="tfidf");
+  if(pythonOnly){
+   box.dataset.engine="python";
+   if(pyJson(request)===pyJson(example.request)){out.textContent=pretty(example.result);status.textContent="Computed by Python when this page was made; this page does not run "+family+" itself.";box.dataset.run="ok"}
+   else{out.textContent="";status.textContent=family+" runs in Python only: printf '%s' '"+JSON.stringify(request).replace(/'/g,"'\\''")+"' | python3 web_ui.py --pattern "+family;box.dataset.run="python"}
+   return}
+   box.dataset.engine="browser";
+  const ticket=++runs,done=value=>{if(ticket!==runs)return;out.textContent=pretty(value);status.textContent="Run in this page.";box.dataset.run="ok"},
+   refuse=e=>{if(!(e instanceof PatternError))throw e;if(ticket!==runs)return;out.textContent="";status.textContent="Refused: "+e.message;box.dataset.run="refused"};
+  let answer;try{answer=patternRun(family,request)}catch(e){refuse(e);return}
+  if(answer instanceof Promise){out.textContent="";status.textContent="Running…";box.dataset.run="running";answer.then(done,refuse)}else done(answer)};
+ const fill=()=>{req.value=pretty(PATTERN_EXAMPLES[runFam.value].request);run()};
+ runFam.addEventListener("change",fill);$("[data-patterns-example]").addEventListener("click",fill);$("[data-patterns-run]").addEventListener("click",run);
+ draw();fill();box.setAttribute("data-patterns-ready","");return box})}
+if(typeof document!=="undefined")bindPatterns();
+"""
+
+
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
 """ + _TEXT_JS + r"""export const strip=s=>pyStrip(s.startsWith("\ufeff")?s.slice(1):s);
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
@@ -8171,7 +10595,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
             '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
             '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
-            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article></section>')
+            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article>'
+            '<article class="ui-card"><h2>792 patterns</h2><p><a href="./patterns.html">The flutter_navigation_basic catalogue and the processing behind it: filter, sort, page, validate, convert, workflow</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -8208,6 +10633,7 @@ def example_pages() -> dict[str, str]:
         "examples/playground.html": playground_document(),
         "examples/test-report.html": report_document(),
         "examples/mcp-lab.html": mcp_document(),
+        "examples/patterns.html": patterns_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -8655,6 +11081,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
     parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world, showcase, door)")
     parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
+    parser.add_argument("--pattern", metavar="FAMILY", help="run one pattern reference on the JSON request in stdin and print its JSON result (see PATTERN_RUNNERS); `list` names the families, `catalogue` prints the 792 patterns")
     parser.add_argument("--url", metavar="URL", help="with --btk-adapter: the address of the page to check (default: the local example server)")
     parser.add_argument("--site", type=Path, metavar="DIR",
                         help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
@@ -8714,6 +11141,23 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
         except ValueError as exc:
             parser.error(str(exc))
+        return 0
+    if args.pattern:
+        if args.pattern == "list":
+            sys.stdout.write("\n".join(sorted(PATTERN_RUNNERS)) + "\n")
+            return 0
+        if args.pattern == "catalogue":
+            sys.stdout.write(json.dumps(pattern_catalogue(), ensure_ascii=False, indent=1) + "\n")
+            return 0
+        try:
+            raw = sys.stdin.buffer.read(PATTERN_MAX_INPUT + 1)
+            if len(raw) > PATTERN_MAX_INPUT:
+                raise ValueError(f"request is larger than {PATTERN_MAX_INPUT} bytes")
+            result = pattern_run(args.pattern, pattern_parse(raw.decode("utf-8")))
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+        except (ValueError, UnicodeError, OSError) as exc:
+            print(f"invalid pattern request: {exc}", file=sys.stderr)
+            return 2
         return 0
     if args.btk_adapter:
         try:

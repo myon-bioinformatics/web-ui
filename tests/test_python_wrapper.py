@@ -2055,7 +2055,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -3570,6 +3570,752 @@ class McpTests(unittest.TestCase):
         self.assertIn("examples/mcp-lab.html", web_ui.example_pages())
         self.assertIn("./mcp-lab.html", web_ui.example_pages()["examples/index.html"])
         self.assertIn("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", html)
+
+
+PATTERN_ASSETS = json.loads((Path(__file__).resolve().parent / "fixtures" / "pattern_assets.json").read_text(encoding="utf-8"))
+PATTERN_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "pattern_golden.json").read_text(encoding="utf-8"))
+
+
+def typed(value):
+    """JSON text that keeps 1, 1.0 and true apart (== does not) and ignores object key order."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+class PatternTests(unittest.TestCase):
+    """The 792-pattern references. The golden values are the original flutter_navigation_basic oracles' own outputs (recorded, never produced by this code)."""
+
+    go = staticmethod(web_ui.pattern_run)
+
+    def refused(self, family, request, message=None):
+        with self.assertRaises(ValueError) as caught:
+            self.go(family, request)
+        if message is not None:
+            self.assertEqual(str(caught.exception), message)
+
+    def test_every_asset_the_dart_app_shows_is_reproduced_exactly(self):
+        assets = PATTERN_ASSETS["assets"]
+        self.assertEqual(len(assets), 34)
+        self.assertEqual({a["family"] for a in assets}, {"collection", "order", "select", "structure", "text", "window"})
+        for asset in assets:
+            with self.subTest(asset["asset"]):
+                self.assertEqual(typed(self.go(asset["family"], asset["request"])), typed(asset["expected"]))
+
+    def test_the_recorded_original_outputs_are_reproduced_exactly(self):
+        cases = PATTERN_GOLDEN["cases"]
+        self.assertGreaterEqual(len(cases), 800)
+        seen: dict[str, set[str]] = {}
+        for index, case in enumerate(cases):
+            kind = "ok" if "ok" in case else "error"
+            seen.setdefault(case["family"], set()).add(kind)
+            with self.subTest(index=index, family=case["family"]):
+                if kind == "ok":
+                    self.assertEqual(typed(self.go(case["family"], case["request"])), typed(case["ok"]))
+                else:
+                    self.refused(case["family"], case["request"], case["error"])
+        self.assertEqual(set(seen), set(web_ui.PATTERN_RUNNERS))
+        for family in set(web_ui.PATTERN_RUNNERS) - {"text", "structure"}:      # the two example-only families have nothing to refuse except an unknown mode
+            self.assertEqual(seen[family], {"ok", "error"}, family)
+
+    # --- query -----------------------------------------------------------------------------------------------------------------------------------
+    def test_sorting_is_stable_in_both_directions(self):
+        items = [{"k": 1, "i": 0}, {"k": 0, "i": 1}, {"k": 1, "i": 2}]
+        order = lambda extra: [row["i"] for row in self.go("query", {"operation": "stable_sort", "items": items, "key": "k", **extra})]
+        self.assertEqual(order({}), [1, 0, 2])
+        self.assertEqual(order({"descending": True}), [0, 2, 1])
+        self.assertEqual([r["i"] for r in self.go("query", {"operation": "custom_sort", "items": items, "key": "k", "comparator": "descending"})], [0, 2, 1])
+        self.refused("query", {"operation": "stable_sort", "items": [{"k": 1}, {"k": "a"}], "key": "k"}, "mixed sort key types")
+        self.refused("query", {"operation": "stable_sort", "items": [{"k": True}], "key": "k"}, "unsupported sort key")
+        self.refused("query", {"operation": "custom_sort", "items": items, "key": "k", "comparator": "lambda"}, "unsupported comparator")
+        self.refused("query", {"operation": "stable_sort", "items": items, "key": "k", "descending": 1}, "descending must be boolean")
+
+    def test_grouping_keeps_one_true_and_one_point_zero_apart(self):
+        groups = self.go("query", {"operation": "group_by", "key": "g", "items": [{"g": 1}, {"g": 1.0}, {"g": True}, {"g": 1}, {"g": None}]})
+        self.assertEqual([typed(g["value"]) for g in groups], ["1", "1.0", "true", "null"])
+        self.assertEqual([len(g["items"]) for g in groups], [2, 1, 1, 1])
+        self.refused("query", {"operation": "group_by", "key": "g", "items": [{"g": [1]}]}, "group key must be scalar")
+
+    def test_filters_and_the_geographic_radius(self):
+        rows = [{"c": "a", "t": ["x"], "v": 1}, {"c": "b", "t": ["y", "z"], "v": 5}, {"c": "a", "t": [], "v": 9}]
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "facet", "items": rows, "key": "c", "selected": ["a"]})], [1, 9])
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "tag", "items": rows, "key": "t", "selected": ["z", "x"]})], [1, 5])
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "range", "items": rows, "key": "v", "minimum": 5, "maximum": 9})], [5, 9])
+        places = [{"name": "Yokohama", "latitude": 35.4437, "longitude": 139.6380}, {"name": "Osaka", "latitude": 34.6937, "longitude": 135.5023}]
+        near = lambda radius: [p["name"] for p in self.go("query", {"operation": "geo", "items": places, "latitude": 35.6762, "longitude": 139.6503, "radius_km": radius})]
+        self.assertEqual(near(30), ["Yokohama"])
+        self.assertEqual(near(20), [])
+        self.assertEqual(near(500), ["Yokohama", "Osaka"])
+        self.refused("query", {"operation": "geo", "items": [], "latitude": 91, "longitude": 0, "radius_km": 1}, "invalid geographic search")
+        self.refused("query", {"operation": "drop", "items": []}, "unsupported operation")
+
+    # --- search ----------------------------------------------------------------------------------------------------------------------------------
+    def test_search_helpers(self):
+        search = lambda **request: self.go("search", request)
+        self.assertEqual(search(operation="tokenize", text="Ｃａｆé, naïve!"), ["café", "naïve"])
+        self.assertEqual(search(operation="stem", text="Running walked cats files go"), ["runn", "walk", "cat", "fil", "go"])
+        self.assertEqual(search(operation="history", events=["a", "b", "A", "c"]), ["c", "A", "b"])
+        self.assertEqual(search(operation="history", events=["a", "b", "c"], limit=2), ["c", "b"])
+        self.assertEqual(search(operation="fuzzy", query="cat", values=["cats", "car", "dog", "cat"], max_distance=1), ["cat", "cats", "car"])
+        self.assertEqual(search(operation="autocomplete", query="ＡＰ", values=["Apple", "apricot", "banana"], limit=1), ["Apple"])
+        self.assertEqual(search(operation="autocomplete", query="", values=["Apple"]), [])
+        self.assertEqual(search(operation="highlight", query="NAIVE", text="a naive test"), {"matched": True, "text": "a naive test"})
+        self.refused("search", {"operation": "history", "events": [], "limit": 0}, "invalid history limit")
+        self.refused("search", {"operation": "regex"}, "unsupported search operation")
+
+    # --- page ------------------------------------------------------------------------------------------------------------------------------------
+    def test_pages_by_offset_and_by_cursor_recover_the_dataset(self):
+        items = list(range(7))
+        self.assertEqual(self.go("page", {"operation": "offset", "items": items, "limit": 3, "offset": 6}), {"items": [6], "has_more": False, "next_offset": None})
+        self.assertEqual(self.go("page", {"operation": "offset", "items": items, "limit": 3}), {"items": [0, 1, 2], "has_more": True, "next_offset": 3})
+        for mode in ("cursor", "infinite"):
+            got, cursor = [], None
+            for _ in range(10):
+                request = {"operation": mode, "items": items, "limit": 3}
+                if cursor is not None:
+                    request["cursor"] = cursor
+                page = self.go("page", request)
+                got.extend(page["items"])
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            self.assertEqual(got, items, mode)
+
+    def test_a_cursor_is_bound_to_the_exact_dataset(self):
+        first = self.go("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1})
+        cursor = first["next_cursor"]
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 4], "limit": 1, "cursor": cursor}, "cursor does not match dataset")
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1, "cursor": cursor[:-2]}, "invalid cursor")
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1, "cursor": ""}, "invalid cursor")
+        self.refused("page", {"operation": "cursor", "items": [1], "limit": 1, "offset": 0}, "cursor mode does not accept offset")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1, "cursor": cursor}, "offset mode does not accept cursor")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1, "offset": 2}, "page position beyond dataset")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1001}, "limit too large")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": True}, "limit must be an integer >= 1")
+
+    # --- score -----------------------------------------------------------------------------------------------------------------------------------
+    def test_tfidf_and_minheap(self):
+        first, second = self.go("score", {"operation": "tfidf", "documents": ["a b", "a c"]})
+        self.assertAlmostEqual(first["a"], 0.5)
+        self.assertAlmostEqual(first["b"], 0.5 * (math.log(3 / 2) + 1))
+        self.assertEqual(sorted(second), ["a", "c"])
+        self.assertEqual(self.go("score", {"operation": "tfidf", "documents": [""]}), [{}])
+        self.assertEqual(self.go("score", {"operation": "minheap", "values": [5, 1, 3, 1], "pops": 2}), {"popped": [1, 1], "remaining_sorted": [3, 5]})
+        values = [3, 1, 2]
+        self.go("score", {"operation": "minheap", "values": values, "pops": 3})
+        self.assertEqual(values, [3, 1, 2], "the request is never changed")
+        self.refused("score", {"operation": "minheap", "values": [1], "pops": 2}, "invalid pop count")
+        self.refused("score", {"operation": "minheap", "values": [True]}, "heap values must be finite numbers")
+
+    # --- reduce ----------------------------------------------------------------------------------------------------------------------------------
+    def test_reducing_actions_into_a_history(self):
+        actions = [{"type": "increment", "value": 5}, {"type": "decrement", "value": 3}, {"type": "set", "value": 100}, {"type": "reset"}]
+        self.assertEqual(self.go("reduce", {"mode": "redux", "initial": 10, "actions": actions}), {"schema": "state-reducer/1", "mode": "redux", "state": 10, "history": [10, 15, 12, 100, 10]})
+        for bad, message in (({"type": "multiply", "value": 2}, "action requires known type"), ({"type": "set", "value": True}, "action value must be integer"),
+                             ({"type": "reset", "value": 1}, "action fields do not match type"), ({"type": "increment", "value": 10 ** 9 + 1}, "action value out of bounds")):
+            self.refused("reduce", {"mode": "event_state", "initial": 0, "actions": [bad]}, message)
+        self.refused("reduce", {"mode": "event_state", "initial": 10 ** 9, "actions": [{"type": "increment", "value": 1}]}, "result out of bounds")
+        self.refused("reduce", {"mode": "getx", "initial": 0, "actions": []}, "unsupported mode")
+
+    # --- convert ---------------------------------------------------------------------------------------------------------------------------------
+    def test_conversions(self):
+        convert = lambda **request: self.go("convert", request)["value"]
+        self.assertEqual(convert(operation="normalize", value="  Ａｂｃ ", case="lower"), "abc")
+        self.assertEqual(convert(operation="normalize", value="e" + chr(0x301), form="NFC"), "é")
+        self.assertEqual((convert(operation="coerce", target="int", value="+12"), convert(operation="coerce", target="float", value="1e3")), (12, 1000.0))
+        self.assertEqual([convert(operation="coerce", target="bool", value=v) for v in ("true", "0", True, 1, 0)], [True, False, True, True, False])
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 1.0}, "invalid boolean")
+        self.refused("convert", {"operation": "coerce", "target": "int", "value": "1_0"}, "invalid integer")
+        self.refused("convert", {"operation": "coerce", "target": "int", "value": "9" * 5000}, "invalid integer")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": "1e999"}, "non-finite float")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": "nan"}, "invalid float")
+        self.assertEqual((convert(operation="date", value="20240229", source="compact", target="iso"), convert(operation="date", value="2024-02-29", target="compact")), ("2024-02-29", "20240229"))
+        self.refused("convert", {"operation": "date", "value": "2023-02-29"}, "invalid iso date")
+        self.refused("convert", {"operation": "date", "value": "2024-W01-1"}, "invalid iso date")
+        self.assertEqual((convert(operation="unit", value=1, **{"from": "km", "to": "m"}), convert(operation="unit", value=500, **{"from": "g", "to": "kg"})), (1000.0, 0.5))
+        self.refused("convert", {"operation": "unit", "value": 1, "from": "kg", "to": "m"}, "incompatible units")
+        self.refused("convert", {"operation": "unit", "value": 1e-320, "from": "cm", "to": "km"}, "unit conversion underflow")
+        self.refused("convert", {"operation": "unit", "value": 10 ** 400, "from": "m", "to": "m"}, "unit value must be finite number")
+        self.assertEqual(convert(operation="encoding", mode="utf8_to_base64", value="héllo"), "aMOpbGxv")
+        self.assertEqual(convert(operation="encoding", mode="base64_to_utf8", value="aMOpbGxv"), "héllo")
+        self.refused("convert", {"operation": "encoding", "mode": "base64_to_utf8", "value": "aMOpbGx"}, "invalid base64 utf8")
+        self.refused("convert", {"operation": "encoding", "mode": "utf8_to_base64", "value": chr(0xD800)}, "invalid utf8 input")
+        self.assertEqual((convert(operation="mask", value="1234567890"), convert(operation="mask", value="abc"), convert(operation="mask", value="日本語テスト", keep_last=2)), ("******7890", "***", "****スト"))
+        self.refused("convert", {"operation": "mask", "value": "x", "keep_last": 33}, "invalid keep_last")
+
+    # --- validate --------------------------------------------------------------------------------------------------------------------------------
+    def test_validation_rules(self):
+        valid = lambda operation, value, **options: self.go("validate", {"operation": operation, "value": value, **({"options": options} if options else {})})["valid"]
+        self.assertEqual([valid("required", v) for v in (None, "", "  ", "x", 0, False)], [False, False, False, True, True, True])
+        self.assertEqual([valid("email", v) for v in ("a@b.co", "a@b", "a b@c.de", 5)], [True, False, False, False])
+        self.assertEqual([valid("password", v) for v in ("abcdefgh1234", "abcdefghijkl", "short1a")], [True, False, False])
+        self.assertEqual([valid("phone", v) for v in ("+8190123456", "0901234567", "123")], [True, True, False])
+        self.assertEqual([valid("url", v) for v in ("https://a.b/c", "ftp://a.b", "https://u:p@a.b", "https://a.b:0", "https://a b")], [True, False, False, False, False])
+        self.assertEqual([valid("date", v) for v in ("2024-02-29", "2023-02-29", "2024-2-9")], [True, False, False])
+        self.assertEqual([valid("range", v, minimum=1, maximum=5) for v in (1, 5, 6, True, "3")], [True, True, False, False, False])
+        self.assertEqual([valid("regex", v, pattern="hex_color") for v in ("#ABCDEF", "#abcdeg", "ABCDEF")], [True, False, False])
+        self.refused("validate", {"operation": "regex", "value": "x", "options": {"pattern": "(a+)+$"}}, "unknown named regex")
+        self.refused("validate", {"operation": "range", "value": 1, "options": {"minimum": 3, "maximum": 1}}, "invalid numeric range")
+        form = self.go("validate", {"operation": "form", "fields": [{"name": "mail", "rule": "email", "value": "a@b.co"}, {"name": "tel", "rule": "phone", "value": "12"}]})
+        self.assertEqual(form, {"valid": False, "fields": [{"name": "mail", "valid": True}, {"name": "tel", "valid": False}]})
+        self.refused("validate", {"operation": "form", "fields": []}, "form requires fields")
+
+    # --- workflow --------------------------------------------------------------------------------------------------------------------------------
+    def test_workflow_operations(self):
+        flow = lambda **request: self.go("workflow", request)["result"]
+        self.assertEqual(flow(operation="swap", values=[1, 2, 3], a=0, b=2), [3, 2, 1])
+        self.assertEqual((flow(operation="move_top", values=[1, 2, 3], index=2), flow(operation="move_bottom", values=[1, 2, 3], index=0)), ([3, 1, 2], [2, 3, 1]))
+        self.assertEqual(flow(operation="insert_sorted", values=[1, 3, 5], value=4), [1, 3, 4, 5])
+        self.refused("workflow", {"operation": "insert_sorted", "values": [3, 1], "value": 2}, "input not sorted")
+        undo = flow(operation="undo_redo", values=[1], commands=[{"type": "append", "value": 2}, {"type": "append", "value": 3}, {"type": "undo"}, {"type": "undo"}, {"type": "redo"}])
+        self.assertEqual((undo["values"], undo["cursor"], undo["history"]), ([1, 2], 1, [[1], [1, 2], [1, 2, 3]]))
+        branch = flow(operation="command", values=[], commands=[{"type": "append", "value": 1}, {"type": "undo"}, {"type": "append", "value": 9}])
+        self.assertEqual((branch["history"], branch["cursor"]), ([[], [9]], 1), "a new command discards the redo branch")
+        self.refused("workflow", {"operation": "memento", "values": [], "commands": [{"type": "undo"}]}, "cannot undo")
+        self.refused("workflow", {"operation": "memento", "values": [], "commands": [{"type": "redo"}]}, "cannot redo")
+        self.assertEqual(flow(operation="batch", values=[1, 2, 3, 4, 5], batch_size=2), [[1, 2], [3, 4], [5]])
+        self.assertEqual(flow(operation="scheduler", values=[1], schedule=[0, 500]), [{"at_ms": 0, "values": [1]}, {"at_ms": 500, "values": [1]}])
+        commands = [{"type": "append", "value": 2}, {"type": "append", "value": 3}]
+        self.assertEqual(flow(operation="transaction", values=[1], commands=commands), {"committed": True, "values": [1, 2, 3], "applied": [0, 1], "rolled_back": False})
+        self.assertEqual(flow(operation="saga", values=[1], commands=commands, fail_at=1), {"committed": False, "values": [1], "applied": [0], "rolled_back": True})
+        events = [{"type": "append", "value": "x"}]
+        self.assertEqual(flow(operation="pubsub", values=[], events=events, subscribers=2), {"subscribers": [events, events], "state": ["x"]})
+        self.assertEqual(flow(operation="cqrs", values=[1], events=events), {"write_state": [1, "x"], "read_projection": [1, "x"]})
+        self.assertEqual(flow(operation="checkpoint", values=[1, 2, 3], checkpoint=1), {"processed": [1], "remaining": [2, 3], "checkpoint": 1})
+        self.refused("workflow", {"operation": "swap", "values": [1], "a": 0, "b": 1}, "index out of range")
+        self.refused("workflow", {"operation": "drop", "values": []}, "unknown operation")
+
+    # --- transform and select --------------------------------------------------------------------------------------------------------------------
+    def test_transformations_keep_json_types_apart(self):
+        make = lambda **request: self.go("transform", request)["values"]
+        self.assertEqual(make(operation="constraint", values=[1, 1.0, True, "1"], condition={"operator": "equals", "value": 1}), [True, False, False, False])
+        self.assertEqual(make(operation="partition", values=[1, 5, 3], condition={"operator": "greater_than", "value": 2}), {"matched": [5, 3], "unmatched": [1]})
+        schema = {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}}, "additional_properties": False}
+        self.assertEqual(make(operation="schema_validation", schema=schema, values=[{"id": 1}, {"id": 1.0}, {"id": 2, "tags": ["a", 1]}, {"id": 3, "x": 1}, {}]), [True, False, False, False, False])
+        self.assertEqual(make(operation="pipeline", values=[" A ", "b"], steps=[{"operation": "strip"}, {"operation": "lower"}]), ["a", "b"])
+        self.assertEqual(make(operation="pipeline", values=[1, 2], steps=[{"operation": "add", "value": 1}, {"operation": "multiply", "value": 2}]), [4, 6])
+        self.assertEqual(make(operation="map_reduce", key="k", reducer="sum", values=[{"k": "a", "value": 1}, {"k": "b", "value": 2}, {"k": "a", "value": 3}]), [{"key": "a", "value": 4}, {"key": "b", "value": 2}])
+        self.assertEqual(make(operation="flatten", values=[1, [2, [3, []]]]), [1, 2, 3])
+        self.assertEqual(make(operation="zip", values=[1, 2, 3], other=["a", "b"]), [[1, "a"], [2, "b"]])
+        self.refused("transform", {"operation": "zip", "values": [1], "other": [], "strict": True}, "strict zip lengths differ")
+        self.refused("transform", {"operation": "flatten", "values": self._nested(101)}, "nested arrays exceed 100 levels")
+        self.assertEqual(make(operation="flatten", values=self._nested(99)), [])
+        self.refused("transform", {"operation": "constraint", "values": [], "condition": {"operator": "greater_than", "value": "a"}}, "ordered comparisons require numbers")
+
+    @staticmethod
+    def _nested(depth):
+        value = []
+        for _ in range(depth):
+            value = [value]
+        return [value]
+
+    def test_selection_filters_distinct_values_and_reports_duplicates(self):
+        pick = lambda **request: self.go("select", request)["values"]
+        self.assertEqual(pick(values=[1, 2, 1], equals=1), [1, 1])
+        rows = [{"name": "A", "profile": {"tags": ["blue"]}}, {"name": "B", "profile": {"tags": ["red"]}}, {"name": "C", "profile": {"tags": ["blue", "red"]}}]
+        condition = lambda path, equals: {"path": path, "equals": equals}
+        self.assertEqual([r["name"] for r in pick(values=rows, conditions=[condition(["profile", "tags", 0], "blue")])], ["A", "C"])
+        self.assertEqual([r["name"] for r in pick(values=rows, match="any", conditions=[condition(["name"], "B"), condition(["profile", "tags", 1], "red")])], ["B", "C"])
+        self.assertEqual([r["name"] for r in pick(values=rows, match="all", conditions=[condition(["name"], "C"), condition(["profile", "tags", 1], "red")])], ["C"])
+        self.assertEqual(typed(pick(operation="distinct", values=[{"a": 1, "b": 2}, {"b": 2, "a": 1}, 1, 1.0, True, [1], [1], None, None])), typed([{"a": 1, "b": 2}, 1, 1.0, True, [1], None]))
+        self.assertEqual(pick(operation="deduplicate_report", values=["a", "b", "a", "a"]), [{"input_count": 4, "unique_count": 2, "duplicate_count": 2, "has_duplicates": True}])
+        self.refused("select", {"values": [], "conditions": []}, "conditions must be a non-empty list")
+        self.refused("select", {"values": [], "conditions": [{"path": ["a", -1], "equals": 1}]}, "path must contain literal keys or non-negative integer indices")
+        self.refused("select", {"values": [], "equals": 1, "conditions": [{"equals": 1}]}, "use equals or conditions, not both")
+        self.refused("select", {"values": [], "operation": "sort"}, "operation must be filter, distinct or deduplicate_report")
+
+    # --- order, text, window, collection, structure ----------------------------------------------------------------------------------------------
+    def test_ordering_examples_and_custom_values(self):
+        order = lambda mode, values=None: self.go("order", {"mode": mode, **({} if values is None else {"values": values})})["values"]
+        self.assertEqual(order("basic"), [1, 2, 3, 5, 9])
+        self.assertEqual(order("reverse", [1, 3, 2]), [3, 2, 1])
+        self.assertEqual(order("sorted-set"), [1, 2, 3, 5])
+        self.assertEqual(order("top-n", [7, 1, 9, 3, 8, 2]), [9, 8, 7])
+        self.assertEqual([r["name"] for r in order("priority")], ["critical", "urgent", "normal", "later"])
+        self.assertEqual([r["name"] for r in order("multi")], ["A3", "A1", "B2", "B1"])
+        self.refused("order", {"mode": "basic", "values": [1, True]}, "basic ordering requires numbers")
+        self.refused("order", {"mode": "shuffle"}, "unsupported ordering mode")
+
+    def test_text_search_is_an_and_over_an_inverted_index(self):
+        docs = web_ui.PATTERN_TEXT_DOCUMENTS
+        self.assertEqual(web_ui.pattern_text_search(docs, "portable search"), ["doc-2"])
+        self.assertEqual(web_ui.pattern_text_search(docs, "the PORTABLE"), ["doc-1", "doc-2"])
+        self.assertEqual(web_ui.pattern_text_search(docs, "and the"), [])
+        self.assertEqual(web_ui.pattern_inverted_index(docs)["search"], ["doc-2", "doc-3"])
+        self.assertEqual(web_ui.pattern_tokens("Ａ b_c 12"), ["b", "c", "12"], "ASCII alphanumerics only")
+        with self.assertRaises(TypeError):
+            web_ui.pattern_tokens(5)
+        with self.assertRaises(ValueError):
+            web_ui.pattern_inverted_index([{"id": "", "text": "x"}])
+        self.refused("text", {"mode": "fuzzy"}, "unsupported text-processing mode")
+
+    def test_windows_clamp_and_keyset_follows_the_last_item(self):
+        window = lambda mode, *commands: self.go("window", {"mode": mode, "commands": list(commands)})
+        self.assertEqual((window("load-more")["values"], window("load-more", "next")["state"]["offset"]), (["item-01", "item-02", "item-03", "item-04"], 4))
+        self.assertEqual(window("load-more", "next", "next", "next", "next")["state"]["offset"], 8, "the last window ends at the end")
+        self.assertEqual(window("keyset", "next")["state"]["cursor"], "item-04")
+        self.assertEqual(window("keyset", "next", "reset")["state"]["cursor"], "item-04", "reset moves back to the start but leaves the cursor as it was")
+        self.assertEqual(window("page-size", "page-size-3")["state"]["limit"], 3)
+        self.assertEqual(window("offset-limit", "offset-6")["values"], ["item-07", "item-08", "item-09", "item-10"])
+        self.assertEqual(window("load-more", "refresh", "refresh")["state"]["revision"], 2)
+        self.assertEqual((window("window", "next")["page"], window("window")["pages"]), (2, 3))
+        self.refused("window", {"mode": "scroll"}, "unsupported mode")
+        self.refused("window", {"mode": "window", "commands": ["jump"]}, "unsupported command")
+        self.refused("window", {"mode": "window", "commands": "next"}, "commands must be strings")
+        state = web_ui.pattern_window_initial("window")
+        self.assertEqual(web_ui.pattern_window_step(state, "next")["offset"], 4)
+        self.assertEqual(state["offset"], 0, "a step never changes the state it is given")
+        self.refused("window", {"mode": "window", "commands": ["x"] * 1001}, "commands must be strings")
+
+    def test_collection_commands(self):
+        run = lambda mode, *commands: self.go("collection", {"mode": mode, "commands": [list(c) for c in commands]})
+        self.assertEqual([v["selected"] for v in run("selectable", ("select", "b"), ("select", "c"), ("select", "b"))["values"]], [False, False, True, False])
+        self.assertEqual(run("swipe-delete", ("select", "a"), ("delete", "a"))["state"], {"mode": "swipe-delete", "items": ["b", "c", "d"], "selected": []})
+        self.assertEqual(run("reorderable", ("move-first", "d"))["state"]["items"], ["d", "a", "b", "c"])
+        self.refused("collection", {"mode": "checklist", "commands": [["toggle", "z"]]}, "unknown item")
+        self.refused("collection", {"mode": "checklist", "commands": [["sort"]]}, "unsupported collection command")
+        self.refused("collection", {"mode": "dragging"}, "unsupported collection mode")
+
+    def test_structure_examples(self):
+        self.assertEqual([(s["header"], [i["id"] for i in s["items"]]) for s in self.go("structure", {"mode": "grouped"})["values"]], [("A", ["a1", "a2"]), ("B", ["b1", "b2"])])
+        self.assertEqual([(n["id"], n["depth"]) for n in self.go("structure", {"mode": "tree"})["values"]], [("root", 0), ("left", 1), ("right", 1), ("leaf", 2)])
+        self.refused("structure", {"mode": "ring"}, "unsupported mode")
+
+    # --- the runner, the parser and the command line ---------------------------------------------------------------------------------------------
+    def test_the_runner_names_unknown_families_and_wraps_crashes(self):
+        with self.assertRaises(ValueError) as unknown:
+            self.go("regex", {})
+        self.assertIn("one of collection, concurrency, convert, event_loop, future, interaction, order", str(unknown.exception))
+        with self.assertRaises(ValueError) as caught:
+            self.go("transform", {"operation": ["unhashable"], "values": []})
+        self.assertTrue(str(caught.exception).startswith("invalid transform request:"))
+        self.refused("order", [])
+        self.refused("window", None)
+
+    def test_the_remaining_refusals(self):
+        self.assertEqual(self.go("convert", {"operation": "normalize", "value": "straße", "case": "upper"}), {"value": "STRASSE"})
+        self.refused("convert", {"operation": "normalize", "value": "x", "case": "title"}, "unsupported case mode")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": 10 ** 400}, "invalid float")
+        self.refused("convert", {"operation": "date", "value": "20231301", "source": "compact"}, "invalid compact date")
+        self.refused("convert", {"operation": "unit", "value": 1e308, "from": "km", "to": "m"}, "unit conversion overflow")
+        self.assertFalse(self.go("validate", {"operation": "url", "value": "https://[::1"})["valid"], "urlsplit itself refuses an unclosed IPv6 host")
+        with self.assertRaises(TypeError):
+            web_ui.pattern_without_stop_words(["a", 1])
+        with self.assertRaises(TypeError):
+            web_ui.pattern_window_step([], "next")
+        self.assertEqual(web_ui.pattern_owner(199), "undecided")
+        with mock.patch.dict(web_ui.PATTERN_TITLES, {"api": "OnlyOne"}), self.assertRaises(ValueError):
+            web_ui.pattern_catalogue()
+
+    def test_edges_of_every_limit_and_type_check(self):
+        # inclusive bounds
+        self.assertEqual(self.go("query", {"operation": "range", "items": [{"v": 3}, {"v": 4}], "key": "v", "minimum": 3, "maximum": 3}), [{"v": 3}])
+        near = lambda lat, lon, row: self.go("query", {"operation": "geo", "items": [row], "latitude": lat, "longitude": lon, "radius_km": 0})
+        self.assertEqual(near(90, 180, {"latitude": 90, "longitude": 180}), [{"latitude": 90, "longitude": 180}])
+        self.assertEqual(near(-90, -180, {"latitude": -90, "longitude": -180}), [{"latitude": -90, "longitude": -180}])
+        for lat, lon in ((90.5, 0), (-90.5, 0), (0, 180.5), (0, -180.5)):
+            self.refused("query", {"operation": "geo", "items": [], "latitude": lat, "longitude": lon, "radius_km": 1}, "invalid geographic search")
+            self.refused("query", {"operation": "geo", "items": [{"latitude": lat, "longitude": lon}], "latitude": 0, "longitude": 0, "radius_km": 1}, "invalid point coordinates")
+        for key in ("", 5, None):
+            self.refused("query", {"operation": "group_by", "items": [], "key": key}, "group key required")
+        self.assertEqual(self.go("search", {"operation": "history", "events": ["a", "b"], "limit": 1}), ["b"])
+        self.assertEqual(self.go("search", {"operation": "fuzzy", "query": "cat", "values": ["cat", "cap"], "max_distance": 0}), ["cat"])
+        self.refused("search", {"operation": "fuzzy", "query": "cat", "values": [], "max_distance": True}, "invalid edit distance")
+        self.refused("search", {"operation": "fuzzy", "query": "cat", "values": [], "max_distance": 11}, "invalid edit distance")
+        self.assertEqual((web_ui._pat_distance("", "abc"), web_ui._pat_distance("kitten", "sitting"), web_ui._pat_distance("abc", "")), (3, 3, 3))
+        # case folding, not lower-casing; a stem only touches plain ASCII words
+        self.assertEqual(self.go("search", {"operation": "tokenize", "text": "STRASSE Straße"}), ["strasse", "strasse"])
+        self.assertEqual(self.go("search", {"operation": "stem", "text": "cafés 123s"}), ["cafés", "123s"])
+        self.assertEqual(self.go("convert", {"operation": "normalize", "value": "Straße", "case": "lower"}), {"value": "strasse"})
+        first, = self.go("score", {"operation": "tfidf", "documents": ["Straße STRASSE"]})
+        self.assertEqual(first, {"strasse": 2 / 2 * (math.log(2 / 2) + 1)})
+        # a cursor is read strictly and does not depend on the order of an object's keys
+        cursor = self.go("page", {"operation": "cursor", "items": [{"a": 1, "b": 2}, {"x": 0}], "limit": 1})["next_cursor"]
+        self.assertEqual(self.go("page", {"operation": "cursor", "items": [{"b": 2, "a": 1}, {"x": 0}], "limit": 1, "cursor": cursor})["items"], [{"x": 0}])
+        for junk in (cursor[:3] + "!" + cursor[3:], cursor[:3] + "\n" + cursor[3:], cursor + "===="):
+            self.refused("page", {"operation": "cursor", "items": [{"a": 1, "b": 2}, {"x": 0}], "limit": 1, "cursor": junk}, "invalid cursor")
+        # convert
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 0.0}, "invalid boolean")
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 2}, "invalid boolean")
+        self.assertEqual(self.go("convert", {"operation": "unit", "value": 0, "from": "km", "to": "m"}), {"value": 0.0})
+        self.refused("convert", {"operation": "encoding", "mode": "base64_to_utf8", "value": "aMOp!bGxv"}, "invalid base64 utf8")
+        self.assertEqual([self.go("convert", {"operation": "mask", "value": "abcd", "keep_last": k})["value"] for k in (0, 1, 32)], ["****", "***d", "****"])
+        self.refused("convert", {"operation": "mask", "value": "abcd", "keep_last": -1}, "invalid keep_last")
+        # validate
+        url = lambda n: "https://a.bc/" + "x" * (n - len("https://a.bc/"))
+        self.assertEqual([self.go("validate", {"operation": "url", "value": url(n)})["valid"] for n in (2048, 2049)], [True, False])
+        self.assertEqual([self.go("validate", {"operation": "regex", "value": "1" * n, "options": {"pattern": "digits"}})["valid"] for n in (4096, 4097)], [True, False])
+        # workflow
+        self.refused("workflow", {"operation": "swap", "values": [1, 2], "a": True, "b": 0}, "index out of range")
+        self.refused("workflow", {"operation": "swap", "values": [1, 2], "a": 0.5, "b": 0}, "index out of range")
+        append = {"type": "append", "value": 1}
+        self.assertEqual(len(self.go("workflow", {"operation": "undo_redo", "values": [], "commands": [append] * 1000})["result"]["values"]), 1000)
+        self.refused("workflow", {"operation": "undo_redo", "values": [], "commands": [append] * 1001}, "commands must be array <=1000")
+        self.refused("workflow", {"operation": "transaction", "values": [], "commands": [append] * 1001}, "commands must be array <=1000")
+        self.assertEqual(len(self.go("workflow", {"operation": "batch", "values": list(range(1000)), "batch_size": 1000})["result"]), 1)
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": 1001}, "invalid batch size")
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": True}, "invalid batch size")
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": 0}, "invalid batch size")
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [True]}, "invalid schedule")
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [60001]}, "invalid schedule")
+        self.assertEqual(len(self.go("workflow", {"operation": "scheduler", "values": [], "schedule": [60000] * 1000})["result"]), 1000)
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [0] * 1001}, "invalid schedule")
+        self.refused("workflow", {"operation": "saga", "values": [], "commands": [{"type": "append", "value": 1}], "fail_at": 1}, "invalid fail_at")
+        event = {"type": "append", "value": 1}
+        self.assertEqual(len(self.go("workflow", {"operation": "queue", "values": [], "events": [event] * 1000})["result"]["state"]), 1000)
+        self.refused("workflow", {"operation": "queue", "values": [], "events": [event] * 1001}, "events must be array <=1000")
+        self.refused("workflow", {"operation": "queue", "values": [0], "events": [event] * 1000}, "result too large")
+        self.refused("workflow", {"operation": "swap", "values": list(range(1001)), "a": 0, "b": 1}, "values must be array <=1000")
+        self.assertEqual(self.go("workflow", {"operation": "checkpoint", "values": [1, 2], "checkpoint": 0})["result"], {"processed": [], "remaining": [1, 2], "checkpoint": 0})
+        # transform
+        none = {"type": "null"}
+        self.assertEqual(self.go("transform", {"operation": "schema_validation", "schema": none, "values": [None, 0, False, ""]})["values"], [True, False, False, False])
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "type", "type": "null"}, "values": [None, 0]})["values"], [True, False])
+        loose = {"type": "object", "properties": {"a": {"type": "integer"}}}
+        self.assertEqual(self.go("transform", {"operation": "schema_validation", "schema": loose, "values": [{"a": 1, "b": 2}, {"a": "x"}]})["values"], [True, False])
+        less = lambda operator, values: self.go("transform", {"operation": "constraint", "condition": {"operator": operator, "value": 2}, "values": values})["values"]
+        self.assertEqual((less("less_than", [1, 2, 3]), less("greater_than", [1, 2, 3])), ([True, False, False], [False, False, True]))
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": {"a": 1, "b": 2}}, "values": [{"b": 2, "a": 1}]})["values"], [True])
+        with self.assertRaises(ValueError):
+            self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": 1}, "values": [float("nan")]})
+        with self.assertRaises(ValueError):
+            self.go("select", {"operation": "distinct", "values": [float("nan")]})
+        # windows and collections
+        window = lambda **state: web_ui.pattern_window_step({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state}, "next")
+        self.assertEqual(window(limit=1)["offset"], 1)
+        for bad in ({"limit": 0}, {"offset": -1}, {"total": -1}, {"offset": True}, {"limit": 0.5}, {"total": "12"}):
+            with self.assertRaises(ValueError, msg=bad):
+                window(**bad)
+        step = lambda command, **state: web_ui.pattern_window_step({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state}, command)["offset"]
+        self.assertEqual((step("page-size-3", total=3), step("page-size-3", total=2), step("offset-6", total=4), step("offset-6", total=3)), (0, 0, 0, 0))
+        self.assertEqual(web_ui.pattern_window_render({"mode": "window", "offset": 0, "limit": 4, "total": 0}), {"schema": "collection-window/1", "mode": "window", "state": {"mode": "window", "offset": 0, "limit": 4, "total": 0}, "page": 0, "pages": 0, "values": []})
+        self.assertEqual(web_ui.pattern_window_render({"mode": "window", "offset": 8, "limit": 4, "total": 10})["pages"], 3)
+        for state in ([], None, {"mode": "dragging", "items": [], "selected": []}, {"mode": "checklist", "items": "ab", "selected": []}, {"mode": "checklist", "items": ["a"], "selected": "a"},
+                      {"mode": "checklist", "items": ["a", "a"], "selected": []}, {"mode": "checklist", "items": ["a", 1], "selected": []}, {"mode": "checklist", "items": ["a"], "selected": ["z"]}):
+            with self.assertRaises(ValueError, msg=state):
+                web_ui.pattern_collection_step(state, "toggle", "a")
+        self.assertEqual(len(self.go("window", {"mode": "window", "commands": ["next"] * 1000})["values"]), 4)
+        self.refused("window", {"mode": "window", "commands": ["next"] * 1001}, "commands must be strings")
+        self.refused("window", {"mode": "window", "commands": ["next", 5]}, "commands must be strings")
+        self.assertEqual(self.go("collection", {"mode": "checklist", "commands": [["toggle"]] * 1000})["state"]["selected"], [])
+        self.refused("collection", {"mode": "checklist", "commands": [["toggle"]] * 1001}, "commands must be [command] or [command, item]")
+        for commands in ("toggle", [["toggle", "a", "b"]], [[]], [["toggle", 5]], [5]):
+            self.refused("collection", {"mode": "checklist", "commands": commands}, "commands must be [command] or [command, item]")
+        # more edges: result limits, the e-mail length, and the shape of a window's page counts
+        self.assertEqual(len(self.go("search", {"operation": "autocomplete", "query": "a", "values": ["a"] * 1001, "limit": 1000})), 1000)
+        self.refused("search", {"operation": "autocomplete", "query": "a", "values": [], "limit": 1001}, "invalid result limit")
+        mail = lambda n: "a" * (n - len("@b.co")) + "@b.co"
+        self.assertEqual([self.go("validate", {"operation": "email", "value": mail(n)})["valid"] for n in (254, 255)], [True, False])
+        self.assertEqual(step("next", total=4), 0)
+        self.assertEqual(step("next", total=0), 0)
+        render = lambda **state: web_ui.pattern_window_render({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state})
+        self.assertEqual([(render(offset=o, total=t)["page"], render(offset=o, total=t)["pages"]) for o, t in ((0, 8), (4, 8), (8, 12), (4, 12), (0, 1), (0, 4), (0, 5))],
+                         [(1, 2), (2, 2), (3, 3), (2, 3), (1, 1), (1, 1), (1, 2)])
+        with self.assertRaises(ValueError):
+            self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": float("nan")}, "values": [1]})
+        with self.assertRaises(ValueError):
+            self.go("page", {"operation": "cursor", "items": [float("nan")], "limit": 1})
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["top-n"], [7, 1, 9, 3, 8, 2])
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["basic"], [9, 2, 5, 1, 3])
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["sorted-set"], [5, 2, 5, 1, 3, 2])
+        self.assertEqual((web_ui._pat_distance("ab", "a"), web_ui._pat_distance("a", "ab"), web_ui._pat_distance("flaw", "lawn"), web_ui._pat_distance("", "")), (1, 1, 2, 0))
+        self.assertEqual(len(self.go("reduce", {"mode": "redux", "initial": 0, "actions": [{"type": "reset"}] * 1000})["history"]), 1001)
+        self.refused("reduce", {"mode": "redux", "initial": 0, "actions": [{"type": "reset"}] * 1001}, "actions must be array of at most 1000")
+        self.assertEqual([self.go("convert", {"operation": "mask", "value": "abcd", "keep_last": k})["value"] for k in (3, 4, 5)], ["*bcd", "****", "****"])
+        self.assertEqual(self.go("convert", {"operation": "mask", "value": "abcd"}), {"value": "****"})
+        with self.assertRaises(ValueError) as caught:
+            self.go("transform", {"operation": "schema_validation", "schema": {"type": ["string"]}, "values": []})
+        self.assertEqual(str(caught.exception), "invalid JSON type")
+        self.refused("transform", {"operation": "schema_validation", "schema": {"type": "string", "items": {"type": "string"}}, "values": ["ab"]}, "items requires array type")
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": {"b": 2, "a": 1}}, "values": [{"a": 1, "b": 2}]})["values"], [True])
+        # select
+        self.refused("select", {"values": [], "conditions": [{"path": [True], "equals": 1}]}, "path must contain literal keys or non-negative integer indices")
+        self.assertEqual(self.go("select", {"values": [[7]], "conditions": [{"path": [0], "equals": 7}]})["values"], [[7]])
+        self.assertEqual(self.go("select", {"values": [[7], [8]], "conditions": [{"path": [1], "equals": 8}]})["values"], [])
+
+    def test_the_javascript_references_answer_as_their_node_tests_expect(self):
+        # javascript/tests/future_patterns.test.mjs
+        future = lambda mode, **extra: self.go("future", {"mode": mode, **extra})["value"]
+        self.assertEqual(future("basic", task={"value": "ok"}), "ok")
+        self.assertEqual(future("chain", task={"value": 2}, steps=[{"op": "multiply", "by": 3}, {"op": "add", "by": 1}]), 7)
+        self.assertEqual(future("chain", task={"value": "ab"}, steps=[{"op": "uppercase"}]), "AB")
+        self.assertEqual(future("error", task={"value": None, "reject": "broken"}, fallback="safe"), {"caught": "broken", "fallback": "safe"})
+        self.assertEqual(future("error", task={"value": 1, "reject": "x"}, fallback=None)["fallback"], None)
+        self.assertEqual(future("error", task={"value": 5}, fallback="unused"), 5)
+        self.assertEqual(future("wait", tasks=[{"value": "slow", "delay_ms": 25}, {"value": "fast"}]), ["slow", "fast"])
+        self.assertEqual(future("any", tasks=[{"value": "slow", "delay_ms": 30}, {"value": "fast"}]), "fast")
+        self.refused("future", {"mode": "any", "tasks": [{"value": "late", "delay_ms": 30}, {"value": None, "reject": "first"}]}, "first")
+        self.refused("future", {"mode": "wait", "tasks": [{"value": 1, "reject": "b", "delay_ms": 9}, {"value": 2, "reject": "a", "delay_ms": 3}, {"value": 3}]}, "a")
+        self.assertEqual(future("any", tasks=[{"value": "one", "delay_ms": 1}, {"value": "zero"}]), "one", "a timer of 0 ms waits 1 ms, so the earlier created wins a tie")
+        self.refused("future", {"mode": "timeout", "task": {"value": 1, "delay_ms": 30}, "timeout_ms": 5}, "timeout")
+        self.assertEqual(future("timeout", task={"value": 1}, timeout_ms=100), 1)
+        self.assertEqual(future("timeout", task={"value": 1, "delay_ms": 5}, timeout_ms=5), 1, "a tie goes to the task")
+        self.refused("future", {"mode": "timeout", "task": {"value": 1, "reject": "late"}, "timeout_ms": 5}, "late")
+        for request, message in (({"mode": "basic", "task": {"value": 1}, "other": 2}, "unknown field other"), ({"mode": "chain", "task": {"value": 1}, "steps": [{"op": "uppercase"}]}, "string input required"),
+                                 ({"mode": "chain", "task": {"value": 1}, "steps": [{"op": "add"}]}, "numeric by required"), ({"mode": "wait", "tasks": []}, "tasks must contain 1..32 tasks"),
+                                 ({"mode": "any", "tasks": [{"value": 1, "delay_ms": -1}]}, "delay_ms must be an integer 0..1000"), ({"mode": "timeout", "task": {"value": 1}, "timeout_ms": 0}, "timeout_ms must be 1..1000"),
+                                 ({"mode": "error", "task": {"value": 1}}, "fallback required"), ({"mode": "basic", "task": {"delay_ms": 1}}, "missing field value"),
+                                 ({"mode": "basic", "task": {"value": 1, "reject": ""}}, "reject must be a nonempty string"), ({"mode": "basic", "task": {"value": 1}, "9": 1, "a": 1}, "unknown field 9"),
+                                 ({"mode": "nope"}, "unsupported mode"), ([], "request must be an object")):
+            self.refused("future", request, message)
+        self.assertEqual(future("basic", task={"value": 1, "delay_ms": 4.0}), 1, "JavaScript reads 4.0 as the integer 4")
+        # javascript/tests/stream_patterns.test.mjs
+        e = lambda *pairs: [{"at_ms": at, "value": value} for at, value in pairs]
+        stream = lambda mode, **extra: self.go("stream", {"mode": mode, **extra})
+        self.assertEqual(stream("basic", events=e((0, 1), (1, 2)))["events"], e((0, 1), (1, 2)))
+        self.assertEqual(stream("controller", commands=[{"op": "add", "value": 1}, {"op": "close"}])["events"], e((0, 1)))
+        self.assertEqual(stream("broadcast", events=e((0, 1)), subscribers=2)["subscribers"], [e((0, 1)), e((0, 1))])
+        self.assertEqual(stream("transform", events=e((0, [1, 2])), steps=[{"op": "expand"}, {"op": "map_add", "value": 1}, {"op": "where_equals", "value": 3}])["events"], e((0, 3)))
+        self.assertEqual(stream("merge", streams=[e((0, "a"), (2, "b")), e((1, "x"), (2, "y"))])["events"],
+                         [{"at_ms": 0, "value": "a", "source": 0}, {"at_ms": 1, "value": "x", "source": 1}, {"at_ms": 2, "value": "b", "source": 0}, {"at_ms": 2, "value": "y", "source": 1}])
+        self.assertEqual(stream("debounce", events=e((0, "a"), (5, "b"), (11, "c"), (20, "d")), duration_ms=6)["events"], e((11, "c"), (20, "d")))
+        self.assertEqual(stream("throttle", events=e((0, 1), (4, 2), (5, 3)), duration_ms=5)["events"], e((0, 1), (5, 3)))
+        self.assertEqual(stream("buffer", events=e((0, 1), (1, 2), (2, 3)), size=2)["events"], e((1, [1, 2]), (2, [3])))
+        self.assertEqual(stream("window", events=e((0, 1), (1, 2), (2, 3)), size=2)["events"], e((1, [1, 2]), (2, [2, 3])))
+        self.assertEqual(stream("window", events=e((0, 1), (1, 2), (2, 3), (3, 4)), size=3, step=1)["events"], e((2, [1, 2, 3]), (3, [2, 3, 4])))
+        self.assertEqual(stream("transform", events=e((0, {"a": 1, "b": 2})), steps=[{"op": "where_equals", "value": {"b": 2, "a": 1}}])["events"], [], "the JSON text is compared, so key order matters")
+        self.assertEqual(stream("transform", events=e((0, 1)), steps=[{"op": "where_equals"}])["events"], [])
+        for request, message in (({"mode": "basic", "events": e((2, 1), (1, 2))}, "sorted event time"), ({"mode": "controller", "commands": [{"op": "close"}, {"op": "add", "value": 1}]}, "invalid add"),
+                                 ({"mode": "controller", "commands": [{"op": "add", "value": 1}]}, "close required"), ({"mode": "controller", "commands": [{"op": "close"}, {"op": "close"}]}, "closed twice"),
+                                 ({"mode": "buffer", "events": [], "size": 0}, "size"), ({"mode": "debounce", "events": [], "duration_ms": 0}, "duration"),
+                                 ({"mode": "basic", "events": [{"at_ms": 1}]}, "event shape"), ({"mode": "merge", "streams": []}, "streams"), ({"mode": "transform", "events": [], "steps": []}, "steps"),
+                                 ({"mode": "transform", "events": e((0, 1)), "steps": [{"op": "expand"}]}, "expand array"), ({"mode": "transform", "events": e((0, 1)), "steps": [{"op": "map_add", "value": "x"}]}, "map_add numbers"),
+                                 ({"mode": "broadcast", "events": [], "subscribers": 17}, "subscribers"), ({"mode": "x"}, "mode")):
+            self.refused("stream", request, message)
+        self.assertEqual(stream("basic", events=e((-1, 1)))["events"], e((-1, 1)), "the first event may be at -1: the original starts its order check there")
+        # javascript/tests/concurrency_patterns.test.mjs
+        task = lambda value, delay_ms=0: {"value": value, "delay_ms": delay_ms}
+        conc = lambda mode, **extra: self.go("concurrency", {"mode": mode, **extra})["result"]
+        self.assertEqual(conc("work_queue", tasks=[task("a", 9), task("b"), task("c")]), {"values": ["a", "b", "c"], "max_active": 1})
+        self.assertEqual(conc("semaphore", concurrency=2, tasks=[task(1, 12), task(2, 12), task(3)]), {"values": [1, 2, 3], "max_active": 2})
+        self.assertEqual(conc("semaphore", concurrency=5, tasks=[task(1)]), {"values": [1], "max_active": 1})
+        self.assertEqual(conc("semaphore", concurrency=5, tasks=[]), {"values": [], "max_active": 0})
+        self.assertEqual(conc("mutex", increments=[3, -1, 4]), {"value": 6, "history": [3, 2, 6]})
+        self.assertEqual(conc("cancelable", task=task("a"), cancel=True), {"status": "cancelled"})
+        self.assertEqual(conc("cancelable", task=task("a"), cancel=False), {"status": "completed", "value": "a"})
+        self.assertEqual(conc("parallel_map", concurrency=2, tasks=[task("slow", 12), task("fast"), task("last")]), {"values": ["slow", "fast", "last"], "max_active": 2})
+        self.assertEqual(conc("progress", tasks=[task(1), task(2)])["progress"], [{"completed": 1, "total": 2}, {"completed": 2, "total": 2}])
+        for request, message in (({"mode": "semaphore", "tasks": [task(1)], "concurrency": 0}, "concurrency 1..32"), ({"mode": "work_queue", "tasks": [task(1, -1)]}, "delay_ms must be 0..50"),
+                                 ({"mode": "cancelable", "task": task(1), "cancel": "true"}, "cancel flag required"), ({"mode": "mutex", "increments": [1.5]}, "increments"),
+                                 ({"mode": "parallel_map", "tasks": [], "concurrency": 33}, "concurrency 1..32"), ({"mode": "mutex", "increments": [2 ** 53 - 1, 1]}, "overflow"),
+                                 ({"mode": "mutex", "increments": [], "tasks": []}, "unknown request keys"), ({"mode": "work_queue", "tasks": [{"delay_ms": 1}]}, "task keys"),
+                                 ({"mode": "work_queue", "tasks": [5]}, "task object required"), ({"mode": "work_queue", "tasks": [task(1)] * 33}, "tasks must be an array (max 32)"),
+                                 ({"mode": "nope"}, "unsupported mode"), ([], "request object")):
+            self.refused("concurrency", request, message)
+        # javascript/tests/event_loop_patterns.test.mjs
+        loop = lambda mode, **extra: self.go("event_loop", {"mode": mode, **extra})["result"]
+        self.assertEqual(loop("reactive", values=[1, 2, 3], steps=[{"op": "map_add", "value": 1}, {"op": "where_equals", "value": 3}]), [3])
+        self.assertEqual([step["phase"] for step in loop("event_loop", values=["x"])], ["sync", "microtask", "timer"])
+        self.assertEqual(loop("microtask", values=[]), ["sync", "microtask", "promise", "timer"])
+        self.assertEqual(loop("suspend_resume", values=[1, 2, 3], pause_after=1), {"values": [1, 2, 3], "trace": ["paused", "resumed"]})
+        self.assertEqual(loop("suspend_resume", values=[1, 2, 3], pause_after=3)["trace"], ["paused", "resumed"])
+        self.assertEqual(loop("async_generator", values=[1, "b", None]), [1, "b", None])
+        for request, message in (({"mode": "reactive", "values": [1], "steps": []}, "steps"), ({"mode": "reactive", "values": [1], "steps": [{"op": "map_add", "value": "bad"}]}, "numbers required"),
+                                 ({"mode": "suspend_resume", "values": [1], "pause_after": 2}, "pause_after"), ({"mode": "microtask", "values": [], "extra": 1}, "unknown field"),
+                                 ({"mode": "reactive", "values": [1]}, "missing field"), ({"mode": "x", "values": 5}, "values must be array <=1000"), ({"mode": "x", "values": []}, "unsupported mode"),
+                                 ({"mode": "reactive", "values": [1], "steps": [{"op": "x", "value": 1}]}, "unsupported reactive step"), ([], "object required")):
+            self.refused("event_loop", request, message)
+        # javascript/tests/interaction_patterns.test.mjs: virtualWindow
+        window = lambda **params: self.go("interaction", {"operation": "virtual_window", **params})["result"]
+        self.assertEqual(window(count=100, itemHeight=20, scrollTop=200, viewportHeight=100, overscan=1), {"start": 9, "end": 16, "topPadding": 180, "bottomPadding": 1680})
+        self.assertEqual(window(count=0, itemHeight=20, scrollTop=0, viewportHeight=100), {"start": 0, "end": 0, "topPadding": 0, "bottomPadding": 0})
+        self.assertEqual(window(count=10, itemHeight=20, scrollTop=0, viewportHeight=40), {"start": 0, "end": 4, "topPadding": 0, "bottomPadding": 120})
+        self.refused("interaction", {"operation": "virtual_window", "count": 10, "itemHeight": 0, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport configuration")
+        self.refused("interaction", {"operation": "virtual_window", "count": 10.5, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport configuration")
+        self.refused("interaction", {"operation": "virtual_window", "count": -1, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport number")
+        self.refused("interaction", {"operation": "virtual_window", "count": 1, "itemHeight": 1, "scrollTop": 0}, "invalid viewport number")
+        self.refused("interaction", {"operation": "virtual_window", "count": 1, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 1, "overscan": None}, "invalid viewport number")
+        self.refused("interaction", {"operation": "nope"}, "unsupported operation")
+
+    def test_the_debounce_follows_the_node_test_with_fake_timers(self):
+        callbacks, seen, ids = {}, [], [0]
+
+        def set_timeout(fn, ms):
+            ids[0] += 1
+            callbacks[ids[0]] = fn
+            return ids[0]
+        trigger = web_ui.PatternDebouncer(seen.append, 20, set_timeout, lambda key: callbacks.pop(key, None))
+        trigger("first")
+        trigger("last")
+        self.assertEqual(len(callbacks), 1)
+        key, callback = next(iter(callbacks.items()))
+        del callbacks[key]
+        callback()
+        self.assertEqual(seen, ["last"])
+        trigger("cancelled")
+        trigger.cancel()
+        self.assertEqual(len(callbacks), 0)
+        for args in ((None, 1), (seen.append, -1), (seen.append, float("nan")), (seen.append, "5"), (seen.append, None)):
+            with self.assertRaises(TypeError, msg=args):
+                web_ui.PatternDebouncer(args[0], args[1], set_timeout, lambda key: None)
+        run = lambda calls, delay=20: self.go("interaction", {"operation": "debounce", "delay_ms": delay, "calls": calls})["result"]
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 5, "value": "b"}, {"at_ms": 60, "value": "c"}]), [{"at_ms": 25, "value": "b"}, {"at_ms": 80, "value": "c"}])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 20, "value": "b"}]), [{"at_ms": 40, "value": "b"}], "a call at the moment the timer is due still replaces it")
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 21, "value": "b"}]), [{"at_ms": 20, "value": "a"}, {"at_ms": 41, "value": "b"}])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 5, "cancel": True}]), [])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}], delay=0), [{"at_ms": 0, "value": "a"}])
+        for calls, message in (([{"at_ms": 5, "value": 1}, {"at_ms": 1, "value": 2}], "sorted call time"), ([{"at_ms": 1}], "call shape"), ([{"at_ms": 1, "cancel": False}], "call shape"),
+                               ([{"at_ms": 1, "value": 1, "cancel": True}], "call shape"), (5, "calls must be array <=1000")):
+            self.refused("interaction", {"operation": "debounce", "delay_ms": 5, "calls": calls}, message)
+        self.refused("interaction", {"operation": "debounce", "delay_ms": 60001, "calls": []}, "delay_ms must be 0..60000")
+
+    def test_strict_parsing(self):
+        parse = web_ui.pattern_parse
+        self.assertEqual(typed(parse('{"a":[1,1.0,true,null]}')), '{"a": [1, 1.0, true, null]}')
+        for text in ("NaN", "[Infinity]", '{"a":-Infinity}', "1e999", "[1e400]", "[" * 100000):
+            with self.subTest(text=text[:12]), self.assertRaises(ValueError):
+                parse(text)
+
+    def test_the_command_line(self):
+        run = lambda *args, **kw: subprocess.run([sys.executable, "-S", str(ROOT / "web_ui.py"), *args], capture_output=True, timeout=60, **kw)
+        done = run("--pattern", "reduce", input=json.dumps({"mode": "redux", "initial": 1, "actions": [{"type": "increment", "value": 2}]}).encode())
+        self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {"history": [1, 3], "mode": "redux", "schema": "state-reducer/1", "state": 3}))
+        for stdin in (b'{"mode":"redux","initial":NaN,"actions":[]}', b"[1", b'{"mode":"x"}', "{\"a\":\"".encode() + b"\xff\"}", b" " * (web_ui.PATTERN_MAX_INPUT + 1)):
+            done = run("--pattern", "reduce", input=stdin)
+            self.assertEqual((done.returncode, done.stdout), (2, b""), stdin[:20])
+            self.assertTrue(done.stderr.startswith(b"invalid pattern request: "))
+        self.assertEqual(run("--pattern", "list").stdout.decode().split(), sorted(web_ui.PATTERN_RUNNERS))
+        done = run("--pattern", "nonsense", input=b"{}")
+        self.assertEqual(done.returncode, 2)
+        self.assertIn(b"unknown pattern family", done.stderr)
+        rows = json.loads(run("--pattern", "catalogue").stdout)
+        self.assertEqual((len(rows), rows[0]["id"], rows[-1]["id"]), (792, "A001", "D198"))
+
+    # --- the catalogue ---------------------------------------------------------------------------------------------------------------------------
+    def test_the_catalogue_lists_all_792_patterns(self):
+        rows = web_ui.pattern_catalogue()
+        self.assertEqual(len(rows), 792)
+        self.assertEqual(len({r["id"] for r in rows}), 792)
+        for key, letter, _ in web_ui.PATTERN_CATEGORIES:
+            own = [r for r in rows if r["category"] == key]
+            self.assertEqual([r["number"] for r in own], list(range(1, 199)))
+            self.assertTrue(all(r["id"] == f"{letter}{r['number']:03d}" for r in own))
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual((by_id["A001"]["title"], by_id["A001"]["theme"]), ("BasicPush", "基本ナビゲーション (Push/Pop/Replace)"))
+        self.assertEqual(by_id["D003"]["title"], "FilterNested")
+        self.assertEqual(by_id["D198"]["title"], "FullPipeline")
+        self.assertTrue(all(r["title"].isascii() and r["title"].isalnum() and r["theme"] for r in rows))
+        self.assertEqual({r["id"] for r in rows if "family" in r}, {r["id"] for r in rows if r["category"] == "data"})
+
+    def test_themes_follow_the_ranges_of_patterns_md(self):
+        for key, ranges in web_ui.PATTERN_THEMES.items():
+            self.assertEqual(ranges[0][0], 1, key)
+            self.assertEqual(ranges[-1][1], 198, key)
+            self.assertTrue(all(a[1] + 1 == b[0] for a, b in zip(ranges, ranges[1:])), key)
+        theme = web_ui.pattern_theme
+        self.assertEqual((theme("data", 30), theme("data", 31), theme("data", 185), theme("data", 186)), ("フィルタリング・ソート・検索", "ページング・無限スクロール・仮想化", "並び替え・追加・入れ替え機能", "バッチ処理・トランザクション・イベント駆動"))
+        self.assertEqual(theme("ui", 175), "プラットフォーム固有 (iOS/Android/Web/macOS)")
+        with self.assertRaises(ValueError):
+            theme("data", 199)
+
+    def test_every_reference_function_belongs_to_the_patterns_that_the_original_assigned(self):
+        families: dict[str, list[int]] = {}
+        for number in range(1, 199):
+            family = web_ui.pattern_family(number)
+            if family:
+                families.setdefault(family, []).append(number)
+        self.assertEqual(set(families), set(web_ui.PATTERN_RUNNERS))
+        self.assertEqual(families["select"], [1, 2, 3, 30, 86, 113])
+        self.assertEqual(families["query"], [11, 12, 14, 15, 16, 17, 18])
+        self.assertEqual(families["window"], [34, 36, 37, 38, 39, 40, 41, 42, 43, 44])
+        self.assertEqual(families["workflow"], list(range(176, 183)) + list(range(185, 199)))
+        self.assertEqual(families["validate"], list(range(91, 100)))
+        self.assertEqual(families["reduce"], [164, 165])
+        self.assertEqual((families["future"], families["concurrency"], families["event_loop"], families["interaction"]), (list(range(121, 127)), list(range(138, 144)), list(range(146, 151)), [4, 35]))
+        self.assertEqual(families["stream"], list(range(127, 136)) + [144, 145])
+        owner = web_ui.pattern_owner
+        self.assertEqual([owner(n) for n in (4, 35, 121, 135, 138, 150)], ["javascript"] * 6)
+        self.assertEqual([owner(n) for n in (136, 137, 151, 163, 166, 170, 171, 184)], ["flutter_native"] * 8)
+        self.assertEqual([owner(n) for n in (50, 60, 61, 90, 91, 112)], ["python_assets / flutter_layout", "python_assets / flutter_layout", "python_cache / runtime_specific", "python_cache / runtime_specific", "python", "python_validation / flutter_form"])
+        self.assertEqual((owner(8), owner(113), owner(35)), ("python", "python", "javascript"), "the first row that contains a number decides (35 is JavaScript, not a window)")
+        self.assertEqual(web_ui.pattern_family(35), "interaction")
+
+    def test_finding_patterns(self):
+        rows = web_ui.pattern_catalogue()
+        ids = lambda **kw: [r["id"] for r in web_ui.pattern_find(rows, **kw)]
+        self.assertEqual(ids(query="filternested"), ["D003"])
+        self.assertEqual(ids(query="ＦＩＬＴＥＲ ｎｅｓｔｅｄ"), ["D003"], "NFKC and case folded")
+        self.assertEqual(ids(query="d003"), ["D003"])
+        self.assertEqual(ids(query="", category="api")[:2], ["B001", "B002"])
+        self.assertEqual(len(ids(category="data", family="select")), 6)
+        self.assertEqual(len(ids()), 792)
+        self.assertEqual(ids(query="no such pattern"), [])
+        self.assertIn("D030", ids(query="フィルタリング"))
+        self.assertEqual(len(ids(query="フィルタリング")), 30)
+
+    # --- the patterns page -----------------------------------------------------------------------------------------------------------------------
+    def test_every_family_has_an_example_and_the_page_runs_seventeen_of_them(self):
+        examples = web_ui.pattern_examples()
+        self.assertEqual(sorted(examples), sorted(web_ui.PATTERN_RUNNERS))
+        self.assertEqual(set(web_ui.PATTERN_RUNNERS) - set(web_ui.PATTERN_TWINS), {"search", "convert", "validate"})
+        for family, example in examples.items():
+            with self.subTest(family):
+                self.assertEqual(typed(example["result"]), typed(self.go(family, web_ui.PATTERN_EXAMPLES[family])))
+                json.dumps(example, allow_nan=False)
+        for family in web_ui.PATTERN_TWINS:
+            self.assertNotIn("1.0", json.dumps(web_ui.PATTERN_EXAMPLES[family]), "a page reads 1.0 as 1")
+
+    def test_the_page_is_one_self_contained_document(self):
+        page = web_ui.patterns_document()
+        self.assertEqual(page.count('<script type="module">'), 1)
+        self.assertEqual(page.count('id="patterns"'), 1)
+        self.assertNotRegex(page, r"https?://")
+        for hook in ("data-patterns-query", "data-patterns-category", "data-patterns-family", "data-patterns-count", "data-patterns-more", "data-patterns-list", "data-patterns-run-family",
+                     "data-patterns-request", "data-patterns-run", "data-patterns-example", "data-patterns-status", "data-patterns-result", 'id="patterns-run-title"'):
+            self.assertEqual(page.count(hook) if hook.startswith("id=") else len(re.findall(r"(?<= )%s(?=[ >])" % re.escape(hook), page)), 1, hook)
+        self.assertEqual(len(re.findall(r'<option value="(?:%s)"' % "|".join(web_ui.PATTERN_RUNNERS), page)), 2 * len(web_ui.PATTERN_RUNNERS))
+        self.assertIn('<option value="query" selected>', page)
+        self.assertEqual(len(re.findall(r'<option value="(?:navigation|api|ui|data)">', page)), 4)
+        self.assertIn("globalThis.webUiPatterns=api", page)
+        self.assertIn(".ui-patterns", web_ui.bundled_css())
+        self.assertTrue(all(int(px) % 8 == 0 for px in re.findall(r"(\d+)px", web_ui._CSS["patterns.css"])), "pixel sizes are multiples of 8")
+        self.assertIn("examples/patterns.html", web_ui.example_pages())
+        self.assertIn('href="./patterns.html"', web_ui.example_pages()["examples/index.html"])
+
+    def test_the_js_constants_are_the_python_values(self):
+        source = web_ui._JS["patterns.js"]
+        want = {"PATTERN_CATEGORIES": web_ui.PATTERN_CATEGORIES, "PATTERN_THEMES": web_ui.PATTERN_THEMES, "PATTERN_TITLES": web_ui.PATTERN_TITLES,
+                "PATTERN_PRODUCERS": [[list(n), r, f] for n, r, f in web_ui.PATTERN_PRODUCERS], "PATTERN_NATIVE": sorted(web_ui.PATTERN_NATIVE),
+                "PATTERN_GESTURES": sorted(web_ui.PATTERN_GESTURES), "PATTERN_FAMILIES": sorted(web_ui.PATTERN_RUNNERS), "PATTERN_TWINS": list(web_ui.PATTERN_TWINS),
+                "PATTERN_EXAMPLES": web_ui.pattern_examples()}
+        for name, value in want.items():
+            found = re.search(r"^export const %s=(.*);$" % name, source, re.M)
+            self.assertIsNotNone(found, name)
+            self.assertEqual(typed(json.loads(found.group(1))), typed(json.loads(json.dumps(value))), name)
+        self.assertNotIn("</script", source.lower())
+        self.assertNotIn('"""', source)
+
+    def test_the_platform_adapters_check_the_page(self):
+        for name, fragment in (("web-ui-patterns", None), ("web-ui-pattern-run", "patterns-run-title")):
+            adapter = web_ui.btk_adapter(name)
+            self.assertEqual(adapter["url"], "http://127.0.0.1:8000/examples/patterns.html" + ("" if fragment is None else "#" + fragment))
+            self.assertNotEqual(adapter["click"]["before"], adapter["click"]["after"])
+            self.assertTrue(all(selector.startswith("#patterns") for selector in adapter["elements"]))
+        self.assertEqual((web_ui.BTK_ADAPTERS["web-ui-patterns"]["click"]["before"], web_ui.BTK_ADAPTERS["web-ui-patterns"]["click"]["after"]), ("48", "96"))
+
+    # --- invariants on random input --------------------------------------------------------------------------------------------------------------
+    def test_random_invariants(self):
+        rng = random.Random(792)
+        for _ in range(300):
+            items = [{"k": rng.randint(0, 4), "i": i} for i in range(rng.randint(0, 12))]
+            descending = rng.random() < 0.5
+            result = self.go("query", {"operation": "stable_sort", "items": items, "key": "k", "descending": descending})
+            self.assertEqual(sorted(r["i"] for r in result), list(range(len(items))), "a permutation")
+            for a, b in zip(result, result[1:]):
+                self.assertTrue(a["k"] > b["k"] or (a["k"] == b["k"] and a["i"] < b["i"]) if descending else a["k"] < b["k"] or (a["k"] == b["k"] and a["i"] < b["i"]))
+            data = list(range(rng.randint(0, 20)))
+            limit = rng.randint(1, 6)
+            got, offset = [], 0
+            while True:
+                page = self.go("page", {"operation": "offset", "items": data, "limit": limit, "offset": offset})
+                got += page["items"]
+                if page["next_offset"] is None:
+                    break
+                offset = page["next_offset"]
+            self.assertEqual(got, data)
+            values = [rng.choice([1, 2, 3, "a", None, [1], 1.5]) for _ in range(rng.randint(0, 8))]
+            unique = self.go("select", {"operation": "distinct", "values": values})["values"]
+            report = self.go("select", {"operation": "deduplicate_report", "values": values})["values"][0]
+            self.assertEqual((report["input_count"], report["unique_count"]), (len(values), len(unique)))
+            self.assertEqual(typed(self.go("select", {"operation": "distinct", "values": unique})["values"]), typed(unique), "distinct is idempotent")
 
 
 if __name__ == '__main__':

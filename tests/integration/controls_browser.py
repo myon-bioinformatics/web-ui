@@ -2581,7 +2581,8 @@ class PlaygroundBrowserTests(unittest.TestCase):
         page.on('pageerror', lambda error: self.errors.append(str(error)))
         page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
         if clock:
-            page.clock.install()
+            page.clock.install(time=0)
+            page.clock.pause_at(10_000)                                                       # from here time moves only when the test says so (Firefox and WebKit are slower between calls)
         page.goto(self.origin + '/play.html')
         return page
 
@@ -3504,6 +3505,827 @@ class McpBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('[data-mcp-meta-out]').inner_text(), 'missing protected resource')
         page.locator('[data-mcp-meta]').fill('{"resource": "https://r/", "authorization_servers": ["https://a/"]}')
         self.assertIn('"bearer_methods_supported": [\n    "header"\n  ]', page.locator('[data-mcp-meta-out]').inner_text())
+
+
+PATTERN_GOLDEN = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_golden.json').read_text(encoding='utf-8'))
+PATTERN_ASSETS = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_assets.json').read_text(encoding='utf-8'))
+
+
+def pat_norm(value):
+    """Python's value with integral floats as ints: JSON in a page cannot tell 1.0 from 1."""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and abs(value) < 2 ** 53 else value
+    if isinstance(value, list):
+        return [pat_norm(v) for v in value]
+    if isinstance(value, dict):
+        return {k: pat_norm(v) for k, v in value.items()}
+    return value
+
+
+def pat_integral_float(value):
+    if isinstance(value, float):
+        return value.is_integer()
+    if isinstance(value, list):
+        return any(pat_integral_float(v) for v in value)
+    if isinstance(value, dict):
+        return any(pat_integral_float(v) for v in value.values())
+    return False
+
+
+def pat_canon(value):
+    return json.dumps(pat_norm(value), sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+
+
+PAT_SCALARS = [None, True, False, 0, 1, -1, 2, 7, 0.5, -1.5, 2.5, '', 'a', 'b', 'A', 'é', ' x ', 'abc', 'item', '1', 'true', '0', 'false']
+
+
+def pat_scalar(r):
+    return r.choice(PAT_SCALARS)
+
+
+def pat_value(r, depth=0):
+    k = r.random()
+    if depth < 2 and k < 0.15:
+        return [pat_value(r, depth + 1) for _ in range(r.randint(0, 3))]
+    if depth < 2 and k < 0.3:
+        return {r.choice('abkn'): pat_value(r, depth + 1) for _ in range(r.randint(0, 3))}
+    return pat_scalar(r)
+
+
+def pat_mutate(r, request, p=0.3):
+    if not isinstance(request, dict) or r.random() > p:
+        return request
+    request = dict(request)
+    keys = list(request)
+    c = r.random()
+    if c < 0.3 and keys:
+        del request[r.choice(keys)]
+    elif c < 0.7 and keys:
+        request[r.choice(keys)] = pat_value(r)
+    else:
+        request[r.choice(['x', 'extra', 'mode'])] = pat_value(r)
+    return request
+
+
+def pat_commands(r):
+    kind = r.choice(['append', 'append', 'remove_last', 'replace', 'x'])
+    if kind == 'append':
+        return {'type': kind, 'value': r.choice([1, 'a', None])}
+    if kind == 'replace':
+        return {'type': kind, 'index': r.choice([0, 1, 2, 9, -1, True]), 'value': r.choice([1, 'a'])}
+    return {'type': kind}
+
+
+def pat_schema(r, depth=0):
+    kind = r.choice(['null', 'boolean', 'integer', 'number', 'string', 'array', 'object'] if r.random() < 0.95 else ['x', 5])
+    spec = {'type': kind}
+    if kind == 'object' and depth < 2:
+        if r.random() < 0.7:
+            spec['properties'] = {k: pat_schema(r, depth + 1) for k in r.sample('abc', r.randint(0, 3))}
+        if r.random() < 0.5:
+            spec['required'] = r.sample('abc', r.randint(0, 2)) if r.random() < 0.9 else ['a', 'a']
+        if r.random() < 0.4:
+            spec['additional_properties'] = r.choice([True, False, 1])
+    if kind == 'array' and depth < 2 and r.random() < 0.7:
+        spec['items'] = pat_schema(r, depth + 1)
+    if r.random() < 0.05:
+        spec[r.choice(['items', 'properties', 'required', 'zzz'])] = r.choice([[], {}, 1])
+    return spec
+
+
+def pat_condition(r):
+    op = r.choice(['equals', 'not_equals', 'greater_than', 'less_than', 'type', 'not_null', 'bogus'])
+    condition = {'operator': op}
+    if op in ('equals', 'not_equals', 'greater_than', 'less_than'):
+        condition['value'] = r.choice([1, True, 'a', None, 2.5, [1], {'a': 1}, 0])
+    elif op == 'type':
+        condition['type'] = r.choice(['null', 'boolean', 'integer', 'number', 'string', 'array', 'object', 'x', 5])
+    if r.random() < 0.05:
+        condition['zzz'] = 1
+    return condition
+
+
+PAT_ASYNC = ('future', 'stream', 'concurrency', 'event_loop')
+PAT_JS_VALUES = [None, True, False, 0, 1, -1, 2, 7, 0.5, -1.5, '', 'a', 'b', 'A', 'é', 'x y', '1', [], [1], {'a': 1}, {'a': 1, 'b': 2}, {'b': 2, 'a': 1}]
+
+
+def pat_js_value(r):
+    return r.choice(PAT_JS_VALUES)
+
+
+def pat_js_task(r, top=1000, small=(0, 1, 2, 3, 5, 8, 13, 21)):
+    task = {'value': pat_js_value(r)}
+    if r.random() < 0.7:
+        task['delay_ms'] = r.choice(list(small) * 3 + [None, -1, top + 1, 1.5, '3', True])
+    if r.random() < 0.3:
+        task['reject'] = r.choice(['boom', 'no', 'x y', 'boom', '', 5, None])
+    if r.random() < 0.05:
+        del task['value']
+    if r.random() < 0.05:
+        task['extra'] = 1
+    return task
+
+
+def pat_js_events(r, count=None, ordered=True):
+    count = r.randint(0, 6) if count is None else count
+    at, events = r.choice([0, 0, 5, -1]), []
+    for _ in range(count):
+        at += r.choice([0, 1, 5, 10, 20])
+        events.append({'at_ms': at if ordered or r.random() < 0.9 else at - 30, 'value': r.choice([1, 2, 3, 'a', None, [1, 2], [3], 2.5, {'a': 1}])})
+    if r.random() < 0.05 and events:
+        events[0] = r.choice([{'at_ms': 1}, {'at_ms': 1, 'value': 1, 'x': 2}, 5, None, [], {'at_ms': 1.5, 'value': 1}, {'at_ms': 70000, 'value': 1}])
+    return events
+
+
+def pat_js_request(family, r):
+    if family == 'future':
+        mode = r.choice(['basic', 'chain', 'error', 'wait', 'any', 'timeout', 'bogus'])
+        request = {'mode': mode}
+        if mode in ('wait', 'any'):
+            request['tasks'] = [pat_js_task(r) for _ in range(r.choice([0, 1, 2, 3, 4, 5, 33] if r.random() < 0.05 else [1, 2, 3, 4, 5]))]
+        else:
+            request['task'] = pat_js_task(r)
+            if mode == 'chain':
+                steps = []
+                for _ in range(r.choice([0, 1, 2, 3, 4] if r.random() < 0.9 else [33])):
+                    op = r.choice(['add', 'multiply', 'uppercase', 'add', 'multiply', 'x'])
+                    step = {'op': op}
+                    if op in ('add', 'multiply'):
+                        step['by'] = r.choice([1, 2, -3, 0.5, '1', None, True])
+                    if r.random() < 0.05:
+                        step['extra'] = 1
+                    steps.append(step)
+                request['steps'] = steps
+                if r.random() < 0.6:
+                    request['task']['value'] = r.choice([1, 2, 3, 2.5, 'ab', 'é', None, True])
+            elif mode == 'error' and r.random() < 0.85:
+                request['fallback'] = pat_js_value(r)
+            elif mode == 'timeout':
+                request['timeout_ms'] = r.choice([1, 2, 3, 5, 8, 13, 21, 34, 0, 1001, 2.5, '5', None])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'stream':
+        mode = r.choice(['basic', 'controller', 'broadcast', 'transform', 'merge', 'debounce', 'throttle', 'buffer', 'window', 'bogus'])
+        request = {'mode': mode}
+        if mode == 'controller':
+            commands = [r.choice([{'op': 'add', 'value': 1}, {'op': 'add', 'value': 'a'}, {'op': 'add'}, {'op': 'close'}, {'op': 'x'}, [1], 5, None, {'op': 'add', 'value': None}]) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.8:
+                commands.append({'op': 'close'})
+            request['commands'] = commands
+        elif mode == 'merge':
+            request['streams'] = [pat_js_events(r) for _ in range(r.choice([0, 1, 2, 3, 3] if r.random() < 0.9 else [17]))]
+        else:
+            request['events'] = pat_js_events(r, ordered=r.random() < 0.95)
+        if mode == 'broadcast':
+            request['subscribers'] = r.choice([1, 2, 3, 16, 17, 0, True, None])
+        elif mode == 'transform':
+            steps = []
+            for _ in range(r.choice([0, 1, 2, 3] if r.random() < 0.9 else [17])):
+                op = r.choice(['where_equals', 'expand', 'map_add', 'map_add', 'x'])
+                step = {'op': op}
+                if op in ('where_equals', 'map_add') and r.random() < 0.9:
+                    step['value'] = r.choice([1, 2, 'a', None, [1, 2], 0.5, {'a': 1}])
+                steps.append(step)
+            if r.random() < 0.05:
+                steps.append(r.choice([5, None, [1], []]))
+            request['steps'] = steps
+            if r.random() < 0.5:
+                request['events'] = [{'at_ms': i * 3, 'value': r.choice([1, 2, 3, [1, 2], [2], 'a'])} for i in range(r.randint(0, 5))]
+        elif mode in ('debounce', 'throttle'):
+            request['duration_ms'] = r.choice([1, 5, 10, 20, 60000, 0, 60001, 2.5, '5', None])
+        elif mode in ('buffer', 'window'):
+            request['size'] = r.choice([1, 2, 3, 4, 1000, 0, 1001, '2', None])
+            if mode == 'window' and r.random() < 0.7:
+                request['step'] = r.choice([1, 2, 3, None, 0, 1001, 1.5])
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'concurrency':
+        mode = r.choice(['work_queue', 'semaphore', 'mutex', 'cancelable', 'parallel_map', 'progress', 'bogus'])
+        request = {'mode': mode}
+        if mode == 'mutex':
+            request['increments'] = [r.choice([1, 2, -3, 5, 2 ** 53 - 1, 2 ** 53, 1.5, '1']) for _ in range(r.choice([0, 1, 2, 3, 5, 33] if r.random() < 0.05 else [0, 1, 2, 3, 5]))]
+        elif mode == 'cancelable':
+            request['task'] = pat_js_task(r, 50, (0, 1, 5, 10, 50))
+            request['task'].pop('reject', None)
+            if r.random() < 0.9:
+                request['cancel'] = r.choice([True, False, False, 1, None, 'x'])
+        else:
+            request['tasks'] = []
+            for _ in range(r.choice([0, 1, 2, 3, 5, 33] if r.random() < 0.05 else [0, 1, 2, 3, 5])):
+                task = pat_js_task(r, 50, (0, 1, 5, 10, 50))
+                task.pop('reject', None)
+                request['tasks'].append(task)
+            if mode in ('semaphore', 'parallel_map') and r.random() < 0.9:
+                request['concurrency'] = r.choice([1, 2, 3, 32, 33, 0, 1.5, '2', None])
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'event_loop':
+        mode = r.choice(['reactive', 'event_loop', 'microtask', 'suspend_resume', 'async_generator', 'bogus'])
+        values = [r.choice([1, 2, 3, 'a', None, [1], 2.5, {'a': 1}]) for _ in range(r.randint(0, 5))]
+        if mode == 'reactive' and r.random() < 0.7:
+            values = [r.choice([1, 2, 3, 0.5]) for _ in range(r.randint(0, 5))]
+        request = {'mode': mode, 'values': values}
+        if mode == 'reactive':
+            request['steps'] = [r.choice([{'op': 'map_add', 'value': r.choice([1, 2, 0.5, 'x', None])}, {'op': 'where_equals', 'value': r.choice([1, 2, 3, 'a', None, [1], 2.5])}, {'op': 'x', 'value': 1}, {'op': 'map_add'}])
+                                for _ in range(r.choice([0, 1, 2, 3] if r.random() < 0.9 else [17]))]
+        elif mode == 'suspend_resume':
+            request['pause_after'] = r.choice([0, 1, len(values), len(values) + 1, -1, 1.5, '1', None])
+            if r.random() < 0.05:
+                del request['pause_after']
+        if r.random() < 0.05:
+            request['values'] = r.choice([None, 'ab', {}, list(range(1001))])
+        return pat_mutate(r, request, 0.12) if r.random() < 0.95 else pat_js_value(r)
+    if r.random() < 0.4:                                                                                  # interaction: a debounce on a virtual clock
+        at, calls = 0, []
+        for _ in range(r.randint(0, 6)):
+            at += r.choice([0, 1, 5, 19, 20, 21, 40])
+            call = {'at_ms': at}
+            if r.random() < 0.2:
+                call['cancel'] = True
+            else:
+                call['value'] = r.choice([1, 'a', None, [1]])
+            calls.append(call)
+        request = {'operation': 'debounce', 'delay_ms': r.choice([0, 5, 20, 21]), 'calls': calls}
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_js_value(r)
+    request = {'operation': r.choice(['virtual_window'] * 6 + ['bogus']), 'count': r.choice([0, 1, 10, 100, 2.5, -1, '5', None]), 'itemHeight': r.choice([20, 1, 0, 0.5, 16, 33, -2]),
+               'scrollTop': r.choice([0, 200, 55, 1000, 7, -1, 0.5, 9999]), 'viewportHeight': r.choice([0, 100, 640, 33, -5, 7.5])}
+    if r.random() < 0.6:
+        request['overscan'] = r.choice([0, 1, 2, 5, 1.5, -1, None, '2'])
+    if r.random() < 0.05:
+        request['extra'] = 1
+    return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+
+
+def pat_request(family, r):
+    """A seeded request for ``family``: mostly well formed, some broken, none that JSON in a page would read differently from Python (no 1.0, no huge ints)."""
+    if family in PAT_ASYNC or family == 'interaction':
+        return pat_js_request(family, r)
+    if family == 'query':
+        op = r.choice(['stable_sort', 'custom_sort', 'group_by', 'facet', 'tag', 'range', 'geo', 'bogus'])
+        n = r.randint(0, 6)
+        request = {'operation': op}
+        if op in ('stable_sort', 'custom_sort'):
+            kind = r.choice(['int', 'str', 'float', 'mix'])
+            value = lambda: {'int': r.randint(-3, 3), 'str': r.choice('abcde'), 'float': r.choice([0.5, 1.5, -2.5, 3.25]), 'mix': r.choice([1, 'a', 1.5])}[kind]
+            request.update(items=[{'k': value(), 'i': i} for i in range(n)], key=r.choice(['k', 'k', 'k', 'z', '']))
+            if op == 'stable_sort':
+                request['descending'] = r.choice([True, False, False, 1])
+            else:
+                request['comparator'] = r.choice(['ascending', 'descending', 'x'])
+                if r.random() < 0.2:
+                    request['descending'] = r.choice([True, False])
+        elif op == 'group_by':
+            request.update(items=[{'g': r.choice(['a', 'b', 1, True, None, 2, [1], 0.5]), 'i': i} for i in range(n)], key='g')
+        elif op in ('facet', 'tag'):
+            rows = [{'c': r.choice(['a', 'b', 'c', 1, True]), 'i': i} for i in range(n)] if op == 'facet' else [{'c': r.sample(['x', 'y', 'z'], r.randint(0, 3)) if r.random() < 0.9 else 'x', 'i': i} for i in range(n)]
+            request.update(items=rows, key='c', selected=[r.choice(['a', 'b', 'x', 'y', 1, True]) for _ in range(r.randint(0, 3))])
+        elif op == 'range':
+            request.update(items=[{'v': r.choice([r.randint(-3, 3), 0.5, 's', None]), 'i': i} for i in range(n)], key='v', minimum=r.choice([-2, 0, 0.5, 3]), maximum=r.choice([1, 2, 5, -1]))
+        elif op == 'geo':
+            request.update(items=[{'latitude': r.choice([35.5, 35.25, 0, 91, 'x', 40.75]), 'longitude': r.choice([139.5, 139.25, 0, 181, -74.5]), 'i': i} for i in range(n)],
+                           latitude=r.choice([35.5, 35.1, 0, 95]), longitude=r.choice([139.5, 139.2, 0, 200]), radius_km=r.choice([0, 10, 100, 5000, -1, 55.5]))
+        return pat_mutate(r, request) if r.random() < 0.9 else pat_value(r)
+    if family == 'page':
+        items = [r.choice([1, 'a', None, {'k': 1}, [1, 2], 0.5]) if r.random() < 0.3 else i for i in range(r.randint(0, 9))]
+        op = r.choice(['offset', 'cursor', 'infinite', 'bogus'])
+        request = {'operation': op, 'items': items, 'limit': r.choice([1, 2, 3, 5, 0, 1000, 1001, True, '2'])}
+        if op == 'offset':
+            if r.random() < 0.7:
+                request['offset'] = r.choice([0, 1, 3, 9, 10, -1, True])
+        elif op in ('cursor', 'infinite'):
+            if r.random() < 0.5:
+                import web_ui
+                try:
+                    cursor = web_ui.pattern_run('page', {'operation': op, 'items': items, 'limit': 2}).get('next_cursor')
+                except ValueError:
+                    cursor = None
+                if cursor is not None:
+                    request['cursor'] = cursor if r.random() < 0.8 else cursor[:-1] + r.choice('AB_-')
+            elif r.random() < 0.2:
+                request['cursor'] = r.choice([None, '', 'x', 5, 'e30'])
+        return pat_mutate(r, request, 0.25) if r.random() < 0.95 else pat_value(r)
+    if family == 'score':
+        values = [r.choice([r.randint(-3, 5), 0.5, -1.5, 2]) for _ in range(r.randint(0, 7))]
+        request = {'operation': 'minheap', 'values': values}
+        if r.random() < 0.8:
+            request['pops'] = r.choice([0, 1, 2, len(values), len(values) + 1, -1, True])
+        return pat_mutate(r, request) if r.random() < 0.9 else pat_value(r)
+    if family == 'reduce':
+        actions = []
+        for _ in range(r.randint(0, 6)):
+            kind = r.choice(['set', 'decrement', 'reset', 'increment'] * 4 + ['x'])
+            action = {'type': kind}
+            if kind != 'reset':
+                action['value'] = r.choice([0, 1, 5, -3, 7, 100, 10 ** 9] * 3 + [1.5, True, '1']) if r.random() < 0.97 else pat_value(r)
+            elif r.random() < 0.1:
+                action['value'] = 1
+            actions.append(action)
+        request = {'mode': r.choice(['event_state', 'redux'] * 6 + ['x']), 'initial': r.choice([0, 3, -2, 5, 10 ** 9] * 3 + [10 ** 9 + 1, 1.5, True]), 'actions': actions}
+        return pat_mutate(r, request, 0.15) if r.random() < 0.97 else pat_value(r)
+    if family == 'workflow':
+        import web_ui
+        op = r.choice(sorted(web_ui._PAT_WORKFLOW_OPS) + ['bogus'])
+        values = [r.choice([1, 2, 3, 5, 8, 'a', 2.5]) for _ in range(r.randint(0, 5))]
+        if op == 'insert_sorted' and r.random() < 0.7:
+            values = sorted(r.randint(0, 9) for _ in range(r.randint(0, 5)))
+        request = {'operation': op, 'values': values}
+        if op in ('swap', 'position_swap'):
+            request.update(a=r.choice([0, 1, 2, 9, -1, True]), b=r.choice([0, 1, 2, 9, -1]))
+        elif op in ('move_top', 'move_bottom'):
+            request['index'] = r.choice([0, 1, 2, 9, -1])
+        elif op == 'insert_sorted':
+            request['value'] = r.choice([0, 4, 10, 'a', 2.5])
+        elif op in ('undo_redo', 'command', 'memento'):
+            request['commands'] = [r.choice([{'type': 'undo'}, {'type': 'redo'}, pat_commands(r), pat_commands(r)]) for _ in range(r.randint(0, 6))]
+        elif op in ('batch', 'worker', 'scheduler'):
+            if r.random() < 0.7:
+                request['batch_size'] = r.choice([1, 2, 3, 0, 1001, True])
+            if op == 'scheduler' and r.random() < 0.7:
+                request['schedule'] = [r.choice([0, 10, 60000, 60001, -1, 1.5]) for _ in range(r.randint(0, 3))]
+        elif op in ('transaction', 'saga', 'pipeline'):
+            request['commands'] = [pat_commands(r) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.6:
+                request['fail_at'] = r.choice([None, 0, 1, 2, 5, -1, True])
+        elif op in ('event_driven', 'pubsub', 'queue', 'outbox', 'event_sourcing', 'cqrs'):
+            request['events'] = [r.choice([{'type': 'append', 'value': 1}, {'type': 'append', 'value': 'a'}, {'type': 'x', 'value': 1}, {'type': 'append'}]) for _ in range(r.randint(0, 4))]
+            if op == 'pubsub' and r.random() < 0.7:
+                request['subscribers'] = r.choice([1, 2, 16, 17, 0, True])
+        elif op == 'checkpoint' and r.random() < 0.8:
+            request['checkpoint'] = r.choice([0, 1, 3, 9, -1, True])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'transform':
+        op = r.choice(['schema_validation', 'constraint', 'pipeline', 'map_reduce', 'flatten', 'partition', 'zip', 'bogus'])
+        request = {'operation': op, 'values': [r.choice([1, True, 'a', ' B ', None, 2.5, [1, [2]], {'a': 1}, {'a': 'x', 'b': 2}, {'a': [1]}, 0, -1]) for _ in range(r.randint(0, 5))]}
+        if op == 'schema_validation':
+            request['schema'] = pat_schema(r)
+        elif op in ('constraint', 'partition'):
+            request['condition'] = pat_condition(r)
+        elif op == 'pipeline':
+            steps = []
+            for _ in range(r.randint(0, 3)):
+                kind = r.choice(['strip', 'lower', 'upper', 'add', 'multiply', 'x'])
+                step = {'operation': kind}
+                if kind in ('add', 'multiply'):
+                    step['value'] = r.choice([1, 2, 0.5, True, 'a'])
+                steps.append(step)
+            request['steps'] = steps
+            if r.random() < 0.6:
+                request['values'] = r.choice([[' a ', 'B'], [1, 2, 3.5], ['a', 1], []])
+        elif op == 'map_reduce':
+            request.update(values=[{'k': r.choice(['a', 'b', 1, True, None]), 'value': r.choice([1, 2.5, 'x', True])} if r.random() < 0.9 else r.choice([1, {}]) for _ in range(r.randint(0, 5))],
+                           key=r.choice(['k', 'k', 'z', '']), reducer=r.choice(['count', 'sum', 'x']))
+        elif op == 'flatten':
+            request['values'] = [r.choice([1, [2, [3]], [], [[[4]]], 'a']) for _ in range(r.randint(0, 4))]
+        elif op == 'zip':
+            request['other'] = [r.choice([1, 'a', None]) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.6:
+                request['strict'] = r.choice([True, False, 1])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'select':
+        values = [r.choice([1, True, 'a', None, [1], {'a': 1, 'b': 2}, {'b': 2, 'a': 1}, {'a': {'b': [1, 2]}}, [[1], [2]], 0.5]) for _ in range(r.randint(0, 6))]
+        op = r.choice(['filter', 'filter', 'distinct', 'deduplicate_report', 'x'])
+        request = {'values': values}
+        if r.random() < 0.9:
+            request['operation'] = op
+        if op == 'filter':
+            if r.random() < 0.4:
+                request['equals'] = r.choice([1, True, 'a', None, [1], {'a': 1}, 0.5])
+            else:
+                request['conditions'] = [{'path': r.choice([[], ['a'], ['a', 'b', 1], [0], ['a', 5], ['a', -1], [True], [1.5]]), 'equals': r.choice([1, 2, 'a', None, [1, 2]])} for _ in range(r.randint(0, 3))]
+                if r.random() < 0.6:
+                    request['match'] = r.choice(['all', 'any', 'x'])
+                if r.random() < 0.05:
+                    request['equals'] = 1
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'order':
+        import web_ui
+        mode = r.choice(sorted(web_ui.PATTERN_ORDER_EXAMPLES) + ['bogus'])
+        values = None
+        if r.random() < 0.5:
+            values = [r.choice([3, 1, 2, 2.5, True, 'a', None]) for _ in range(r.randint(0, 5))]
+        if mode == 'multi' and r.random() < 0.7:
+            values = [{'group': r.choice('ab'), 'score': r.choice([1, 2, 3, 2.5])} for _ in range(r.randint(0, 5))]
+        if mode == 'priority' and r.random() < 0.7:
+            values = [{'name': r.choice('xyz'), 'priority': r.choice([1, 2, 3, True])} for _ in range(r.randint(0, 5))]
+        if mode in ('basic', 'reverse', 'sorted-set', 'top-n') and r.random() < 0.5:
+            values = [r.choice([3, 1, 2, 2.5, 7, 0]) for _ in range(r.randint(0, 7))]
+        request = {'mode': mode} if values is None else {'mode': mode, 'values': values}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    if family == 'text':
+        return {'mode': r.choice(['search', 'tokens', 'text-index', 'inverted-index', 'bogus'])} if r.random() < 0.9 else pat_value(r)
+    if family == 'structure':
+        return {'mode': r.choice(['sticky', 'section', 'grouped', 'tree', 'flat', 'bogus'])} if r.random() < 0.9 else pat_value(r)
+    if family == 'window':
+        import web_ui
+        commands = ['next', 'previous', 'load-more', 'prefetch', 'reset', 'page-size-3', 'offset-6', 'refresh', 'x']
+        request = {'mode': r.choice(list(web_ui.PATTERN_WINDOW_MODES) + ['bogus']), 'commands': [r.choice(commands) for _ in range(r.randint(0, 6))]}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    if family == 'collection':
+        import web_ui
+        request = {'mode': r.choice(list(web_ui.PATTERN_COLLECTION_MODES) + ['bogus']),
+                   'commands': [[r.choice(['select', 'toggle', 'delete', 'move-first', 'x']), r.choice(['a', 'b', 'c', 'e'])][:r.choice([1, 2, 2, 2])] for _ in range(r.randint(0, 5))]}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    raise AssertionError(family)
+
+
+class PatternBrowserTests(unittest.TestCase):
+    """The patterns page in a real browser: its twins give Python's answer to every request (the recorded original outputs, and seeded random requests, including the refusals and their
+    text), the catalogue and its search agree, and the page works."""
+
+    FAMILIES = ('collection', 'interaction', 'order', 'page', 'query', 'reduce', 'score', 'select', 'structure', 'text', 'transform', 'window', 'workflow')
+
+    def setUp(self):
+        from web_ui import patterns_document
+        self.server, self.origin = WorldBrowserTests.serve({'patterns.html': patterns_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/patterns.html')
+        page.wait_for_selector('[data-patterns-ready]')
+        return page
+
+    START = """jobs => { window.__out = jobs.map(() => null); jobs.forEach(([family, request], i) => { try { Promise.resolve(webUiPatterns.patternRun(family, request)).then(ok => { window.__out[i] = {ok} },
+        e => { window.__out[i] = {error: e.message} }) } catch (e) { window.__out[i] = {error: e.message} } }) }"""
+
+    def clock_page(self):
+        """The page with a clock that moves only when the test moves it: the promises and timers of future, stream, concurrency and event_loop run on virtual time."""
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.clock.install(time=0)
+        page.clock.pause_at(10_000)
+        page.goto(self.origin + '/patterns.html')
+        page.wait_for_selector('[data-patterns-ready]')
+        return page
+
+    def run_virtual(self, page, jobs):
+        page.evaluate(self.START, jobs)
+        for _ in range(80):
+            if page.evaluate('() => window.__out.every(x => x !== null)'):
+                break
+            page.clock.run_for(250)
+        else:
+            self.fail('requests never finished')
+        return page.evaluate('() => window.__out')
+
+    RUN = """jobs => jobs.map(([family, request]) => { try { return {ok: webUiPatterns.patternRun(family, request)} } catch (e) { return {error: e.message, kind: e.constructor.name} } })"""
+
+    @staticmethod
+    def python_outcome(family, request):
+        import web_ui
+        try:
+            return {'ok': web_ui.pattern_run(family, request)}
+        except ValueError as error:
+            return {'error': str(error)}
+
+    def same(self, family, request, python, browser):
+        """The browser must give Python's result or Python's refusal text (a crash Python wraps as `invalid X request:` need only be a refusal here, as the wrapped text is CPython's)."""
+        if 'ok' in python:
+            self.assertEqual(('ok' in browser, pat_canon(browser.get('ok')) if 'ok' in browser else browser), (True, pat_canon(python['ok'])), (family, request))
+        elif python['error'].startswith(f'invalid {family} request: '):
+            self.assertIn('error', browser, (family, request))
+        else:
+            self.assertEqual(browser.get('error'), python['error'], (family, request))
+
+    # --- the recorded outputs of the original oracles
+    def test_the_recorded_original_outputs_are_reproduced_exactly(self):
+        page = self.page()
+        cases = [c for c in PATTERN_GOLDEN['cases'] if c['family'] in self.FAMILIES + PAT_ASYNC and not (c['family'] == 'score' and isinstance(c['request'], dict) and c['request'].get('operation') == 'tfidf')
+                 and not pat_integral_float(c['request'])]
+        assets = PATTERN_ASSETS['assets']
+        self.assertGreaterEqual(len(cases), 550)
+        got = page.evaluate(self.RUN, [[c['family'], c['request']] if c['family'] not in PAT_ASYNC else ['query', {}] for c in cases])
+        timed = [i for i, c in enumerate(cases) if c['family'] in PAT_ASYNC]
+        self.assertGreaterEqual(len(timed), 150)
+        for i, outcome in zip(timed, self.run_virtual(self.clock_page(), [[cases[i]['family'], cases[i]['request']] for i in timed])):
+            got[i] = outcome
+        for case, outcome in zip(cases, got):
+            if 'ok' in case:
+                self.assertEqual(pat_canon(outcome.get('ok', outcome)), pat_canon(case['ok']), case)
+            else:
+                self.assertEqual(outcome.get('error'), case['error'], case)
+        got = page.evaluate(self.RUN, [[a['family'], a['request']] for a in assets])
+        for asset, outcome in zip(assets, got):
+            self.assertEqual(pat_canon(outcome.get('ok', outcome)), pat_canon(asset['expected']), asset['asset'])
+
+    # --- seeded random requests
+    def test_random_requests_get_python_answers_and_refusals(self):
+        page = self.page()
+        for family in self.FAMILIES:
+            rng = random.Random(f'patterns-{family}')
+            jobs = []
+            while len(jobs) < 1200:
+                request = pat_request(family, rng)
+                if not pat_integral_float(request):
+                    jobs.append([family, request])
+            got = page.evaluate(self.RUN, jobs)
+            ok = 0
+            for (name, request), outcome in zip(jobs, got):
+                python = self.python_outcome(name, request)
+                ok += 'ok' in python
+                self.same(name, request, python, outcome)
+            minimum = {'structure': 400, 'text': 400}.get(family, 120)
+            self.assertGreaterEqual(ok, minimum, (family, 'answers'))
+            self.assertGreaterEqual(len(jobs) - ok, 20 if family not in ('structure', 'text') else 40, (family, 'refusals'))
+
+    def test_random_requests_to_the_javascript_references_agree_on_a_virtual_clock(self):
+        page = self.clock_page()
+        for family in PAT_ASYNC:
+            rng = random.Random(f'patterns-js-{family}')
+            jobs = []
+            while len(jobs) < 700:
+                request = pat_request(family, rng)
+                if not pat_integral_float(request):
+                    jobs.append([family, request])
+            ok = 0
+            for (name, request), outcome in zip(jobs, self.run_virtual(page, jobs)):
+                python = self.python_outcome(name, request)
+                ok += 'ok' in python
+                self.same(name, request, python, outcome)
+            self.assertGreaterEqual(ok, 60, (family, 'answers'))
+            self.assertGreaterEqual(len(jobs) - ok, 60, (family, 'refusals'))
+
+    def test_a_task_of_zero_milliseconds_waits_one_and_ties_go_to_the_earlier(self):
+        page = self.clock_page()
+        jobs = [['future', {'mode': 'any', 'tasks': [{'value': 'one', 'delay_ms': 1}, {'value': 'zero'}]}], ['future', {'mode': 'any', 'tasks': [{'value': 'zero'}, {'value': 'one', 'delay_ms': 1}]}],
+                ['future', {'mode': 'timeout', 'task': {'value': 1, 'delay_ms': 5}, 'timeout_ms': 5}], ['future', {'mode': 'timeout', 'task': {'value': 1, 'delay_ms': 6}, 'timeout_ms': 5}],
+                ['future', {'mode': 'wait', 'tasks': [{'value': 1, 'reject': 'b', 'delay_ms': 9}, {'value': 2, 'reject': 'a', 'delay_ms': 3}, {'value': 3}]}]]
+        for (name, request), outcome in zip(jobs, self.run_virtual(page, jobs)):
+            self.same(name, request, self.python_outcome(name, request), outcome)
+        self.assertEqual([o.get('ok', o).get('value', o.get('error')) for o in self.run_virtual(page, jobs)], ['one', 'zero', 1, 'timeout', 'a'])
+
+    def test_every_limit_is_where_python_puts_it(self):
+        """Each cap is tried at the value that is still allowed and the one that is not, in both languages."""
+        ev = lambda n: [{'at_ms': i, 'value': i} for i in range(n)]
+        one = {'type': 'append', 'value': 1}
+        pairs = []
+        for n in (1000, 1001):
+            pairs += [('stream', {'mode': 'basic', 'events': ev(n)}), ('stream', {'mode': 'controller', 'commands': [{'op': 'add', 'value': 1}] * (n - 1) + [{'op': 'close'}]}),
+                      ('event_loop', {'mode': 'async_generator', 'values': list(range(n))}), ('stream', {'mode': 'buffer', 'events': ev(3), 'size': n}),
+                      ('stream', {'mode': 'window', 'events': ev(3), 'size': 2, 'step': n}), ('workflow', {'operation': 'undo_redo', 'values': [], 'commands': [one] * n}),
+                      ('workflow', {'operation': 'swap', 'values': list(range(n)), 'a': 0, 'b': 1}), ('workflow', {'operation': 'batch', 'values': [1], 'batch_size': n}),
+                      ('workflow', {'operation': 'scheduler', 'values': [], 'schedule': [0] * n}), ('workflow', {'operation': 'queue', 'values': [], 'events': [one] * n}),
+                      ('workflow', {'operation': 'queue', 'values': [0], 'events': [one] * (n - 1)}), ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'reset'}] * n}),
+                      ('page', {'operation': 'offset', 'items': [1], 'limit': n}), ('window', {'mode': 'window', 'commands': ['next'] * n}), ('collection', {'mode': 'checklist', 'commands': [['toggle']] * n})]
+        for n in (32, 33):
+            pairs += [('future', {'mode': 'wait', 'tasks': [{'value': 1}] * n}), ('future', {'mode': 'chain', 'task': {'value': 1}, 'steps': [{'op': 'add', 'by': 1}] * n}),
+                      ('concurrency', {'mode': 'work_queue', 'tasks': [{'value': 1}] * n}), ('concurrency', {'mode': 'mutex', 'increments': [1] * n}),
+                      ('concurrency', {'mode': 'semaphore', 'tasks': [{'value': 1}], 'concurrency': n})]
+        for n in (16, 17):
+            pairs += [('stream', {'mode': 'merge', 'streams': [ev(1)] * n}), ('stream', {'mode': 'transform', 'events': ev(1), 'steps': [{'op': 'map_add', 'value': 1}] * n}),
+                      ('stream', {'mode': 'broadcast', 'events': ev(1), 'subscribers': n}), ('event_loop', {'mode': 'reactive', 'values': [1], 'steps': [{'op': 'map_add', 'value': 1}] * n}),
+                      ('workflow', {'operation': 'pubsub', 'values': [], 'events': [one], 'subscribers': n})]
+        for n in (1000, 1001):
+            pairs += [('future', {'mode': 'basic', 'task': {'value': 1, 'delay_ms': n}}), ('future', {'mode': 'timeout', 'task': {'value': 1}, 'timeout_ms': n})]
+        for n in (50, 51):
+            pairs += [('concurrency', {'mode': 'cancelable', 'task': {'value': 1, 'delay_ms': n}, 'cancel': False})]
+        for n in (60000, 60001):
+            pairs += [('stream', {'mode': 'debounce', 'events': ev(2), 'duration_ms': n}), ('interaction', {'operation': 'debounce', 'delay_ms': n, 'calls': [{'at_ms': 0, 'value': 1}]})]
+        for n in (0, -1, 60000, 60001):
+            pairs += [('stream', {'mode': 'basic', 'events': [{'at_ms': n, 'value': 1}]})]
+        sync = [(f, r) for f, r in pairs if f not in PAT_ASYNC]
+        timed = [(f, r) for f, r in pairs if f in PAT_ASYNC]
+        outcomes = self.page().evaluate(self.RUN, [list(x) for x in sync]) + self.run_virtual(self.clock_page(), [list(x) for x in timed])
+        answered = 0
+        for (family, request), outcome in zip(sync + timed, outcomes):
+            python = self.python_outcome(family, request)
+            answered += 'ok' in python
+            self.same(family, request, python, outcome)
+        self.assertGreater(answered, 30)
+        self.assertGreater(len(pairs) - answered, 25)
+
+    def test_odd_shapes_get_python_refusals(self):
+        """Requests that are almost right: a key swapped for another, a float where an int goes, the cursor of a keyset that is back at the start."""
+        pairs = [('reduce', {'mode': 'redux', 'initial': 0, 'action': []}), ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'set', 'values': 1}]}),
+                 ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'reset', 'values': 1}]}), ('reduce', {'mode': 'redux', 'initial': 1.5, 'actions': []}),
+                 ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 1.5}), ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 2}), ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 3}),
+                 ('page', {'operation': 'cursor', 'items': [1, 2], 'limit': 1, 'cursor': 'eyJ2IjoxLCJ4IjoxLCJoIjoiYSJ9'}), ('page', {'operation': 'cursor', 'items': [1, 2], 'limit': 1, 'cursor': 5}),
+                 ('select', {'values': [[1, 2]], 'conditions': [{'path': [1.5], 'equals': 2}]}), ('select', {'values': [[1, 2]], 'conditions': [{'path': [2], 'equals': 2}]}),
+                 ('select', {'values': [[1, 2]], 'conditions': [{'path': [1], 'equals': 2}]}), ('select', {'values': [{'a': 1}], 'conditions': [{'path': ['a'], 'equals': 1, 'x': 1}]}),
+                 ('transform', {'operation': 'zip', 'values': [1], 'other': [1], 'strict': 'yes'}), ('transform', {'operation': 'flatten', 'values': [1], 'x': 1}),
+                 ('workflow', {'operation': 'swap', 'values': [1, 2], 'a': 0, 'b': 1, 'index': 0}), ('workflow', {'operation': 'swap', 'values': [1, 2], 'a': 0}),
+                 ('order', {'mode': 'basic', 'values': None}), ('order', {'mode': 'multi', 'values': [{'group': 'a', 'score': 1, 'name': 'x'}]}), ('order', {'mode': 'priority', 'values': [{'name': 'a', 'priority': 1.5}]}),
+                 ('text', {'mode': 'inverted-index'}), ('structure', {'mode': 'flat'}), ('query', {'operation': 'range', 'items': [{'v': 1}], 'key': 'v', 'minimum': 1, 'maximum': 1}),
+                 ('query', {'operation': 'range', 'items': [], 'key': 'v', 'minimum': 2, 'maximum': 1}), ('query', {'operation': 'geo', 'items': [{'latitude': 90, 'longitude': 180}], 'latitude': 90, 'longitude': 180, 'radius_km': 0}),
+                 ('query', {'operation': 'geo', 'items': [{'latitude': 90, 'longitude': 180}], 'latitude': 91, 'longitude': 180, 'radius_km': 0}), ('query', {'operation': 'group_by', 'items': [], 'key': ''}),
+                 ('query', {'operation': 'tag', 'items': [{'t': 'x'}], 'key': 't', 'selected': ['x']})]
+        states = [{'mode': 'keyset', 'offset': 0, 'limit': 4, 'total': 0}, {'mode': 'keyset', 'offset': 0, 'limit': 4, 'total': 4}, {'mode': 'keyset', 'offset': 3, 'limit': 4, 'total': 12},
+                  {'mode': 'keyset', 'offset': 0, 'limit': 1, 'total': 1}, {'mode': 'window', 'offset': 0, 'limit': 4, 'total': 0}, {'mode': 'window', 'offset': 5, 'limit': 3, 'total': 2}]
+        import web_ui
+        windows = [[state, command] for state in states for command in ('next', 'previous', 'page-size-3', 'offset-6', 'refresh', 'reset')]
+        page = self.page()
+        got = page.evaluate(self.RUN, [list(x) for x in pairs])
+        for (family, request), outcome in zip(pairs, got):
+            self.same(family, request, self.python_outcome(family, request), outcome)
+        got = page.evaluate("""w => w.map(([s, cmd]) => { try { return {ok: webUiPatterns.patternWindowRender(webUiPatterns.patternWindowStep(s, cmd))} } catch (e) { return {error: e.message} } })""", windows)
+        for (state, command), outcome in zip(windows, got):
+            try:
+                python = {'ok': web_ui.pattern_window_render(web_ui.pattern_window_step(state, command))}
+            except ValueError as error:
+                python = {'error': str(error)}
+            self.same('window-state', [state, command], python, outcome)
+
+    def test_the_event_loop_phases_are_the_real_ones(self):
+        page = self.clock_page()
+        got = self.run_virtual(page, [['event_loop', {'mode': 'microtask', 'values': []}], ['event_loop', {'mode': 'event_loop', 'values': ['x']}]])
+        self.assertEqual(got[0]['ok']['result'], ['sync', 'microtask', 'promise', 'timer'])
+        self.assertEqual([step['phase'] for step in got[1]['ok']['result']], ['sync', 'microtask', 'timer'])
+
+    def test_the_debounce_function_takes_the_timers_it_is_given(self):
+        got = self.page().evaluate("""() => { const calls = new Map(); let id = 0; const seen = [];
+            const trigger = webUiPatterns.debounce(v => seen.push(v), 20, {setTimeoutFn: fn => { calls.set(++id, fn); return id }, clearTimeoutFn: key => calls.delete(key)});
+            trigger('first'); trigger('last'); const size = calls.size; const [key, fn] = [...calls.entries()][0]; calls.delete(key); fn(); const afterFire = [...seen];
+            trigger('cancelled'); trigger.cancel(); const errors = [];
+            for (const args of [[null, 1], [() => {}, -1], [() => {}, NaN]]) { try { webUiPatterns.debounce(...args) } catch (e) { errors.push(e.constructor.name + ': ' + e.message) } }
+            return {size, afterFire, left: calls.size, errors, window: webUiPatterns.virtualWindow({count: 100, itemHeight: 20, scrollTop: 200, viewportHeight: 100, overscan: 1})} }""")
+        self.assertEqual(got, {'size': 1, 'afterFire': ['last'], 'left': 0, 'errors': ['TypeError: invalid debounce arguments'] * 3, 'window': {'start': 9, 'end': 16, 'topPadding': 180, 'bottomPadding': 1680}})
+
+    def test_the_states_of_windows_and_collections_agree_on_every_command(self):
+        import web_ui
+        rng = random.Random('patterns-states')
+        windows, collections = [], []
+        for _ in range(800):
+            state = {'mode': rng.choice(web_ui.PATTERN_WINDOW_MODES), 'offset': rng.choice([0, 3, 4, 20, -1, True, '1']), 'limit': rng.choice([4, 3, 0, True, 0.5]), 'total': rng.choice([12, 0, 5, -1])}
+            if rng.random() < 0.2:
+                state.pop(rng.choice(list(state)))
+            windows.append([state, rng.choice(['next', 'previous', 'load-more', 'prefetch', 'reset', 'page-size-3', 'offset-6', 'refresh', 'x'])])
+            collections.append([{'mode': rng.choice(web_ui.PATTERN_COLLECTION_MODES), 'items': rng.choice([['a', 'b'], ['a', 'a'], [], ['a', 1], ['a', 'b', 'c', 'd']]), 'selected': rng.choice([[], ['a'], ['z'], ['a', 'a']])},
+                                rng.choice(['select', 'toggle', 'delete', 'move-first', 'x']), rng.choice(['a', 'b', 'z'])])
+        page = self.page()
+        got = page.evaluate("""([w, c]) => [w.map(([s, cmd]) => { try { return {ok: webUiPatterns.patternWindowRender(webUiPatterns.patternWindowStep(s, cmd))} } catch (e) { return {error: e.message} } }),
+            c.map(([s, cmd, item]) => { try { return {ok: webUiPatterns.patternCollectionRender(webUiPatterns.patternCollectionStep(s, cmd, item))} } catch (e) { return {error: e.message} } })]""", [windows, collections])
+        okay = 0
+        for (state, command), outcome in zip(windows, got[0]):
+            try:
+                python = {'ok': web_ui.pattern_window_render(web_ui.pattern_window_step(state, command))}
+            except (ValueError, TypeError) as error:
+                python = {'error': str(error)}
+            okay += 'ok' in python
+            self.same('window-state', [state, command], python, outcome)
+        for (state, command, item), outcome in zip(collections, got[1]):
+            try:
+                python = {'ok': web_ui.pattern_collection_render(web_ui.pattern_collection_step(state, command, item))}
+            except (ValueError, TypeError) as error:
+                python = {'error': str(error)}
+            okay += 'ok' in python
+            self.same('collection-state', [state, command, item], python, outcome)
+        self.assertGreater(okay, 150)
+
+    def test_text_search_helpers(self):
+        import web_ui
+        rng = random.Random('patterns-text')
+        words = ['Flutter', 'portable', 'search', 'the', 'And', 'a', 'x_1', 'Ａ', 'cat', 'Dog', '123', 'indexes']
+        queries = [' '.join(rng.choice(words) for _ in range(rng.randint(0, 4))) + rng.choice(['', '!', '  ']) for _ in range(400)]
+        docs = [[{'id': rng.choice(['d1', 'd2', 'd3']), 'text': ' '.join(rng.choice(words) for _ in range(rng.randint(0, 5)))} for _ in range(rng.randint(0, 4))] for _ in range(400)]
+        got = self.page().evaluate("""([queries, docs]) => queries.map((q, i) => [webUiPatterns.patternTokens(q), webUiPatterns.patternWithoutStopWords(webUiPatterns.patternTokens(q)), webUiPatterns.patternTextSearch(docs[i], q),
+            webUiPatterns.patternInvertedIndex(docs[i])])""", [queries, docs])
+        for query, documents, outcome in zip(queries, docs, got):
+            tokens = web_ui.pattern_tokens(query)
+            index = web_ui.pattern_inverted_index(documents)
+            self.assertEqual(outcome, [tokens, web_ui.pattern_without_stop_words(tokens), web_ui.pattern_text_search(documents, query), [[t, ids] for t, ids in index.items()]], (query, documents))
+
+    # --- the helpers the twins stand on
+    def test_pyjson_writes_what_python_writes(self):
+        rng = random.Random('patterns-json')
+        alphabet = ['a', 'é', '日', '😀', chr(0xFFFF), chr(0x10000), chr(0), '\n', '"', '\\', chr(0x7F), chr(0x2028), ' ', chr(0x1F), 'z']
+        def text():
+            return ''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 5)))
+        def number():
+            return rng.choice([0, 1, -1, 12345, 2 ** 52, 0.5, -1.5, 1.5e-7, 1e-5, 0.0001, 0.00012, 123456.789, 1e-300, 5e-324, 4503599627370495.5, 0.1 + 0.2, 1 / 3, 1e15 + 0.5, 2.5e-5])
+        def value(depth=0):
+            kind = rng.random()
+            if depth < 3 and kind < 0.15:
+                return [value(depth + 1) for _ in range(rng.randint(0, 4))]
+            if depth < 3 and kind < 0.3:
+                return {text(): value(depth + 1) for _ in range(rng.randint(0, 4))}
+            return rng.choice([None, True, False, text(), number(), number(), text()])
+        values = [value() for _ in range(1500)]
+        got = self.page().evaluate("values => values.map(v => webUiPatterns.pyJson(v))", values)
+        for item, text_out in zip(values, got):
+            self.assertEqual(text_out, pat_canon(item), item)
+
+    def test_equality_and_ordering_of_strings_follow_python(self):
+        rng = random.Random('patterns-eq')
+        pool = [None, True, False, 0, 1, 2, 0.5, 2.5, '', 'a', '1', 'true', [], [1], [True], [1, 'a'], {}, {'a': 1}, {'a': True}, {'b': 1}, {'a': [1]}, {'a': [True]}, [[0]], [[False]]]
+        pairs = [[rng.choice(pool), rng.choice(pool)] for _ in range(1500)]
+        got = self.page().evaluate("pairs => pairs.map(([a, b]) => webUiPatterns.pyEq(a, b))", pairs)
+        self.assertEqual(got, [a == b for a, b in pairs])
+        alphabet = ['a', 'b', 'é', '日', '😀', chr(0xFFFF), chr(0x10000), chr(0xD7FF), chr(0xE000), 'Z']
+        strings = [[''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 4))), ''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 4)))] for _ in range(1500)]
+        got = self.page().evaluate("pairs => pairs.map(([a, b]) => webUiPatterns.cmpStr(a, b))", strings)
+        self.assertEqual(got, [(a > b) - (a < b) for a, b in strings])
+
+    def test_unknown_families_are_named_as_python_names_them(self):
+        names = ['regex', "O'Reilly", 'say "hi"', 'a\\b', "both ' and \"", '', 'Query']
+        got = self.page().evaluate(self.RUN, [[name, {}] for name in names])
+        for name, outcome in zip(names, got):
+            self.assertEqual(outcome['error'], self.python_outcome(name, {})['error'], name)
+        for name in ('search', 'convert', 'validate'):
+            self.assertEqual(self.page().evaluate(self.RUN, [[name, {}]])[0]['error'], f'{name} runs in Python only: python3 web_ui.py --pattern {name}')
+        self.assertEqual(self.page().evaluate(self.RUN, [['score', {'operation': 'tfidf', 'documents': []}]])[0]['error'], 'tfidf runs in Python only')
+
+    # --- the catalogue
+    def test_the_catalogue_is_python_catalogue(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual(page.evaluate("webUiPatterns.patternCatalogue()"), web_ui.pattern_catalogue())
+        numbers = list(range(-2, 203))
+        got = page.evaluate("""n => n.map(x => { const out = [webUiPatterns.patternFamily(x), webUiPatterns.patternOwner(x)]; for (const c of ['navigation', 'api', 'ui', 'data']) { try { out.push(webUiPatterns.patternTheme(c, x)) } catch (e) { out.push(e.message) } } return out })""", numbers)
+        for number, outcome in zip(numbers, got):
+            themes = []
+            for category in ('navigation', 'api', 'ui', 'data'):
+                try:
+                    themes.append(web_ui.pattern_theme(category, number))
+                except ValueError as error:
+                    themes.append(str(error))
+            self.assertEqual(outcome, [web_ui.pattern_family(number), web_ui.pattern_owner(number), *themes], number)
+
+    def test_searching_the_catalogue_agrees(self):
+        import web_ui
+        rng = random.Random('patterns-find')
+        rows = web_ui.pattern_catalogue()
+        words = ['filter', 'FILTER', 'ＦＩＬＴＥＲ', 'd003', 'push', 'pop', 'ページング', 'Navigation', ' ', 'theme', 'Cupertino', 'ａｐｉ', '001', 'フィルタ', 'Json', 'a', 'の', 'xyzzy', 'Material', 'ダーク']
+        queries = [[' '.join(rng.choice(words) for _ in range(rng.randint(0, 3))), rng.choice(['', '', 'navigation', 'api', 'ui', 'data', 'nope']), rng.choice(['', '', '', 'select', 'workflow', 'query', 'nope'])]
+                   for _ in range(600)]
+        got = self.page().evaluate("""qs => { const rows = webUiPatterns.patternCatalogue(); return qs.map(([q, c, f]) => webUiPatterns.patternFind(rows, q, c, f).map(r => r.id)) }""", queries)
+        counts = set()
+        for (query, category, family), outcome in zip(queries, got):
+            expected = [r['id'] for r in web_ui.pattern_find(rows, query, category, family)]
+            self.assertEqual(outcome, expected, (query, category, family))
+            counts.add(min(len(expected), 3))
+        self.assertEqual(counts, {0, 1, 2, 3})
+
+    # --- the page
+    def test_the_page_lists_and_searches_the_catalogue(self):
+        page = self.page()
+        self.assertEqual(page.text_content('[data-patterns-count]'), '792 patterns')
+        self.assertEqual(page.eval_on_selector_all('[data-patterns-list] li', 'els => els.length'), 48)
+        self.assertEqual(page.get_attribute('[data-patterns-list] li', 'data-id'), 'A001')
+        page.click('[data-patterns-more]')
+        self.assertEqual(page.eval_on_selector_all('[data-patterns-list] li', 'els => els.length'), 96)
+        self.assertEqual(page.get_attribute('#patterns', 'data-shown'), '96')
+        page.fill('[data-patterns-query]', 'FilterNested')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '1 of 792 patterns')
+        self.assertIn('D003', page.text_content('[data-patterns-list]'))
+        self.assertIn('select', page.text_content('[data-patterns-list]'))
+        self.assertTrue(page.is_hidden('[data-patterns-more]'))
+        page.fill('[data-patterns-query]', '')
+        page.select_option('[data-patterns-category]', 'data')
+        page.select_option('[data-patterns-family]', 'select')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '6 of 792 patterns')
+        page.select_option('[data-patterns-family]', '')
+        page.fill('[data-patterns-query]', 'nothing matches this')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '0 of 792 patterns')
+
+    def test_the_runner_runs_twins_here_and_shows_python_for_the_rest(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run'), page.get_attribute('#patterns', 'data-family')), ('browser', 'ok', 'query'))
+        self.assertEqual(pat_canon(json.loads(page.text_content('[data-patterns-result]'))), pat_canon(web_ui.pattern_run('query', web_ui.PATTERN_EXAMPLES['query'])))
+        for family in sorted(web_ui.PATTERN_RUNNERS):
+            page.select_option('[data-patterns-run-family]', family)
+            engine = 'browser' if family in web_ui.PATTERN_TWINS else 'python'
+            if family in PAT_ASYNC:
+                expect(page.locator('#patterns')).to_have_attribute('data-run', 'ok')
+            self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run')), (engine, 'ok'), family)
+            self.assertEqual(pat_canon(json.loads(page.text_content('[data-patterns-result]'))), pat_canon(web_ui.pattern_run(family, web_ui.PATTERN_EXAMPLES[family])), family)
+        page.select_option('[data-patterns-run-family]', 'search')
+        page.fill('[data-patterns-request]', '{"operation": "stem", "text": "walking it\'s"}')
+        page.click('[data-patterns-run]')
+        self.assertEqual(page.get_attribute('#patterns', 'data-run'), 'python')
+        self.assertIn("python3 web_ui.py --pattern search", page.text_content('[data-patterns-status]'))
+        self.assertIn("'\\''", page.text_content('[data-patterns-status]'), 'a quote in the request is escaped for the shell')
+        page.select_option('[data-patterns-run-family]', 'order')
+        page.fill('[data-patterns-request]', '{"mode": "shuffle"}')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-run'), page.text_content('[data-patterns-status]'), page.text_content('[data-patterns-result]')), ('refused', 'Refused: unsupported ordering mode', ''))
+        page.fill('[data-patterns-request]', '{"mode": ')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-run'), page.text_content('[data-patterns-status]')), ('invalid', 'Not JSON.'))
+        page.click('[data-patterns-example]')
+        self.assertEqual(page.get_attribute('#patterns', 'data-run'), 'ok')
+        page.select_option('[data-patterns-run-family]', 'score')
+        page.fill('[data-patterns-request]', '{"operation": "tfidf", "documents": ["a b"]}')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run')), ('python', 'python'))
+
+    def test_the_page_fits_a_phone(self):
+        page = self.page()
+        page.set_viewport_size({'width': 320, 'height': 700})
+        page.select_option('[data-patterns-run-family]', 'workflow')
+        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 320)
+        self.assertLessEqual(page.evaluate('Math.max(...[...document.querySelectorAll("#patterns *")].map(e => e.getBoundingClientRect().right))'), 320)
 
 
 if __name__ == '__main__':
