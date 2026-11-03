@@ -2879,6 +2879,291 @@ def theme_wall_document(count: int) -> str:
 # MCP/API stubs and mocks are one function call. The mock is declarative: a JSON template whose "$input"
 # is replaced by what was typed, evaluated the same way here (stub_response) and in the browser.
 
+# --- Composition studio: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed ---------------------------------
+# Absorbs flutter_navigation_basic's lib/features/composition_generator/domain (chord_theory.dart, metronome_timing.dart, note_sequence.dart,
+# song_seed_generator.dart) and lib/data/composer.dart. Its Dart tests are the golden values below. Python is the reference; ``composition.js`` must agree.
+# Deliberate differences: separators are ASCII whitespace and commas only, rounding is floor(x + 0.5) in both languages, and the seed uses mulberry32.
+
+FLAT_KEYS = ("C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B")
+SHARP_KEYS = ("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
+SELECTABLE_KEYS = ("C", "C♯", "D♭", "D", "D♯", "E♭", "E", "F", "F♯", "G♭", "G", "G♯", "A♭", "A", "A♯", "B♭", "B")
+CHORD_MODIFIERS = ("triad", "6", "m6", "7", "maj7", "m7", "m7♭5", "sus2", "sus4", "add9", "add11", "dim", "aug")
+_MAJOR_STEPS, _MINOR_STEPS = (0, 2, 4, 5, 7, 9, 11), (0, 2, 3, 5, 7, 8, 10)
+_MAJOR_QUALITIES, _MINOR_QUALITIES = ("", "m", "m", "", "", "m", "dim"), ("m", "dim", "", "m", "m", "", "")
+_LETTERS = "CDEFGAB"
+_NATURALS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+_CHORD_INTERVALS = {"triad": (0, 4, 7), "6": (0, 4, 7, 9), "m6": (0, 3, 7, 9), "7": (0, 4, 7, 10), "maj7": (0, 4, 7, 11), "m7": (0, 3, 7, 10),
+                    "m7♭5": (0, 3, 6, 10), "sus2": (0, 2, 7), "sus4": (0, 5, 7), "add9": (0, 4, 7, 14), "add11": (0, 4, 7, 17), "dim": (0, 3, 6), "aug": (0, 4, 8)}
+_ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7}
+METRONOME_MIN_BPM, METRONOME_MAX_BPM = 30, 300
+SEED_KEYS = ("B♭", "B", "C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A")
+SEED_MODES, SEED_TIMES = ("Major", "Minor"), ("4/4", "3/4", "6/8")
+SEED_PROGRESSIONS = {"Major": ("I – V – vi – IV", "I – vi – IV – V", "ii – V – I – vi", "I – IV – V – IV"),
+                     "Minor": ("i – VI – III – VII", "i – iv – VII – III", "i – VII – VI – VII", "i – iv – v – i")}
+
+
+def pitch_class(note: str) -> int:
+    """0..11 for a note name such as ``C``, ``F♯`` or ``B♭♭``; anything else is a ``ValueError``."""
+    match = re.fullmatch(r"([A-G])([♯♭]*)", note) if isinstance(note, str) else None
+    if not match:
+        raise ValueError(f"unsupported note: {note!r}")
+    return (_NATURALS[match.group(1)] + match.group(2).count("♯") - match.group(2).count("♭")) % 12
+
+
+def prefers_sharps(key: str) -> bool:
+    return "♯" in key or key in ("D", "E", "G", "A", "B")
+
+
+def note_for_pitch_class(value: int, *, sharps: bool) -> str:
+    return (SHARP_KEYS if sharps else FLAT_KEYS)[value % 12]
+
+
+def transpose_key(key: str, semitones: int) -> str:
+    return note_for_pitch_class(pitch_class(key) + semitones, sharps=prefers_sharps(key))
+
+
+def fifth_neighbor(key: str, *, clockwise: bool) -> str:
+    return transpose_key(key, 7 if clockwise else -7)
+
+
+def _spell_pitch(letter: str, value: int) -> str:
+    delta = (value % 12) - _NATURALS[letter]
+    delta = delta - 12 if delta > 6 else delta + 12 if delta < -6 else delta
+    if delta not in (-2, -1, 0, 1, 2):
+        raise ValueError(f"cannot spell pitch {value % 12} on {letter}")
+    return letter + {-2: "♭♭", -1: "♭", 0: "", 1: "♯", 2: "♯♯"}[delta]
+
+
+def scale(key: str, *, minor: bool) -> list[str]:
+    """The seven notes of the scale, one letter each (``F♯`` major ends ``E♯``, not ``F``)."""
+    root, first = pitch_class(key), _LETTERS.find(key[:1])
+    if first < 0:
+        raise ValueError(f"unsupported root letter: {key!r}")
+    steps = _MINOR_STEPS if minor else _MAJOR_STEPS
+    return [_spell_pitch(_LETTERS[(first + degree) % 7], root + steps[degree]) for degree in range(7)]
+
+
+def diatonic_chord(key: str, degree: int, *, minor: bool) -> str:
+    if type(degree) is not int or not 1 <= degree <= 7:
+        raise ValueError("degree must be 1 through 7")
+    return scale(key, minor=minor)[degree - 1] + (_MINOR_QUALITIES if minor else _MAJOR_QUALITIES)[degree - 1]
+
+
+def roman_degree(token: str) -> int | None:
+    match = re.match(r"[ivIV]+", token.strip(" \t\r\n\f\v"))
+    return _ROMAN.get(match.group(0).upper()) if match else None
+
+
+def convert_roman_token(key: str, token: str, *, minor: bool) -> str:
+    """A Roman-numeral chord (``vi``, ``IVsus2``, ``viiø7``) as a chord name in ``key``; anything not starting with a numeral is kept as written."""
+    trimmed = token.strip(" \t\r\n\f\v")
+    match = re.fullmatch(r"([ivIV]+)([\s\S]*)", trimmed)
+    degree = roman_degree(trimmed) if match else None
+    if not match or degree is None:
+        return token
+    root, base = scale(key, minor=minor)[degree - 1], diatonic_chord(key, degree, minor=minor)
+    suffix = match.group(2).strip(" \t\r\n\f\v")
+    if not suffix:
+        return base
+    if suffix in ("6", "7"):
+        return base + suffix
+    if suffix == "m6":
+        return root + "m6"
+    if suffix in ("maj7", "M7", "△7"):
+        return root + "maj7"
+    if suffix == "m7":
+        return root + "m7"
+    if suffix in ("m7♭5", "ø7"):
+        return root + "m7♭5"
+    if suffix in ("sus2", "sus4", "add9", "add11"):
+        return root + suffix
+    if suffix in ("dim", "°"):
+        return root + "dim"
+    if suffix in ("aug", "+"):
+        return root + "aug"
+    return base
+
+
+def convert_progression(key: str, progression: str, *, minor: bool) -> list[str]:
+    """``I V vi IV`` (separated by spaces, commas, dashes or bars) as chord names in ``key``."""
+    for dash in "–—-|":
+        progression = progression.replace(dash, " ")
+    return [convert_roman_token(key, token, minor=minor) for token in re.split(r"[ \t\r\n\f\v,]+", progression) if token]
+
+
+def apply_modifier(root: str, modifier: str) -> str:
+    if modifier not in CHORD_MODIFIERS:
+        raise ValueError(f"unsupported chord modifier: {modifier!r}")
+    return root if modifier == "triad" else root + modifier
+
+
+def chord_tones(root: str, modifier: str) -> list[str]:
+    if modifier not in _CHORD_INTERVALS:
+        raise ValueError(f"unsupported chord modifier: {modifier!r}")
+    start, sharps = pitch_class(root), prefers_sharps(root)
+    return [note_for_pitch_class(start + interval, sharps=sharps) for interval in _CHORD_INTERVALS[modifier]]
+
+
+def normalized_inversion(modifier: str, inversion: int) -> int:
+    """0..3 as the studio's four buttons; a triad has no third inversion, so that slot repeats the first."""
+    if type(inversion) is not int or not 0 <= inversion <= 3:
+        raise ValueError("inversion must be 0 through 3")
+    count = len(_CHORD_INTERVALS[modifier])
+    return inversion if inversion < count else 1 if count == 3 and inversion == 3 else inversion % count
+
+
+def chord_with_inversion(root: str, modifier: str, inversion: int) -> str:
+    chord, number = apply_modifier(root, modifier), normalized_inversion(modifier, inversion)
+    return chord if number == 0 else f"{chord}/{chord_tones(root, modifier)[number]}"
+
+
+def _round_half_up(value: float) -> int:
+    return math.floor(value + 0.5)
+
+
+def beat_micros(bpm: int) -> int:
+    """Microseconds in one beat; ``bpm`` is held to 30..300."""
+    return _round_half_up(60_000_000 / min(max(bpm, METRONOME_MIN_BPM), METRONOME_MAX_BPM))
+
+
+def subdivision_micros(bpm: int, per_beat: int) -> int:
+    if per_beat <= 0:
+        raise ValueError("subdivisions per beat must be positive")
+    return _round_half_up(beat_micros(bpm) / per_beat)
+
+
+def bar_micros(bpm: int, beats: int) -> int:
+    if beats <= 0:
+        raise ValueError("beats per bar must be positive")
+    return beat_micros(bpm) * beats
+
+
+def metronome_position(elapsed_micros: int, bpm: int, beats_per_bar: int, per_beat: int) -> tuple[int, int, float]:
+    """``(beat index in the bar, subdivision index in the beat, phase 0..1 within the subdivision)`` from elapsed time, never from a frame count."""
+    if beats_per_bar <= 0 or per_beat <= 0:
+        raise ValueError("beats per bar and subdivisions must be positive")
+    unit, elapsed = subdivision_micros(bpm, per_beat), max(elapsed_micros, 0)
+    steps = elapsed // unit
+    return (steps // per_beat) % beats_per_bar, steps % per_beat, (elapsed % unit) / unit
+
+
+def duration_label(micros: int) -> str:
+    """``500 ms`` below a second, ``2.00 s`` from a second on; rounded half up on integers, so every language prints the same."""
+    if micros >= 1_000_000:
+        hundredths = _round_half_up(micros / 10_000)
+        return f"{hundredths // 100}.{hundredths % 100:02d} s"
+    return f"{_round_half_up(micros / 1000)} ms"
+
+
+def tap_tempo(taps: list[int], tap: int, *, reset_gap: int = 2_000_000, max_intervals: int = 5) -> tuple[list[int], int | None]:
+    """Add a tap (microseconds) and give ``(taps kept, bpm or None)``: the average of the last intervals, 30..300; a gap over two seconds starts again."""
+    kept = [] if taps and tap - taps[-1] > reset_gap else list(taps)
+    kept.append(tap)
+    if len(kept) > max_intervals + 1:
+        kept.pop(0)
+    if len(kept) < 2:
+        return kept, None
+    average = (kept[-1] - kept[0]) / (len(kept) - 1)
+    if average <= 0:
+        return kept, None
+    return kept, min(max(_round_half_up(60_000_000 / average), METRONOME_MIN_BPM), METRONOME_MAX_BPM)
+
+
+def parse_notes(text: str) -> list[str]:
+    """Note tokens like ``C3 d3 F#3 Gb3`` (letter, optional # b ♯ ♭, one octave digit, separated by spaces or commas) as ``C3 D3 F♯3 G♭3``."""
+    notes = []
+    for token in re.split(r"[ \t\r\n\f\v,]+", text):
+        if not token:
+            continue
+        match = re.fullmatch(r"([A-Ga-g])([#b♯♭]?)(-?[0-9])", token)
+        if not match:
+            raise ValueError(f"invalid note: {token}")
+        notes.append(match.group(1).upper() + {"#": "♯", "b": "♭"}.get(match.group(2), match.group(2)) + match.group(3))
+    return notes
+
+
+def notes_per_bar(beats_per_bar: int, beat_unit: int, note_unit: int) -> int:
+    if note_unit not in (4, 8):
+        raise ValueError("only quarter and eighth notes are supported")
+    value = beats_per_bar * note_unit / beat_unit
+    if value != int(value) or value <= 0:
+        raise ValueError("the selected note value does not divide this bar evenly")
+    return int(value)
+
+
+def note_bars(notes: list[str], beats_per_bar: int, beat_unit: int, note_unit: int) -> list[list[str]]:
+    size = notes_per_bar(beats_per_bar, beat_unit, note_unit)
+    return [notes[start:start + size] for start in range(0, len(notes), size)]
+
+
+def song_seed(seed: int, avoid: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A reproducible song seed (``tonic``, ``mode``, ``bpm`` 80..160, ``time``, ``progression``) from ``mulberry32(seed)``; differs from ``avoid`` if it can in 8 tries."""
+    rng = mulberry32(seed)
+    pick = lambda options: options[math.floor(next(rng) * len(options))]
+    for _ in range(8):
+        mode = pick(SEED_MODES)
+        result = {"tonic": pick(SEED_KEYS), "mode": mode, "bpm": 80 + math.floor(next(rng) * 81), "time": pick(SEED_TIMES),
+                  "progression": pick(SEED_PROGRESSIONS[mode])}
+        if avoid is None or result != avoid:
+            break
+    return result
+
+
+def song_seed_text(seed: dict[str, Any]) -> str:
+    return f"Key: {seed['tonic']} {seed['mode']} · BPM: {seed['bpm']} · Time: {seed['time']} · Progression: {seed['progression']}"
+
+
+_CSS["studio.css"] = ("@layer components{.ui-studio h3{margin:24px 0 8px}.ui-studio label{display:inline-block;margin:8px 8px 4px 0}"
+                      ".ui-studio-bar{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-studio-bar legend{padding:0 0 4px}"
+                      ".ui-studio-bar label{margin:0}.ui-studio-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}"
+                      ".ui-studio-row .ui-input{flex:1 1 192px;min-width:0}.ui-studio textarea.ui-input{width:100%;box-sizing:border-box}"
+                      ".ui-beats{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-beat{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;"
+                      "border:1px solid var(--ui-border);border-radius:50%}.ui-beat[data-on]{background:var(--ui-accent);color:var(--ui-bg)}"
+                      ".ui-studio-bars{margin:8px 0;padding-left:24px}.ui-studio-bars li[data-error]{color:var(--ui-danger)}"
+                      ".ui-studio-chords{margin:8px 0;overflow-wrap:anywhere}.ui-studio-degrees{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}}")
+
+
+def studio_html() -> str:
+    """The composition studio as semantic HTML: metronome, chord theory (keys, circle of fifths, progressions, chord builder), note sequence, song seed."""
+    radios = lambda name, values, checked, label=lambda v: v: "".join(
+        f'<label><input type="radio" name="{name}" value="{escape(str(v), quote=True)}"{" checked" if v == checked else ""}> {escape(label(v))}</label>' for v in values)
+    keys = "".join(f'<option value="{k}">{k}</option>' for k in SELECTABLE_KEYS)
+    mods = "".join(f'<option value="{escape(m, quote=True)}">{escape(m)}</option>' for m in CHORD_MODIFIERS)
+    degrees = "".join(f'<option value="{i}">Degree {i}</option>' for i in range(1, 8))
+    return ('<section class="ui-panel ui-studio" id="studio" data-ui-studio><h2>Composition studio</h2>'
+            '<p class="ui-muted">Theory is computed from music rules, not stored. Python is the reference and this page gives the same answers.</p>'
+            '<h3>Metronome</h3><div class="ui-studio-row"><label for="studio-bpm">Tempo</label>'
+            '<input type="range" id="studio-bpm" min="30" max="300" value="120" data-bpm> <output data-bpm-out>120 BPM</output></div>'
+            f'<fieldset class="ui-studio-bar"><legend>Time signature</legend>{radios("studio-sig", SEED_TIMES, "4/4")}</fieldset>'
+            '<div class="ui-beats" data-beats role="img" aria-label="Beat indicator"></div><p class="ui-muted" data-beat-info></p>'
+            '<div class="ui-studio-row"><button class="ui-button" type="button" data-run aria-pressed="false">Start</button>'
+            '<button class="ui-button" type="button" data-tap>Tap tempo</button></div>'
+            '<h3>Chord theory</h3><div class="ui-studio-row"><label for="studio-key">Key</label>'
+            f'<select class="ui-input" id="studio-key" data-key>{keys}</select>'
+            '<button class="ui-button" type="button" data-semi-down>Semitone down</button><button class="ui-button" type="button" data-semi-up>Semitone up</button></div>'
+            f'<fieldset class="ui-studio-bar"><legend>Mode</legend>{radios("studio-mode", ("Major", "Minor"), "Major")}</fieldset>'
+            '<div class="ui-studio-row"><span>Circle of fifths</span><button class="ui-button" type="button" data-fifth-left></button>'
+            '<button class="ui-button" type="button" data-fifth-right></button></div>'
+            '<div class="ui-studio-degrees" data-degrees></div>'
+            '<div class="ui-studio-row"><label for="studio-prog">Progression (Roman numerals)</label>'
+            '<input class="ui-input" id="studio-prog" data-prog value="I V vi IV" autocomplete="off"></div><p class="ui-studio-chords" data-prog-out></p>'
+            f'<div class="ui-studio-row"><label for="studio-degree">Chord builder</label><select class="ui-input" id="studio-degree" data-degree>{degrees}</select>'
+            f'<select class="ui-input" id="studio-mod" aria-label="Quality or extension" data-mod>{mods}</select></div>'
+            f'<fieldset class="ui-studio-bar"><legend>Inversion</legend>{radios("studio-inv", (0, 1, 2, 3), 0, lambda v: ("Root", "1st", "2nd", "3rd")[v])}</fieldset>'
+            '<p class="ui-studio-chords" data-chord></p>'
+            '<h3>Note sequence</h3><div class="ui-studio-row"><label for="studio-notes">Notes</label>'
+            '<select class="ui-input" id="studio-note-unit" aria-label="Note value" data-note-unit><option value="4">Quarter notes</option><option value="8" selected>Eighth notes</option></select></div>'
+            '<textarea class="ui-input" id="studio-notes" rows="2" data-notes>C3 D3 C3 D3 G3 A3 G3 C4</textarea><ol class="ui-studio-bars" data-bars></ol>'
+            '<h3>Song seed</h3><div class="ui-studio-row"><button class="ui-button" type="button" data-new-seed>New song seed</button></div>'
+            '<p class="ui-studio-chords" data-seed-out>Press the button for a key, tempo, time signature and progression.</p></section>')
+
+
+def studio_document(*, theme: str = "modern") -> str:
+    """A single-file page for the composition studio."""
+    return render_document(trusted_html='<main class="ui-page">' + studio_html() + "</main>" + module_script(_JS["composition.js"]), title="Composition studio",
+                           theme=theme, css=bundled_css())
+
+
 # --- Door-to-Door and emoji transitions: one emoji per page, a go/return notation, a seeded draw, a pull-down ----------------------------
 # Absorbs flutter_navigation_basic's page identities (python/generate_page_identities.py, docs/testing/page-identities.md), its "A -> B / A <-> B"
 # transition notation, Home discovery (python/home_discovery.py) and the Door-to-Door selector (tool_door_selector.dart, HomeDoorCatalog).
@@ -3431,6 +3716,84 @@ STUB_SCHEMA = "web-ui-stub/1"
 # stub.js without its import line: it needs setText/prettyJson from ui.js, so an embedded module is ui.js + this.
 EMBEDDED_STUB_JS = _JS["stub.js"].split("\n", 1)[1]
 
+_JS["composition.js"] = r"""/* web-ui composition: chord theory, metronome timing, tap tempo, note sequences and a seeded song seed. Python (web_ui.chord_with_inversion, metronome_position, ...) is the reference. */
+export const FLAT_KEYS=["C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"],SHARP_KEYS=["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+export const SELECTABLE_KEYS=["C","C♯","D♭","D","D♯","E♭","E","F","F♯","G♭","G","G♯","A♭","A","A♯","B♭","B"];
+export const CHORD_MODIFIERS=["triad","6","m6","7","maj7","m7","m7♭5","sus2","sus4","add9","add11","dim","aug"];
+const MAJOR=[0,2,4,5,7,9,11],MINOR=[0,2,3,5,7,8,10],MAJOR_Q=["","m","m","","","m","dim"],MINOR_Q=["m","dim","","m","m","","" ],LETTERS="CDEFGAB",NAT={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
+const INTERVALS={triad:[0,4,7],"6":[0,4,7,9],m6:[0,3,7,9],"7":[0,4,7,10],maj7:[0,4,7,11],m7:[0,3,7,10],"m7♭5":[0,3,6,10],sus2:[0,2,7],sus4:[0,5,7],add9:[0,4,7,14],add11:[0,4,7,17],dim:[0,3,6],aug:[0,4,8]};
+const ROMAN={I:1,II:2,III:3,IV:4,V:5,VI:6,VII:7},mod=(n,m)=>((n%m)+m)%m,trim=s=>s.replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g,"");
+export function pitchClass(note){const m=typeof note==="string"?/^([A-G])([♯♭]*)$/.exec(note):null;if(!m)throw new Error("unsupported note: "+note);
+ const sharps=(m[2].match(/♯/g)||[]).length,flats=(m[2].match(/♭/g)||[]).length;return mod(NAT[m[1]]+sharps-flats,12)}
+export const prefersSharps=key=>key.includes("♯")||["D","E","G","A","B"].includes(key);
+export const noteForPitchClass=(v,sharps)=>(sharps?SHARP_KEYS:FLAT_KEYS)[mod(v,12)];
+export const transposeKey=(key,n)=>noteForPitchClass(pitchClass(key)+n,prefersSharps(key));
+export const fifthNeighbor=(key,clockwise)=>transposeKey(key,clockwise?7:-7);
+function spell(letter,v){let d=mod(v,12)-NAT[letter];d=d>6?d-12:d<-6?d+12:d;if(![-2,-1,0,1,2].includes(d))throw new Error("cannot spell pitch");return letter+({"-2":"♭♭","-1":"♭","0":"","1":"♯","2":"♯♯"})[d]}
+export function scale(key,minor){const root=pitchClass(key),first=LETTERS.indexOf(key.slice(0,1));if(first<0)throw new Error("unsupported root letter");const steps=minor?MINOR:MAJOR;return steps.map((st,d)=>spell(LETTERS[(first+d)%7],root+st))}
+export function diatonicChord(key,degree,minor){if(!Number.isInteger(degree)||degree<1||degree>7)throw new Error("degree must be 1 through 7");return scale(key,minor)[degree-1]+(minor?MINOR_Q:MAJOR_Q)[degree-1]}
+export function romanDegree(token){const m=/^[ivIV]+/.exec(trim(token));return m&&ROMAN[m[0].toUpperCase()]||null}
+export function convertRomanToken(key,token,minor){const t=trim(token),m=/^([ivIV]+)([\s\S]*)$/.exec(t),degree=m?romanDegree(t):null;if(!m||degree===null)return token;
+ const root=scale(key,minor)[degree-1],base=diatonicChord(key,degree,minor),suffix=trim(m[2]);
+ if(!suffix)return base;if(suffix==="6"||suffix==="7")return base+suffix;if(suffix==="m6")return root+"m6";if(["maj7","M7","△7"].includes(suffix))return root+"maj7";if(suffix==="m7")return root+"m7";
+ if(["m7♭5","ø7"].includes(suffix))return root+"m7♭5";if(["sus2","sus4","add9","add11"].includes(suffix))return root+suffix;if(["dim","°"].includes(suffix))return root+"dim";if(["aug","+"].includes(suffix))return root+"aug";return base}
+export function convertProgression(key,progression,minor){for(const d of "–—-|")progression=progression.split(d).join(" ");return progression.split(/[ \t\r\n\f\v,]+/).filter(Boolean).map(t=>convertRomanToken(key,t,minor))}
+export function applyModifier(root,modifier){if(!CHORD_MODIFIERS.includes(modifier))throw new Error("unsupported chord modifier");return modifier==="triad"?root:root+modifier}
+export function chordTones(root,modifier){if(!Object.hasOwn(INTERVALS,modifier))throw new Error("unsupported chord modifier");const start=pitchClass(root),sharps=prefersSharps(root);return INTERVALS[modifier].map(i=>noteForPitchClass(start+i,sharps))}
+export function normalizedInversion(modifier,inversion){if(!Number.isInteger(inversion)||inversion<0||inversion>3)throw new Error("inversion must be 0 through 3");const n=INTERVALS[modifier].length;return inversion<n?inversion:n===3&&inversion===3?1:inversion%n}
+export function chordWithInversion(root,modifier,inversion){const chord=applyModifier(root,modifier),n=normalizedInversion(modifier,inversion);return n===0?chord:chord+"/"+chordTones(root,modifier)[n]}
+const half=v=>Math.floor(v+0.5);
+export const beatMicros=bpm=>half(60000000/Math.min(Math.max(bpm,30),300));
+export function subdivisionMicros(bpm,per){if(!(per>0))throw new Error("subdivisions per beat must be positive");return half(beatMicros(bpm)/per)}
+export function barMicros(bpm,beats){if(!(beats>0))throw new Error("beats per bar must be positive");return beatMicros(bpm)*beats}
+export function metronomePosition(elapsed,bpm,beats,per){if(!(beats>0&&per>0))throw new Error("beats per bar and subdivisions must be positive");const unit=subdivisionMicros(bpm,per),e=Math.max(elapsed,0),steps=Math.floor(e/unit);return[Math.floor(steps/per)%beats,steps%per,(e%unit)/unit]}
+export function durationLabel(micros){if(micros>=1000000){const h=half(micros/10000);return Math.floor(h/100)+"."+String(h%100).padStart(2,"0")+" s"}return half(micros/1000)+" ms"}
+export function tapTempo(taps,tap,resetGap=2000000,maxIntervals=5){const kept=taps.length&&tap-taps[taps.length-1]>resetGap?[]:[...taps];kept.push(tap);if(kept.length>maxIntervals+1)kept.shift();if(kept.length<2)return[kept,null];
+ const avg=(kept[kept.length-1]-kept[0])/(kept.length-1);if(avg<=0)return[kept,null];return[kept,Math.min(Math.max(half(60000000/avg),30),300)]}
+export function parseNotes(text){const out=[];for(const token of text.split(/[ \t\r\n\f\v,]+/)){if(!token)continue;const m=/^([A-Ga-g])([#b♯♭]?)(-?[0-9])$/.exec(token);if(!m)throw new Error("invalid note: "+token);out.push(m[1].toUpperCase()+({"#":"♯",b:"♭"}[m[2]]??m[2])+m[3])}return out}
+export function notesPerBar(beats,unit,noteUnit){if(noteUnit!==4&&noteUnit!==8)throw new Error("only quarter and eighth notes are supported");const v=beats*noteUnit/unit;if(!Number.isInteger(v)||v<=0)throw new Error("the selected note value does not divide this bar evenly");return v}
+export function noteBars(notes,beats,unit,noteUnit){const size=notesPerBar(beats,unit,noteUnit),out=[];for(let i=0;i<notes.length;i+=size)out.push(notes.slice(i,i+size));return out}
+export function mulberry32(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^a>>>15,a|1);t=((t+Math.imul(t^t>>>7,t|61))^t)>>>0;return((t^t>>>14)>>>0)/4294967296}}
+export const SEED_KEYS=["B♭","B","C","D♭","D","E♭","E","F","G♭","G","A♭","A"],SEED_MODES=["Major","Minor"],SEED_TIMES=["4/4","3/4","6/8"];
+export const SEED_PROGRESSIONS={Major:["I – V – vi – IV","I – vi – IV – V","ii – V – I – vi","I – IV – V – IV"],Minor:["i – VI – III – VII","i – iv – VII – III","i – VII – VI – VII","i – iv – v – i"]};
+export function songSeed(seed,avoid=null){const rng=mulberry32(seed),pick=o=>o[Math.floor(rng()*o.length)];let result;
+ for(let i=0;i<8;i++){const mode=pick(SEED_MODES);result={tonic:pick(SEED_KEYS),mode,bpm:80+Math.floor(rng()*81),time:pick(SEED_TIMES),progression:pick(SEED_PROGRESSIONS[mode])};
+  if(avoid===null||JSON.stringify(result)!==JSON.stringify(avoid))break}return result}
+export const songSeedText=s=>"Key: "+s.tonic+" "+s.mode+" · BPM: "+s.bpm+" · Time: "+s.time+" · Progression: "+s.progression;
+export function bindStudio(root=document){return[...root.querySelectorAll("[data-ui-studio]")].map(box=>{
+ const $=s=>box.querySelector(s),$$=s=>[...box.querySelectorAll(s)],checked=n=>box.querySelector('input[name="'+n+'"]:checked').value;
+ const el={bpm:$("[data-bpm]"),bpmOut:$("[data-bpm-out]"),beats:$("[data-beats]"),info:$("[data-beat-info]"),run:$("[data-run]"),tap:$("[data-tap]"),key:$("[data-key]"),prog:$("[data-prog]"),progOut:$("[data-prog-out]"),
+  degrees:$("[data-degrees]"),fifths:$("[data-fifths]"),degree:$("[data-degree]"),mod:$("[data-mod]"),chord:$("[data-chord]"),notes:$("[data-notes]"),noteUnit:$("[data-note-unit]"),bars:$("[data-bars]"),seed:$("[data-seed-out]")};
+ const sig=()=>checked("studio-sig").split("/").map(Number),minor=()=>checked("studio-mode")==="Minor";let running=false,t0=0,taps=[],raf=0;
+ const text=(n,t)=>{n.textContent=t};
+ const drawBeats=()=>{const[b]=sig();el.beats.replaceChildren(...Array.from({length:b},(_,i)=>{const d=document.createElement("span");d.className="ui-beat";d.dataset.i=i;d.textContent=i+1;return d}))};
+ const tick=()=>{const[b,u]=sig(),bpm=Number(el.bpm.value),[beat,sub,phase]=metronomePosition((performance.now()-t0)*1000,bpm,b,2);box.dataset.beat=beat;box.dataset.sub=sub;
+  for(const d of el.beats.children)d.toggleAttribute("data-on",Number(d.dataset.i)===beat);
+  text(el.info,"Beat "+(beat+1)+"/"+b+" · "+durationLabel(beatMicros(bpm))+" per beat · bar "+durationLabel(barMicros(bpm,b)));if(running)raf=requestAnimationFrame(tick)};
+ const idle=()=>{const[b]=sig(),bpm=Number(el.bpm.value);text(el.bpmOut,bpm+" BPM");text(el.info,b+"/"+sig()[1]+" · beat "+durationLabel(beatMicros(bpm))+" · bar "+durationLabel(barMicros(bpm,b)))};
+ const restart=()=>{if(running)t0=performance.now();idle()};
+ el.bpm.addEventListener("input",restart);for(const r of $$('input[name="studio-sig"]'))r.addEventListener("change",()=>{drawBeats();restart();notes()});
+ el.run.addEventListener("click",()=>{running=!running;el.run.setAttribute("aria-pressed",String(running));el.run.textContent=running?"Stop":"Start";if(running){t0=performance.now();raf=requestAnimationFrame(tick)}else{cancelAnimationFrame(raf);for(const d of el.beats.children)d.removeAttribute("data-on");delete box.dataset.beat;idle()}});
+ el.tap.addEventListener("click",()=>{const[kept,bpm]=tapTempo(taps,Math.floor(performance.now()*1000));taps=kept;if(bpm!==null){el.bpm.value=bpm;restart();text(el.tap,"Tap tempo ("+bpm+")")}});
+ const theory=()=>{const key=el.key.value,m=minor();text(el.progOut,convertProgression(key,el.prog.value,m).join("  "));
+  el.degrees.replaceChildren(...Array.from({length:7},(_,i)=>{const s=document.createElement("span");s.className="ui-tag";s.textContent=(i+1)+" "+diatonicChord(key,i+1,m);return s}));
+  const left=fifthNeighbor(key,false),right=fifthNeighbor(key,true);text($("[data-fifth-left]"),left);text($("[data-fifth-right]"),right);$("[data-fifth-left]").value=left;$("[data-fifth-right]").value=right;
+  const degree=Number(el.degree.value),root=scale(key,m)[degree-1],inv=Number(checked("studio-inv")),modifier=el.mod.value;
+  text(el.chord,chordWithInversion(root,modifier,inv)+"  ("+chordTones(root,modifier).join(" ")+")")};
+ const setKey=k=>{if(![...el.key.options].some(o=>o.value===k))return;el.key.value=k;theory()};
+ el.key.addEventListener("change",theory);el.prog.addEventListener("input",theory);el.degree.addEventListener("change",theory);el.mod.addEventListener("change",theory);
+ for(const r of $$('input[name="studio-mode"],input[name="studio-inv"]'))r.addEventListener("change",theory);
+ $("[data-semi-down]").addEventListener("click",()=>setKey(transposeKey(el.key.value,-1)));$("[data-semi-up]").addEventListener("click",()=>setKey(transposeKey(el.key.value,1)));
+ for(const b of $$("[data-fifth-left],[data-fifth-right]"))b.addEventListener("click",()=>setKey(b.value));
+ const notes=()=>{try{const[b,u]=sig(),n=parseNotes(el.notes.value),bars=noteBars(n,b,u,Number(el.noteUnit.value));el.bars.replaceChildren(...bars.map((bar,i)=>{const li=document.createElement("li");li.textContent=bar.join(" ");li.dataset.bar=i+1;return li}))}catch(e){el.bars.replaceChildren();const li=document.createElement("li");li.textContent=e.message;li.dataset.error="";el.bars.append(li)}};
+ el.notes.addEventListener("input",notes);el.noteUnit.addEventListener("change",notes);
+ $("[data-new-seed]").addEventListener("click",()=>{const seed=Math.floor(Math.random()*4294967296),r=songSeed(seed);text(el.seed,songSeedText(r)+" (seed "+seed+")");
+  el.key.value=r.tonic;box.querySelector('input[name="studio-mode"][value="'+r.mode+'"]').checked=true;el.bpm.value=r.bpm;box.querySelector('input[name="studio-sig"][value="'+r.time+'"]').checked=true;el.prog.value=r.progression;drawBeats();restart();theory();notes()});
+ drawBeats();idle();theory();notes();return box})}
+globalThis.webUiStudio={pitchClass,transposeKey,fifthNeighbor,scale,diatonicChord,convertProgression,convertRomanToken,applyModifier,chordTones,normalizedInversion,chordWithInversion,beatMicros,subdivisionMicros,barMicros,metronomePosition,durationLabel,tapTempo,parseNotes,notesPerBar,noteBars,mulberry32,songSeed,songSeedText,bindStudio};
+if(typeof document!=="undefined")bindStudio();
+"""
+
 _JS["door.js"] = r"""/* web-ui door: a Door-to-Door pull-down, emoji transitions ("A → B", "A ↔ B") and a seeded draw. Python (web_ui.door_options, emoji_path, door_draw) is the reference. */
 const DROP="\\ufe0e\\ufe0f \\t\\n\\v\\f\\r\\x1c-\\x1f\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 export const emojiKey=e=>e.replace(new RegExp("["+DROP+"]","g"),"");
@@ -3737,7 +4100,8 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Themes</h2><p><a href="./github-like.html">GitHub-like theme</a></p></article>'
             '<article class="ui-card"><h2>App shell</h2><p><a href="./showcase.html">Showcase</a>: header, rail or bottom bar, sections.</p></article>'
             '<article class="ui-card"><h2>Clipboard shelf</h2><p><a href="./clipboard-shelf.html">Shelf and prompt workbench</a>: paste, filter, copy a bundle.</p></article>'
-            '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article></section>')
+            '<article class="ui-card"><h2>Door-to-Door</h2><p><a href="./door.html">Pull-down and emoji transitions</a>: A → B, A ↔ B.</p></article>'
+            '<article class="ui-card"><h2>Composition studio</h2><p><a href="./composition-studio.html">Metronome, chords, notes, song seed</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -3767,6 +4131,7 @@ def example_pages() -> dict[str, str]:
         "examples/github-like.html": page(github_like, "web-ui GitHub-like theme", "github-like"),
         "examples/showcase.html": showcase_document(EXAMPLES["showcase"]),
         "examples/clipboard-shelf.html": shelf_document(),
+        "examples/composition-studio.html": studio_document(),
         "examples/door.html": door_document(EXAMPLES["door"]),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
@@ -4086,7 +4451,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, composition.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

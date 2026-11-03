@@ -1249,5 +1249,211 @@ class DoorBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class StudioBrowserTests(unittest.TestCase):
+    """The composition studio in Chromium: every rule equals Python's, and the controls drive them."""
+
+    def serve_page(self):
+        from web_ui import studio_document
+        return WorldBrowserTests.serve({'studio.html': studio_document()})
+
+    def test_every_rule_in_the_page_equals_pythons(self):
+        import random
+        import web_ui as w
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(origin + '/studio.html')
+                    # Run a Python function and the page's on the same arguments; an error must be an error on both sides.
+                    def agree(name, py, calls):
+                        got = page.evaluate(f"""calls => calls.map(a => {{ try {{ return {{ok: webUiStudio.{name}(...a)}} }} catch (e) {{ return {{error: true}} }} }})""", calls)
+                        for call, result in zip(calls, got):
+                            try:
+                                expected = {'ok': py(*call)}
+                            except ValueError:
+                                expected = {'error': True}
+                            if 'ok' in expected and isinstance(expected['ok'], tuple):
+                                expected = {'ok': list(expected['ok'])}
+                            self.assertEqual(result, expected, (name, call))
+                        return got
+                    keys = list(w.SELECTABLE_KEYS)
+                    agree('transposeKey', w.transpose_key, [[k, n] for k in keys for n in range(-14, 15)])
+                    agree('fifthNeighbor', lambda k, c: w.fifth_neighbor(k, clockwise=c), [[k, c] for k in keys for c in (True, False)])
+                    agree('scale', lambda k, m: w.scale(k, minor=m), [[k, m] for k in keys + ['H', 'C#', ''] for m in (False, True)])
+                    agree('diatonicChord', lambda k, d, m: w.diatonic_chord(k, d, minor=m), [[k, d, m] for k in keys for d in range(0, 9) for m in (False, True)])
+                    roots = [r for k in keys[:6] for r in w.scale(k, minor=False)]
+                    agree('chordWithInversion', w.chord_with_inversion, [[r, m, i] for r in roots for m in w.CHORD_MODIFIERS + ('9',) for i in range(-1, 5)])
+                    agree('chordTones', w.chord_tones, [[r, m] for r in roots for m in w.CHORD_MODIFIERS])
+                    agree('pitchClass', w.pitch_class, [[x] for x in ['C', 'F♯', 'B♭♭', 'E♯♯', 'H', 'c', '', 'C#', 'C♯♭']])
+                    # Progressions: random Roman numerals, suffixes, separators, odd characters.
+                    rng = random.Random(3)
+                    tokens = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii', 'VII', 'i', 'iv', 'v', 'VI', 'III', 'I6', 'ii6', 'Imaj7', 'IM7', 'I△7', 'V7', 'ii7', 'viiø7', 'viim7♭5', 'IVsus2', 'IVsus4',
+                              'IVadd9', 'IVadd11', 'Vaug', 'V+', 'vii°', 'viidim', 'im6', 'Vx', 'IIII', 'x', 'C', '7', 'vi\u3000', '\ufeffI', 'I\u2028V', 'iv\u00a0']
+                    seps = [' ', ' ', ',', ' – ', ' — ', '-', '|', ' | ', '\t', '\n', ', ', '  ']
+                    progressions = [''.join(rng.choice(tokens) + rng.choice(seps) for _ in range(rng.randint(0, 6))) for _ in range(500)]
+                    agree('convertProgression', lambda k, p, m: w.convert_progression(k, p, minor=m), [[rng.choice(keys), p, rng.random() < 0.5] for p in progressions])
+                    # Metronome: all tempos around the clamps, odd meters, huge and negative elapsed times; labels for every tempo.
+                    cases = [[rng.choice([-10 ** 6, 0, 1, 249_999, 250_000, 750_000, 2_250_000, rng.randint(0, 10 ** 9), rng.randint(0, 10 ** 12)]),
+                              rng.choice([1, 29, 30, 31, 120, 299, 300, 301, 1000]), rng.choice([1, 2, 3, 4, 6, 7, 12]), rng.choice([1, 2, 3, 4])] for _ in range(1500)]
+                    agree('metronomePosition', w.metronome_position, cases)
+                    agree('beatMicros', w.beat_micros, [[b] for b in range(0, 400)])
+                    agree('barMicros', w.bar_micros, [[b, n] for b in range(25, 310, 7) for n in range(0, 13)])
+                    agree('subdivisionMicros', w.subdivision_micros, [[b, n] for b in range(25, 310, 7) for n in range(0, 9)])
+                    agree('durationLabel', w.duration_label, [[m] for m in [0, 1, 499, 500, 501, 999_499, 999_500, 999_999, 1_000_000, 1_004_999, 1_005_000, 1_125_000, 2_000_000, 12_345_678]
+                                                              + [w.bar_micros(b, n) for b in range(30, 301, 5) for n in (1, 3, 4, 6)]])
+                    # Tap tempo: random tap trains, with long gaps, repeats and zero intervals.
+                    for _ in range(300):
+                        train = sorted(rng.choice([0, 100_000, 250_000, 500_000, 900_000, 2_000_001, 5_000_000]) + 7_000_000 * j for j in range(rng.randint(1, 9)))
+                        got = page.evaluate("""train => { let taps = []; return train.map(t => { const [k, b] = webUiStudio.tapTempo(taps, t); taps = k; return [k, b] }) }""", train)
+                        taps, expected = [], []
+                        for t in train:
+                            taps, bpm = w.tap_tempo(taps, t)
+                            expected.append([taps, bpm])
+                        self.assertEqual(got, expected, train)
+                    # Notes and bars.
+                    notes = ['C3 d3 F#3 Gb3', 'C3,D3,\tE-1\n', '', 'C3 nope', 'C33', 'c♯♭3', 'A4 B4 C5 D5 E5', ' G3  ', 'H1']
+                    agree('parseNotes', w.parse_notes, [[n] for n in notes])
+                    agree('notesPerBar', w.notes_per_bar, [[b, u, n] for b in range(0, 9) for u in (1, 2, 4, 8) for n in (2, 4, 8, 16)])
+                    agree('noteBars', w.note_bars, [[w.parse_notes(n), b, u, nu] for n in notes[:1] + notes[1:2] + notes[6:7] for b, u, nu in ((4, 4, 8), (4, 4, 4), (6, 8, 8), (6, 8, 4), (3, 4, 8), (5, 8, 4))])
+                    # Song seeds, with and without something to avoid.
+                    seeds = [0, 1, 5, 2 ** 32 - 1, 20261103] + [rng.randrange(2 ** 32) for _ in range(500)]
+                    agree('songSeed', w.song_seed, [[x] for x in seeds])
+                    agree('songSeed', w.song_seed, [[x, w.song_seed(x)] for x in seeds[:100]])
+                    agree('songSeedText', w.song_seed_text, [[w.song_seed(x)] for x in seeds[:100]])
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_controls_drive_the_rules(self):
+        import web_ui as w
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 1200})
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.add_init_script('window.__rnd = [0.5]; Math.random = () => window.__rnd.shift() ?? 0.123')
+                    page.goto(origin + '/studio.html')
+                    text = lambda sel: page.locator(sel).text_content()
+                    # Theory: the Dart tests' own cases, through the controls.
+                    self.assertEqual(text('[data-prog-out]').split(), ['C', 'G', 'Am', 'F'])
+                    page.locator('[data-key]').select_option('D')
+                    self.assertEqual(text('[data-prog-out]').split(), ['D', 'A', 'Bm', 'G'])
+                    page.locator('[data-semi-down]').click()
+                    self.assertEqual(page.locator('[data-key]').input_value(), 'C♯')                    # D prefers sharps, so a semitone down is C♯
+                    page.locator('[data-key]').select_option('D♭')
+                    self.assertEqual(text('[data-fifth-left]'), 'G♭')
+                    self.assertEqual(text('[data-fifth-right]'), 'A♭')
+                    page.locator('[data-fifth-right]').click()
+                    self.assertEqual(page.locator('[data-key]').input_value(), 'A♭')
+                    page.locator('[data-key]').select_option('C')
+                    self.assertEqual(page.locator('[data-degrees] .ui-tag').all_text_contents(), ['1 C', '2 Dm', '3 Em', '4 F', '5 G', '6 Am', '7 Bdim'])
+                    page.locator('[data-prog]').fill('I6 IV6 Imaj7 V7 ii7 viiø7 IVsus2 IVadd9 Vaug')
+                    self.assertEqual(text('[data-prog-out]').split(), ['C6', 'F6', 'Cmaj7', 'G7', 'Dm7', 'Bm7♭5', 'Fsus2', 'Fadd9', 'Gaug'])
+                    page.locator('label', has_text='Minor').click()
+                    self.assertEqual(page.locator('[data-degrees] .ui-tag').first.text_content(), '1 Cm')
+                    page.locator('label', has_text='Major').first.click()
+                    page.locator('[data-degree]').select_option('1')
+                    page.locator('[data-mod]').select_option('maj7')
+                    page.locator('label', has_text='1st').click()
+                    self.assertEqual(text('[data-chord]'), 'Cmaj7/E  (C E G B)')
+                    page.locator('[data-mod]').select_option('triad')
+                    page.locator('label', has_text='3rd').click()
+                    self.assertEqual(text('[data-chord]').split()[0], 'C/E')
+                    # Notes and bars, and a refused note.
+                    self.assertEqual(page.locator('[data-bars] li').all_text_contents(), ['C3 D3 C3 D3 G3 A3 G3 C4'])
+                    page.locator('[data-note-unit]').select_option('4')
+                    self.assertEqual(page.locator('[data-bars] li').all_text_contents(), ['C3 D3 C3 D3', 'G3 A3 G3 C4'])
+                    page.locator('[data-notes]').fill('C3 nope')
+                    self.assertEqual(page.locator('[data-bars] li[data-error]').text_content(), 'invalid note: nope')
+                    # Metronome: the labels use Python's numbers; time signature changes the dots.
+                    self.assertEqual(page.locator('.ui-beat').count(), 4)
+                    self.assertIn(f'bar {w.duration_label(w.bar_micros(120, 4))}', text('[data-beat-info]'))
+                    page.locator('label', has_text='6/8').click()
+                    self.assertEqual(page.locator('.ui-beat').count(), 6)
+                    page.locator('label', has_text='3/4').click()
+                    self.assertEqual(page.locator('.ui-beat').count(), 3)
+                    page.locator('[data-bpm]').fill('60')
+                    self.assertEqual(text('[data-bpm-out]'), '60 BPM')
+                    self.assertIn(w.duration_label(w.beat_micros(60)), text('[data-beat-info]'))
+                    # A new song seed: Math.random picks the seed, the text and the controls show what Python computes for it.
+                    page.locator('[data-new-seed]').click()
+                    seed = int(0.5 * 4294967296)
+                    result = w.song_seed(seed)
+                    self.assertEqual(text('[data-seed-out]'), f'{w.song_seed_text(result)} (seed {seed})')
+                    self.assertEqual((page.locator('[data-key]').input_value(), page.locator('[data-bpm]').input_value(), page.locator('[data-prog]').input_value()),
+                                     (result['tonic'], str(result['bpm']), result['progression']))
+                    self.assertTrue(page.locator(f'input[name="studio-mode"][value="{result["mode"]}"]').is_checked())
+                    self.assertTrue(page.locator(f'input[name="studio-sig"][value="{result["time"]}"]').is_checked())
+                    self.assertEqual(text('[data-prog-out]').split(), w.convert_progression(result['tonic'], result['progression'], minor=result['mode'] == 'Minor'))
+                    self.assertEqual(page.evaluate('localStorage.length + sessionStorage.length'), 0)
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_metronome_follows_elapsed_time_and_tap_tempo_sets_the_tempo(self):
+        import web_ui as w
+        server, origin = self.serve_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                try:
+                    page = browser.new_page(viewport={'width': 800, 'height': 1200})
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.clock.install(time=0)
+                    page.goto(origin + '/studio.html')
+                    page.clock.pause_at(10_000)                                                       # from here time moves only when the test says so
+                    dots = lambda: [d.get_attribute('data-on') is not None for d in page.locator('.ui-beat').all()]
+                    self.assertEqual(dots(), [False] * 4)
+                    page.locator('[data-run]').click()
+                    self.assertEqual(page.locator('[data-run]').get_attribute('aria-pressed'), 'true')
+                    start = page.evaluate('performance.now()')                                         # 120 BPM in 4/4, two subdivisions per beat
+                    for elapsed in (100, 770, 1620, 2270, 4120):                                      # just past a boundary: a frame lands 16 ms apart
+                        now = page.evaluate('performance.now()')
+                        page.clock.run_for(start + elapsed - now)
+                        page.wait_for_timeout(0)
+                        beat, sub, _ = w.metronome_position(elapsed * 1000, 120, 4, 2)
+                        self.assertEqual(dots().index(True), beat, elapsed)
+                        self.assertEqual(page.locator('[data-ui-studio]').get_attribute('data-sub'), str(sub), elapsed)
+                    # A new tempo restarts the bar; stopping clears the dots.
+                    page.locator('[data-bpm]').fill('60')
+                    now = page.evaluate('performance.now()')
+                    page.clock.run_for(1500)
+                    self.assertEqual(dots().index(True), w.metronome_position(1_500_000, 60, 4, 2)[0])
+                    page.locator('[data-run]').click()
+                    self.assertEqual(dots(), [False] * 4)
+                    self.assertEqual(page.locator('[data-run]').text_content(), 'Start')
+                    # Tap tempo: taps 500 ms apart make 120 BPM; a long pause starts again.
+                    for _ in range(4):
+                        page.locator('[data-tap]').click()
+                        page.clock.run_for(500)
+                    self.assertEqual(page.locator('[data-bpm]').input_value(), '120')
+                    self.assertIn('120', page.locator('[data-tap]').text_content())
+                    page.clock.run_for(5000)
+                    page.locator('[data-tap]').click()
+                    page.clock.run_for(250)
+                    page.locator('[data-tap]').click()
+                    self.assertEqual(page.locator('[data-bpm]').input_value(), '240')
+                    self.assertEqual(errors, [])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == '__main__':
     unittest.main()

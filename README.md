@@ -74,6 +74,12 @@ rail (256 px at 1200+, 80 px from 900) or bottom bar (narrower) and sections tha
 switching. Classes `ui-shell*`, `ui-rail*`, `ui-bottom-*`, `ui-icon-button`; the optional favorite button uses `bindToggles` from ui.js (memory only)
 and the theme list uses `bindTheme`. It replaces the pinned CSS copy in flutter_navigation_basic's `experiments/ui-showcase-html`.
 
+Composition studio (`examples/composition-studio.html`): chord theory (`scale`, `diatonic_chord`, `convert_progression` for Roman numerals, `chord_tones`,
+`chord_with_inversion`, `transpose_key`, `fifth_neighbor`), metronome timing from elapsed time (`metronome_position`, `beat_micros`, `duration_label`), `tap_tempo`,
+`parse_notes` / `note_bars` and a reproducible `song_seed(seed)`, from flutter_navigation_basic's composition_generator. Its Dart tests are the golden values;
+`composition.js` is checked against Python on every key, mode, chord quality and inversion, 1,500 metronome positions and random progressions, tap trains, notes
+and seeds. Deliberate differences: separators are ASCII whitespace and commas, rounding is half up on integers, and seeds use `mulberry32`.
+
 Door-to-Door and emoji transitions (`examples/door.html`): `door_validate` keeps one emoji per page (variation selectors and spaces do not count, so `🗺️` and
 `🗺` collide) and only safe targets (a relative path or an http(s) address); `emoji_path("🏠 → 🗺️ → 🌍 ↔ 🕶️", pages)` expands `A → B` (go) and `A ↔ B` (go and come
 back) into the hrefs visited, and an unknown emoji returns nothing at all; `door_options` orders the pull-down as Home, the drawn discoveries, then the rest.

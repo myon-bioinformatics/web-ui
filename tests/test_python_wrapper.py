@@ -700,6 +700,114 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(len(long["floors"][0]["spots"][0]["label"]), 40)
 
 
+class CompositionTests(unittest.TestCase):
+    """The studio's rules. Expected values are the ones in flutter_navigation_basic's Dart tests (chord_theory, metronome_timing, note_sequence)."""
+
+    def test_chord_theory_as_the_dart_tests_say(self):
+        w = web_ui
+        self.assertEqual(w.convert_progression("C", "I V vi IV", minor=False), ["C", "G", "Am", "F"])
+        key = w.transpose_key("C", 2)
+        self.assertEqual((key, w.convert_progression(key, "I V vi IV", minor=False)), ("D", ["D", "A", "Bm", "G"]))
+        self.assertEqual(w.transpose_key("C", -1), "B")
+        self.assertEqual([w.fifth_neighbor("C", clockwise=False), w.fifth_neighbor("C", clockwise=True), w.fifth_neighbor("D♭", clockwise=False),
+                          w.fifth_neighbor("D♭", clockwise=True)], ["F", "G", "G♭", "A♭"])
+        self.assertEqual(w.scale("F♯", minor=False), ["F♯", "G♯", "A♯", "B", "C♯", "D♯", "E♯"])           # one letter per degree: E♯, not F
+        self.assertEqual(w.convert_progression("C", "I6 IV6 Imaj7 V7 ii7 viiø7 IVsus2 IVadd9 Vaug", minor=False),
+                         ["C6", "F6", "Cmaj7", "G7", "Dm7", "Bm7♭5", "Fsus2", "Fadd9", "Gaug"])
+        self.assertEqual(w.convert_progression("C", "ii6 vi6", minor=False), ["Dm6", "Am6"])
+        self.assertEqual([w.apply_modifier(r, m) for r, m in (("C", "6"), ("C", "m6"), ("B", "m7♭5"), ("C", "sus2"), ("C", "sus4"), ("F", "add9"),
+                                                              ("F", "add11"), ("D", "dim"), ("E", "aug"), ("G", "7"))],
+                         ["C6", "Cm6", "Bm7♭5", "Csus2", "Csus4", "Fadd9", "Fadd11", "Ddim", "Eaug", "G7"])
+        self.assertEqual([w.chord_with_inversion("C", "maj7", i) for i in range(4)], ["Cmaj7", "Cmaj7/E", "Cmaj7/G", "Cmaj7/B"])
+        self.assertEqual(w.chord_with_inversion("C", "6", 3), "C6/A")
+        self.assertEqual((w.normalized_inversion("triad", 3), w.chord_with_inversion("C", "triad", 3), w.chord_with_inversion("C", "sus4", 3)), (1, "C/E", "Csus4/F"))
+        self.assertEqual([w.diatonic_chord("C", d, minor=False) for d in range(1, 8)], ["C", "Dm", "Em", "F", "G", "Am", "Bdim"])
+
+    def test_every_key_and_chord_is_spelled_consistently_and_bad_input_is_refused(self):
+        w = web_ui
+        for key in w.SELECTABLE_KEYS:
+            for minor in (False, True):
+                notes = w.scale(key, minor=minor)
+                self.assertEqual((notes[0], [n[0] for n in notes]), (key, [("CDEFGAB" * 2)[("CDEFGAB".index(key[0]) + i)] for i in range(7)]), (key, minor))
+                steps = (0, 2, 3, 5, 7, 8, 10) if minor else (0, 2, 4, 5, 7, 9, 11)
+                self.assertEqual([w.pitch_class(n) for n in notes], [(w.pitch_class(key) + st) % 12 for st in steps])
+                for neighbor in (w.fifth_neighbor(key, clockwise=True), w.fifth_neighbor(key, clockwise=False)):
+                    self.assertIn(neighbor, w.SELECTABLE_KEYS)                                         # the circle never leaves the key list
+                for modifier in w.CHORD_MODIFIERS:
+                    for root in notes:
+                        for inversion in range(4):
+                            chord = w.chord_with_inversion(root, modifier, inversion)
+                            self.assertTrue(chord.startswith(w.apply_modifier(root, modifier)))
+        for bad in ("H", "c", "C#", "", "C♯♭x", None, 5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                w.pitch_class(bad)
+        for call in (lambda: w.diatonic_chord("C", 0, minor=False), lambda: w.diatonic_chord("C", 8, minor=False), lambda: w.apply_modifier("C", "9"),
+                     lambda: w.chord_tones("C", "nope"), lambda: w.normalized_inversion("triad", 4), lambda: w.normalized_inversion("triad", -1), lambda: w.scale("H", minor=False)):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(w.convert_progression("C", "I – V | vi, IV", minor=False), ["C", "G", "Am", "F"])
+        self.assertEqual(w.convert_progression("C", "x I y", minor=False), ["x", "C", "y"])                  # not a numeral: kept as written
+        self.assertEqual(w.convert_progression("A", "i iv v i", minor=True), ["Am", "Dm", "Em", "Am"])
+        self.assertEqual(w.convert_progression("C", "", minor=False), [])
+
+    def test_metronome_and_tap_tempo_as_the_dart_tests_say(self):
+        w = web_ui
+        self.assertEqual((w.beat_micros(120), w.bar_micros(120, 4), w.subdivision_micros(120, 2)), (500_000, 2_000_000, 250_000))
+        self.assertEqual(w.metronome_position(750_000, 120, 4, 2), (1, 1, 0.0))                              # position comes from elapsed time
+        self.assertEqual(w.metronome_position(2_250_000, 120, 4, 2)[:2], (0, 1))                             # and wraps at the end of the bar
+        self.assertEqual(w.metronome_position(-5, 120, 4, 2), (0, 0, 0.0))
+        self.assertEqual((w.beat_micros(1), w.beat_micros(30), w.beat_micros(9999), w.beat_micros(300)), (2_000_000, 2_000_000, 200_000, 200_000))
+        for bad in ((lambda: w.subdivision_micros(120, 0)), (lambda: w.bar_micros(120, 0)), (lambda: w.metronome_position(0, 120, 0, 2))):
+            with self.assertRaises(ValueError):
+                bad()
+        taps, bpms = [], []
+        for ms in (0, 500, 1000, 1500):
+            taps, bpm = w.tap_tempo(taps, ms * 1000)
+            bpms.append(bpm)
+        self.assertEqual(bpms, [None, 120, 120, 120])
+        taps, _ = w.tap_tempo([], 0)
+        taps, bpm = w.tap_tempo(taps, 500_000)
+        taps, bpm2 = w.tap_tempo(taps, 3_000_000)                                                            # more than two seconds: start again
+        self.assertEqual((bpm, bpm2, len(taps)), (120, None, 1))
+        self.assertEqual(w.tap_tempo([0], 100_000)[1], 300)                                                  # clamped to the supported range
+        self.assertEqual(w.tap_tempo([0], 1_900_000)[1], 32)
+        self.assertEqual(w.tap_tempo([5], 5)[1], None)                                                       # no time passed
+        taps = []
+        for ms in range(0, 3000, 400):                                                                       # only the last five intervals count
+            taps, bpm = w.tap_tempo(taps, ms * 1000)
+        self.assertEqual((len(taps), bpm), (6, 150))
+        self.assertEqual([w.duration_label(m) for m in (500_000, 2_000_000, 1_125_000, 999_999, 1_000_000, 0)],
+                         ["500 ms", "2.00 s", "1.13 s", "1000 ms", "1.00 s", "0 ms"])
+
+    def test_note_sequences_as_the_dart_tests_say(self):
+        w = web_ui
+        self.assertEqual(w.parse_notes("C3 d3 F#3 Gb3"), ["C3", "D3", "F♯3", "G♭3"])
+        self.assertEqual(w.note_bars(w.parse_notes("C3 D3 C3 D3 G3 A3 G3 C4"), 4, 4, 8), [["C3", "D3", "C3", "D3", "G3", "A3", "G3", "C4"]])
+        self.assertEqual(w.note_bars(w.parse_notes("C3 D3 E3 F3 G3 A3 B3 C4"), 4, 4, 4), [["C3", "D3", "E3", "F3"], ["G3", "A3", "B3", "C4"]])
+        self.assertEqual((w.notes_per_bar(6, 8, 8), w.notes_per_bar(6, 8, 4), w.notes_per_bar(3, 4, 8)), (6, 3, 6))
+        self.assertEqual(w.parse_notes("C3,D3,\tE-1\n"), ["C3", "D3", "E-1"])
+        self.assertEqual((w.parse_notes(""), w.note_bars([], 4, 4, 8)), ([], []))
+        for bad in ("C3 nope D3", "C", "C33", "H3", "C3#", "c♯♭3", "٣"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                w.parse_notes(bad)
+        for args in ((4, 4, 16), (5, 8, 4), (4, 4, 2), (0, 4, 4)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                w.notes_per_bar(*args)
+
+    def test_the_seeded_song_seed(self):
+        w = web_ui
+        seeds = [w.song_seed(n) for n in range(2000)]
+        self.assertEqual(w.song_seed(5), w.song_seed(5))
+        self.assertTrue(all(80 <= x["bpm"] <= 160 and x["tonic"] in w.SEED_KEYS and x["time"] in w.SEED_TIMES and x["progression"] in w.SEED_PROGRESSIONS[x["mode"]] for x in seeds))
+        for field, options in (("tonic", w.SEED_KEYS), ("mode", w.SEED_MODES), ("time", w.SEED_TIMES)):
+            self.assertEqual({x[field] for x in seeds}, set(options))
+        self.assertEqual({x["bpm"] for x in seeds}, set(range(80, 161)))
+        self.assertTrue(all(w.song_seed(n, avoid=w.song_seed(n)) != w.song_seed(n) for n in range(300)))          # asked to differ, it does
+        self.assertEqual(w.song_seed_text({"tonic": "E♭", "mode": "Minor", "bpm": 100, "time": "6/8", "progression": "i – iv – v – i"}),
+                         "Key: E♭ Minor · BPM: 100 · Time: 6/8 · Progression: i – iv – v – i")
+        self.assertEqual(w.song_seed(1), {"tonic": "B♭", "mode": "Minor", "bpm": 122, "time": "6/8", "progression": "i – iv – v – i"})   # frozen: the page must agree
+
+
 DOOR = web_ui.example_data("door")
 # The identities the Flutter doc's examples use (docs/testing/page-identities.md), as a door registry.
 FLUTTER_PAGES = [{"emoji": e, "label": l, "href": h} for e, l, h in (("🏠", "Home", "#/"), ("🗺️", "Hub", "#/hub"), ("🥐", "Irony", "#/examples/irony-generator"),
