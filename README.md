@@ -149,7 +149,7 @@ Use `write_js(output_dir)` when only browser modules are needed; source checkout
 
 ## UI verification
 
-Run the static contract checks locally:
+Run the unittest-compatible subset of the static contract checks locally\n(13 cases in the validated snapshot). Module-level pytest functions in the same\nfile remain part of the full pytest lane:
 
 ```sh
 python -S -m unittest discover -s tests -p test_static_contract.py -v
