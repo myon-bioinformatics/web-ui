@@ -144,7 +144,7 @@ def test_the_migration_inventory_is_pinned_complete_and_honest():
     for row in list(data['non_catalogue_files']) + [r for rows in data['other_sources'].values() for r in rows]:
         counts[row['status']] = counts.get(row['status'], 0) + 1
     assert data['status_counts_outside_catalogues'] == dict(sorted(counts.items()))
-    assert (data['navigation_api_ui_view_files'], data['navigation_api_ui_view_shapes']) == (594, 1), 'the 594 per-pattern views are one template'
+    assert (data['navigation_api_ui_view_files'], data['navigation_api_ui_view_shapes']) == (594, 1), 'the 594 per-pattern views share one heuristic shape, not an equivalence proof'
     waiting = [row['path'] for row in rows if row['status'] in ('pending', 'unreviewed', 'proposed_retirement')]
     assert waiting and data['archive_ready'] is False, 'archiving stays blocked while something is waiting for a decision'
     for row in rows:

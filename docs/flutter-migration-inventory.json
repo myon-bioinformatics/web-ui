@@ -1471,15 +1471,15 @@
       "files": 202,
       "status": "partial",
       "target": "14 Python and 5 JavaScript references as pattern_run families; native examples; screens",
-      "remaining": "The Flutter views of the data-processing patterns are shown as screens; the 23 view shapes are not reviewed one by one",
+      "remaining": "The Flutter views of the data-processing patterns are shown as screens; the view shapes in file_kinds are not reviewed one by one",
       "file_kinds": {
         "service.dart": {
           "files": 26,
-          "distinct_shapes": 2
+          "distinct_shapes": 1
         },
         "view.dart": {
           "files": 176,
-          "distinct_shapes": 23
+          "distinct_shapes": 22
         }
       },
       "tree_digest": "2763465fcd3df775f1dde111f2688f20c57d73e1a58e971771a6ccc1dfa21a63"
@@ -1488,7 +1488,7 @@
       "files": 792,
       "status": "partial",
       "target": "pattern_catalogue (198 rows), 198 screens",
-      "remaining": "Per-pattern Flutter views and controllers: see file_kinds; one shape means one template",
+      "remaining": "Per-pattern Flutter views and controllers: see file_kinds; shapes are heuristic groups, not proof of equivalent behavior",
       "file_kinds": {
         "controller.dart": {
           "files": 198,

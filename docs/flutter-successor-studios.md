@@ -18,7 +18,9 @@ python -S tool/flutter_migration_inventory.py /path/to/flutter_navigation_basic 
 
 The inventory lists SHA-256 and a disposition for 178 non-catalogue Dart files, for the 56 Python tools, 8 Dart build tools and
 18 workflows, and per group for the four catalogues (2,578 further Dart files; for each kind of file, how many distinct shapes it has once comments,
-strings and numbers are removed: one shape is one template, and all 594 navigation, API and UI `view.dart` files are the same shape). A status says what web-ui did, not that the original was
+plain string values, numeric literals and whitespace are ignored, and Pattern-number identifiers are normalized.
+Single/double/triple and raw strings are recognized; interpolation expressions are retained as nested shapes.
+These are heuristic groups, not proof of equivalent behavior or completed migration. All 594 navigation, API and UI `view.dart` files share one shape). A status says what web-ui did, not that the original was
 reviewed line by line: `successor`, `partial`, `not_absorbed` (with the reason), `pending` (asked for, not done), `proposed_retirement` (Flutter runtime with no counterpart on the web; needs the
 owner's approval) and `unreviewed`. Outside the catalogues: 9 not_absorbed, 96 partial, 3 pending, 64 proposed_retirement, 74 successor, 14 unreviewed. `archive_ready` stays false while anything is pending, unreviewed or an unapproved retirement.
 `tests/test_successor_tools.py` checks the file's invariants, that every function it names exists, and (with `FLUTTER_NAVIGATION_BASIC_CHECKOUT` set) that the tool writes exactly this file.
@@ -151,3 +153,9 @@ A sporadic existing WebKit ResizeObserver loop during EXIF imports was also
 observed. Photo studio now observes a zero-height width probe rather than the
 canvas parent whose height changes during imports; existing orientation/resize
 acceptance tests cover this behavior without filtering browser errors.
+
+The lexical shape repair changes only data-processing group counts at the pinned source:
+`service.dart` 2 → 1 and `view.dart` 23 → 22. Whitespace and comment placement no longer create extra groups.
+Original file/tree hashes, file counts and migration dispositions are unchanged. This scanner is not a Dart parser;
+it rejects unterminated delimiters but does not validate all Dart syntax. Numeric/string values are intentionally ignored,
+so distinct runtime behavior can still share a shape.

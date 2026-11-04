@@ -178,20 +178,103 @@ WORKFLOWS = {
     'claude.yml': ('proposed_retirement', None, 'Assistant workflow of that repository'),
 }
 
-_STRING = re.compile(r"'(?:[^'\\\n]|\\.)*'")
+_TOKEN = re.compile(r'[A-Za-z_$][A-Za-z_0-9$]*|(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|>>>=|===|!==|>>>|<<=|>>=|\?\?=|\.\.\.|=>|==|!=|<=|>=|&&|\|\||\+\+|--|\+=|-=|\*=|/=|~/|%=|<<|>>|\?\?|\?\.|\.\.|[^\s]')
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _comment_end(text: str, start: int) -> int:
+    if text.startswith('//', start):
+        end = text.find('\n', start + 2)
+        return len(text) if end < 0 else end
+    depth, i = 1, start + 2
+    while i < len(text):
+        if text.startswith('/*', i):
+            depth += 1
+            i += 2
+        elif text.startswith('*/', i):
+            depth -= 1
+            i += 2
+            if not depth:
+                return i
+        else:
+            i += 1
+    raise ValueError('Unterminated Dart comment')
+
+
+def _string_end(text: str, start: int) -> tuple[int, list[str]]:
+    raw = text[start] == 'r'
+    i = start + int(raw)
+    quote = text[i] * (3 if text.startswith(text[i] * 3, i) else 1)
+    i += len(quote)
+    expressions = []
+    while i < len(text):
+        if text.startswith(quote, i):
+            return i + len(quote), expressions
+        if not raw and text[i] == '\\':
+            i += 2
+        elif not raw and text[i] == '$':
+            i += 1
+            if i < len(text) and text[i] == '{':
+                depth = 1
+                i += 1
+                expression_start = i
+                while i < len(text) and depth:
+                    if text.startswith(('//', '/*'), i):
+                        i = _comment_end(text, i)
+                    elif text[i] in '\"\'' or (text[i] == 'r' and i + 1 < len(text) and text[i + 1] in '\"\''):
+                        i, _ = _string_end(text, i)
+                    else:
+                        depth += (text[i] == '{') - (text[i] == '}')
+                        i += 1
+                if depth:
+                    raise ValueError('Unterminated Dart interpolation')
+                expressions.append(text[expression_start:i - 1])
+            else:
+                match = re.match(r'[A-Za-z_][A-Za-z_0-9]*', text[i:])
+                if not match:
+                    raise ValueError('Invalid Dart interpolation')
+                expressions.append(match.group())
+                i += len(match.group())
+        else:
+            i += 1
+    raise ValueError('Unterminated Dart string')
+
+
 def _shape(text: str) -> str:
-    """A Dart file with its comments, string literals, numbers and whitespace removed: two files of one template have one shape."""
-    text = re.sub(r'^\s*//.*$', '', text, flags=re.M)
-    text = _STRING.sub('S', text)
-    text = re.sub(r'Pattern\d+', 'PatternN', text)
-    text = re.sub(r'\d+', 'N', text)
-    return hashlib.sha256(re.sub(r'\s+', ' ', text).encode()).hexdigest()
+    """Heuristic template grouping, not semantic equivalence or migration proof.
+
+    Ignore comments, whitespace, plain string values and numeric literals.
+    Retain interpolated expressions as nested shapes; their string labels are
+    ignored. Numeric values are deliberately still ignored, so this is not
+    a test of behavioral equivalence. Raw strings have no interpolation.
+    Only Pattern<number> identifiers are normalized, not arbitrary identifiers.
+    Unterminated string/comment/interpolation delimiters fail; this is not
+    a Dart parser and does not validate Dart syntax.
+    """
+    tokens = []
+    i = 0
+    while i < len(text):
+        if text[i].isspace():
+            i += 1
+        elif text.startswith(('//', '/*'), i):
+            i = _comment_end(text, i)
+        elif text[i] in '\"\'' or (text[i] == 'r' and i + 1 < len(text) and text[i + 1] in '\"\''):
+            end, expressions = _string_end(text, i)
+            tokens.append(('string', [_shape(expression) for expression in expressions]))
+            i = end
+        else:
+            match = _TOKEN.match(text, i)
+            token = match.group()
+            if token[0].isdigit():
+                tokens.append(('number', ''))
+            else:
+                token = re.sub(r'^Pattern\d+', 'PatternN', token)
+                tokens.append(('code', token))
+            i = match.end()
+    return hashlib.sha256(json.dumps(tokens, ensure_ascii=False).encode()).hexdigest()
 
 
 def disposition(name: str, feature: str | None) -> tuple[str, str | None, str]:
@@ -217,10 +300,10 @@ def _group_file_kinds(root: Path, names: list[str]) -> dict:
 
 
 CATALOGUE_GROUPS = {
-    'navigation_patterns': ('partial', 'pattern_catalogue (198 rows), 198 screens', 'Per-pattern Flutter views and controllers: see file_kinds; one shape means one template'),
+    'navigation_patterns': ('partial', 'pattern_catalogue (198 rows), 198 screens', 'Per-pattern Flutter views and controllers: see file_kinds; shapes are heuristic groups, not proof of equivalent behavior'),
     'api_patterns': ('partial', 'pattern_catalogue (198 rows), 198 screens', 'As navigation_patterns; service.dart and model.dart have three shapes'),
     'ui_theme_patterns': ('partial', 'pattern_catalogue (198 rows), 198 screens (and the web-ui themes)', 'As navigation_patterns'),
-    'data_processing_patterns': ('partial', '14 Python and 5 JavaScript references as pattern_run families; native examples; screens', 'The Flutter views of the data-processing patterns are shown as screens; the 23 view shapes are not reviewed one by one'),
+    'data_processing_patterns': ('partial', '14 Python and 5 JavaScript references as pattern_run families; native examples; screens', 'The Flutter views of the data-processing patterns are shown as screens; the view shapes in file_kinds are not reviewed one by one'),
 }
 
 
