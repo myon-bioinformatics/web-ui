@@ -4407,7 +4407,7 @@ class ImageStudioTests(unittest.TestCase):
         return history
 
     def run_cli(self, *argv, stdin=None):
-        done = subprocess.run([sys.executable, str(Path(web_ui.__file__)), *map(str, argv)], input=stdin, capture_output=True, timeout=60)
+        done = subprocess.run([sys.executable, "-S", str(Path(web_ui.__file__)), *map(str, argv)], input=stdin, capture_output=True, timeout=60, cwd=ROOT)
         return done.returncode, done.stdout, done.stderr.decode("utf-8")
 
     # --- the originals' own outputs -------------------------------------------------------------------------------------------------------------
