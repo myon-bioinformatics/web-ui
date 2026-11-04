@@ -10,8 +10,11 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
+# Optional focused test profile; default/full CI remains unchanged.
+world-test = ["pytest>=8", "anyio>=4.15.1"]
 # Default sync: pytest and PyYAML only. Stagehand is browser tooling, opt-in via --group stagehand.
 dev = [
+    "pillow>=13.0.0",
     "pytest>=8",
     "PyYAML>=6",
 ]

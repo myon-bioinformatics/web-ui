@@ -1,0 +1,30 @@
+{
+  "schema": "web-ui-audio-build/1",
+  "node": "26.13.0",
+  "tone": "15.1.22",
+  "esbuild": "0.25.12",
+  "exports": [
+    "Synth",
+    "start",
+    "now",
+    "getContext"
+  ],
+  "packages": [
+    "@babel/runtime",
+    "automation-events",
+    "standardized-audio-context",
+    "tone",
+    "tslib"
+  ],
+  "subset": {
+    "bytes": 237137,
+    "gzip_bytes": 61383,
+    "sha256": "27793516b31dbc84d1cf7289788c9d5922415efd03882da813fb54e18128ac92"
+  },
+  "full_umd": {
+    "bytes": 345500,
+    "gzip_bytes": 79843,
+    "sha256": "e290952fa43d9a7a780182a83c6fccf44d79cb7ae2cba102ef1f2b9d98124e22"
+  },
+  "lock_sha256": "779143f892f723b3416d30ffa9d1c898cbccd44ed09201f229168afeb8c70bf0"
+}

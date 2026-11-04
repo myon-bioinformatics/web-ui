@@ -1,0 +1,9 @@
+{
+  "name": "web-ui-studio-audio-build",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=26"},
+  "dependencies": {"tone": "15.1.22"},
+  "devDependencies": {"esbuild": "0.25.12"},
+  "scripts": {"build": "node build.mjs"}
+}

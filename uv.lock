@@ -1666,6 +1666,7 @@ source = { editable = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "pillow" },
     { name = "pytest" },
     { name = "pyyaml" },
 ]
@@ -1677,11 +1678,16 @@ gradio = [
 stagehand = [
     { name = "stagehand" },
 ]
+world-test = [
+    { name = "anyio" },
+    { name = "pytest" },
+]
 
 [package.metadata]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
 ]
@@ -1691,6 +1697,10 @@ gradio = [
     { name = "pytest", specifier = ">=9.1.1" },
 ]
 stagehand = [{ name = "stagehand", specifier = ">=4" }]
+world-test = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "websockets"
