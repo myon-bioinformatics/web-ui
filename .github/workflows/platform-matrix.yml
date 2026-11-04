@@ -16,6 +16,10 @@ on:
       - 'tests/fixtures/pattern_assets.json'
       - 'tests/fixtures/pattern_golden.json'
       - 'tests/fixtures/studio_golden.json'
+      - 'tests/fixtures/screens_asset.json'
+      - 'tests/fixtures/screen_text_golden.json'
+      - 'tests/fixtures/numbered_routes.toml'
+      - 'tests/fixtures/contract_golden.json'
       - '.github/workflows/platform-matrix.yml'
   workflow_dispatch:
   schedule:
@@ -33,9 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests ImageStudioBrowserTests'}
-          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests ImageStudioBrowserTests'}
-          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests ImageStudioBrowserTests'}
+          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
+          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
+          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
           - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
           - {name: webkit / iPhone 13 (emulation), browser: webkit, profile: iphone, device: 'iPhone 13', tests: 'PhotoPageBrowserTests'}
     steps:

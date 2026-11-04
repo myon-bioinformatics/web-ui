@@ -1,9 +1,11 @@
 """Golden behavior and cross-runtime checks for the Flutter successor tools."""
 import datetime as dt
 import json
+import os
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -117,3 +119,55 @@ def test_optional_audio_not_in_default_shared_modules_and_no_runtime_network_in_
     for name in ('play.js','timeline.js'):
         for forbidden in ('fetch(', 'localStorage', 'sessionStorage', 'XMLHttpRequest'):
             assert forbidden not in u.js_modules()[name]
+
+
+INVENTORY = Path(__file__).resolve().parents[1] / 'docs' / 'flutter-migration-inventory.json'
+INVENTORY_STATUSES = {'successor', 'partial', 'not_absorbed', 'pending', 'proposed_retirement', 'unreviewed'}
+
+
+def inventory_rows(data):
+    yield from data['non_catalogue_files']
+    for rows in data['other_sources'].values():
+        yield from rows
+
+
+def test_the_migration_inventory_is_pinned_complete_and_honest():
+    data = json.loads(INVENTORY.read_text(encoding='utf-8'))
+    assert data['schema'] == 'web-ui-flutter-migration/2' and len(data['source_commit']) == 40
+    assert data['repository'] == 'myon-bioinformatics/flutter_navigation_basic'
+    rows = list(inventory_rows(data))
+    assert {row['status'] for row in rows} | {group['status'] for group in data['catalogues'].values()} <= INVENTORY_STATUSES
+    assert len({row['path'] for row in rows}) == len(rows), 'a file is listed once'
+    assert all(len(row['sha256']) == 64 for row in rows)
+    assert data['dart_files'] == len(data['non_catalogue_files']) + sum(group['files'] for group in data['catalogues'].values()) == 2756
+    counts = {}
+    for row in list(data['non_catalogue_files']) + [r for rows in data['other_sources'].values() for r in rows]:
+        counts[row['status']] = counts.get(row['status'], 0) + 1
+    assert data['status_counts_outside_catalogues'] == dict(sorted(counts.items()))
+    assert (data['navigation_api_ui_view_files'], data['navigation_api_ui_view_shapes']) == (594, 1), 'the 594 per-pattern views are one template'
+    waiting = [row['path'] for row in rows if row['status'] in ('pending', 'unreviewed', 'proposed_retirement')]
+    assert waiting and data['archive_ready'] is False, 'archiving stays blocked while something is waiting for a decision'
+    for row in rows:
+        assert row['status'] not in ('successor', 'partial') or row['target'], row['path']
+        assert row['status'] not in ('not_absorbed', 'proposed_retirement', 'pending') or row['remaining'], row['path']
+
+
+def test_every_function_the_inventory_names_as_a_successor_exists():
+    data = json.loads(INVENTORY.read_text(encoding='utf-8'))
+    named = set()
+    for row in list(inventory_rows(data)) + list(data['catalogues'].values()):
+        if row['status'] in ('successor', 'partial') and row['target']:
+            for part in row['target'].split(', '):
+                part = part.split(' (')[0].strip()
+                if part.replace('_', '').isalnum() and part.islower() and ' ' not in part:
+                    named.add(part)
+    assert {'screen_view', 'pattern_run', 'parse_curl', 'junit_inspect'} <= named
+    assert not [name for name in sorted(named) if not hasattr(u, name)], 'a target that is not a function of web_ui.py'
+
+
+def test_the_migration_inventory_is_what_the_tool_writes_from_the_pinned_checkout():
+    checkout = os.environ.get('FLUTTER_NAVIGATION_BASIC_CHECKOUT')
+    if not checkout:
+        pytest.skip('set FLUTTER_NAVIGATION_BASIC_CHECKOUT to a clean checkout of the pinned commit')
+    done = subprocess.run([sys.executable, '-S', str(INVENTORY.parents[1] / 'tool' / 'flutter_migration_inventory.py'), checkout, '--output', str(INVENTORY), '--check'], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr

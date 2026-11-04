@@ -17,6 +17,7 @@ import hashlib
 import heapq
 import hmac
 import http.client
+import http.server
 import importlib.util
 import json
 import math
@@ -4187,6 +4188,11 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-pattern-run": {"page": "patterns.html", "fragment": "patterns-run-title",
                            "elements": ["#patterns-run-title", "#patterns [data-patterns-request]", "#patterns [data-patterns-run]", "#patterns [data-patterns-example]"],
                            "click": {"target": "#patterns [data-patterns-run]", "observe": "#patterns", "attribute": "data-runs", "before": "1", "after": "2"}},
+    "web-ui-screens": {"page": "screens.html", "elements": ["#screens h2", "#screens [data-screens-locale]", "#screens [data-screens-query]", "#screens [data-screens-count]", "#screens [data-screens-mode=\"list\"]"],
+                       "click": {"target": "#screens [data-screens-mode=\"list\"]", "observe": "#screens", "attribute": "data-mode", "before": "grid", "after": "list"}},
+    # The native examples are below the hub, so this one opens at pattern 151's card (#native-151, a card id the browser scrolls to) to keep everything on the first screen.
+    "web-ui-native-patterns": {"page": "screens.html", "fragment": "native-151", "elements": ["#screens [data-native=\"151\"] h4", "#screens [data-native=\"151\"] [data-native-action=\"increment\"]"],
+                               "click": {"target": "#screens [data-native=\"151\"] [data-native-action=\"increment\"]", "observe": "#screens [data-native=\"151\"]", "attribute": "data-count", "before": "0", "after": "1"}},
     "web-ui-image-studio": {"page": "image-studio.html", "elements": ["#imagestudio h2", "#imagestudio [data-is=\"board\"]", "#imagestudio [data-is=\"undo\"]", "#imagestudio [data-is=\"blank\"]"],
                             "click": {"target": "#imagestudio [data-is=\"blank\"]", "observe": "#imagestudio", "attribute": "data-layers", "before": "8", "after": "0"}},
     # The tools are lower on the page, so this one opens at their heading (#is-tools-title) to keep everything on the first screen.
@@ -7878,6 +7884,7 @@ PATTERN_TITLES: dict[str, str] = {
 # (numbers, runtime in the original, family here): the first row that contains a number decides, as in the original audit. ``order`` and ``text`` have no row there; their
 # producers (list_ordering.py, text_processing.py) are proved by the checked-in assets of patterns 005, 009, 010, 013, 019, 020, 024, 026, 027 and 029.
 PATTERN_PRODUCERS: tuple[tuple[Any, str, str | None], ...] = (
+    ((136, 137, *range(151, 164), *range(166, 176), 183, 184), "flutter_native", "native"),
     ((103, 104, 105, 107, 109, 110), "python", "convert"),
     (range(91, 100), "python", "validate"),
     ((4, 35), "javascript", "interaction"),
@@ -7966,22 +7973,2481 @@ def pattern_find(rows: list[dict[str, Any]], query: str = "", category: str = ""
 
 
 
+# --- Screens: the 198 numbered screens of flutter_navigation_basic, its Hub, and the native examples behind patterns 136-184 ----------------------------------------
+# Absorbs lib/screens/generic_screen.dart (GenericScreen), pattern_template_screen.dart (eleven templates), hub_screen.dart, shared/catalog/catalog_search.dart, the display catalog's
+# chrome (shared/display; 11 locales) and lib/core/data_processing/*_example.dart (the native examples). A screen is data (assets/screens.json: 198 entries, each binding one pattern of
+# each of the four catalogue categories) drawn by one of eleven templates, so the Python here returns the screen as data (``screen_view``) and the page draws it. Python is the reference;
+# ``screens.js`` must agree. The independent oracles are the originals' own files: ``tests/fixtures/screens_asset.json`` (assets/screens.json, byte for byte), ``screen_text_golden.json``
+# (the chrome keys of assets/display/app_text.json) and ``numbered_routes.toml`` (ci/numbered_routes.toml); the Dart tests' expectations are the unit tests.
+# Differences from the originals: (1) the Flutter widgets are semantic HTML; (2) the screens' data and chrome texts are embedded in the page (no asset loading, so no load-error state);
+# (3) screens 91-99 and 103-110 show the references here as well as the original source links; screen 5 (the URL-parameter tool) is shown as its generic screen with a note; (4) the native
+# examples count notifications and rebuilds (the Flutter API's own rules), which the Dart examples do not display, and run pattern 136-137 in a Web Worker where Dart uses an Isolate.
+
+SCREEN_DOMAINS = (
+    ("integration", "外部連携", "🌐"),
+    ("auth", "認証・認可", "🔐"),
+    ("realtime", "リアルタイム通信", "📡"),
+    ("data-fetch-cache", "データ取得・キャッシュ", "🗂️"),
+    ("data-transform", "データ変換・整形", "🧮"),
+    ("search-filter", "検索・絞り込み", "🔎"),
+    ("input-form", "入力・フォーム", "📝"),
+    ("routing", "画面遷移・ルーティング", "🧭"),
+    ("theme-design", "テーマ・デザイン", "🎨"),
+    ("multiplatform", "マルチプラットフォーム", "📱"),
+    ("accessibility", "アクセシビリティ", "♿"),
+    ("settings-persistence", "設定・永続化", "⚙️"),
+    ("state-management", "状態管理", "🚦"),
+    ("error-recovery", "エラー処理・回復", "🧯"),
+    ("observability", "可観測性", "📊"),
+    ("testing-quality", "テスト・品質", "🧪"),
+    ("build-delivery", "ビルド・配信", "🚀"),
+    ("security-privacy", "セキュリティ・プライバシー", "🔒"),
+)
+
+# emoji | useCaseJa | useCaseEn, one line per screen (screen n is line n)
+SCREEN_ROWS = (
+    "🌍|連携先カタログ|Integration Catalog",
+    "👥|アカウント一覧|Account List",
+    "📶|接続中クライアント一覧|Connected Client List",
+    "🗃️|キャッシュ済み一覧|Cached List",
+    "🔢|変換結果一覧|Transformed Result List",
+    "🔍|検索結果一覧|Search Result List",
+    "📓|下書き一覧|Draft List",
+    "🏝️|画面遷移マップ一覧|Route Map List",
+    "🌈|テーマギャラリー|Theme Gallery",
+    "🖲️|対応プラットフォーム一覧|Supported Platform List",
+    "☑️|アクセシビリティ項目一覧|Accessibility Checklist",
+    "📥|保存済みデータ一覧|Persisted Data List",
+    "📸|状態スナップショット一覧|State Snapshot List",
+    "📜|エラーログ一覧|Error Log List",
+    "📊|メトリクス一覧|Metrics List",
+    "🧫|テストケース一覧|Test Case List",
+    "🚀|ビルド履歴一覧|Build History List",
+    "🔒|監査ログ一覧|Audit Log List",
+    "🔌|API連携|API Integration",
+    "🪪|認可スコープ詳細|Authorization Scope Detail",
+    "💬|メッセージ詳細|Message Detail",
+    "📄|取得結果の詳細|Fetch Result Detail",
+    "🧭|マッピング詳細|Mapping Detail",
+    "🎯|ヒット項目詳細|Search Hit Detail",
+    "🧐|入力内容の詳細確認|Input Review Detail",
+    "🚩|遷移先の詳細|Destination Detail",
+    "🖌️|配色詳細|Color Palette Detail",
+    "💻|端末別挙動の詳細|Platform Behavior Detail",
+    "🗣️|読み上げ内容の詳細|Screen Reader Detail",
+    "📦|保存項目の詳細|Stored Item Detail",
+    "🔬|状態遷移の詳細|State Transition Detail",
+    "🩺|エラー内容の詳細|Error Detail",
+    "🪡|トレース詳細|Trace Detail",
+    "📃|テスト結果の詳細|Test Result Detail",
+    "🏗️|ビルド結果の詳細|Build Result Detail",
+    "🧨|インシデント詳細|Incident Detail",
+    "🛠️|リクエストビルダー|Request Builder",
+    "🔑|サインインフォーム|Sign-in Form",
+    "📣|チャンネル作成フォーム|Channel Creation Form",
+    "🧾|再取得条件フォーム|Refetch Condition Form",
+    "🧰|変換ルールフォーム|Transform Rule Form",
+    "🥅|絞り込み条件フォーム|Filter Condition Form",
+    "🪧|複数ステップフォーム|Multi-step Form",
+    "🔗|ディープリンク設定フォーム|Deep Link Config Form",
+    "🖍️|カスタムテーマフォーム|Custom Theme Form",
+    "🪢|プラットフォーム分岐フォーム|Platform Branch Form",
+    "🔤|代替テキスト入力フォーム|Alt Text Input Form",
+    "📝|設定変更フォーム|Settings Edit Form",
+    "🧪|状態編集フォーム|State Edit Form",
+    "↩️|再試行条件フォーム|Retry Condition Form",
+    "📈|アラート条件フォーム|Alert Condition Form",
+    "🎬|テストシナリオフォーム|Test Scenario Form",
+    "📰|リリースノート入力フォーム|Release Note Form",
+    "✉️|権限申請フォーム|Access Request Form",
+    "📘|OpenAPIスキーマ検索|OpenAPI Schema Search",
+    "🕵️|ユーザー検索|User Search",
+    "🔭|ライブイベント検索|Live Event Search",
+    "🗄️|キャッシュ検索|Cache Search",
+    "🔠|フィールド検索|Field Search",
+    "📖|全文検索|Full-text Search",
+    "🔡|入力候補検索|Input Suggestion Search",
+    "🛤️|ルート検索|Route Search",
+    "🧶|コンポーネント検索|Component Search",
+    "📡|デバイス検索|Device Search",
+    "🔦|コントラスト検索|Contrast Search",
+    "🔎|設定項目検索|Settings Search",
+    "🧮|状態検索|State Search",
+    "🐛|エラーコード検索|Error Code Search",
+    "🪵|ログ検索|Log Search",
+    "🥽|テストケース検索|Test Case Search",
+    "🏺|アーティファクト検索|Artifact Search",
+    "🕷️|脆弱性検索|Vulnerability Search",
+    "🧬|REST / GraphQL / gRPC 比較|REST GraphQL gRPC Comparison",
+    "🔏|認証方式タブ|Auth Method Tabs",
+    "📻|配信チャンネルタブ|Stream Channel Tabs",
+    "🕰️|鮮度別タブ|Freshness Tabs",
+    "🗒️|フォーマット別タブ|Format Tabs",
+    "🏷️|検索カテゴリタブ|Search Category Tabs",
+    "🗂️|入力セクションタブ|Form Section Tabs",
+    "🚦|ナビゲーションタブ|Navigation Tabs",
+    "🎟️|デザイントークンタブ|Design Token Tabs",
+    "🪞|プラットフォーム別タブ|Platform Tabs",
+    "🧏|支援機能タブ|Assistive Feature Tabs",
+    "🔖|設定カテゴリタブ|Settings Category Tabs",
+    "🏬|ストアタブ|Store Tabs",
+    "📛|エラー種別タブ|Error Category Tabs",
+    "📺|ダッシュボードタブ|Dashboard Tabs",
+    "🗞️|テスト種別タブ|Test Type Tabs",
+    "🚛|配信チャンネルタブ|Delivery Channel Tabs",
+    "🔰|セキュリティ分類タブ|Security Category Tabs",
+    "🤖|MCP連携|MCP Integration",
+    "🔃|アカウント切替ナビ|Account Switch Navigation",
+    "🔔|通知センターナビ|Notification Center Navigation",
+    "📴|オフライン切替ナビ|Offline Toggle Navigation",
+    "🪜|パイプライン段階ナビ|Pipeline Stage Navigation",
+    "🕘|検索履歴ナビ|Search History Navigation",
+    "➡️|フォーム間ナビ|Form Flow Navigation",
+    "🔄|ボトムナビ切替|Bottom Navigation Switch",
+    "🌗|表示モード切替ナビ|Display Mode Navigation",
+    "📏|レスポンシブナビ|Responsive Navigation",
+    "🎧|フォーカス順ナビ|Focus Order Navigation",
+    "🔂|設定間ナビ|Settings Navigation",
+    "🧲|画面間の状態共有ナビ|Shared State Navigation",
+    "🚑|復旧手順ナビ|Recovery Step Navigation",
+    "📹|監視画面ナビ|Monitoring Navigation",
+    "🎒|テストスイートナビ|Test Suite Navigation",
+    "🆚|バージョン切替ナビ|Version Switch Navigation",
+    "🙈|プライバシーメニューナビ|Privacy Menu Navigation",
+    "🔀|連携環境の切替|Integration Environment Switch",
+    "🗓️|権限メニュー|Permission Drawer Menu",
+    "📚|購読トピックメニュー|Subscription Topic Drawer",
+    "🧱|キャッシュ層メニュー|Cache Layer Drawer",
+    "📐|正規化メニュー|Normalization Drawer",
+    "📑|保存済みフィルタメニュー|Saved Filter Drawer",
+    "🗳️|テンプレート選択メニュー|Form Template Drawer",
+    "🪟|階層ドロワーメニュー|Hierarchical Drawer Menu",
+    "📔|スタイルガイドメニュー|Style Guide Drawer",
+    "🖥️|デバイスメニュー|Device Drawer Menu",
+    "🤲|支援メニュー|Assistive Drawer Menu",
+    "🧳|設定メニュー|Settings Drawer Menu",
+    "🐞|状態デバッグメニュー|State Debug Drawer",
+    "🆘|サポートメニュー|Support Drawer Menu",
+    "🧺|ログソースメニュー|Log Source Drawer",
+    "🥧|カバレッジメニュー|Coverage Drawer Menu",
+    "🏭|配信先メニュー|Delivery Target Drawer",
+    "🔐|データ保護メニュー|Data Protection Drawer",
+    "🤝|外部連携の同意|External Integration Consent",
+    "📲|多要素認証ダイアログ|MFA Dialog",
+    "🔁|再接続確認ダイアログ|Reconnect Confirmation Dialog",
+    "🧹|キャッシュ破棄ダイアログ|Cache Eviction Dialog",
+    "⚠️|スキーマ不一致ダイアログ|Schema Mismatch Dialog",
+    "↕️|並び替えダイアログ|Sort Order Dialog",
+    "✅|入力確認ダイアログ|Input Confirmation Dialog",
+    "🚧|遷移確認ダイアログ|Navigation Confirmation Dialog",
+    "🪄|テーマ適用ダイアログ|Apply Theme Dialog",
+    "⚖️|プラットフォーム差異ダイアログ|Platform Difference Dialog",
+    "📢|確認読み上げダイアログ|Announcement Dialog",
+    "♻️|初期化確認ダイアログ|Reset Confirmation Dialog",
+    "🧯|状態リセットダイアログ|State Reset Dialog",
+    "❗|エラー詳細ダイアログ|Error Dialog",
+    "🔺|しきい値超過ダイアログ|Threshold Alert Dialog",
+    "❌|失敗テスト詳細ダイアログ|Test Failure Dialog",
+    "🛫|ロールアウト確認ダイアログ|Rollout Confirmation Dialog",
+    "🚫|同意取り消しダイアログ|Consent Revocation Dialog",
+    "🌆|コネクタギャラリー|Connector Gallery",
+    "🧩|ロール一覧グリッド|Role Grid",
+    "🟢|プレゼンスグリッド|Presence Grid",
+    "🧊|先読みグリッド|Prefetch Grid",
+    "🔣|サンプルデータグリッド|Sample Data Grid",
+    "🧷|候補グリッド|Suggestion Grid",
+    "🔘|選択肢グリッド|Choice Grid",
+    "🔳|画面遷移グリッド|Route Grid",
+    "🔷|アイコングリッド|Icon Grid",
+    "🔲|フォームファクターグリッド|Form Factor Grid",
+    "👆|タップ領域グリッド|Tap Target Grid",
+    "🎴|設定プリセットグリッド|Settings Preset Grid",
+    "🎲|状態一覧グリッド|State Grid",
+    "🪤|既知の問題グリッド|Known Issue Grid",
+    "🎫|イベントグリッド|Event Grid",
+    "🀄|テストマトリクスグリッド|Test Matrix Grid",
+    "🪨|ビルド一覧グリッド|Build Grid",
+    "🥋|権限マトリクスグリッド|Permission Matrix Grid",
+    "📮|Webhook受信|Webhook Receiver",
+    "⏳|トークン更新状態|Token Refresh State",
+    "🛰️|接続状態モニタ|Connection State Monitor",
+    "⏱️|読み込み進捗状態|Loading Progress State",
+    "⚙️|変換処理の進行状態|Transform Progress State",
+    "⌛|検索中の状態表示|Search Loading State",
+    "📤|送信中の状態|Submitting State",
+    "🚶|遷移中の状態|Transition Loading State",
+    "🌓|テーマ読み込み状態|Theme Loading State",
+    "🌀|対応状況の読込状態|Compatibility Loading State",
+    "🔊|読み込み状態のアナウンス|Loading State Announcement",
+    "🔋|同期中の状態|Sync Loading State",
+    "⏲️|非同期状態インジケータ|Async State Indicator",
+    "🩹|再試行中の状態|Retrying State",
+    "🕐|集計中の状態|Aggregating State",
+    "🏃|テスト実行中の状態|Test Running State",
+    "🛸|デプロイ中の状態|Deploying State",
+    "🩻|スキャン中の状態|Scanning State",
+    "🗝️|APIキー・ベースURL管理|API Key and Base URL Management",
+    "🛡️|セッション設定|Session Settings",
+    "🧵|Socket設定|Socket Settings",
+    "💾|キャッシュ設定|Cache Settings",
+    "🪛|変換パイプライン設定|Transform Pipeline Settings",
+    "🎚️|検索設定|Search Settings",
+    "⌨️|入力補助設定|Input Assist Settings",
+    "🛣️|ルーティング設定|Routing Settings",
+    "🎛️|テーマ設定|Theme Settings",
+    "🔧|プラットフォーム設定|Platform Settings",
+    "🦻|アクセシビリティ設定|Accessibility Settings",
+    "🗜️|永続化ストレージ設定|Storage Settings",
+    "🕹️|状態管理設定|State Management Settings",
+    "🚨|エラー通知設定|Error Notification Settings",
+    "🧿|計測設定|Telemetry Settings",
+    "🥇|品質ゲート設定|Quality Gate Settings",
+    "🚂|配信パイプライン設定|Delivery Pipeline Settings",
+    "🕶️|プライバシー設定|Privacy Settings",
+)
+
+SCREEN_DETAILS: dict[int, tuple[str, str, tuple[str, ...], str, str]] = {
+    1: ("利用可能な外部連携先（決済・通知・認証など）をカタログとして一覧表示し、選択して詳細に進めるための入口を提供する。",
+        "複数の外部サービスをまとめて紹介し、ユーザーや管理者に連携先を選ばせたいとき。",
+        ("連携先ごとの状態（連携済み/未連携/準備中）をバッジ等でひと目で区別できるようにする", "キーワード検索やカテゴリフィルタで目的の連携先を絞り込めるようにする", "一覧APIはページングまたは無限スクロールに対応し、連携先数の増加に耐えられる設計にする",),
+        "一覧表示のたびに各連携先の詳細情報まで取得すると通信量が増えるため、一覧APIは要約情報のみ返す設計にする。",
+        "final res = await http.get(Uri.parse('$base/integrations'));\nfinal list = (jsonDecode(res.body) as List)\n    .map((e) => Integration.fromJson(e))\n    .toList();\nsetState(() => _integrations = list);"),
+    2: ("ログイン中ユーザーに紐づくアカウント（連携中のIDや認証方式）を一覧表示し、それぞれの認証状態を把握できるようにする。",
+        "複数の認証方式やアカウントを横断して管理する画面が必要なとき。",
+        ("一覧にはアカウントの識別情報のみを表示し、パスワードやトークンなど機微情報は表示しない", "各アカウントの認証状態（有効/要再認証/無効）をひと目で判別できるようにする", "一覧取得APIは認証済みセッションでのみ呼び出し、未認証時は401としてログイン画面へ誘導する",),
+        "アカウント一覧に権限（authorization）の情報まで混在させると、本人確認(authentication)の一覧なのか権限確認(authorization)の一覧なのか画面の責務が曖昧になる。一覧は認証状態の可視化に留め、権限管理は別画面に分離する。",
+        "final res = await http.post(\n  Uri.parse('$base/auth/accounts'),\n  headers: {'Authorization': 'Bearer $accessToken'},\n);\nif (res.statusCode == 401) {\n  return redirectToLogin(); // アクセストークン失効 → 再認証へ\n}\nfinal accounts = (jsonDecode(res.body) as List)\n    .map((e) => Account.fromJson(e))\n    .toList();\nsetState(() => _accounts = accounts);"),
+    19: ("外部APIの呼び出し結果を1件の詳細情報としてまとめて表示する。",
+        "REST/GraphQLなど外部サービスから取得したリソース1件を詳しく見せたいとき。",
+        ("ローディング・成功・失敗の状態をUIで明確に分ける", "レスポンスの型とUI表示用モデルを分離する", "再取得（リトライ）導線を用意する",),
+        "APIエラー時に画面が真っ白になる実装は避け、エラー内容をユーザーに伝える。",
+        "final response = await http.get(uri);\nif (response.statusCode == 200) {\n  final data = jsonDecode(response.body);\n  setState(() => _detail = data);\n}"),
+    20: ("特定のアクセストークンや外部連携に付与された認可スコープ（権限範囲）の詳細を表示する。",
+        "「このトークン/アプリが何にアクセスできるか」をユーザーに開示・確認させたいとき。",
+        ("authentication（本人確認）ではなく authorization（権限範囲）の情報であることを明記し混同を避ける", "スコープは最小権限の原則に沿って個別に表示し、まとめて「フルアクセス」のような曖昧な表現を避ける", "スコープの取り消し操作を提供し、取り消し後は即座にサーバー側でトークンを無効化する",),
+        "スコープ詳細画面でアクセストークンの値自体を表示・ログ出力してしまうと漏洩リスクになる。画面にはスコープ名や権限の説明のみを表示し、トークン文字列そのものは表示しない。",
+        "final res = await http.get(\n  Uri.parse('$base/auth/tokens/$tokenId/scopes'),\n  headers: {'If-None-Match': _etag ?? ''},\n);\nif (res.statusCode == 304) return; // キャッシュ有効\nfinal scopes = (jsonDecode(res.body)['scopes'] as List).cast<String>();\nsetState(() => _scopes = scopes);"),
+    37: ("外部APIへ送信するリクエスト（メソッド・ヘッダー・ボディ）をフォームで組み立て、その場で実行結果を確認する。",
+        "OpenAPI仕様を整備する前に手動でエンドポイントを試したい、または開発者向けのAPIテストツールを提供したいとき。",
+        ("HTTPメソッド・URL・ヘッダー・ボディを個別入力にし、送信前にフォームバリデーションを行う", "OAuth2などの認可コードフローを扱う場合は、認可待ち・失効といった状態を画面上に明示する", "送信結果と合わせてリクエスト履歴を保持し、再送や比較をしやすくする",),
+        "認可トークンやAPIキーをフォームの状態やログに平文のまま残さない。送信直前のみ保持し、画面を離れたら破棄する。",
+        "final req = http.Request(method, Uri.parse(url))\n  ..headers.addAll(headers)\n  ..body = body;\nfinal streamed = await req.send();\nfinal res = await http.Response.fromStream(streamed);"),
+    38: ("メールアドレス（またはID）とパスワードを入力してサインインし、認証成功時にアクセストークンとリフレッシュトークンを受け取る。",
+        "新規セッションを開始する入口画面が必要なとき。",
+        ("入力されたパスワードは送信後に変数から即座に破棄し、ログへ出力しない", "サインイン成功時はアクセストークンとリフレッシュトークンを分けて安全なストレージへ保存する", "失敗時はアカウントの有無を推測させないよう汎用的なエラーメッセージにとどめる",),
+        "パスワードを平文のまま変数に長く保持したり、SharedPreferencesやログに書き出すと漏洩の原因になる。送信後は速やかに変数をクリアし、平文保存は行わない。",
+        "final res = await http.post(\n  Uri.parse('$base/auth/sign-in'),\n  body: {'email': email, 'password': password},\n);\npassword = ''; // 送信後は保持しない\nif (res.statusCode == 401) {\n  setState(() => _error = '認証情報が正しくありません');\n  return;\n}\nfinal body = jsonDecode(res.body);\nawait secureStorage.write(key: 'access_token', value: body['accessToken']);\nawait secureStorage.write(key: 'refresh_token', value: body['refreshToken']);"),
+    55: ("OpenAPI（Swagger）仕様書からエンドポイントやスキーマ定義を検索し、目的の定義に素早くたどり着けるようにする。",
+        "大規模なAPI仕様の中から特定のパス・スキーマ・パラメータを探したいとき。",
+        ("OpenAPIのJSON/YAMLをパースし、パス名・タグ・説明などから検索用インデックスを事前に構築する", "入力のたびに結果を絞り込むインクリメンタル検索で、体感速度を落とさないようにする", "検索結果からスキーマの詳細（型・必須項目・サンプル値）へドリルダウンできるようにする",),
+        "巨大な仕様ファイルを表示のたびに全文パースすると起動が遅くなるため、パース結果をメモリやローカルキャッシュに保持する。",
+        "final spec = jsonDecode(await rootBundle.loadString('openapi.json'));\nfinal paths = (spec['paths'] as Map).entries\n    .where((e) => e.key.contains(query))\n    .toList();"),
+    56: ("管理者がユーザーや権限の割り当て状況を検索し、対象ユーザーの認可設定を素早く見つけられるようにする。",
+        "大量のユーザーの中から特定ユーザーやロール保有者を絞り込みたい管理画面で。",
+        ("検索APIは管理者権限（authorization）を持つセッションのみ許可し、権限不足時は403を返す", "検索結果にはメールアドレス等の個人情報を最小限に留め、パスワードや秘密情報は含めない", "通信はTLS証明書検証済みの経路のみで行い、検証をスキップする設定を本番に残さない",),
+        "401（未認証）と403（権限不足）を同じエラーメッセージ・同じ遷移で扱うと、ユーザーが「ログインし直せば直る」のか「権限がないので管理者に問い合わせる」のか判断できなくなる。ステータスコードごとに導線を分ける。",
+        "final res = await http.get(\n  Uri.parse('$base/admin/users?q=$query'),\n  headers: {'Authorization': 'Bearer $accessToken'},\n);\nif (res.statusCode == 401) return redirectToLogin();\nif (res.statusCode == 403) return showPermissionDeniedDialog();\nfinal users = (jsonDecode(res.body) as List)\n    .map((e) => UserResult.fromJson(e))\n    .toList();"),
+    73: ("REST・GraphQL・gRPCという3つの通信方式の違いをタブで切り替えながら並べて比較提示する。",
+        "プロジェクトでどの通信方式を採用するか検討する際に、リクエスト/レスポンスの違いを見比べたいとき。",
+        ("TabBarで3方式を切り替え、各タブで同じユースケースのリクエスト例を統一フォーマットで表示する", "レイテンシ・ペイロードサイズ・型安全性など比較軸を明示し、数値やコード例で裏付ける", "gRPCはHTTP/2前提、GraphQLは単一エンドポイントなど、方式ごとの制約差を補足コピーで説明する",),
+        "3方式の説明を均等な情報量で作らないと、特定方式に誘導する印象を与えてしまう。",
+        "final tabController = TabController(length: 3, vsync: this);\nTabBarView(\n  controller: tabController,\n  children: [RestExample(), GraphQLExample(), GrpcExample()],\n);"),
+    74: ("パスワード・パスキー・SSOなど複数の認証方式をタブで切り替えて比較・選択できるようにする。",
+        "ユーザーに複数のサインイン手段を提示し、状況に応じて選ばせたいとき。",
+        ("各タブは独立した認証方式であることを明示し、タブ切替え自体では既存のログイン状態を変化させない", "パスキーやSSOのようなフィッシング耐性の高い方式を優先的に案内する", "どのタブを選んでも最終的に同じ認可情報（アクセストークン）に正規化して扱う",),
+        "タブごとに認証成功後の処理を個別実装すると、トークン発行後の扱いがタブによってばらつき、権限チェックの抜け漏れが生まれる。認証方式が違ってもトークン取得後の処理は共通化する。",
+        "Widget buildTab(AuthMethod method) {\n  return switch (method) {\n    AuthMethod.password => PasswordSignInForm(onSuccess: _onAuthenticated),\n    AuthMethod.passkey => PasskeySignInButton(onSuccess: _onAuthenticated),\n    AuthMethod.sso => SsoSignInButton(onSuccess: _onAuthenticated),\n  };\n}\nvoid _onAuthenticated(AuthResult r) => _saveTokens(r.accessToken, r.refreshToken);"),
+    91: ("Model Context Protocol (MCP) サーバーが公開するツール群を切り替えながら呼び出す。",
+        "複数のMCPツール（検索・実行・保存など）を1画面から使い分けたいとき。",
+        ("ツールごとに入力スキーマが異なる前提でUIを組む", "接続中のMCPサーバー・未接続状態を明示する", "ツール呼び出し結果を種類ごとに描画し分ける",),
+        "MCPツールの呼び出し失敗を無視すると、ユーザーが原因を特定できなくなる。",
+        "final tool = mcpClient.tools[selectedIndex];\nfinal result = await mcpClient.callTool(tool.name, args);\nsetState(() => _result = result);"),
+    92: ("複数アカウントを切り替えながらアプリの主要セクションへナビゲーションできるようにする。",
+        "1つの端末で複数アカウント（仕事用/個人用など）を行き来する必要があるとき。",
+        ("アカウント切替時はアクセストークン・リフレッシュトークンを完全に入れ替え、前アカウントの情報を残さない", "各タブの表示内容は切替後のアカウントの認可範囲（ロール）に応じて出し分ける", "切替操作自体にも再認証やアカウントロック状態の確認を挟み、意図しない切替を防ぐ",),
+        "アカウント切替時にメモリ上のキャッシュやフォーム入力を消し忘れると、前のアカウントのデータが新しいアカウントの画面に一瞬表示される「アカウント混線」が起きる。切替時は関連する状態を明示的にリセットする。",
+        "Future<void> switchAccount(Account next) async {\n  await secureStorage.write(key: 'access_token', value: next.accessToken);\n  await secureStorage.write(key: 'refresh_token', value: next.refreshToken);\n  _cache.clear(); // 前アカウントのキャッシュを破棄\n  setState(() => _currentAccount = next);\n}"),
+    109: ("外部連携先の接続環境（本番/ステージング/開発など）をドロワーから切り替える。",
+        "同じ連携先に対して複数環境（Sandbox/Production等）のAPIキーやベースURLを使い分けたいとき。",
+        ("現在選択中の環境をドロワー内とアプリバーの両方に常時表示し、誤操作を防ぐ", "環境切替時はAPIクライアントを再生成し、古い環境の認証情報を引き継がないようにする", "本番環境への切替時は確認ダイアログを挟み、誤操作による事故を防ぐ",),
+        "環境ごとのAPIキーをコードにハードコードすると本番キーが漏洩する恐れがあるため、設定ストレージやSecure Storageから読み込む。",
+        "Drawer(\n  child: ListView(\n    children: environments.map((e) => ListTile(\n      title: Text(e.name),\n      onTap: () => apiClient.switchEnvironment(e),\n    )).toList(),\n  ),\n);"),
+    110: ("ログイン中ユーザーの権限（ロール）に応じて、ドロワーメニューの項目を出し分ける。",
+        "管理者/一般ユーザーなど権限によって導線を変えたいとき。",
+        ("メニュー項目の表示・非表示はサーバー側の権限情報（authorization）に基づいて決定する", "権限がない項目は非表示または無効化し、押しても403で弾かれるだけの導線を残さない", "権限情報はログイン中に取得したロール/パーミッションをキャッシュし、更新があれば再取得する",),
+        "クライアント側でメニュー項目を隠すだけで満足し、対応するAPI側の権限チェックを省略すると、URLを直接叩かれた場合に権限のないユーザーが操作できてしまう。UIの出し分けとAPIの認可チェックは必ずセットで実装する。",
+        "List<DrawerItem> buildMenu(UserRoles roles) => [\n  if (roles.contains('user')) DrawerItem('マイページ', '/me'),\n  if (roles.contains('admin')) DrawerItem('管理画面', '/admin'),\n];\n// サーバー側でも同じロールチェックを必須で行う"),
+    127: ("外部サービス連携時にユーザーへ許可範囲（スコープ）を提示し、明示的な同意を取得する。",
+        "OAuthなどで外部サービスに自分のデータへのアクセスを許可させる前に、影響範囲を明示して同意を得たいとき。",
+        ("要求スコープを箇条書きで具体的に示し、何ができて何ができないかを明確にする", "同意・拒否の結果をダイアログの戻り値として呼び出し元に返し、後続処理を分岐させる", "同意状態を永続化しつつ、要求スコープが変わった場合は必ず再同意させる",),
+        "「同意する」ボタンだけを強調し拒否を選びにくくするダークパターンは避け、両方の選択肢を対等に扱う。",
+        "final consented = await showDialog<bool>(\n  context: context,\n  builder: (_) => ConsentDialog(scopes: requestedScopes),\n);\nif (consented == true) await savedConsent(scopes: requestedScopes);"),
+    128: ("決済や権限変更などの重要操作の前に、多要素認証（MFA）による再認証をダイアログで要求する。",
+        "通常のセッションだけでは実行させたくない操作の直前。",
+        ("セッションの有効性ではなく「直近の再認証からの経過時間」を確認し、期限切れなら再度MFAを要求する", "MFAコードはワンタイムかつ短時間で失効させ、成功後は使い回さない", "MFA成功後は操作専用の短命な確認トークンを発行し、通常のアクセストークンと役割を分離する",),
+        "MFAダイアログをキャンセルした場合でも元の画面操作が続行できてしまうと、再認証を要求した意味がなくなる。キャンセル時は必ず対象操作自体も中断する。",
+        "final ok = await showMfaDialog(context);\nif (!ok) return; // キャンセル時は操作自体を中断\nfinal res = await http.post(\n  Uri.parse('$base/auth/mfa/verify'),\n  body: {'code': code},\n);\nif (res.statusCode == 401) return showMfaError();\nfinal confirmToken = jsonDecode(res.body)['confirmToken'];\nawait performSensitiveAction(confirmToken);"),
+    145: ("利用可能な連携コネクタをアイコン主体のグリッドで表示し、視覚的にサービスを選びやすくする。",
+        "多数の連携先をカテゴリ横断でざっと見せ、直感的に探させたいとき。",
+        ("GridViewでアイコン・名称・接続状態バッジを組み合わせたカードを表示する", "検索やフィルタ操作にスロットリングをかけ、スクロール中の再描画負荷を抑える", "タップ時はコネクタの詳細画面へ遷移し、接続手順や必要な認証情報を案内する",),
+        "接続失敗時に自動リトライを無制限に行うと過剰なリクエストになるため、リトライ回数と間隔の上限を設ける。",
+        "GridView.builder(\n  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3),\n  itemCount: connectors.length,\n  itemBuilder: (_, i) => ConnectorCard(connector: connectors[i]),\n);"),
+    146: ("ロールごとに付与されている権限をグリッド形式で一覧・比較できるようにする。",
+        "どのロールがどの操作を許可されているかをまとめて確認・監査したいとき。",
+        ("グリッドの軸は「ロール」×「権限（できる操作）」とし、認証方式の違いとは区別して扱う", "権限の付与・剥奪はこの画面から即時反映せず、確認ステップを挟んでから更新する", "変更操作自体も管理者権限を要求し、権限のないユーザーには読み取り専用で表示する",),
+        "ロール×権限グリッドに「認証済みかどうか」のような認証状態の列を混ぜると、認可（何ができるか）と認証（本人確認済みか）の軸が混同され、監査時に読み違えやすくなる。グリッドは権限情報だけに専念させる。",
+        "DataTable buildRoleGrid(List<Role> roles, List<Permission> perms) {\n  return DataTable(\n    columns: [\n      const DataColumn(label: Text('ロール')),\n      ...perms.map((p) => DataColumn(label: Text(p.name))),\n    ],\n    rows: roles.map((r) => DataRow(cells: [\n      DataCell(Text(r.name)),\n      ...perms.map((p) => DataCell(Icon(r.has(p) ? Icons.check : Icons.close))),\n    ])).toList(),\n  );\n}"),
+    163: ("外部サービスから送られてくるWebhookイベントを受信し、非同期に一覧・処理する。",
+        "決済完了通知やCI結果など、外部からのイベントをリアルタイムに近い形で受け取り画面へ反映したいとき。",
+        ("受信イベントはStreamやBlocで管理し、到着に応じて画面を自動更新する", "署名検証（HMAC等）でWebhookの送信元を確認し、不正なペイロードを弾く", "処理失敗イベントを状態（未処理/処理済み/失敗）として保持し、再処理できるようにする",),
+        "受信のたびに重い処理を同期実行するとイベントを取りこぼすため、受信とハンドリングをキューで分離する。",
+        "webhookStream.listen((event) {\n  if (!verifySignature(event)) return;\n  eventQueue.add(event);\n});"),
+    164: ("アクセストークンの有効期限が切れる前後にリフレッシュトークンで再取得する非同期処理の状態を表示する。",
+        "バックグラウンドでトークンを自動更新し、その進行状況やエラーをユーザーに伝えたいとき。",
+        ("アクセストークン（短命・API呼び出し用）とリフレッシュトークン（長命・再発行専用）の役割を分離する", "リフレッシュにも失敗した場合はセッション失効として扱い、再ログインを促す", "複数リクエストが同時にリフレッシュを走らせて競合しないよう、更新処理を1つに集約する",),
+        "リフレッシュトークンをアクセストークンと同じ場所・同じ扱いで保存すると、片方が漏洩したときにもう片方まで危険にさらされる。用途ごとに保存先やスコープを分ける。",
+        "Future<String> ensureFreshToken() async {\n  if (!_isExpiringSoon(_accessToken)) return _accessToken!;\n  final res = await http.post(\n    Uri.parse('$base/auth/refresh'),\n    body: {'refreshToken': _refreshToken},\n  );\n  if (res.statusCode == 401) {\n    _sessionExpired = true; // 再ログインへ\n    throw SessionExpiredException();\n  }\n  _accessToken = jsonDecode(res.body)['accessToken'];\n  return _accessToken!;\n}"),
+    181: ("外部連携に使うAPIキーとベースURLを画面から設定・管理する。",
+        "連携先ごとに異なるAPIキーやエンドポイントURLをユーザー自身に入力・変更させたいとき。",
+        ("APIキー入力欄はマスク表示にし、平文表示は明示的な操作でのみ切り替える", "保存前にベースURLの形式チェックとAPIキーの疎通確認（テスト呼び出し）を行う", "設定変更をコマンド単位で扱い、直前の値へ戻せるUndo導線を用意する",),
+        "APIキーを平文のSharedPreferencesに保存すると漏洩リスクが高いため、Secure Storageなど暗号化された領域に保存する。",
+        "await secureStorage.write(key: 'api_key', value: apiKey);\nawait secureStorage.write(key: 'base_url', value: baseUrl);\nfinal ok = await testConnectivity(baseUrl, apiKey);"),
+    182: ("ログインセッションの有効期限やMFAなど、セキュリティに関する設定をユーザーが管理できるようにする。",
+        "「他端末を全てログアウトする」「MFAを有効化する」等のセキュリティ設定画面が必要なとき。",
+        ("影響の大きい変更（MFA無効化、全端末ログアウト等）は再認証を挟んでから確定する", "有効なセッション一覧はデバイス名・最終利用日時など識別に必要な情報のみ表示し、トークン自体は表示しない", "設定の保存はサーバー側の認可チェックを経て反映し、クライアント側の表示だけを変更して満足しない",),
+        "「全端末からログアウト」のような破壊的操作を確認なしに即実行すると、誤操作で自分自身も含めた全セッションを失効させてしまう。実行前に確認ダイアログと再認証を挟む。",
+        "Future<void> revokeAllSessions() async {\n  final confirmed = await showConfirmDialog(context, '全端末からログアウトしますか？');\n  if (!confirmed) return;\n  final reauthed = await requireReauth(context);\n  if (!reauthed) return;\n  await http.post(\n    Uri.parse('$base/auth/sessions/revoke-all'),\n    headers: {'Authorization': 'Bearer $accessToken'},\n  );\n}"),
+}
+
+SCREEN_TEXT_KEYS = (
+    "hub.title",
+    "hub.listViewTooltip",
+    "hub.gridViewTooltip",
+    "hub.searchHint",
+    "hub.empty",
+    "hub.homeFab",
+    "generic.backToHub",
+    "generic.tabUseCase",
+    "generic.tabUiSample",
+    "generic.sectionPurpose",
+    "generic.sectionWhen",
+    "generic.sectionPoints",
+    "generic.sectionPitfall",
+    "generic.sectionSnippet",
+    "generic.patternNavigation",
+    "generic.patternApi",
+    "generic.patternTheme",
+    "generic.patternData",
+    "generic.templateVariant",
+    "generic.screenFallbackTitle",
+    "patternTemplate.list",
+    "patternTemplate.detail",
+    "patternTemplate.form",
+    "patternTemplate.search",
+    "patternTemplate.tabs",
+    "patternTemplate.bottomNavigation",
+    "patternTemplate.drawer",
+    "patternTemplate.dialog",
+    "patternTemplate.grid",
+    "patternTemplate.asyncState",
+    "patternTemplate.settings",
+    "patternTemplate.listItem",
+    "patternTemplate.screenIdLabel",
+    "patternTemplate.sampleInputLabel",
+    "patternTemplate.submit",
+    "patternTemplate.submitted",
+    "patternTemplate.searchHint",
+    "patternTemplate.typeToFilter",
+    "patternTemplate.resultFor",
+    "patternTemplate.tabOverview",
+    "patternTemplate.tabCode",
+    "patternTemplate.tabNotes",
+    "patternTemplate.destination",
+    "patternTemplate.navHome",
+    "patternTemplate.navPatterns",
+    "patternTemplate.navAbout",
+    "patternTemplate.drawerSampleTitle",
+    "patternTemplate.drawerHome",
+    "patternTemplate.drawerLibrary",
+    "patternTemplate.drawerSettings",
+    "patternTemplate.dialogOpen",
+    "patternTemplate.dialogClose",
+    "patternTemplate.asyncSimulate",
+    "patternTemplate.settingsEnableOption",
+    "patternTemplate.settingsThemePreference",
+    "patternTemplate.settingsSystem",
+    "mockApi.title",
+    "mcp.title",
+    "clipboardWorkbench.clear",
+)
+
+SCREEN_TEXT: dict[str, tuple[str, ...]] = {
+    "eng": (
+        "Navigation Hub 🗺️",
+        "List view",
+        "Grid view",
+        "Search screens…",
+        "No screens found.",
+        "Home",
+        "Back to Hub",
+        "Use case",
+        "UI sample",
+        "Purpose",
+        "When to use",
+        "Design points",
+        "Pitfall",
+        "Snippet",
+        "Navigation",
+        "API",
+        "Theme",
+        "Data",
+        "Template {n} of 11 · variant {v} of 18",
+        "Screen {screenDataId}",
+        "List",
+        "Detail",
+        "Form",
+        "Search",
+        "Tabs",
+        "Bottom navigation",
+        "Drawer",
+        "Dialog",
+        "Grid",
+        "Async state",
+        "Settings",
+        "{title} item {n}",
+        "Screen ID: {screenDataId}",
+        "Sample input",
+        "Submit",
+        "Submitted: {value}",
+        "Search this sample",
+        "Type a query to filter",
+        "Result for “{query}”",
+        "Overview",
+        "Code",
+        "Notes",
+        "Destination {n}: {title}",
+        "Home",
+        "Patterns",
+        "About",
+        "Drawer-style navigation sample",
+        "Home",
+        "Library",
+        "Settings",
+        "Open dialog",
+        "Close",
+        "Simulate async task",
+        "Enable sample option",
+        "Theme preference",
+        "System",
+        "External Integration · API",
+        "External Integration · MCP",
+        "Clear",
+    ),
+    "jpn": (
+        "ナビゲーションハブ 🗺️",
+        "リスト表示",
+        "グリッド表示",
+        "画面を検索…",
+        "画面が見つかりません。",
+        "ホーム",
+        "ハブに戻る",
+        "用途",
+        "UIサンプル",
+        "目的",
+        "使いどころ",
+        "設計ポイント",
+        "落とし穴",
+        "スニペット",
+        "ナビゲーション",
+        "API",
+        "テーマ",
+        "データ",
+        "テンプレート {n} / 11 · バリアント {v} / 18",
+        "画面 {screenDataId}",
+        "リスト",
+        "詳細",
+        "フォーム",
+        "検索",
+        "タブ",
+        "ボトムナビゲーション",
+        "ドロワー",
+        "ダイアログ",
+        "グリッド",
+        "非同期状態",
+        "設定",
+        "{title} 項目 {n}",
+        "スクリーンID: {screenDataId}",
+        "サンプル入力",
+        "送信",
+        "送信しました: {value}",
+        "このサンプルを検索",
+        "絞り込むには入力してください",
+        "「{query}」の結果",
+        "概要",
+        "コード",
+        "メモ",
+        "宛先 {n}: {title}",
+        "ホーム",
+        "パターン",
+        "このアプリについて",
+        "ドロワー形式のナビゲーション例",
+        "ホーム",
+        "ライブラリ",
+        "設定",
+        "ダイアログを開く",
+        "閉じる",
+        "非同期タスクをシミュレート",
+        "サンプルオプションを有効にする",
+        "テーマ設定",
+        "システム",
+        "External Integration · API",
+        "External Integration · MCP",
+        "クリア",
+    ),
+    "fra": (
+        "Hub de navigation 🗺️",
+        "Vue liste",
+        "Vue grille",
+        "Rechercher des écrans…",
+        "Aucun écran trouvé.",
+        "Accueil",
+        "Retour au Hub",
+        "Cas d'usage",
+        "Exemple d'UI",
+        "Objectif",
+        "Quand l'utiliser",
+        "Points de conception",
+        "Piège",
+        "Extrait",
+        "Navigation",
+        "API",
+        "Thème",
+        "Données",
+        "Modèle {n} sur 11 · variante {v} sur 18",
+        "Écran {screenDataId}",
+        "Liste",
+        "Détail",
+        "Formulaire",
+        "Recherche",
+        "Onglets",
+        "Navigation inférieure",
+        "Tiroir",
+        "Boîte de dialogue",
+        "Grille",
+        "État asynchrone",
+        "Paramètres",
+        "{title} élément {n}",
+        "ID d’écran : {screenDataId}",
+        "Exemple de saisie",
+        "Envoyer",
+        "Envoyé : {value}",
+        "Rechercher dans cet exemple",
+        "Saisissez une requête pour filtrer",
+        "Résultat pour « {query} »",
+        "Aperçu",
+        "Code",
+        "Notes",
+        "Destination {n} : {title}",
+        "Accueil",
+        "Modèles",
+        "À propos",
+        "Exemple de navigation de type tiroir",
+        "Accueil",
+        "Bibliothèque",
+        "Paramètres",
+        "Ouvrir la boîte de dialogue",
+        "Fermer",
+        "Simuler une tâche asynchrone",
+        "Activer l’option d’exemple",
+        "Préférence de thème",
+        "Système",
+        "External Integration · API",
+        "External Integration · MCP",
+        "Effacer",
+    ),
+    "spa": (
+        "Centro de navegación 🗺️",
+        "Vista de lista",
+        "Vista de cuadrícula",
+        "Buscar pantallas…",
+        "No se encontraron pantallas.",
+        "Inicio",
+        "Volver al Hub",
+        "Caso de uso",
+        "Ejemplo de UI",
+        "Propósito",
+        "Cuándo usarlo",
+        "Puntos de diseño",
+        "Riesgo habitual",
+        "Fragmento",
+        "Navegación",
+        "API",
+        "Tema",
+        "Datos",
+        "Plantilla {n} de 11 · variante {v} de 18",
+        "Pantalla {screenDataId}",
+        "Lista",
+        "Detalle",
+        "Formulario",
+        "Búsqueda",
+        "Pestañas",
+        "Navegación inferior",
+        "Cajón",
+        "Diálogo",
+        "Cuadrícula",
+        "Estado asíncrono",
+        "Configuración",
+        "{title} elemento {n}",
+        "ID de pantalla: {screenDataId}",
+        "Entrada de ejemplo",
+        "Enviar",
+        "Enviado: {value}",
+        "Buscar en este ejemplo",
+        "Escribe una búsqueda para filtrar",
+        "Resultado para “{query}”",
+        "Resumen",
+        "Código",
+        "Notas",
+        "Destino {n}: {title}",
+        "Inicio",
+        "Patrones",
+        "Acerca de",
+        "Ejemplo de navegación tipo cajón",
+        "Inicio",
+        "Biblioteca",
+        "Configuración",
+        "Abrir diálogo",
+        "Cerrar",
+        "Simular tarea asíncrona",
+        "Activar opción de ejemplo",
+        "Preferencia de tema",
+        "Sistema",
+        "External Integration · API",
+        "External Integration · MCP",
+        "Borrar",
+    ),
+    "por": (
+        "Central de navegação 🗺️",
+        "Visualização em lista",
+        "Visualização em grade",
+        "Pesquisar telas…",
+        "Nenhuma tela encontrada.",
+        "Início",
+        "Voltar ao Hub",
+        "Caso de uso",
+        "Exemplo de UI",
+        "Objetivo",
+        "Quando usar",
+        "Pontos de design",
+        "Armadilha",
+        "Trecho",
+        "Navegação",
+        "API",
+        "Tema",
+        "Dados",
+        "Modelo {n} de 11 · variante {v} de 18",
+        "Tela {screenDataId}",
+        "Lista",
+        "Detalhe",
+        "Formulário",
+        "Pesquisa",
+        "Abas",
+        "Navegação inferior",
+        "Gaveta",
+        "Diálogo",
+        "Grade",
+        "Estado assíncrono",
+        "Configurações",
+        "{title} item {n}",
+        "ID da tela: {screenDataId}",
+        "Entrada de exemplo",
+        "Enviar",
+        "Enviado: {value}",
+        "Pesquisar neste exemplo",
+        "Digite uma consulta para filtrar",
+        "Resultado para “{query}”",
+        "Visão geral",
+        "Código",
+        "Notas",
+        "Destino {n}: {title}",
+        "Início",
+        "Padrões",
+        "Sobre",
+        "Exemplo de navegação em gaveta",
+        "Início",
+        "Biblioteca",
+        "Configurações",
+        "Abrir diálogo",
+        "Fechar",
+        "Simular tarefa assíncrona",
+        "Ativar opção de exemplo",
+        "Preferência de tema",
+        "Sistema",
+        "External Integration · API",
+        "External Integration · MCP",
+        "Limpar",
+    ),
+    "ara": (
+        "مركز التنقل 🗺️",
+        "عرض القائمة",
+        "عرض الشبكة",
+        "البحث في الشاشات…",
+        "لم يتم العثور على أي شاشة.",
+        "الرئيسية",
+        "العودة إلى المركز",
+        "حالة الاستخدام",
+        "نموذج واجهة المستخدم",
+        "الغرض",
+        "متى يُستخدم",
+        "نقاط التصميم",
+        "مأزق شائع",
+        "مقتطف",
+        "التنقل",
+        "API",
+        "السمة",
+        "البيانات",
+        "القالب {n} من 11 · النسخة {v} من 18",
+        "الشاشة {screenDataId}",
+        "قائمة",
+        "التفاصيل",
+        "نموذج",
+        "بحث",
+        "علامات التبويب",
+        "التنقل السفلي",
+        "الدرج الجانبي",
+        "مربع حوار",
+        "شبكة",
+        "حالة غير متزامنة",
+        "الإعدادات",
+        "{title} عنصر {n}",
+        "معرّف الشاشة: {screenDataId}",
+        "إدخال نموذجي",
+        "إرسال",
+        "تم الإرسال: {value}",
+        "ابحث في هذا النموذج",
+        "اكتب استعلامًا للتصفية",
+        "النتيجة لـ «{query}»",
+        "نظرة عامة",
+        "الشيفرة",
+        "ملاحظات",
+        "الوجهة {n}: {title}",
+        "الرئيسية",
+        "الأنماط",
+        "حول",
+        "نموذج تنقل بنمط الدرج الجانبي",
+        "الرئيسية",
+        "المكتبة",
+        "الإعدادات",
+        "فتح مربع الحوار",
+        "إغلاق",
+        "محاكاة مهمة غير متزامنة",
+        "تفعيل الخيار النموذجي",
+        "تفضيل السمة",
+        "النظام",
+        "External Integration · API",
+        "External Integration · MCP",
+        "مسح",
+    ),
+    "zho": (
+        "导航中心 🗺️",
+        "列表视图",
+        "网格视图",
+        "搜索屏幕…",
+        "未找到任何屏幕。",
+        "首页",
+        "返回导航中心",
+        "使用场景",
+        "UI 示例",
+        "目的",
+        "使用时机",
+        "设计要点",
+        "常见陷阱",
+        "代码片段",
+        "导航",
+        "API",
+        "主题",
+        "数据",
+        "模板 {n} / 11 · 变体 {v} / 18",
+        "屏幕 {screenDataId}",
+        "列表",
+        "详情",
+        "表单",
+        "搜索",
+        "标签页",
+        "底部导航",
+        "抽屉导航",
+        "对话框",
+        "网格",
+        "异步状态",
+        "设置",
+        "{title} 项目 {n}",
+        "屏幕 ID：{screenDataId}",
+        "示例输入",
+        "提交",
+        "已提交：{value}",
+        "搜索此示例",
+        "输入查询以进行筛选",
+        "“{query}” 的结果",
+        "概览",
+        "代码",
+        "备注",
+        "目的地 {n}：{title}",
+        "首页",
+        "模式",
+        "关于",
+        "抽屉式导航示例",
+        "首页",
+        "资料库",
+        "设置",
+        "打开对话框",
+        "关闭",
+        "模拟异步任务",
+        "启用示例选项",
+        "主题偏好",
+        "系统",
+        "External Integration · API",
+        "External Integration · MCP",
+        "清除",
+    ),
+    "rus": (
+        "Центр навигации 🗺️",
+        "Вид списком",
+        "Вид сеткой",
+        "Поиск экранов…",
+        "Экраны не найдены.",
+        "Главная",
+        "Назад в Хаб",
+        "Сценарий использования",
+        "Пример интерфейса",
+        "Назначение",
+        "Когда использовать",
+        "Особенности проектирования",
+        "Подводный камень",
+        "Фрагмент кода",
+        "Навигация",
+        "API",
+        "Тема",
+        "Данные",
+        "Шаблон {n} из 11 · вариант {v} из 18",
+        "Экран {screenDataId}",
+        "Список",
+        "Подробности",
+        "Форма",
+        "Поиск",
+        "Вкладки",
+        "Нижняя навигация",
+        "Боковая панель",
+        "Диалог",
+        "Сетка",
+        "Асинхронное состояние",
+        "Настройки",
+        "{title} элемент {n}",
+        "ID экрана: {screenDataId}",
+        "Пример ввода",
+        "Отправить",
+        "Отправлено: {value}",
+        "Поиск по этому примеру",
+        "Введите запрос для фильтрации",
+        "Результат для «{query}»",
+        "Обзор",
+        "Код",
+        "Заметки",
+        "Раздел {n}: {title}",
+        "Главная",
+        "Шаблоны",
+        "О приложении",
+        "Пример навигации в виде боковой панели",
+        "Главная",
+        "Библиотека",
+        "Настройки",
+        "Открыть диалог",
+        "Закрыть",
+        "Смоделировать асинхронную задачу",
+        "Включить пример параметра",
+        "Настройка темы",
+        "Система",
+        "External Integration · API",
+        "External Integration · MCP",
+        "Очистить",
+    ),
+    "ind": (
+        "Hub Navigasi 🗺️",
+        "Tampilan daftar",
+        "Tampilan kisi",
+        "Cari layar…",
+        "Tidak ada layar ditemukan.",
+        "Beranda",
+        "Kembali ke Hub",
+        "Kasus penggunaan",
+        "Contoh UI",
+        "Tujuan",
+        "Kapan digunakan",
+        "Poin desain",
+        "Jebakan",
+        "Cuplikan",
+        "Navigation",
+        "API",
+        "Theme",
+        "Data",
+        "Templat {n} dari 11 · varian {v} dari 18",
+        "Layar {screenDataId}",
+        "Daftar",
+        "Detail",
+        "Formulir",
+        "Cari",
+        "Tab",
+        "Navigasi bawah",
+        "Drawer",
+        "Dialog",
+        "Kisi",
+        "Status async",
+        "Pengaturan",
+        "Item {title} {n}",
+        "ID layar: {screenDataId}",
+        "Input contoh",
+        "Kirim",
+        "Dikirim: {value}",
+        "Cari contoh ini",
+        "Ketik kueri untuk memfilter",
+        "Hasil untuk “{query}”",
+        "Ikhtisar",
+        "Kode",
+        "Catatan",
+        "Tujuan {n}: {title}",
+        "Beranda",
+        "Pola",
+        "Tentang",
+        "Contoh navigasi bergaya drawer",
+        "Beranda",
+        "Perpustakaan",
+        "Pengaturan",
+        "Buka dialog",
+        "Tutup",
+        "Simulasikan tugas async",
+        "Aktifkan opsi contoh",
+        "Preferensi tema",
+        "Sistem",
+        "Integrasi Eksternal · API",
+        "Integrasi Eksternal · MCP",
+        "Kosongkan",
+    ),
+    "deu": (
+        "Navigations-Hub 🗺️",
+        "Listenansicht",
+        "Rasteransicht",
+        "Screens suchen…",
+        "Keine Screens gefunden.",
+        "Start",
+        "Zurück zum Hub",
+        "Anwendungsfall",
+        "UI-Beispiel",
+        "Zweck",
+        "Wann nutzen",
+        "Designpunkte",
+        "Fallstrick",
+        "Snippet",
+        "Navigation",
+        "API",
+        "Theme",
+        "Daten",
+        "Vorlage {n} von 11 · Variante {v} von 18",
+        "Screen {screenDataId}",
+        "Liste",
+        "Detail",
+        "Formular",
+        "Suche",
+        "Tabs",
+        "Untere Navigation",
+        "Drawer",
+        "Dialog",
+        "Raster",
+        "Async-Zustand",
+        "Einstellungen",
+        "{title}-Eintrag {n}",
+        "Screen-ID: {screenDataId}",
+        "Beispieleingabe",
+        "Absenden",
+        "Gesendet: {value}",
+        "Dieses Beispiel durchsuchen",
+        "Abfrage tippen zum Filtern",
+        "Ergebnis für „{query}“",
+        "Überblick",
+        "Code",
+        "Notizen",
+        "Ziel {n}: {title}",
+        "Start",
+        "Muster",
+        "Über",
+        "Drawer-Navigationsbeispiel",
+        "Start",
+        "Bibliothek",
+        "Einstellungen",
+        "Dialog öffnen",
+        "Schließen",
+        "Async-Aufgabe simulieren",
+        "Beispieloption aktivieren",
+        "Theme-Einstellung",
+        "System",
+        "Externe Integration · API",
+        "Externe Integration · MCP",
+        "Leeren",
+    ),
+    "swa": (
+        "Kituo cha Urambazaji 🗺️",
+        "Mwonekano wa orodha",
+        "Mwonekano wa gridi",
+        "Tafuta skrini…",
+        "Hakuna skrini zilizopatikana.",
+        "Nyumbani",
+        "Rudi kwenye Hub",
+        "Kesi ya matumizi",
+        "Sampuli ya UI",
+        "Kusudi",
+        "Wakati wa kutumia",
+        "Pointi za muundo",
+        "Mtego",
+        "Kipande",
+        "Navigation",
+        "API",
+        "Theme",
+        "Data",
+        "Kiolezo {n} kati ya 11 · lahaja {v} kati ya 18",
+        "Skrini {screenDataId}",
+        "Orodha",
+        "Maelezo",
+        "Fomu",
+        "Tafuta",
+        "Vichupo",
+        "Urambazaji wa chini",
+        "Drawer",
+        "Kidirisha",
+        "Gridi",
+        "Hali ya async",
+        "Mipangilio",
+        "Kipengele cha {title} {n}",
+        "Kitambulisho cha skrini: {screenDataId}",
+        "Ingizo la sampuli",
+        "Wasilisha",
+        "Imewasilishwa: {value}",
+        "Tafuta sampuli hii",
+        "Andika swali ili kuchuja",
+        "Matokeo ya “{query}”",
+        "Muhtasari",
+        "Msimbo",
+        "Maelezo",
+        "Marudio {n}: {title}",
+        "Nyumbani",
+        "Mifumo",
+        "Kuhusu",
+        "Sampuli ya urambazaji wa mtindo wa drawer",
+        "Nyumbani",
+        "Maktaba",
+        "Mipangilio",
+        "Fungua kidirisha",
+        "Funga",
+        "Simulia kazi ya async",
+        "Wezesha chaguo la sampuli",
+        "Mapendeleo ya mandhari",
+        "Mfumo",
+        "Ujumuishaji wa Nje · API",
+        "Ujumuishaji wa Nje · MCP",
+        "Futa",
+    ),
+}
+
+SCREEN_COUNT = 198
+SCREEN_TEMPLATES = ("list", "detail", "form", "search", "tabs", "bottomNavigation", "drawer", "dialog", "grid", "asyncState", "settings")
+SCREEN_TEMPLATE_JA = ("一覧", "詳細", "フォーム", "検索", "タブ", "ボトムナビゲーション", "ドロワー", "ダイアログ", "グリッド", "非同期", "設定")
+SCREEN_CATEGORIES = ("navigation", "api", "ui", "data", "advanced")
+SCREEN_LOCALES = tuple(SCREEN_TEXT)
+SCREEN_BCP47 = {"eng": "en", "jpn": "ja", "fra": "fr", "spa": "es", "por": "pt", "ara": "ar", "zho": "zh", "rus": "ru", "ind": "id", "deu": "de", "swa": "sw"}
+SCREEN_LEGACY_LOCALES = {"en": "eng", "ja": "jpn", "fr": "fra", "es": "spa", "pt": "por", "ar": "ara", "zh": "zho", "ru": "rus", "id": "ind", "in": "ind", "de": "deu", "sw": "swa"}
+SCREEN_RTL_LOCALES = frozenset(("ara",))
+SCREEN_TITLE_EXCEPTIONS = {180: "DrawerModal2"}
+SCREEN_ASYNC_MS = 500
+# Dart's String.trim: the Unicode White_Space characters and the byte order mark (not Python's str.strip set, not JavaScript's).
+_SCR_WS = frozenset("\t\n\x0b\x0c\r \x85\xa0                　﻿")
+# Which widget the original's route table (ci/numbered_routes.toml) gives each numbered route; every other number is a GenericScreen.
+SCREEN_VALIDATION_NAMES = ("ValidationBasic", "EmailValidation", "PasswordStrength", "PhoneValidation", "UrlValidation", "DateValidation", "RangeValidation", "RegexValidation", "FormValidation")
+SCREEN_CONVERSION_NAMES = {103: "DataNormalize", 104: "TypeCoercion", 105: "DateConvert", 107: "UnitConvert", 109: "Encoding", 110: "DataMasking"}
+SCREEN_SOURCE_BASE = "https://github.com/myon-bioinformatics/flutter_navigation_basic/blob/ae3c4cb78cfc9aed15871dfce750d8320a19d1e6/"
+SCREEN_VALIDATION_LINKS = (("Python実装", "python/validation_patterns.py"), ("Pythonテスト", "python/tests/test_validation_patterns.py"),
+                           ("ローカル入力画面", "python/validation_http.py"), ("利用方法・制約", "docs/data-processing-validation-091-099.md"))
+SCREEN_CONVERSION_LINKS = (("Python実装", "python/conversion_patterns.py"), ("Pythonテスト", "python/tests/test_conversion_patterns.py"),
+                           ("利用方法・制約", "docs/data-processing-conversion-103-110.md"))
+SCREEN_VALIDATION_LIMIT = "限定実装: Pythonとローカルブラウザで実行可能。Flutterからの検証実行は未接続。"
+SCREEN_CONVERSION_LIMIT = "限定実装: Pythonで実行可能。Flutterからの変換実行は未接続。"
+SCREEN_LINKS_NOTE = "GitHub PagesではPythonを実行できません。実装・テストへのリンクを表示します。"
+NATIVE_PARALLEL = (136, 137)
+NATIVE_INTERACTIVE = (171, 172, 173, 174, 175, 183, 184)
+# number -> (kind, description): the Dart view.dart of each pattern says which shared widget it is and what it tells the reader.
+NATIVE_STATE: dict[int, tuple[str, str]] = {
+    151: ("catalogue", "GetX を使った基本的な状態管理。"), 152: ("catalogue", "Rx 変数による Observable 状態管理。"), 153: ("catalogue", "GetxController のライフサイクル管理。"),
+    154: ("catalogue", "Bindings による DI と状態管理。"), 155: ("catalogue", "ever/once/debounce/interval Workers 実装。"), 156: ("catalogue", "GetxService による永続サービス実装。"),
+    157: ("scope", "Provider パターンによる状態管理 (擬似実装)。"), 158: ("change", "ChangeNotifier による状態通知実装。"), 159: ("value", "ValueNotifier の基本実装。"),
+    160: ("scope", "InheritedWidget による状態伝播。"), 161: ("model", "InheritedModel による選択的再ビルド。"), 162: ("state_notifier", "StateNotifier パターン実装。"),
+    163: ("bloc", "BLoC パターンの擬似実装。"), 166: ("mvc", "MVC パターンの Flutter 実装。"), 167: ("mvvm", "MVVM パターンの Flutter 実装。"), 168: ("mvp", "MVP パターンの Flutter 実装。"),
+    169: ("clean", "Clean Architecture の実装例。"), 170: ("atom", "Atom 状態管理パターン (Riverpod 風擬似実装)。")}
+NATIVE_NUMBERS = tuple(sorted((*NATIVE_PARALLEL, *NATIVE_STATE, *NATIVE_INTERACTIVE)))
+# A ValueNotifier does not notify when it is set to the value it has; a ChangeNotifier, a Bloc's state stream and the Clean adapter notify on every call.
+_NAT_NOTIFY_ON_EQUAL = frozenset(("change", "bloc", "mvc", "mvp", "clean"))
+_NAT_COUNTER_KINDS = frozenset(("catalogue", "change", "value", "state_notifier", "bloc", "mvc", "mvvm", "mvp", "clean"))
+_NAT_NOTES = {"catalogue": "GetXを使用しないFlutter標準のValueNotifier実例。旧GetX固有機能の同等実装ではありません。", "change": "ChangeNotifierで状態を通知", "value": "ValueNotifierで状態を通知",
+              "mvc": "Flutter標準APIによる最小構成の実動作例。フレームワーク全機能の実装ではありません。", "mvvm": None, "mvp": None, "clean": None, "atom": None}
+_NAT_NOTES["mvvm"] = _NAT_NOTES["mvp"] = _NAT_NOTES["clean"] = _NAT_NOTES["atom"] = _NAT_NOTES["mvc"]
+_NAT_INTERACTIVE_NOTE = "Flutter標準Widgetで実際に操作する例。外部CLIとデータ処理は別境界。"
+_NAT_ENGINES = {136: {"worker": "Web Worker（別スレッドで実行）", "fallback": "同期フォールバック（Worker並列実行なし）"},
+                137: {"worker": "compute（Web Worker）", "fallback": "compute（同期フォールバック・別スレッド保証なし）"}}
+NATIVE_MAX_ACTIONS = 1000
+NATIVE_MAX_VALUES = 4096
+NATIVE_SAFE = 2 ** 53
+
+
+_SCR_PATTERNS = {key: tuple(PATTERN_TITLES[key].split()) for key in ("navigation", "api", "ui", "data")}
+
+
+def screen_template_index(screen_id: int) -> int:
+    """The position in ``SCREEN_TEMPLATES`` of the block of 18 numbers that ``screen_id`` falls in."""
+    return max(0, min(len(SCREEN_TEMPLATES) - 1, (screen_id - 1) // 18))
+
+
+def _scr_trim(text: str) -> str:
+    start, end = 0, len(text)
+    while start < end and text[start] in _SCR_WS:
+        start += 1
+    while end > start and text[end - 1] in _SCR_WS:
+        end -= 1
+    return text[start:end]
+
+
+def _scr_str(value: Any) -> str:
+    """Dart's ``'${value ?? ''}'`` for the values the screens pass: text, whole numbers and null."""
+    if value is None:
+        return ""
+    if value is True or value is False:
+        return "true" if value else "false"
+    return str(value)
+
+
+def screen_locale(raw: Any = None) -> str:
+    """DisplayLocaleCodes.canonicalize: an ISO 639-3 code or a legacy two-letter one (trimmed, lower-cased); anything else is English."""
+    if not isinstance(raw, str):
+        return "eng"
+    text = _scr_trim(raw).lower()
+    if not text:
+        return "eng"
+    if text in SCREEN_TEXT:
+        return text
+    return SCREEN_LEGACY_LOCALES.get(text, "eng")
+
+
+def screen_text(locale: Any, key: str, arguments: Any = ()) -> str:
+    """DisplayCatalog.text: the locale's text for ``key``, else English, else the key itself; then every ``{name}`` of ``arguments`` (pairs, in order) is replaced in turn."""
+    keys = SCREEN_TEXT_INDEX
+    value = key
+    resolved = screen_locale(locale)
+    position = keys.get(key)
+    if position is not None:
+        value = SCREEN_TEXT[resolved][position]
+    for name, argument in arguments:
+        value = value.replace("{" + name + "}", _scr_str(argument))
+    return value
+
+
+SCREEN_TEXT_INDEX = {key: index for index, key in enumerate(SCREEN_TEXT_KEYS)}
+
+
+def screen_row(screen_id: int) -> dict[str, Any]:
+    """The assets/screens.json entry of screen ``screen_id`` (1 to 198), with its keys in the original's order."""
+    if type(screen_id) is not int or not 1 <= screen_id <= SCREEN_COUNT:
+        raise ValueError(f"screen must be an integer 1..{SCREEN_COUNT}")
+    emoji, use_case_ja, use_case_en = SCREEN_ROWS[screen_id - 1].split("|")
+    domain_key, domain_ja, domain_emoji = SCREEN_DOMAINS[(screen_id - 1) % 18]
+    patterns = {key: _SCR_PATTERNS[key][screen_id - 1] for key in ("navigation", "api", "ui", "data")}
+    row: dict[str, Any] = {
+        "name": f"Screen{screen_id}", "title": SCREEN_TITLE_EXCEPTIONS.get(screen_id, patterns["navigation"]), "emoji": emoji, "domainKey": domain_key, "domainJa": domain_ja,
+        "domainEmoji": domain_emoji, "useCaseJa": use_case_ja, "useCaseEn": use_case_en,
+        "useCaseKey": domain_key + "." + re.sub(r"[^a-z0-9]+", "-", use_case_en.lower()).strip("-"), "templateJa": SCREEN_TEMPLATE_JA[screen_template_index(screen_id)],
+        "templateOverride": None,
+        "description": f"Navigation: {patterns['navigation']}, API: {patterns['api']}, Theme: {patterns['ui']}, Data: {patterns['data']}",
+        "category": SCREEN_CATEGORIES[(screen_id - 1) % 5], "navigationPattern": patterns["navigation"], "apiPattern": patterns["api"], "themePattern": patterns["ui"],
+        "dataPattern": patterns["data"], "tags": ["navigation", "api", "ui", "data"]}
+    detail = SCREEN_DETAILS.get(screen_id)
+    if detail is not None:
+        row["detail"] = {"purpose": detail[0], "when": detail[1], "points": list(detail[2]), "pitfall": detail[3], "snippet": detail[4]}
+    row["screenDataId"] = screen_id
+    return row
+
+
+def screens_catalogue() -> list[dict[str, Any]]:
+    """All 198 entries of assets/screens.json (what ScreensConfig.load returns), in file order."""
+    return [screen_row(n) for n in range(1, SCREEN_COUNT + 1)]
+
+
+def screen_template(screen_id: int, override: Any = None) -> str:
+    """The template of a screen: its override when that names one (an unknown name is a list), else the block of 18 numbers it falls in."""
+    if override is not None and override != "":
+        return override if override in SCREEN_TEMPLATES else "list"
+    return SCREEN_TEMPLATES[screen_template_index(screen_id)]
+
+
+def screen_search(rows: list[dict[str, Any]], query: Any) -> list[dict[str, Any]]:
+    """searchCatalog: the rows whose id, ``screenN``, name, title, description, category, domain, use case (Japanese, English) or use-case key contains the trimmed, lower-cased
+    query; an empty query keeps every row; the order is the source order."""
+    needle = _scr_trim(query).lower() if isinstance(query, str) else ""
+    if not needle:
+        return list(rows)
+    found = []
+    for row in rows:
+        values = (str(row["screenDataId"]), f"screen{row['screenDataId']}", row["name"], row["title"], row["description"], row["category"], row["domainKey"], row["domainJa"],
+                  row["useCaseJa"], row["useCaseEn"], row["useCaseKey"])
+        if any(needle in value.lower() for value in values):
+            found.append(row)
+    return found
+
+
+def screen_route(screen_id: int) -> dict[str, Any]:
+    """Which widget the original's route ``/screenN`` opens (ci/numbered_routes.toml) and, for the shared ones, the pattern it shows."""
+    if type(screen_id) is not int or not 1 <= screen_id <= SCREEN_COUNT:
+        raise ValueError(f"screen must be an integer 1..{SCREEN_COUNT}")
+    if screen_id == 5:
+        return {"screen": screen_id, "widget": "Screen5Page", "kind": "dedicated"}
+    if 91 <= screen_id <= 99:
+        return {"screen": screen_id, "widget": "ValidationPatternLinks", "kind": "validation"}
+    if screen_id in SCREEN_CONVERSION_NAMES:
+        return {"screen": screen_id, "widget": "ConversionPatternLinks", "kind": "conversion"}
+    if screen_id in NATIVE_PARALLEL:
+        return {"screen": screen_id, "widget": "NativeParallelPatternExample", "kind": "parallel"}
+    if screen_id in NATIVE_INTERACTIVE:
+        return {"screen": screen_id, "widget": "InteractivePatternExample", "kind": "interactive"}
+    return {"screen": screen_id, "widget": "GenericScreen", "kind": "generic"}
+
+
+def screen_initial() -> dict[str, Any]:
+    """The state of a screen when it opens: the first tab, empty inputs, nothing open or loading, the sample switch on."""
+    return {"tab": "usecase", "value": "", "query": "", "submitted": None, "index": 0, "open": False, "loading": False, "elapsed": 0, "enabled": True}
+
+
+_SCR_STATE_KEYS = tuple(screen_initial())
+
+
+def _scr_state(state: Any) -> dict[str, Any]:
+    if state is None:
+        return screen_initial()
+    if not isinstance(state, dict) or any(key not in _SCR_STATE_KEYS for key in state):
+        raise ValueError("state must be an object with the keys of screen_initial")
+    merged = {**screen_initial(), **state}
+    if merged["tab"] not in ("usecase", "ui") or not isinstance(merged["value"], str) or not isinstance(merged["query"], str):
+        raise ValueError("invalid state")
+    if merged["submitted"] is not None and not isinstance(merged["submitted"], str):
+        raise ValueError("invalid state")
+    if not _pat_js_int(merged["index"]) or not 0 <= merged["index"] <= 2 or not _pat_js_int(merged["elapsed"]) or not 0 <= merged["elapsed"] <= SCREEN_ASYNC_MS:
+        raise ValueError("invalid state")
+    if type(merged["open"]) is not bool or type(merged["loading"]) is not bool or type(merged["enabled"]) is not bool:
+        raise ValueError("invalid state")
+    merged["index"], merged["elapsed"] = int(merged["index"]), int(merged["elapsed"])
+    return merged
+
+
+def screen_step(screen_id: int, state: Any, event: Any) -> dict[str, Any]:
+    """The state after one event on screen ``screen_id``: ``tab``, ``input`` (the screen-6 search, the search template's field or the form's), ``clear`` (screen 6), ``submit``
+    (form), ``select`` (tabs and bottom navigation), ``open``/``close`` (dialog), ``start`` and ``tick`` (async: it ends 500 ms after it starts) and ``toggle`` (settings). An event
+    the screen's template does not have is refused."""
+    row = screen_row(screen_id)
+    current = _scr_state(state)
+    if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+        raise ValueError("event must be an object with a type")
+    kind = event["type"]
+    template = screen_template(screen_id, row["templateOverride"])
+    allowed = {"tab": row.get("detail") is not None, "input": screen_id == 6 or template in ("form", "search"), "clear": screen_id == 6, "submit": screen_id != 6 and template == "form",
+               "select": screen_id != 6 and template in ("tabs", "bottomNavigation"), "open": screen_id != 6 and template == "dialog", "close": screen_id != 6 and template == "dialog",
+               "start": screen_id != 6 and template == "asyncState", "tick": screen_id != 6 and template == "asyncState", "toggle": screen_id != 6 and template == "settings"}
+    if kind not in allowed:
+        raise ValueError(f"unknown event: {kind!r}")
+    if not allowed[kind]:
+        raise ValueError(f"{kind} is not available on screen {screen_id}")
+    if not all(key in {"type", *(_SCR_EVENT_KEYS[kind])} for key in event):
+        raise ValueError("unknown event keys")
+    nxt = dict(current)
+    if kind == "tab":
+        if event.get("tab") not in ("usecase", "ui"):
+            raise ValueError("tab must be usecase or ui")
+        nxt["tab"] = event["tab"]
+    elif kind == "input":
+        if not isinstance(event.get("value"), str) or len(event["value"]) > 10000:
+            raise ValueError("value must be text of at most 10000 characters")
+        nxt["value" if template == "form" and screen_id != 6 else "query"] = event["value"]
+    elif kind == "clear":
+        nxt["query"] = ""
+    elif kind == "submit":
+        nxt["submitted"] = current["value"]
+    elif kind == "select":
+        if not _pat_js_int(event.get("index")) or not 0 <= event["index"] <= 2:
+            raise ValueError("index must be 0..2")
+        nxt["index"] = int(event["index"])
+    elif kind in ("open", "close"):
+        nxt["open"] = kind == "open"
+    elif kind == "start":
+        if not current["loading"]:
+            nxt["loading"], nxt["elapsed"] = True, 0
+    elif kind == "tick":
+        if not _pat_js_int(event.get("ms")) or not 0 <= event["ms"] <= 60000:
+            raise ValueError("ms must be 0..60000")
+        if current["loading"]:
+            nxt["elapsed"] = current["elapsed"] + int(event["ms"])
+            if nxt["elapsed"] >= SCREEN_ASYNC_MS:
+                nxt["loading"], nxt["elapsed"] = False, 0
+    else:
+        if type(event.get("value")) is not bool:
+            raise ValueError("value must be true or false")
+        nxt["enabled"] = event["value"]
+    return nxt
+
+
+_SCR_EVENT_KEYS = {"tab": ("tab",), "input": ("value",), "clear": (), "submit": (), "select": ("index",), "open": (), "close": (), "start": (), "tick": ("ms",), "toggle": ("value",)}
+
+
+def screen_template_view(template: str, screen_id: int, title: str, description: str, locale: str, state: dict[str, Any]) -> dict[str, Any]:
+    """What PatternTemplateBody draws for ``template``: texts in ``locale`` and the parts of ``state`` it shows."""
+    def t(key: str, *arguments: Any) -> str:
+        return screen_text(locale, "patternTemplate." + key, arguments)
+    if template == "list":
+        return {"template": template, "items": [{"avatar": str(i + 1), "title": t("listItem", ("title", title), ("n", i + 1)), "subtitle": description} for i in range(6)]}
+    if template == "detail":
+        return {"template": template, "heading": title, "description": description, "screenId": t("screenIdLabel", ("screenDataId", screen_id))}
+    if template == "form":
+        return {"template": template, "label": t("sampleInputLabel"), "value": state["value"], "submit": t("submit"),
+                "snackbar": None if state["submitted"] is None else t("submitted", ("value", state["submitted"]))}
+    if template == "search":
+        query = state["query"]
+        return {"template": template, "hint": t("searchHint"), "query": query,
+                "result": {"title": t("typeToFilter") if query == "" else t("resultFor", ("query", query)), "subtitle": description}}
+    if template == "tabs":
+        return {"template": template, "tabs": [t("tabOverview"), t("tabCode"), t("tabNotes")], "selected": state["index"], "panels": [{"text": title}, {"icon": "code"}, {"text": description}]}
+    if template == "bottomNavigation":
+        return {"template": template, "destination": t("destination", ("n", state["index"] + 1), ("title", title)), "items": [t("navHome"), t("navPatterns"), t("navAbout")], "selected": state["index"]}
+    if template == "drawer":
+        return {"template": template, "title": t("drawerSampleTitle"), "items": [t("drawerHome"), t("drawerLibrary"), t("drawerSettings")]}
+    if template == "dialog":
+        return {"template": template, "open": t("dialogOpen"), "dialog": {"title": title, "content": description, "close": t("dialogClose")} if state["open"] else None}
+    if template == "grid":
+        return {"template": template, "cards": [f"{title}\n#{i + 1}" for i in range(8)]}
+    if template == "asyncState":
+        return {"template": template, "loading": state["loading"], "action": t("asyncSimulate")}
+    if template == "settings":
+        return {"template": template, "option": t("settingsEnableOption"), "subtitle": description, "enabled": state["enabled"], "theme": t("settingsThemePreference"), "system": t("settingsSystem")}
+    raise ValueError("unknown template")
+
+
+def screen_catalog_view(locale: str, query: str) -> dict[str, Any]:
+    """The search list of screen 6 and the Hub: the matching screens, ``n / 198`` and the texts around them."""
+    found = screen_search(screens_catalogue(), query)
+    items = []
+    for row in found:
+        parts = [row["useCaseEn"]] if row["useCaseEn"] else []
+        if row["domainJa"]:
+            parts.append(f"{row['domainEmoji']} {row['domainJa']}")
+        items.append({"id": row["screenDataId"], "emoji": row["emoji"], "name": row["name"], "title": row["title"], "description": row["description"],
+                      "heading": f"Screen {row['screenDataId']} · {row['useCaseJa'] or row['title']}", "subtitle": " · ".join(parts)})
+    return {"hint": screen_text(locale, "hub.searchHint"), "query": query, "count": f"{len(found)} / {SCREEN_COUNT}", "empty": screen_text(locale, "hub.empty") if not found else None,
+            "clear": screen_text(locale, "clipboardWorkbench.clear") if query != "" else None, "items": items}
+
+
+def screen_view(screen_id: int, locale: Any = "eng", state: Any = None) -> dict[str, Any]:
+    """GenericScreen as data: the app-bar title, the headline and sub-line, the four pattern chips, the Use case / UI sample tabs of a screen that has a detail, and the body (the
+    search of screen 6, or the template with ``state``)."""
+    row = screen_row(screen_id)
+    loc = screen_locale(locale)
+    current = _scr_state(state)
+
+    def t(key: str, *arguments: Any) -> str:
+        return screen_text(loc, key, arguments)
+    detail = row.get("detail")
+    has_use_case = row["useCaseJa"] != ""
+    title = f"{row['emoji']} {row['useCaseJa']}" if has_use_case else f"Screen{screen_id}: {row['title']} {row['emoji']}"
+    has_domain = row["domainJa"] != "" and row["templateJa"] != ""
+    headline = row["useCaseJa"] if has_use_case else t("patternTemplate." + screen_template(screen_id))
+    subline = (f"{row['domainEmoji']} {row['domainJa']} · {row['templateJa']}テンプレート · Screen {screen_id}" if has_domain
+               else t("generic.templateVariant", ("n", (screen_id - 1) // 18 + 1), ("v", (screen_id - 1) % 18 + 1)))
+    chips = [{"avatar": label[:1], "text": f"{label}: {value}"} for label, value in
+             ((t("generic.patternNavigation"), row["navigationPattern"]), (t("generic.patternApi"), row["apiPattern"]), (t("generic.patternTheme"), row["themePattern"]),
+              (t("generic.patternData"), row["dataPattern"]))]
+    template = screen_template(screen_id, row["templateOverride"])
+    body: dict[str, Any]
+    if screen_id == 6:
+        body = {"template": "catalog", **screen_catalog_view(loc, current["query"])}
+    else:
+        body = screen_template_view(template, screen_id, row["title"], row["description"], loc, current)
+    view: dict[str, Any] = {"schema": "screens/1", "screen": screen_id, "locale": loc, "lang": SCREEN_BCP47[loc], "dir": "rtl" if loc in SCREEN_RTL_LOCALES else "ltr", "widget": "GenericScreen",
+                            "title": title, "emoji": row["emoji"], "headline": headline, "subline": subline, "back": t("generic.backToHub"),
+                            "chips": chips if detail is None else [], "tabs": None, "tab": None, "useCase": None, "body": body}
+    if detail is not None and screen_id != 6:
+        view["tabs"] = [{"id": "usecase", "label": t("generic.tabUseCase")}, {"id": "ui", "label": t("generic.tabUiSample")}]
+        view["tab"] = current["tab"]
+        view["useCase"] = {"sections": [{"heading": t("generic.sectionPurpose"), "text": detail["purpose"]}, {"heading": t("generic.sectionWhen"), "text": detail["when"]},
+                                        {"heading": t("generic.sectionPoints"), "points": list(detail["points"])}, {"heading": t("generic.sectionPitfall"), "text": detail["pitfall"]},
+                                        {"heading": t("generic.sectionSnippet"), "code": detail["snippet"]}], "chips": chips}
+    return view
+
+
+def screen_hub(locale: Any = "eng", query: Any = "", mode: str = "grid") -> dict[str, Any]:
+    """HubScreen as data: its title, the two list/grid buttons, the two external-integration buttons, the search and the matching screens."""
+    if mode not in ("list", "grid"):
+        raise ValueError("mode must be list or grid")
+    if not isinstance(query, str) or len(query) > 10000:
+        raise ValueError("query must be text of at most 10000 characters")
+    loc = screen_locale(locale)
+    catalog = screen_catalog_view(loc, query)
+    return {"schema": "screens/1", "locale": loc, "lang": SCREEN_BCP47[loc], "dir": "rtl" if loc in SCREEN_RTL_LOCALES else "ltr", "title": screen_text(loc, "hub.title"), "mode": mode,
+            "tooltips": {"api": screen_text(loc, "mockApi.title"), "mcp": screen_text(loc, "mcp.title"), "list": screen_text(loc, "hub.listViewTooltip"),
+                         "grid": screen_text(loc, "hub.gridViewTooltip")}, "home": screen_text(loc, "hub.homeFab"), **{k: v for k, v in catalog.items() if k != "clear"}}
+
+
+def screen_links_view(screen_id: int, locale: Any = "eng") -> dict[str, Any]:
+    """ValidationPatternLinks and ConversionPatternLinks as data: the pattern's title, the original's note, its source links (pinned to the audited commit) and the reference here."""
+    route = screen_route(screen_id)
+    if route["kind"] not in ("validation", "conversion"):
+        raise ValueError(f"screen {screen_id} is not a source-links screen")
+    if route["kind"] == "validation":
+        name, limit, links, family = SCREEN_VALIDATION_NAMES[screen_id - 91], SCREEN_VALIDATION_LIMIT, SCREEN_VALIDATION_LINKS, "validate"
+    else:
+        name, limit, links, family = SCREEN_CONVERSION_NAMES[screen_id], SCREEN_CONVERSION_LIMIT, SCREEN_CONVERSION_LINKS, "convert"
+    loc = screen_locale(locale)
+    return {"schema": "screens/1", "screen": screen_id, "locale": loc, "widget": route["widget"], "title": f"Pattern {screen_id:03d}: {name}", "note": SCREEN_LINKS_NOTE, "limitation": limit,
+            "links": [{"label": label, "path": path, "url": SCREEN_SOURCE_BASE + path} for label, path in links], "family": family, "page": "patterns.html"}
+
+
+def _scr_run_screen(request: Any) -> dict[str, Any]:
+    """The ``screen`` family: ``view`` (a screen after some events), ``hub``, ``search``, ``text``, ``route`` and ``links``."""
+    _pat_need(isinstance(request, dict), "request object")
+    operation = request.get("operation")
+    allowed = {"view": ("screen", "locale", "events"), "hub": ("locale", "query", "mode"), "search": ("query",), "text": ("locale", "key", "arguments"), "route": ("screen",),
+               "links": ("screen", "locale")}
+    _pat_need(isinstance(operation, str) and operation in allowed, "operation must be view, hub, search, text, route or links")
+    _pat_need(all(key == "operation" or key in allowed[operation] for key in request), "unknown request keys")
+    screen = request.get("screen")
+    if operation in ("view", "route", "links"):
+        _pat_need(_pat_js_int(screen), f"screen must be an integer 1..{SCREEN_COUNT}")
+        screen = int(screen)
+    if operation == "view":
+        events = request.get("events", [])
+        _pat_need(isinstance(events, list) and len(events) <= NATIVE_MAX_ACTIONS, f"events must be an array of at most {NATIVE_MAX_ACTIONS}")
+        state = None
+        for event in events:
+            state = screen_step(screen, state, event)
+        return {"schema": "screens/1", "operation": operation, "result": screen_view(screen, request.get("locale", "eng"), state), "state": _scr_state(state)}
+    if operation == "hub":
+        return {"schema": "screens/1", "operation": operation, "result": screen_hub(request.get("locale", "eng"), request.get("query", ""), request.get("mode", "grid"))}
+    if operation == "search":
+        query = request.get("query", "")
+        _pat_need(isinstance(query, str) and len(query) <= 10000, "query must be text of at most 10000 characters")
+        return {"schema": "screens/1", "operation": operation, "result": [row["screenDataId"] for row in screen_search(screens_catalogue(), query)]}
+    if operation == "text":
+        key, arguments = request.get("key"), request.get("arguments", [])
+        _pat_need(isinstance(key, str) and len(key) <= 200, "key must be text")
+        _pat_need(isinstance(arguments, list) and len(arguments) <= 20 and all(isinstance(a, list) and len(a) == 2 and isinstance(a[0], str) and
+                                                                                  (a[1] is None or isinstance(a[1], str) or _pat_js_int(a[1]) and abs(a[1]) <= NATIVE_SAFE)
+                                                                                  for a in arguments), "arguments must be [name, value] pairs")
+        return {"schema": "screens/1", "operation": operation, "result": screen_text(request.get("locale", "eng"), key,
+                                                                                    [(a[0], int(a[1]) if _pat_js_int(a[1]) else a[1]) for a in arguments])}
+    if operation == "route":
+        return {"schema": "screens/1", "operation": operation, "result": screen_route(screen)}
+    return {"schema": "screens/1", "operation": operation, "result": screen_links_view(screen, request.get("locale", "eng"))}
+
+
+# --- The native examples: patterns 136-137 (a sum of squares off the main thread), 151-170 (one counter or two, kept by a notifier of some kind) and 171-175, 183-184 (a list that is reordered, swapped, inserted into, removed from or selected) ---
+def native_initial(number: int) -> dict[str, Any]:
+    """The state of native example ``number`` when it opens."""
+    if number in NATIVE_STATE:
+        if NATIVE_STATE[number][0] in ("scope", "model", "atom"):
+            return {"left": 0, "right": 0, "rebuilds": {"left": 0, "right": 0}}
+        return {"count": 0, "notifications": 0}
+    if number in NATIVE_INTERACTIVE:
+        return {"items": ["A", "B", "C"], "selected": [], "inserted": 0}
+    raise ValueError(f"pattern {number} has no state example")
+
+
+def native_step(number: int, state: dict[str, Any], action: Any) -> dict[str, Any]:
+    """The state after one action. Counters: ``increment`` and ``reset``. Two values: ``left`` and ``right`` (a scope rebuilds both displays, a model or an atom only the one
+    that changed). Lists: ``{"type": "reorder", "old": i, "new": j}`` (Flutter's onReorder: ``new`` counts the list before the item is taken out), ``swap`` (``a``, ``b``), ``insert``
+    (a new item N1, N2 ... at the top), ``remove`` (the first), ``select`` (``item``, ``value``) and ``delete_selected``."""
+    new = json.loads(json.dumps(state))
+    if number in NATIVE_STATE:
+        kind = NATIVE_STATE[number][0]
+        if kind in _NAT_COUNTER_KINDS:
+            _pat_need(action in ("increment", "reset"), "action must be increment or reset")
+            if action == "increment":
+                new["count"] += 1
+                new["notifications"] += 1
+            else:
+                if new["count"] != 0 or kind in _NAT_NOTIFY_ON_EQUAL:
+                    new["notifications"] += 1
+                new["count"] = 0
+            return new
+        _pat_need(action in ("left", "right"), "action must be left or right")
+        new[action] += 1
+        if kind == "scope":
+            new["rebuilds"]["left"] += 1
+            new["rebuilds"]["right"] += 1
+        else:
+            new["rebuilds"][action] += 1
+        return new
+    _pat_need(number in NATIVE_INTERACTIVE and isinstance(action, dict) and isinstance(action.get("type"), str), "action must be an object with a type")
+    kind = action["type"]
+    allowed = {171: ("reorder",), 172: ("reorder",), 184: ("reorder",), 173: ("swap",), 174: ("insert",), 175: ("remove",), 183: ("select", "delete_selected")}[number]
+    _pat_need(kind in allowed, f"{kind} is not available in pattern {number}")
+    items = new["items"]
+    _pat_need(all(key in {"type", *{"reorder": ("old", "new"), "swap": ("a", "b"), "select": ("item", "value")}.get(kind, ())} for key in action), "unknown action keys")
+    if kind == "reorder":
+        old, target = action.get("old"), action.get("new")
+        _pat_need(_pat_js_int(old) and _pat_js_int(target) and 0 <= old < len(items) and 0 <= target <= len(items), "old must be 0..n-1 and new 0..n")
+        old, target = int(old), int(target)
+        if target > old:
+            target -= 1
+        items.insert(target, items.pop(old))
+    elif kind == "swap":
+        first, second = action.get("a"), action.get("b")
+        _pat_need(isinstance(first, str) and isinstance(second, str), "a and b must be item names")
+        if first in items and second in items and first != second:
+            i, j = items.index(first), items.index(second)
+            items[i], items[j] = items[j], items[i]
+    elif kind == "insert":
+        new["inserted"] += 1
+        items.insert(0, f"N{new['inserted']}")
+    elif kind == "remove":
+        if items:
+            items.pop(0)
+    elif kind == "select":
+        item, value = action.get("item"), action.get("value")
+        _pat_need(isinstance(item, str) and item in items and type(value) is bool, "item must be in the list and value true or false")
+        if value and item not in new["selected"]:
+            new["selected"].append(item)
+        if not value and item in new["selected"]:
+            new["selected"].remove(item)
+    else:
+        if new["selected"]:
+            new["items"] = [item for item in items if item not in new["selected"]]
+            new["selected"] = []
+    return new
+
+
+def native_view(number: int, state: dict[str, Any]) -> dict[str, Any]:
+    """The lines and buttons of native example ``number`` in ``state`` (the Dart texts, in order; the notification and rebuild lines are this page's addition)."""
+    if number in NATIVE_STATE:
+        kind, description = NATIVE_STATE[number]
+        title = f"Pattern {number}: {_SCR_PATTERNS['data'][number - 1]}"
+        note = _NAT_NOTES.get(kind)
+        if kind in _NAT_COUNTER_KINDS:
+            lines = [description, *([note] if note else []), f"カウント: {state['count']}", f"通知回数: {state['notifications']}"]
+            return {"title": title, "lines": lines, "buttons": [{"label": "加算", "action": "increment"}, {"label": "リセット", "action": "reset"}]}
+        lines = [description, *([note] if note else []), f"left: {state['left']}", f"right: {state['right']}", f"再ビルド left: {state['rebuilds']['left']} / right: {state['rebuilds']['right']}"]
+        return {"title": title, "lines": lines, "buttons": [{"label": "左を加算", "action": "left"}, {"label": "右を加算", "action": "right"}]}
+    if number in NATIVE_INTERACTIVE:
+        title = f"Pattern {number}: {_SCR_PATTERNS['data'][number - 1]}"
+        lines = [_NAT_INTERACTIVE_NOTE, "順序: " + ", ".join(state["items"])]
+        buttons: list[dict[str, Any]] = []
+        if number == 183:
+            lines.append(f"選択数: {len(state['selected'])}")
+            buttons.append({"label": "選択項目を削除", "action": "delete_selected", "enabled": bool(state["selected"])})
+        if number == 174:
+            buttons.append({"label": "挿入", "action": "insert", "enabled": True})
+        if number == 175:
+            buttons.append({"label": "削除", "action": "remove", "enabled": bool(state["items"])})
+        return {"title": title, "lines": lines, "buttons": buttons, "items": [{"label": item, "selected": item in state["selected"]} for item in state["items"]]}
+    raise ValueError(f"pattern {number} has no state example")
+
+
+def native_parallel(number: int, values: list[int] | None = None, engine: str = "worker") -> dict[str, Any]:
+    """Patterns 136 and 137: the sum of the squares of ``values`` (1 to 5 by default), the engine's label and the status line the page shows. The value is exact up to 2**53."""
+    if number not in NATIVE_PARALLEL:
+        raise ValueError("pattern must be 136 or 137")
+    if engine not in ("worker", "fallback"):
+        raise ValueError("engine must be worker or fallback")
+    values = [1, 2, 3, 4, 5] if values is None else values
+    if not isinstance(values, list) or len(values) > NATIVE_MAX_VALUES or not all(_pat_js_int(v) for v in values):
+        raise ValueError(f"values must be an array of at most {NATIVE_MAX_VALUES} integers")
+    total = 0
+    for value in values:
+        total += int(value) ** 2
+        if total > NATIVE_SAFE:
+            raise ValueError("the sum of squares must not exceed 2**53")
+    label = _NAT_ENGINES[number][engine]
+    return {"title": f"Pattern {number}", "result": total, "engine": label, "status": f"{label}: {total}"}
+
+
+def pattern_native(request: Any) -> dict[str, Any]:
+    """The ``native`` family: ``{"pattern": N, "actions": [...]}`` for a counter, a pair of counters or a list (patterns 151-175, 183, 184), and ``{"pattern": 136 | 137, "values": [...],
+    "engine": "worker" | "fallback"}`` for the sum of squares. The answer is the state and the lines and buttons the example shows."""
+    _pat_need(isinstance(request, dict), "request object")
+    number = request.get("pattern")
+    _pat_need(_pat_js_int(number) and int(number) in NATIVE_NUMBERS, "pattern must be one of " + ", ".join(map(str, NATIVE_NUMBERS)))
+    number = int(number)
+    if number in NATIVE_PARALLEL:
+        _pat_need(all(key in ("pattern", "values", "engine") for key in request), "unknown request keys")
+        result = native_parallel(number, request.get("values"), request.get("engine", "worker"))
+        return {"schema": "native-patterns/1", "pattern": number, "kind": "parallel", "state": {"status": result["status"], "result": result["result"]},
+                "view": {"title": result["title"], "lines": [result["status"]], "buttons": [{"label": "実行", "action": "run"}]}}
+    _pat_need(all(key in ("pattern", "actions") for key in request), "unknown request keys")
+    actions = request.get("actions", [])
+    _pat_need(isinstance(actions, list) and len(actions) <= NATIVE_MAX_ACTIONS, f"actions must be an array of at most {NATIVE_MAX_ACTIONS}")
+    state = native_initial(number)
+    for action in actions:
+        state = native_step(number, state, action)
+    kind = NATIVE_STATE[number][0] if number in NATIVE_STATE else "interactive"
+    return {"schema": "native-patterns/1", "pattern": number, "kind": kind, "state": state, "view": native_view(number, state)}
+
+
+PATTERN_RUNNERS["native"] = pattern_native
+PATTERN_RUNNERS["screen"] = _scr_run_screen
+
+
+# --- Contracts: what a catalogue's data, a measured layout and a drag's pixels must satisfy (Python only) -----------------------------------------------------------
+# Absorbs flutter_navigation_basic's python/metadata_contracts.py (the 198 screens and the eleven locale tables), python/header_contracts.py (measured box geometry) and
+# python/gesture_paint.py (a swap of two cards, judged on saved PNGs rather than on the DOM). Each takes a JSON request and answers ``{"ok", "failures", ...}``; a request that
+# is not a well-formed measurement (a PNG that is not a PNG, a viewport that is not a size) is a ``ValueError``, a measurement that fails the contract is ``ok: false`` with its reasons.
+# Python only: the page cannot decode a screenshot the way the Playwright run saved it, and the other three are checks run by a test or by CI, not by a visitor.
+# Differences from the originals: (1) all failures are listed (at most CONTRACT_MAX_FAILURES) instead of the first assertion; (2) ``count`` says how many screens to expect (198 by
+# default) so a smaller catalogue can be checked, and the domain's Japanese name and emoji are checked as well; (3) locale placeholders must equal English's for every key, not for the
+# three keys the original named; (4) the header's title-emoji identity belongs to Flutter's shared header and is left out, the rest of its geometry is generic (names given by the
+# request); (5) the PNGs are decoded by ``studio_png_decode`` (8-bit, not interlaced, at most 4 MP) instead of the vendored Pillow subset, and a PNG with a bool scale is refused.
+CONTRACT_MAX_FAILURES = 50
+CONTRACT_MAX_ROWS = 400
+CONTRACT_EDGE = 1
+CONTRACT_ROW = 2
+CONTRACT_MIN_ROW_HEIGHT = 40
+CONTRACT_MAX_BOXES = 200
+_CON_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_CON_ASSET_TEXT = ("name", "title", "description", "category", "navigationPattern", "apiPattern", "themePattern", "dataPattern")
+_CON_DETAIL_TEXT = ("purpose", "when", "pitfall", "snippet")
+
+
+def _con_result(operation: str, failures: list[str], **extra: Any) -> dict[str, Any]:
+    return {"operation": operation, "ok": not failures, "failures": failures[:CONTRACT_MAX_FAILURES], "truncated": max(0, len(failures) - CONTRACT_MAX_FAILURES), **extra}
+
+
+def _con_text(value: Any) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def contract_screens(screens: Any, count: int = SCREEN_COUNT) -> dict[str, Any]:
+    """Whether ``screens`` (the rows of assets/screens.json) are the catalogue the screens page is made for: ids 1..count once each; the domain and the template that the id's place in
+    blocks of eighteen decides; one emoji and one ``useCaseKey`` for each screen; every pattern name a non-empty string; and a ``detail`` (a purpose, a time to use it, three design points,
+    a pitfall and a snippet) for the integration and auth screens only."""
+    _pat_need(isinstance(screens, list) and len(screens) <= CONTRACT_MAX_ROWS, f"screens must be an array of at most {CONTRACT_MAX_ROWS} rows")
+    _pat_need(_pat_js_int(count) and 1 <= count <= SCREEN_COUNT, f"count must be an integer from 1 to {SCREEN_COUNT}")
+    count = int(count)
+    failures: list[str] = []
+    if len(screens) != count:
+        failures.append(f"expected {count} screens, found {len(screens)}")
+    seen_ids: dict[int, int] = {}
+    keys: dict[str, int] = {}
+    emojis: dict[str, int] = {}
+    for index, row in enumerate(screens):
+        if not isinstance(row, dict):
+            failures.append(f"row {index}: not an object")
+            continue
+        identity = row.get("screenDataId", row.get("id"))
+        if type(identity) is not int:
+            failures.append(f"row {index}: screenDataId must be an integer")
+            continue
+        label = f"screen {identity}"
+        if identity in seen_ids:
+            failures.append(f"{label}: duplicate id")
+        seen_ids[identity] = index
+        if not 1 <= identity <= count:
+            failures.append(f"{label}: id is outside 1..{count}")
+            continue
+        for field, seen in (("useCaseKey", keys), ("emoji", emojis)):
+            value = row.get(field)
+            if not _con_text(value):
+                failures.append(f"{label}: {field} must be a non-empty string")
+                continue
+            normal = value.replace("\ufe0f", "") if field == "emoji" else value
+            if normal in seen:
+                failures.append(f"{label}: duplicate {field}")
+            seen[normal] = identity
+        domain = SCREEN_DOMAINS[(identity - 1) % len(SCREEN_DOMAINS)]
+        for field, expected in (("domainKey", domain[0]), ("domainJa", domain[1]), ("domainEmoji", domain[2]), ("templateJa", SCREEN_TEMPLATE_JA[(identity - 1) // len(SCREEN_DOMAINS)])):
+            if row.get(field) != expected:
+                failures.append(f"{label}: {field} is not {expected}")
+        if _con_text(row.get("useCaseKey")) and not row["useCaseKey"].startswith(domain[0] + "."):
+            failures.append(f"{label}: useCaseKey does not start with {domain[0]}.")
+        if row.get("templateOverride") is not None:
+            failures.append(f"{label}: templateOverride must be null")
+        for field in _CON_ASSET_TEXT:
+            if not _con_text(row.get(field)):
+                failures.append(f"{label}: {field} must be a non-empty string")
+        detail = row.get("detail")
+        if domain[0] in ("integration", "auth"):
+            if not isinstance(detail, dict):
+                failures.append(f"{label}: detail is missing")
+                continue
+            for field in _CON_DETAIL_TEXT:
+                if not _con_text(detail.get(field)):
+                    failures.append(f"{label}: detail.{field} must be a non-empty string")
+            points = detail.get("points")
+            if not (isinstance(points, list) and len(points) == 3 and all(_con_text(point) for point in points)):
+                failures.append(f"{label}: detail.points must be three non-empty strings")
+        elif detail is not None:
+            failures.append(f"{label}: detail is only for the integration and auth screens")
+    if set(seen_ids) != set(range(1, count + 1)):
+        failures.append(f"ids are not 1..{count}: missing {sorted(set(range(1, count + 1)) - set(seen_ids))[:5]}")
+    return _con_result("screens", failures, count=len(screens))
+
+
+def contract_locales(locales: Any) -> dict[str, Any]:
+    """Whether ``locales`` (language code to key to text, the shape of assets/display/app_text.json's ``locales``) is the eleven-language table the screens page reads: exactly those
+    eleven codes, the same keys in each as in English, no blank text, and the ``{placeholders}`` of each text those of its English text."""
+    _pat_need(isinstance(locales, dict) and len(locales) <= 64, "locales must be an object of at most 64 languages")
+    failures: list[str] = []
+    expected = set(SCREEN_BCP47)
+    if set(locales) != expected:
+        missing, extra = sorted(expected - set(locales)), sorted(set(locales) - expected, key=str)
+        failures.append("locales: " + "; ".join(part for part in (f"missing {', '.join(missing)}" if missing else "", f"unexpected {', '.join(map(repr, extra))}" if extra else "") if part))
+    reference = locales.get("eng")
+    if not isinstance(reference, dict) or not reference:
+        failures.append("eng must be an object with at least one key")
+        return _con_result("locales", failures, keys=0, locales=sorted(map(str, locales)))
+    keys = set(reference)
+    for code in sorted(locales, key=str):
+        values = locales[code]
+        if not isinstance(values, dict):
+            failures.append(f"{code}: not an object")
+            continue
+        if set(values) != keys:
+            missing, extra = sorted(keys - set(values), key=str), sorted(set(values) - keys, key=str)
+            failures.append(f"{code}: different keys" + (f"; missing {', '.join(map(str, missing[:5]))}" if missing else "") + (f"; unexpected {', '.join(map(str, extra[:5]))}" if extra else ""))
+        for key in sorted(values, key=str):
+            if not isinstance(values[key], str) or not values[key].strip():
+                failures.append(f"{code}: blank value for {key}")
+        if code != "eng":
+            for key in sorted(keys & set(values), key=str):
+                if isinstance(reference[key], str) and isinstance(values[key], str) and set(_CON_PLACEHOLDER.findall(reference[key])) != set(_CON_PLACEHOLDER.findall(values[key])):
+                    failures.append(f"{code}: {key} has other placeholders than eng")
+    return _con_result("locales", failures, keys=len(keys), locales=sorted(map(str, locales)))
+
+
+def _con_num(boxes: dict[str, Any], name: str, field: str) -> float:
+    """One measurement of one box, read only when a rule needs it (a box a rule does not look at may lack the fields that rule does not use, as in the original)."""
+    box = boxes[name]
+    _pat_need(isinstance(box, dict) and _pat_finite(box.get(field)), f"box {name!r} needs a numeric {field}")
+    return box[field]
+
+
+def _con_names(request: dict[str, Any], field: str, boxes: dict[str, Any]) -> list[str]:
+    names = request.get(field, [])
+    _pat_need(isinstance(names, list) and len(names) <= CONTRACT_MAX_BOXES and all(isinstance(name, str) and name in boxes for name in names), f"{field} must name boxes")
+    return names
+
+
+def contract_layout(request: Any) -> dict[str, Any]:
+    """Whether measured boxes keep a layout's promises: ``within`` names are not empty and sit inside the viewport's width (one pixel of slack); the ``aligned`` names share a row (the
+    middles of their heights within two pixels of the first's); each ``stacked`` entry ``{name, below, min_height}`` starts below the bottom edge of the names in ``below`` (one pixel
+    of slack) and is at least ``min_height`` (40) high. A box needs only the numbers that the rules naming it read (``x``, ``y``, ``width`` and ``height`` for ``within`` and ``aligned``,
+    ``y`` and ``height`` for the others); a number that is missing, not finite or a bool is a ``ValueError``."""
+    _pat_need(isinstance(request, dict) and all(key in ("operation", "viewport", "boxes", "within", "aligned", "stacked") for key in request), "unknown request keys")
+    viewport = request.get("viewport")
+    _pat_need(isinstance(viewport, dict) and _pat_finite(viewport.get("width")) and viewport["width"] > 0 and _pat_finite(viewport.get("height")) and viewport["height"] > 0,
+              "viewport needs a positive width and height")
+    boxes = request.get("boxes")
+    _pat_need(isinstance(boxes, dict) and len(boxes) <= CONTRACT_MAX_BOXES, f"boxes must be an object of at most {CONTRACT_MAX_BOXES} boxes")
+    within, aligned = _con_names(request, "within", boxes), _con_names(request, "aligned", boxes)
+    stacked = request.get("stacked", [])
+    _pat_need(isinstance(stacked, list) and len(stacked) <= CONTRACT_MAX_BOXES, "stacked must be an array")
+    failures: list[str] = []
+    num = lambda name, field: _con_num(boxes, name, field)
+    for name in within:
+        x, width, height = num(name, "x"), num(name, "width"), num(name, "height")
+        if not (width > 0 and height > 0):
+            failures.append(f"{name}: empty bounds")
+        if not (x >= -CONTRACT_EDGE and x + width <= viewport["width"] + CONTRACT_EDGE):
+            failures.append(f"{name}: horizontal overflow")
+    if aligned:
+        centre = num(aligned[0], "y") + num(aligned[0], "height") / 2
+        for name in aligned[1:]:
+            if abs(num(name, "y") + num(name, "height") / 2 - centre) > CONTRACT_ROW:
+                failures.append(f"{name}: outside common row")
+    for entry in stacked:
+        _pat_need(isinstance(entry, dict) and all(key in ("name", "below", "min_height") for key in entry) and isinstance(entry.get("name"), str) and entry["name"] in boxes, "stacked entries need a box name")
+        floor = _con_names(entry, "below", boxes)
+        minimum = entry.get("min_height", CONTRACT_MIN_ROW_HEIGHT)
+        _pat_need(_pat_finite(minimum) and minimum >= 0, "min_height must be a non-negative number")
+        name = entry["name"]
+        if floor and num(name, "y") < max(num(other, "y") + num(other, "height") for other in floor) - CONTRACT_EDGE:
+            failures.append(f"{name}: overlaps the row above")
+        if num(name, "height") < minimum:
+            failures.append(f"{name}: row too small")
+    return _con_result("layout", failures)
+
+
+def _con_png(text: Any, name: str) -> tuple[int, int, bytes]:
+    _pat_need(isinstance(text, str), f"{name} must be a PNG as Base64 text")
+    decoded = decode_image_text(text)
+    _pat_need(decoded["ok"] and decoded["format"] == "png", f"{name} must be a PNG as Base64 text")
+    try:
+        return studio_png_decode(base64.b64decode(decoded["data"]))
+    except StudioError as error:
+        raise ValueError(f"{name}: {error}") from None
+
+
+def _con_compare(a: bytes, b: bytes, width: int, height: int) -> dict[str, Any]:
+    """Exact comparison of two RGBA rasters of the same size: how many pixels differ in any channel, where, and by how much at most (no tolerance)."""
+    changed, delta, left, top, right, bottom = 0, 0, width, height, 0, 0
+    stride = width * 4
+    for y in range(height):
+        row_a, row_b = a[y * stride:(y + 1) * stride], b[y * stride:(y + 1) * stride]
+        if row_a == row_b:
+            continue
+        for x in range(width):
+            pa, pb = row_a[x * 4:x * 4 + 4], row_b[x * 4:x * 4 + 4]
+            if pa != pb:
+                changed += 1
+                delta = max(delta, max(abs(p - q) for p, q in zip(pa, pb)))
+                left, right, top, bottom = min(left, x), max(right, x + 1), min(top, y), max(bottom, y + 1)
+    total = width * height
+    return {"changed": changed, "ratio": round(changed / total, 6) if total else 0, "bbox": [left, top, right, bottom] if changed else None, "max_delta": delta, "differs": changed > 0}
+
+
+def _con_crop(rgba: bytes, width: int, box: tuple[int, int, int, int]) -> bytes:
+    return b"".join(rgba[(y * width + box[0]) * 4:(y * width + box[2]) * 4] for y in range(box[1], box[3]))
+
+
+def contract_swap(request: Any) -> dict[str, Any]:
+    """Whether two cards traded places between two screenshots (``before`` and ``after``, PNG as Base64): each card's interior (its box less eight pixels all round, in device pixels) in
+    ``after`` must equal, pixel for pixel, the other card's interior in ``before``. The screenshots must be the size of the recorded viewport, the two interiors must be the same size and must
+    differ from each other (a blank pair proves nothing). ``geometry`` is ``{device_scale_factor, viewport: {width, height}, slots: [{x, y, width, height}, {...}]}``."""
+    _pat_need(isinstance(request, dict) and all(key in ("operation", "before", "after", "geometry") for key in request), "unknown request keys")
+    geometry = request.get("geometry")
+    _pat_need(isinstance(geometry, dict), "geometry must be an object")
+    before, after = _con_png(request.get("before"), "before"), _con_png(request.get("after"), "after")
+    _pat_need(before[:2] == after[:2], "capture dimensions changed during the gesture")
+    scale = geometry.get("device_scale_factor")
+    _pat_need(_pat_finite(scale) and scale > 0, "invalid device scale factor")
+    viewport = geometry.get("viewport")
+    _pat_need(isinstance(viewport, dict) and all(_pat_finite(viewport.get(key)) for key in ("width", "height")), "viewport needs a width and height")
+    _pat_need(all(abs(before[index] - viewport[key] * scale) <= 1 for index, key in enumerate(("width", "height"))), "PNG dimensions do not match the recorded viewport")
+    slots = geometry.get("slots")
+    _pat_need(isinstance(slots, list) and len(slots) == 2, "exactly two pre-drag slots are required")
+    boxes = []
+    for slot in slots:
+        _pat_need(isinstance(slot, dict) and all(_pat_finite(slot.get(key)) for key in ("x", "y", "width", "height")), "invalid card bounds")
+        x, y, width, height = (slot[key] for key in ("x", "y", "width", "height"))
+        _pat_need(width > 16 and height > 16, "card interior is too small")
+        box = tuple(round(value * scale) for value in (x + 8, y + 8, x + width - 8, y + height - 8))
+        _pat_need(box[0] >= 0 and box[1] >= 0 and box[2] <= before[0] and box[3] <= before[1], "card crop is outside the PNG")
+        _pat_need(box[2] > box[0] and box[3] > box[1], "card crop is empty")
+        boxes.append(box)
+    sizes = [(box[2] - box[0], box[3] - box[1]) for box in boxes]
+    _pat_need(sizes[0] == sizes[1], "the two card interiors have different pixel dimensions")
+    reference = [_con_crop(before[2], before[0], box) for box in boxes]
+    _pat_need(reference[0] != reference[1], "reference card interiors are identical, possibly blank")
+    comparisons = [_con_compare(reference[1 - index], _con_crop(after[2], after[0], box), *sizes[index]) for index, box in enumerate(boxes)]
+    failures = [f"slot {index} does not show the other card" for index, comparison in enumerate(comparisons) if comparison["differs"]]
+    return _con_result("swap", failures, pixel_crops=[list(box) for box in boxes], comparisons=comparisons)
+
+
+def pattern_contract(request: Any) -> dict[str, Any]:
+    """The ``contract`` family: ``operation`` is ``screens`` (``screens``, ``count``), ``locales`` (``locales``), ``layout`` or ``swap`` (see ``contract_layout`` and ``contract_swap``)."""
+    _pat_need(isinstance(request, dict) and isinstance(request.get("operation"), str) and request["operation"] in ("screens", "locales", "layout", "swap"), "operation must be screens, locales, layout or swap")
+    operation = request["operation"]
+    if operation == "screens":
+        _pat_need(all(key in ("operation", "screens", "count") for key in request), "unknown request keys")
+        return contract_screens(request.get("screens"), request.get("count", SCREEN_COUNT))
+    if operation == "locales":
+        _pat_need(all(key in ("operation", "locales") for key in request), "unknown request keys")
+        return contract_locales(request.get("locales"))
+    return contract_layout(request) if operation == "layout" else contract_swap(request)
+
+
+PATTERN_RUNNERS["contract"] = pattern_contract
+
+
+# --- The screens in the page: one JS twin of the ``screen`` and ``native`` families, shared by the patterns page (the Run box) and the screens page --------------------------
+_SCREENS_CORE_SRC = r"""export class ScreenError extends Error{}
+const fail=m=>{throw new ScreenError(m)},need=(c,m)=>{if(!c)fail(m)};
+const isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v),has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+const isInt=v=>typeof v==="number"&&Number.isFinite(v)&&Number.isInteger(v),clone=x=>JSON.parse(JSON.stringify(x));
+const WS=new Set(WS_CHARS);
+const trim=s=>{let a=0,b=s.length;while(a<b&&WS.has(s[a]))a++;while(b>a&&WS.has(s[b-1]))b--;return s.slice(a,b)};
+const str=v=>v===null||v===undefined?"":v===true?"true":v===false?"false":String(v);
+export function screenLocale(raw){
+ if(typeof raw!=="string")return"eng";
+ const t=trim(raw).toLowerCase();
+ if(!t)return"eng";
+ if(has(TEXT,t))return t;
+ return has(LEGACY,t)?LEGACY[t]:"eng"}
+export function screenText(locale,key,args=[]){
+ let v=key;
+ if(has(TEXT_INDEX,key))v=TEXT[screenLocale(locale)][TEXT_INDEX[key]];
+ for(const[name,a]of args)v=v.split("{"+name+"}").join(str(a));
+ return v}
+const patterns=key=>PATTERNS[key];
+const validId=n=>{if(!isInt(n)||n<1||n>COUNT)fail("screen must be an integer 1.."+COUNT)};
+export function screenTemplateIndex(id){return Math.max(0,Math.min(TEMPLATES.length-1,Math.floor((id-1)/18)))}
+export function screenRow(id){
+ validId(id);
+ const[emoji,ja,en]=ROWS[id-1].split("|"),[dk,dj,de]=DOMAINS[(id-1)%18],p={};
+ for(const k of["navigation","api","ui","data"])p[k]=patterns(k)[id-1];
+ const row={name:"Screen"+id,title:has(TITLE_EXCEPTIONS,String(id))?TITLE_EXCEPTIONS[String(id)]:p.navigation,emoji,domainKey:dk,domainJa:dj,domainEmoji:de,useCaseJa:ja,useCaseEn:en,
+  useCaseKey:dk+"."+en.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,""),templateJa:TEMPLATE_JA[screenTemplateIndex(id)],templateOverride:null,
+  description:"Navigation: "+p.navigation+", API: "+p.api+", Theme: "+p.ui+", Data: "+p.data,category:CATEGORIES[(id-1)%5],navigationPattern:p.navigation,apiPattern:p.api,themePattern:p.ui,
+  dataPattern:p.data,tags:["navigation","api","ui","data"]};
+ const d=DETAILS[String(id)];
+ if(d)row.detail={purpose:d[0],when:d[1],points:[...d[2]],pitfall:d[3],snippet:d[4]};
+ row.screenDataId=id;return row}
+export function screensCatalogue(){const rows=[];for(let n=1;n<=COUNT;n++)rows.push(screenRow(n));return rows}
+export function screenTemplate(id,override=null){
+ if(override!==null&&override!=="")return TEMPLATES.includes(override)?override:"list";
+ return TEMPLATES[screenTemplateIndex(id)]}
+export function screenSearch(rows,query){
+ const needle=typeof query==="string"?trim(query).toLowerCase():"";
+ if(!needle)return[...rows];
+ return rows.filter(r=>[String(r.screenDataId),"screen"+r.screenDataId,r.name,r.title,r.description,r.category,r.domainKey,r.domainJa,r.useCaseJa,r.useCaseEn,r.useCaseKey].some(v=>v.toLowerCase().includes(needle)))}
+export function screenRoute(id){
+ validId(id);
+ if(id===5)return{screen:id,widget:"Screen5Page",kind:"dedicated"};
+ if(id>=91&&id<=99)return{screen:id,widget:"ValidationPatternLinks",kind:"validation"};
+ if(has(CONVERSION_NAMES,String(id)))return{screen:id,widget:"ConversionPatternLinks",kind:"conversion"};
+ if(PARALLEL.includes(id))return{screen:id,widget:"NativeParallelPatternExample",kind:"parallel"};
+ if(INTERACTIVE.includes(id))return{screen:id,widget:"InteractivePatternExample",kind:"interactive"};
+ return{screen:id,widget:"GenericScreen",kind:"generic"}}
+export function screenInitial(){return{tab:"usecase",value:"",query:"",submitted:null,index:0,open:false,loading:false,elapsed:0,enabled:true}}
+const STATE_KEYS=Object.keys(screenInitial());
+function scrState(state){
+ if(state===null||state===undefined)return screenInitial();
+ need(isObj(state)&&Object.keys(state).every(k=>STATE_KEYS.includes(k)),"state must be an object with the keys of screen_initial");
+ const m={...screenInitial(),...state};
+ need(["usecase","ui"].includes(m.tab)&&typeof m.value==="string"&&typeof m.query==="string","invalid state");
+ need(m.submitted===null||typeof m.submitted==="string","invalid state");
+ need(isInt(m.index)&&m.index>=0&&m.index<=2&&isInt(m.elapsed)&&m.elapsed>=0&&m.elapsed<=ASYNC_MS,"invalid state");
+ need(typeof m.open==="boolean"&&typeof m.loading==="boolean"&&typeof m.enabled==="boolean","invalid state");
+ return m}
+const EVENT_KEYS={tab:["tab"],input:["value"],clear:[],submit:[],select:["index"],open:[],close:[],start:[],tick:["ms"],toggle:["value"]};
+export function screenStep(id,state,event){
+ const row=screenRow(id),cur=scrState(state);
+ need(isObj(event)&&typeof event.type==="string","event must be an object with a type");
+ const kind=event.type,template=screenTemplate(id,row.templateOverride),not6=id!==6;
+ const allowed={tab:!!row.detail,input:id===6||template==="form"||template==="search",clear:id===6,submit:not6&&template==="form",select:not6&&(template==="tabs"||template==="bottomNavigation"),
+  open:not6&&template==="dialog",close:not6&&template==="dialog",start:not6&&template==="asyncState",tick:not6&&template==="asyncState",toggle:not6&&template==="settings"};
+ need(has(allowed,kind),"unknown event: "+pyRepr(kind));
+ need(allowed[kind],kind+" is not available on screen "+id);
+ need(Object.keys(event).every(k=>k==="type"||EVENT_KEYS[kind].includes(k)),"unknown event keys");
+ const n={...cur};
+ if(kind==="tab"){need(["usecase","ui"].includes(event.tab),"tab must be usecase or ui");n.tab=event.tab}
+ else if(kind==="input"){need(typeof event.value==="string"&&[...event.value].length<=10000,"value must be text of at most 10000 characters");n[template==="form"&&id!==6?"value":"query"]=event.value}
+ else if(kind==="clear")n.query="";
+ else if(kind==="submit")n.submitted=cur.value;
+ else if(kind==="select"){need(isInt(event.index)&&event.index>=0&&event.index<=2,"index must be 0..2");n.index=event.index}
+ else if(kind==="open"||kind==="close")n.open=kind==="open";
+ else if(kind==="start"){if(!cur.loading){n.loading=true;n.elapsed=0}}
+ else if(kind==="tick"){need(isInt(event.ms)&&event.ms>=0&&event.ms<=60000,"ms must be 0..60000");
+  if(cur.loading){n.elapsed=cur.elapsed+event.ms;if(n.elapsed>=ASYNC_MS){n.loading=false;n.elapsed=0}}}
+ else{need(typeof event.value==="boolean","value must be true or false");n.enabled=event.value}
+ return n}
+const hex=(c,n)=>c.toString(16).padStart(n,"0");
+const pyRepr=s=>{
+ const q=s.includes("'")&&!s.includes('"')?'"':"'";let out=q;
+ for(const ch of s){const c=ch.codePointAt(0);
+  if(ch===q||ch==="\\")out+="\\"+ch;
+  else if(ch==="\t")out+="\\t";else if(ch==="\n")out+="\\n";else if(ch==="\r")out+="\\r";
+  else if(c<0x20||c===0x7f)out+="\\x"+hex(c,2);
+  else if(c<0x7f)out+=ch;
+  else if(/^[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]$/u.test(ch))out+=c<=0xff?"\\x"+hex(c,2):c<=0xffff?"\\u"+hex(c,4):"\\U"+hex(c,8);
+  else out+=ch}
+ return out+q};
+export function screenTemplateView(template,id,title,description,locale,state){
+ const t=(key,...args)=>screenText(locale,"patternTemplate."+key,args),L=n=>Array.from({length:n},(_,i)=>i);
+ switch(template){
+  case"list":return{template,items:L(6).map(i=>({avatar:String(i+1),title:t("listItem",["title",title],["n",i+1]),subtitle:description}))};
+  case"detail":return{template,heading:title,description,screenId:t("screenIdLabel",["screenDataId",id])};
+  case"form":return{template,label:t("sampleInputLabel"),value:state.value,submit:t("submit"),snackbar:state.submitted===null?null:t("submitted",["value",state.submitted])};
+  case"search":return{template,hint:t("searchHint"),query:state.query,result:{title:state.query===""?t("typeToFilter"):t("resultFor",["query",state.query]),subtitle:description}};
+  case"tabs":return{template,tabs:[t("tabOverview"),t("tabCode"),t("tabNotes")],selected:state.index,panels:[{text:title},{icon:"code"},{text:description}]};
+  case"bottomNavigation":return{template,destination:t("destination",["n",state.index+1],["title",title]),items:[t("navHome"),t("navPatterns"),t("navAbout")],selected:state.index};
+  case"drawer":return{template,title:t("drawerSampleTitle"),items:[t("drawerHome"),t("drawerLibrary"),t("drawerSettings")]};
+  case"dialog":return{template,open:t("dialogOpen"),dialog:state.open?{title,content:description,close:t("dialogClose")}:null};
+  case"grid":return{template,cards:L(8).map(i=>title+"\n#"+(i+1))};
+  case"asyncState":return{template,loading:state.loading,action:t("asyncSimulate")};
+  case"settings":return{template,option:t("settingsEnableOption"),subtitle:description,enabled:state.enabled,theme:t("settingsThemePreference"),system:t("settingsSystem")}}
+ return fail("unknown template")}
+export function screenCatalogView(locale,query){
+ const found=screenSearch(screensCatalogue(),query),items=found.map(r=>{
+  const parts=r.useCaseEn?[r.useCaseEn]:[];if(r.domainJa)parts.push(r.domainEmoji+" "+r.domainJa);
+  return{id:r.screenDataId,emoji:r.emoji,name:r.name,title:r.title,description:r.description,heading:"Screen "+r.screenDataId+" · "+(r.useCaseJa||r.title),subtitle:parts.join(" · ")}});
+ return{hint:screenText(locale,"hub.searchHint"),query,count:found.length+" / "+COUNT,empty:found.length?null:screenText(locale,"hub.empty"),clear:query!==""?screenText(locale,"clipboardWorkbench.clear"):null,items}}
+export function screenView(id,locale="eng",state=null){
+ const row=screenRow(id),loc=screenLocale(locale),cur=scrState(state),t=(k,...a)=>screenText(loc,k,a),detail=row.detail;
+ const hasUse=row.useCaseJa!=="",title=hasUse?row.emoji+" "+row.useCaseJa:"Screen"+id+": "+row.title+" "+row.emoji,hasDomain=row.domainJa!==""&&row.templateJa!=="";
+ const headline=hasUse?row.useCaseJa:t("patternTemplate."+screenTemplate(id));
+ const subline=hasDomain?row.domainEmoji+" "+row.domainJa+" · "+row.templateJa+"テンプレート · Screen "+id:t("generic.templateVariant",["n",Math.floor((id-1)/18)+1],["v",(id-1)%18+1]);
+ const chips=[[t("generic.patternNavigation"),row.navigationPattern],[t("generic.patternApi"),row.apiPattern],[t("generic.patternTheme"),row.themePattern],[t("generic.patternData"),row.dataPattern]].map(([label,value])=>({avatar:[...label][0]||"",text:label+": "+value}));
+ const template=screenTemplate(id,row.templateOverride);
+ const body=id===6?{template:"catalog",...screenCatalogView(loc,cur.query)}:screenTemplateView(template,id,row.title,row.description,loc,cur);
+ const view={schema:"screens/1",screen:id,locale:loc,lang:BCP47[loc],dir:RTL.includes(loc)?"rtl":"ltr",widget:"GenericScreen",title,emoji:row.emoji,headline,subline,back:t("generic.backToHub"),
+  chips:detail?[]:chips,tabs:null,tab:null,useCase:null,body};
+ if(detail&&id!==6){view.tabs=[{id:"usecase",label:t("generic.tabUseCase")},{id:"ui",label:t("generic.tabUiSample")}];view.tab=cur.tab;
+  view.useCase={sections:[{heading:t("generic.sectionPurpose"),text:detail.purpose},{heading:t("generic.sectionWhen"),text:detail.when},{heading:t("generic.sectionPoints"),points:[...detail.points]},
+   {heading:t("generic.sectionPitfall"),text:detail.pitfall},{heading:t("generic.sectionSnippet"),code:detail.snippet}],chips}}
+ return view}
+export function screenHub(locale="eng",query="",mode="grid"){
+ need(mode==="list"||mode==="grid","mode must be list or grid");
+ need(typeof query==="string"&&[...query].length<=10000,"query must be text of at most 10000 characters");
+ const loc=screenLocale(locale),c=screenCatalogView(loc,query),{clear,...rest}=c;
+ return{schema:"screens/1",locale:loc,lang:BCP47[loc],dir:RTL.includes(loc)?"rtl":"ltr",title:screenText(loc,"hub.title"),mode,
+  tooltips:{api:screenText(loc,"mockApi.title"),mcp:screenText(loc,"mcp.title"),list:screenText(loc,"hub.listViewTooltip"),grid:screenText(loc,"hub.gridViewTooltip")},home:screenText(loc,"hub.homeFab"),...rest}}
+export function screenLinksView(id,locale="eng"){
+ const route=screenRoute(id);
+ need(route.kind==="validation"||route.kind==="conversion","screen "+id+" is not a source-links screen");
+ const v=route.kind==="validation",name=v?VALIDATION_NAMES[id-91]:CONVERSION_NAMES[String(id)],limit=v?VALIDATION_LIMIT:CONVERSION_LIMIT,links=v?VALIDATION_LINKS:CONVERSION_LINKS;
+ return{schema:"screens/1",screen:id,locale:screenLocale(locale),widget:route.widget,title:"Pattern "+String(id).padStart(3,"0")+": "+name,note:LINKS_NOTE,limitation:limit,
+  links:links.map(([label,path])=>({label,path,url:SOURCE_BASE+path})),family:v?"validate":"convert",page:"patterns.html"}}
+const hasKey=(o,k)=>has(o,k)?o[k]:undefined;
+function runScreen(request){
+ need(isObj(request),"request object");
+ const op=request.operation,spec={view:["screen","locale","events"],hub:["locale","query","mode"],search:["query"],text:["locale","key","arguments"],route:["screen"],links:["screen","locale"]};
+ need(typeof op==="string"&&has(spec,op),"operation must be view, hub, search, text, route or links");
+ need(Object.keys(request).every(k=>k==="operation"||spec[op].includes(k)),"unknown request keys");
+ const get=(k,d)=>has(request,k)?request[k]:d;let screen=request.screen;
+ if(op==="view"||op==="route"||op==="links"){need(isInt(screen),"screen must be an integer 1.."+COUNT)}
+ if(op==="view"){
+  const events=get("events",[]);need(Array.isArray(events)&&events.length<=MAX_ACTIONS,"events must be an array of at most "+MAX_ACTIONS);
+  let state=null;for(const e of events)state=screenStep(screen,state,e);
+  return{schema:"screens/1",operation:op,result:screenView(screen,get("locale","eng"),state),state:scrState(state)}}
+ if(op==="hub")return{schema:"screens/1",operation:op,result:screenHub(get("locale","eng"),get("query",""),get("mode","grid"))};
+ if(op==="search"){const q=get("query","");need(typeof q==="string"&&[...q].length<=10000,"query must be text of at most 10000 characters");
+  return{schema:"screens/1",operation:op,result:screenSearch(screensCatalogue(),q).map(r=>r.screenDataId)}}
+ if(op==="text"){const key=request.key,args=get("arguments",[]);
+  need(typeof key==="string"&&key.length<=200,"key must be text");
+  need(Array.isArray(args)&&args.length<=20&&args.every(a=>Array.isArray(a)&&a.length===2&&typeof a[0]==="string"&&(a[1]===null||typeof a[1]==="string"||(isInt(a[1])&&Math.abs(a[1])<=SAFE))),"arguments must be [name, value] pairs");
+  return{schema:"screens/1",operation:op,result:screenText(get("locale","eng"),key,args)}}
+ if(op==="route")return{schema:"screens/1",operation:op,result:screenRoute(screen)};
+ return{schema:"screens/1",operation:op,result:screenLinksView(screen,get("locale","eng"))}}
+export function nativeInitial(n){
+ if(has(NATIVE_STATE,String(n))){return["scope","model","atom"].includes(NATIVE_STATE[String(n)][0])?{left:0,right:0,rebuilds:{left:0,right:0}}:{count:0,notifications:0}}
+ if(INTERACTIVE.includes(n))return{items:["A","B","C"],selected:[],inserted:0};
+ return fail("pattern "+n+" has no state example")}
+export function nativeStep(n,state,action){
+ const s=clone(state);
+ if(has(NATIVE_STATE,String(n))){
+  const kind=NATIVE_STATE[String(n)][0];
+  if(COUNTER_KINDS.includes(kind)){
+   need(action==="increment"||action==="reset","action must be increment or reset");
+   if(action==="increment"){s.count++;s.notifications++}
+   else{if(s.count!==0||NOTIFY_ON_EQUAL.includes(kind))s.notifications++;s.count=0}
+   return s}
+  need(action==="left"||action==="right","action must be left or right");
+  s[action]++;
+  if(kind==="scope"){s.rebuilds.left++;s.rebuilds.right++}else s.rebuilds[action]++;
+  return s}
+ need(INTERACTIVE.includes(n)&&isObj(action)&&typeof action.type==="string","action must be an object with a type");
+ const kind=action.type,ok={171:["reorder"],172:["reorder"],184:["reorder"],173:["swap"],174:["insert"],175:["remove"],183:["select","delete_selected"]}[n];
+ need(ok.includes(kind),kind+" is not available in pattern "+n);
+ const extra={reorder:["old","new"],swap:["a","b"],select:["item","value"]}[kind]||[];
+ need(Object.keys(action).every(k=>k==="type"||extra.includes(k)),"unknown action keys");
+ const items=s.items;
+ if(kind==="reorder"){
+  let{old,new:target}=action;
+  need(isInt(old)&&isInt(target)&&old>=0&&old<items.length&&target>=0&&target<=items.length,"old must be 0..n-1 and new 0..n");
+  if(target>old)target--;
+  items.splice(target,0,items.splice(old,1)[0])}
+ else if(kind==="swap"){
+  const{a,b}=action;need(typeof a==="string"&&typeof b==="string","a and b must be item names");
+  if(items.includes(a)&&items.includes(b)&&a!==b){const i=items.indexOf(a),j=items.indexOf(b);[items[i],items[j]]=[items[j],items[i]]}}
+ else if(kind==="insert"){s.inserted++;items.unshift("N"+s.inserted)}
+ else if(kind==="remove"){if(items.length)items.shift()}
+ else if(kind==="select"){
+  const{item,value}=action;need(typeof item==="string"&&items.includes(item)&&typeof value==="boolean","item must be in the list and value true or false");
+  if(value&&!s.selected.includes(item))s.selected.push(item);
+  if(!value&&s.selected.includes(item))s.selected.splice(s.selected.indexOf(item),1)}
+ else if(s.selected.length){s.items=items.filter(i=>!s.selected.includes(i));s.selected=[]}
+ return s}
+export function nativeView(n,state){
+ const name=patterns("data")[n-1];
+ if(has(NATIVE_STATE,String(n))){
+  const[kind,description]=NATIVE_STATE[String(n)],title="Pattern "+n+": "+name,note=NOTES[kind]||null;
+  if(COUNTER_KINDS.includes(kind))return{title,lines:[description,...(note?[note]:[]),"カウント: "+state.count,"通知回数: "+state.notifications],buttons:[{label:"加算",action:"increment"},{label:"リセット",action:"reset"}]};
+  return{title,lines:[description,...(note?[note]:[]),"left: "+state.left,"right: "+state.right,"再ビルド left: "+state.rebuilds.left+" / right: "+state.rebuilds.right],
+   buttons:[{label:"左を加算",action:"left"},{label:"右を加算",action:"right"}]}}
+ if(INTERACTIVE.includes(n)){
+  const title="Pattern "+n+": "+name,lines=[INTERACTIVE_NOTE,"順序: "+state.items.join(", ")],buttons=[];
+  if(n===183){lines.push("選択数: "+state.selected.length);buttons.push({label:"選択項目を削除",action:"delete_selected",enabled:state.selected.length>0})}
+  if(n===174)buttons.push({label:"挿入",action:"insert",enabled:true});
+  if(n===175)buttons.push({label:"削除",action:"remove",enabled:state.items.length>0});
+  return{title,lines,buttons,items:state.items.map(label=>({label,selected:state.selected.includes(label)}))}}
+ return fail("pattern "+n+" has no state example")}
+export function nativeParallel(n,values=null,engine="worker"){
+ need(PARALLEL.includes(n),"pattern must be 136 or 137");
+ need(engine==="worker"||engine==="fallback","engine must be worker or fallback");
+ const vs=values===null||values===undefined?[1,2,3,4,5]:values;
+ need(Array.isArray(vs)&&vs.length<=MAX_VALUES&&vs.every(isInt),"values must be an array of at most "+MAX_VALUES+" integers");
+ let total=0;
+ for(const v of vs){const sq=v*v;need(sq<=SAFE-total,"the sum of squares must not exceed 2**53");total+=sq}
+ const label=ENGINES[String(n)][engine];
+ return{title:"Pattern "+n,result:total,engine:label,status:label+": "+total}}
+function runNative(request){
+ need(isObj(request),"request object");
+ const n=request.pattern;
+ need(isInt(n)&&NATIVE_NUMBERS.includes(n),"pattern must be one of "+NATIVE_NUMBERS.join(", "));
+ if(PARALLEL.includes(n)){
+  need(Object.keys(request).every(k=>["pattern","values","engine"].includes(k)),"unknown request keys");
+  const r=nativeParallel(n,has(request,"values")?request.values:null,has(request,"engine")?request.engine:"worker");
+  return{schema:"native-patterns/1",pattern:n,kind:"parallel",state:{status:r.status,result:r.result},view:{title:r.title,lines:[r.status],buttons:[{label:"実行",action:"run"}]}}}
+ need(Object.keys(request).every(k=>k==="pattern"||k==="actions"),"unknown request keys");
+ const actions=has(request,"actions")?request.actions:[];
+ need(Array.isArray(actions)&&actions.length<=MAX_ACTIONS,"actions must be an array of at most "+MAX_ACTIONS);
+ let state=nativeInitial(n);for(const a of actions)state=nativeStep(n,state,a);
+ return{schema:"native-patterns/1",pattern:n,kind:has(NATIVE_STATE,String(n))?NATIVE_STATE[String(n)][0]:"interactive",state,view:nativeView(n,state)}}
+export function screensRun(family,request){
+ need(family==="screen"||family==="native","unknown pattern family: "+pyRepr(family)+"; one of native, screen");
+ try{return family==="screen"?runScreen(request):runNative(request)}
+ catch(e){if(e instanceof TypeError||e instanceof RangeError)throw new ScreenError("invalid "+family+" request: "+e.message);throw e}}
+"""
+
+_SCREENS_API = ("ScreenError,screenLocale,screenText,screenRow,screensCatalogue,screenTemplate,screenSearch,screenRoute,screenInitial,screenStep,screenTemplateView,screenCatalogView,screenView,"
+                "screenHub,screenLinksView,nativeInitial,nativeStep,nativeView,nativeParallel,screensRun")
+
+
+def _screens_core_js() -> str:
+    """The reference logic of the screens as a closure ``webUiScreensCore``: its tables are the Python values (JSON), its functions the ones above, written once more for the browser."""
+    data = {
+        "WS_CHARS": "".join(sorted(_SCR_WS)), "TEXT": {locale: list(values) for locale, values in SCREEN_TEXT.items()}, "TEXT_INDEX": SCREEN_TEXT_INDEX, "LEGACY": SCREEN_LEGACY_LOCALES,
+        "BCP47": SCREEN_BCP47, "RTL": sorted(SCREEN_RTL_LOCALES), "PATTERNS": {key: list(titles) for key, titles in _SCR_PATTERNS.items()}, "COUNT": SCREEN_COUNT, "ROWS": list(SCREEN_ROWS),
+        "DOMAINS": [list(domain) for domain in SCREEN_DOMAINS], "TITLE_EXCEPTIONS": {str(k): v for k, v in SCREEN_TITLE_EXCEPTIONS.items()}, "CATEGORIES": list(SCREEN_CATEGORIES),
+        "DETAILS": {str(k): [d[0], d[1], list(d[2]), d[3], d[4]] for k, d in SCREEN_DETAILS.items()}, "TEMPLATES": list(SCREEN_TEMPLATES), "TEMPLATE_JA": list(SCREEN_TEMPLATE_JA),
+        "CONVERSION_NAMES": {str(k): v for k, v in SCREEN_CONVERSION_NAMES.items()}, "VALIDATION_NAMES": list(SCREEN_VALIDATION_NAMES), "VALIDATION_LIMIT": SCREEN_VALIDATION_LIMIT,
+        "CONVERSION_LIMIT": SCREEN_CONVERSION_LIMIT, "VALIDATION_LINKS": [list(link) for link in SCREEN_VALIDATION_LINKS], "CONVERSION_LINKS": [list(link) for link in SCREEN_CONVERSION_LINKS],
+        "LINKS_NOTE": SCREEN_LINKS_NOTE, "SOURCE_BASE": SCREEN_SOURCE_BASE, "PARALLEL": list(NATIVE_PARALLEL), "INTERACTIVE": list(NATIVE_INTERACTIVE), "ASYNC_MS": SCREEN_ASYNC_MS,
+        "MAX_ACTIONS": NATIVE_MAX_ACTIONS, "MAX_VALUES": NATIVE_MAX_VALUES, "SAFE": NATIVE_SAFE, "NATIVE_STATE": {str(k): list(v) for k, v in NATIVE_STATE.items()},
+        "NATIVE_NUMBERS": list(NATIVE_NUMBERS), "NOTES": _NAT_NOTES, "INTERACTIVE_NOTE": _NAT_INTERACTIVE_NOTE, "ENGINES": {str(k): v for k, v in _NAT_ENGINES.items()},
+        "COUNTER_KINDS": sorted(_NAT_COUNTER_KINDS), "NOTIFY_ON_EQUAL": sorted(_NAT_NOTIFY_ON_EQUAL), "LOCALES": list(SCREEN_LOCALES)}
+    constants = "".join(f"const {name}=" + json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", chr(92) + "u003c") + ";\n" for name, value in data.items())
+    body = re.sub(r"(?m)^export ", "", _SCREENS_CORE_SRC)
+    return ("const webUiScreensCore=(()=>{\n" + constants + body + "\nreturn{" + _SCREENS_API + ",LOCALES,BCP47,RTL_LOCALES:RTL,NATIVE_NUMBERS,PARALLEL_NUMBERS:PARALLEL,"
+            "INTERACTIVE_NUMBERS:INTERACTIVE,SCREEN_COUNT:COUNT};\n})();\n")
+
+
+_CSS["screens.css"] = (
+    "@layer components{.ui-screens h3{margin:24px 0 8px}.ui-screens-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0}"
+    ".ui-screens .ui-button,.ui-screens select,.ui-screens .ui-input{min-height:48px;box-sizing:border-box;max-width:100%}.ui-screens-bar .ui-input{width:auto;min-width:0}"
+    ".ui-screens-stage{min-width:0;margin:16px 0}.ui-screens-stage input[type=search],.ui-screens-stage #screens-field{width:100%}"
+    ".ui-screens-items,.ui-screens-list,.ui-screens-checks,.ui-screens-chips,.ui-screens-links,.ui-screens-grid,.ui-screens-reorder,.ui-screens-swap,.ui-screens-animated{list-style:none;margin:8px 0;padding:0}"
+    ".ui-screens-items{display:grid;gap:8px}.ui-screens-items[data-mode=grid]{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}"
+    ".ui-screens-item{display:grid;gap:8px;min-height:48px;text-decoration:none;color:inherit;overflow-wrap:anywhere}.ui-screens-emoji{font-size:24px}"
+    ".ui-screens-chips{display:flex;flex-wrap:wrap;gap:8px}.ui-screens-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ui-screens-grid li{white-space:pre-line;text-align:center}"
+    ".ui-screens-list li{display:flex;gap:16px;align-items:center;margin:8px 0}.ui-screens-avatar{display:inline-flex;align-items:center;justify-content:center;flex:none;width:40px;height:40px;"
+    "border-radius:50%;background:var(--ui-accent,currentColor);color:var(--ui-bg,Canvas)}.ui-screens-tabs,.ui-screens-bottom{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}"
+    ".ui-screens-tabs [aria-selected=true],.ui-screens-bottom [aria-current=page]{font-weight:700;text-decoration:underline}.ui-screens-dialog{margin:16px 0}"
+    ".ui-screens code,.ui-screens-links li{overflow-wrap:anywhere}.ui-screens pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-family:var(--ui-font-mono,monospace)}"
+    ".ui-screens-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}.ui-screens-native{min-width:0}.ui-screens-native h4{margin:0 0 8px}"
+    ".ui-screens-swap{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ui-screens-entry{display:flex;align-items:center;gap:8px;margin:8px 0}"
+    ".ui-screens-grip{flex:none;min-width:24px;text-align:center;cursor:grab;touch-action:none;user-select:none}.ui-screens-name{flex:1;min-width:0;overflow-wrap:anywhere}"
+    ".ui-screens-entry[data-dragging]{opacity:.5}.ui-screens-entry[data-over]{outline:thick solid var(--ui-accent,currentColor)}"
+    ".ui-screens-checks li{display:flex;align-items:center;gap:8px;min-height:48px}.ui-screens-checks input{flex:none;width:24px;height:24px}.ui-screens-checks label{flex:1;min-width:0;min-height:48px;display:flex;align-items:center}.ui-screens-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}"
+    "@media (prefers-reduced-motion:no-preference){.ui-screens-entry[data-new]{animation:ui-screens-in 180ms ease-out}}@keyframes ui-screens-in{from{opacity:0;transform:scaleY(0)}}}")
+
+
+def screens_html() -> str:
+    """The screens page as semantic HTML: the Hub of the 198 screens, a language switch, the screen the address names, and the native examples below."""
+    options = "".join(f'<option value="{code}"{" selected" if code == "eng" else ""}>{code} · {SCREEN_BCP47[code]}</option>' for code in SCREEN_LOCALES)
+    return ('<section class="ui-panel ui-screens" id="screens" data-ui-screens><h2>198 screens</h2>'
+            '<p class="ui-muted">flutter_navigation_basic\'s Hub and its numbered screens, in eleven languages. Open one at <code>#screenN</code>; the texts are the original\'s display catalogue.</p>'
+            '<div class="ui-screens-bar"><label for="screens-locale">Language</label><select class="ui-input" id="screens-locale" data-screens-locale>' + options + '</select>'
+            '<span class="ui-muted" role="status" aria-live="polite" data-screens-status></span></div>'
+            '<div class="ui-screens-stage" data-screens-stage></div>'
+            '<h3 id="screens-native-title">Native examples</h3>'
+            '<p class="ui-muted">Patterns 136-137, 151-175 and 183-184: a sum of squares in a Web Worker, counters kept by each kind of notifier, and lists you reorder, swap, insert into, remove from or select '
+            'in (a long press of half a second starts the drag of 173 and 184).</p>'
+            '<div class="ui-screens-gallery" data-screens-native></div></section>')
+
+
+def screens_document(*, theme: str = "modern") -> str:
+    """A single-file page for the screens."""
+    return render_document(trusted_html='<main class="ui-page">' + screens_html() + "</main>" + module_script(_JS["screens.js"]), title="198 screens", theme=theme, css=bundled_css())
+
+
+_SCREENS_PAGE_SRC = r"""export const {ScreenError,screenLocale,screenText,screenRow,screensCatalogue,screenTemplate,screenSearch,screenRoute,screenInitial,screenStep,screenTemplateView,screenCatalogView,screenView,screenHub,screenLinksView,nativeInitial,nativeStep,nativeView,nativeParallel,screensRun,LOCALES,BCP47,RTL_LOCALES,NATIVE_NUMBERS,PARALLEL_NUMBERS,INTERACTIVE_NUMBERS,SCREEN_COUNT}=webUiScreensCore;
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props)){if(v===false||v===null||v===undefined)continue;if(k==="text")e.textContent=v;else e.setAttribute(k,v===true?"":v)}e.append(...kids);return e};
+const WORKER_SOURCE='onmessage=e=>{let t=0;for(const x of e.data)t+=x*x;postMessage({total:t,off:typeof WorkerGlobalScope!=="undefined"&&self instanceof WorkerGlobalScope})}';
+export function runInWorker(values,timeoutMs=5000){
+ return new Promise((resolve,reject)=>{
+  let url,worker;
+  try{url=URL.createObjectURL(new Blob([WORKER_SOURCE],{type:"text/javascript"}));worker=new Worker(url)}
+  catch(e){if(url)URL.revokeObjectURL(url);reject(e);return}
+  const timer=setTimeout(()=>finish(reject,new Error("the worker did not answer")),timeoutMs);
+  const finish=(fn,v)=>{clearTimeout(timer);worker.terminate();URL.revokeObjectURL(url);fn(v)};
+  worker.onmessage=e=>finish(resolve,e.data);worker.onerror=e=>finish(reject,new Error(e.message||"worker error"));
+  worker.postMessage(values)})}
+export function parseValues(text){
+ const parts=text.split(",").map(s=>s.trim()).filter((s,i,all)=>!(s===""&&all.length===1));
+ if(!parts.every(s=>/^[+-]?[0-9]{1,16}$/.test(s)))throw new ScreenError("values must be integers separated by commas");
+ return parts.map(Number)}
+const HOLD_MS=500,SLOP=8;
+function dragList(list,{hold,onDrop,vertical}){
+ /* One pointer at a time. `hold` waits HOLD_MS without moving more than SLOP pixels (a long press); then the item follows the pointer and is dropped on pointer up. */
+ let drag=null;
+ const items=()=>[...list.querySelectorAll("[data-item]")];
+ const slotAt=(x,y)=>{let slot=0;for(const it of items()){const r=it.getBoundingClientRect();if(vertical?y>r.top+r.height/2:(y>r.bottom||(y>=r.top&&x>r.left+r.width/2)))slot++}return slot};
+ const clear=()=>{list.querySelectorAll("[data-over]").forEach(n=>n.removeAttribute("data-over"));list.querySelectorAll("[data-dragging]").forEach(n=>n.removeAttribute("data-dragging"));list.removeAttribute("data-drag")};
+ list.addEventListener("pointerdown",e=>{
+  const grip=e.target.closest("[data-grip]"),item=grip&&grip.closest("[data-item]");
+  if(!item||drag||(e.pointerType==="mouse"&&e.button!==0))return;
+  drag={item,id:e.pointerId,x:e.clientX,y:e.clientY,active:!hold,timer:0};
+  try{grip.setPointerCapture(e.pointerId)}catch(_){}
+  const start=()=>{drag.active=true;item.setAttribute("data-dragging","");list.setAttribute("data-drag",item.dataset.item)};
+  if(hold)drag.timer=setTimeout(start,HOLD_MS);else start();
+  if(!hold)e.preventDefault()});
+ list.addEventListener("pointermove",e=>{
+  if(!drag||e.pointerId!==drag.id)return;
+  if(!drag.active){if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>SLOP){clearTimeout(drag.timer);drag=null;clear()}return}
+  e.preventDefault();
+  list.querySelectorAll("[data-over]").forEach(n=>n.removeAttribute("data-over"));
+  const hit=document.elementFromPoint(e.clientX,e.clientY),over=hit&&hit.closest&&hit.closest("[data-item]");
+  if(vertical){const slot=slotAt(e.clientX,e.clientY),all=items();if(slot<all.length)all[slot].setAttribute("data-over","before");else if(all.length)all[all.length-1].setAttribute("data-over","after")}
+  else if(over&&over!==drag.item&&list.contains(over))over.setAttribute("data-over","")});
+ const finish=(e,drop)=>{
+  if(!drag||e.pointerId!==drag.id)return;
+  clearTimeout(drag.timer);const d=drag;drag=null;const was=d.active;
+  if(was&&drop){
+   if(vertical)onDrop({item:d.item.dataset.item,from:items().indexOf(d.item),slot:slotAt(e.clientX,e.clientY)});
+   else{const hit=document.elementFromPoint(e.clientX,e.clientY),over=hit&&hit.closest&&hit.closest("[data-item]");clear();if(over&&over!==d.item&&list.contains(over))onDrop({item:d.item.dataset.item,target:over.dataset.item});return}}
+  clear()};
+ list.addEventListener("pointerup",e=>finish(e,true));
+ list.addEventListener("pointercancel",e=>finish(e,false));
+ list.addEventListener("lostpointercapture",e=>{if(drag&&e.pointerId===drag.id&&drag.active===false){clearTimeout(drag.timer);drag=null;clear()}})}
+export function nativeCard(n,{onChange=()=>{}}={}){
+ let st=null;
+ const card=el("article",{class:"ui-card ui-screens-native","data-native":String(n),lang:"ja",dir:"ltr"});
+ if(PARALLEL_NUMBERS.includes(n)){
+  const title=el("h4",{text:"Pattern "+n}),input=el("input",{class:"ui-input",id:"screens-values-"+n,type:"text",value:"1, 2, 3, 4, 5","data-native-values":"",inputmode:"numeric",autocomplete:"off"});
+  const label=el("label",{for:"screens-values-"+n,text:"Values (integers, separated by commas)"}),run=el("button",{class:"ui-button",type:"button","data-native-run":"",text:"実行"});
+  const status=el("p",{class:"ui-screens-status",role:"status","aria-live":"polite","data-native-status":"",text:"未実行"});
+  let runs=0;
+  run.addEventListener("click",async()=>{
+   const mine=++runs;let values;
+   try{values=parseValues(input.value);nativeParallel(n,values,"worker")}catch(e){status.textContent="失敗: "+e.message;card.dataset.error="";return}
+   card.removeAttribute("data-error");run.disabled=true;status.textContent="実行中";
+   let engine="fallback",total=null;
+   try{const answer=await runInWorker(values);if(answer.off){engine="worker";total=answer.total}}catch(_){}
+   if(total===null)total=values.reduce((sum,v)=>sum+v*v,0);
+   run.disabled=false;
+   if(mine!==runs)return;
+   const want=nativeParallel(n,values,engine);
+   if(want.result!==total){status.textContent="失敗: "+total+" ≠ "+want.result;card.dataset.error="";return}
+   card.dataset.engine=engine;card.dataset.result=String(total);status.textContent=want.status;card.dataset.runs=String(mine);onChange(card)});
+  card.append(title,label,input,run,status);return card}
+ st=nativeInitial(n);
+ const draw=()=>{
+  const v=nativeView(n,st),focus=card.contains(document.activeElement)?document.activeElement.getAttribute("data-focus"):null;
+  card.replaceChildren(el("h4",{text:v.title}),...v.lines.map((line,i)=>el("p",{class:i===0?"":"ui-muted",text:line})));
+  if(st.items)card.dataset.order=st.items.join(",");
+  if("count" in st)card.dataset.count=String(st.count);
+  if(st.selected)card.dataset.selected=st.selected.join(",");
+  if(v.buttons.length){
+   const bar=el("div",{class:"ui-screens-bar"});
+   for(const b of v.buttons){const btn=el("button",{class:"ui-button",type:"button","data-native-action":b.action,disabled:b.enabled===false,text:b.label});btn.addEventListener("click",()=>act(b.action));bar.append(btn)}
+   card.append(bar)}
+  if(v.items)card.append(listFor(v.items));
+  if(focus){const again=card.querySelector('[data-focus="'+focus+'"]');if(again)again.focus()}
+  onChange(card)};
+ const act=action=>{
+  try{st=nativeStep(n,st,typeof action==="string"&&["insert","remove","delete_selected"].includes(action)?{type:action}:action)}catch(e){card.dataset.error=e.message;return}
+  card.removeAttribute("data-error");if(action==="insert")card.dataset.entered="N"+st.inserted;draw();card.removeAttribute("data-entered")};
+ const move=(i,to)=>act({type:"reorder",old:i,new:to});
+ const listFor=items=>{
+  if(n===183){
+   const ul=el("ul",{class:"ui-screens-checks"});
+   for(const it of items){const box=el("input",{type:"checkbox",id:"screens-"+n+"-"+it.label,"data-native-select":it.label,"data-focus":"c-"+it.label});box.checked=it.selected;box.addEventListener("change",()=>act({type:"select",item:it.label,value:box.checked}));
+    ul.append(el("li",{},box,el("label",{for:box.id,text:it.label})))}
+   return ul}
+  if(n===174||n===175){
+   const ul=el("ul",{class:"ui-screens-animated","data-native-items":""});
+   items.forEach(it=>{const li=el("li",{class:"ui-screens-entry","data-item":it.label,text:it.label});if(card.dataset.entered===it.label)li.setAttribute("data-new","");ul.append(li)});
+   return ul}
+  const reorder=n===171||n===172||n===184,ul=el("ul",{class:reorder?"ui-screens-reorder":"ui-screens-swap","data-native-items":"","data-gesture":n===184||n===173?"long-press":"drag"});
+  items.forEach((it,i)=>{
+   const grip=el("span",{class:"ui-screens-grip","data-grip":"","aria-hidden":"true",text:"⠿"}),name=el("span",{class:"ui-screens-name",text:it.label});
+   const buttons=reorder?[["▲","Move "+it.label+" up",()=>i>0&&move(i,i-1),i===0],["▼","Move "+it.label+" down",()=>i<items.length-1&&move(i,i+2),i===items.length-1]]
+    :[["◀","Swap "+it.label+" with the previous",()=>i>0&&act({type:"swap",a:it.label,b:items[i-1].label}),i===0],["▶","Swap "+it.label+" with the next",()=>i<items.length-1&&act({type:"swap",a:it.label,b:items[i+1].label}),i===items.length-1]];
+   const row=el("li",{class:"ui-screens-entry","data-item":it.label},grip,name);
+   buttons.forEach(([glyph,labelText,fn,off],j)=>{const b=el("button",{class:"ui-button",type:"button","aria-label":labelText,"data-focus":"b-"+it.label+"-"+j,disabled:off,text:glyph});b.addEventListener("click",fn);row.append(b)});
+   ul.append(row)});
+  if(reorder)dragList(ul,{hold:n===184,vertical:true,onDrop:({from,slot})=>{if(slot!==from&&slot!==from+1)act({type:"reorder",old:from,new:slot})}});
+  else dragList(ul,{hold:true,vertical:false,onDrop:({item,target})=>act({type:"swap",a:item,b:target})});
+  return ul};
+ draw();
+ card.nativeState=()=>st;card.nativeAct=act;
+ return card}
+export function bindScreens(root=document){
+ return[...root.querySelectorAll("[data-ui-screens]")].map(box=>{
+  const stage=box.querySelector("[data-screens-stage]"),gallery=box.querySelector("[data-screens-native]"),pick=box.querySelector("[data-screens-locale]"),status=box.querySelector("[data-screens-status]");
+  let locale=screenLocale(pick.value),mode="grid",query="",id=0,state=null,timer=0,bodyUpdate=null,renders=0;
+  const say=text=>{status.textContent=text},clearTimer=()=>{if(timer){clearTimeout(timer);timer=0}};
+  const go=n=>{location.hash=n?"screen"+n:""};
+  const parse=()=>{const m=/^#screen([0-9]{1,3})$/.exec(location.hash),n=m?Number(m[1]):0;return n>=1&&n<=SCREEN_COUNT?n:0};
+  const frame=v=>{stage.lang=v.lang||"ja";stage.dir=v.dir||"ltr";box.dataset.locale=v.locale||locale;stage.replaceChildren();bodyUpdate=null};
+  const done=()=>{box.dataset.renders=String(++renders)};
+  const back=text=>{const b=el("button",{class:"ui-button",type:"button","data-screens-back":"",text:"← "+text});b.addEventListener("click",()=>go(0));return b};
+  const tabBar=(tabs,selected,onPick,key)=>{
+   const bar=el("div",{role:"tablist",class:"ui-screens-tabs","data-screens-tabs":key});
+   tabs.forEach((t,i)=>{const label=typeof t==="string"?t:t.label,value=typeof t==="string"?i:t.id,on=(typeof t==="string"?i:t.id)===selected;
+    const b=el("button",{class:"ui-button",type:"button",role:"tab","aria-selected":String(on),tabindex:on?"0":"-1","data-focus":key+"-"+i,"data-tab":String(value),text:label});
+    b.addEventListener("click",()=>onPick(value,i));
+    b.addEventListener("keydown",e=>{
+     const rtl=stage.dir==="rtl",step={ArrowRight:rtl?-1:1,ArrowLeft:rtl?1:-1}[e.key];
+     let j=e.key==="Home"?0:e.key==="End"?tabs.length-1:step===undefined?null:(i+step+tabs.length)%tabs.length;
+     if(j===null)return;e.preventDefault();const t2=tabs[j];onPick(typeof t2==="string"?j:t2.id,j)});
+    bar.append(b)});
+   return bar};
+  const chips=list=>el("ul",{class:"ui-screens-chips"},...list.map(c=>el("li",{class:"ui-tag"},el("span",{"aria-hidden":"true",text:c.avatar+" "}),c.text)));
+  const useCase=u=>{
+   const w=el("div",{class:"ui-screens-usecase","data-screens-usecase":""});
+   for(const s of u.sections){
+    w.append(el("h4",{text:s.heading}));
+    if(s.text!==undefined)w.append(el("p",{text:s.text}));
+    if(s.points)w.append(el("ul",{},...s.points.map(p=>el("li",{text:p}))));
+    if(s.code!==undefined)w.append(el("pre",{lang:"dart",dir:"ltr"},el("code",{text:s.code})))}
+   w.append(chips(u.chips));return w};
+  const dispatch=(event,focus=null)=>{
+   let next;try{next=screenStep(id,state,event)}catch(e){say(e.message);return}
+   state=next;
+   if(event.type==="input"){if(bodyUpdate)bodyUpdate(screenView(id,locale,state).body);return}
+   if(event.type==="start")arm();
+   renderScreen();
+   if(focus){const again=stage.querySelector('[data-focus="'+focus+'"]');if(again)again.focus()}};
+  const arm=()=>{clearTimer();timer=setTimeout(()=>{timer=0;dispatch({type:"tick",ms:500})},500)};
+  const catalog=b=>{
+   const w=el("div",{class:"ui-screens-body","data-template":"catalog"});
+   const input=el("input",{class:"ui-input",type:"search",id:"screens-catalog",autocomplete:"off","data-screens-input":"",maxlength:"10000",placeholder:b.hint,"aria-label":b.hint});input.value=b.query;
+   const clearBtn=el("button",{class:"ui-button",type:"button","data-screens-clear":""}),count=el("span",{role:"status","aria-live":"polite","data-screens-count":""}),empty=el("p",{class:"ui-muted","data-screens-empty":""}),list=el("ul",{class:"ui-screens-items","data-mode":"list","data-screens-items":""});
+   const fill=nb=>{count.textContent=nb.count;empty.textContent=nb.empty||"";empty.hidden=!nb.empty;clearBtn.hidden=nb.clear===null;clearBtn.textContent=nb.clear||"";
+    list.replaceChildren(...nb.items.map(i=>el("li",{},el("a",{class:"ui-card ui-screens-item",href:"#screen"+i.id,"data-screen":String(i.id)},el("span",{class:"ui-screens-emoji","aria-hidden":"true",text:i.emoji}),el("strong",{text:i.heading}),el("span",{class:"ui-muted",text:i.subtitle}),el("span",{class:"ui-muted",text:i.description})))))};
+   input.addEventListener("input",()=>dispatch({type:"input",value:input.value}));
+   clearBtn.addEventListener("click",()=>{dispatch({type:"clear"});const again=stage.querySelector("[data-screens-input]");if(again)again.focus()});
+   fill(b);bodyUpdate=nb=>fill(nb);
+   w.append(input,clearBtn,count,empty,list);return w};
+  const body=b=>{
+   if(b.template==="catalog")return catalog(b);
+   const w=el("div",{class:"ui-screens-body","data-template":b.template});
+   if(b.template==="list")w.append(el("ul",{class:"ui-screens-list"},...b.items.map(i=>el("li",{},el("span",{class:"ui-screens-avatar","aria-hidden":"true",text:i.avatar}),el("span",{},el("strong",{text:i.title}),el("br"),el("span",{class:"ui-muted",text:i.subtitle}))))));
+   else if(b.template==="detail")w.append(el("h4",{text:b.heading}),el("p",{text:b.description}),el("p",{class:"ui-muted",text:b.screenId}));
+   else if(b.template==="form"){
+    const input=el("input",{class:"ui-input",id:"screens-field",type:"text",maxlength:"10000","data-screens-input":""});input.value=b.value;
+    input.addEventListener("input",()=>dispatch({type:"input",value:input.value}));
+    input.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();dispatch({type:"submit"})}});
+    const submit=el("button",{class:"ui-button",type:"button","data-screens-submit":"",text:b.submit});submit.addEventListener("click",()=>dispatch({type:"submit"}));
+    w.append(el("label",{for:"screens-field",text:b.label}),input,submit);
+    if(b.snackbar!==null)w.append(el("p",{role:"status","data-screens-snackbar":"",text:b.snackbar}))}
+   else if(b.template==="search"){
+    const input=el("input",{class:"ui-input",id:"screens-field",type:"search",maxlength:"10000",autocomplete:"off","data-screens-input":"",placeholder:b.hint,"aria-label":b.hint});input.value=b.query;
+    const title=el("strong",{"data-screens-result":"",text:b.result.title}),card=el("p",{class:"ui-card"},title,el("br"),el("span",{class:"ui-muted",text:b.result.subtitle}));
+    input.addEventListener("input",()=>dispatch({type:"input",value:input.value}));
+    bodyUpdate=nb=>{title.textContent=nb.result.title};
+    w.append(input,card)}
+   else if(b.template==="tabs"){
+    w.append(tabBar(b.tabs,b.selected,(v,i)=>dispatch({type:"select",index:i},"tpl-"+i),"tpl"));
+    const p=b.panels[b.selected],panel=el("div",{role:"tabpanel",class:"ui-card","data-screens-panel":String(b.selected)});
+    panel.append(p.text!==undefined?el("p",{text:p.text}):el("span",{role:"img","aria-label":p.icon,text:"</>"}));w.append(panel)}
+   else if(b.template==="bottomNavigation"){
+    w.append(el("p",{class:"ui-card","data-screens-destination":"",text:b.destination}));
+    const nav=el("nav",{class:"ui-screens-bottom"});
+    b.items.forEach((label,i)=>{const btn=el("button",{class:"ui-button",type:"button","data-focus":"nav-"+i,"aria-current":i===b.selected?"page":false,text:label});btn.addEventListener("click",()=>dispatch({type:"select",index:i},"nav-"+i));nav.append(btn)});
+    w.append(nav)}
+   else if(b.template==="drawer")w.append(el("aside",{class:"ui-card","aria-label":b.title},el("strong",{text:b.title}),el("ul",{},...b.items.map(t=>el("li",{text:t})))));
+   else if(b.template==="dialog"){
+    const open=el("button",{class:"ui-button",type:"button","data-screens-open":"","data-focus":"dialog-open",text:b.open});open.addEventListener("click",()=>dispatch({type:"open"},"dialog-close"));w.append(open);
+    if(b.dialog){
+     const close=el("button",{class:"ui-button",type:"button","data-screens-close":"","data-focus":"dialog-close",text:b.dialog.close});close.addEventListener("click",()=>dispatch({type:"close"},"dialog-open"));
+     const dlg=el("div",{role:"dialog","aria-modal":"true","aria-labelledby":"screens-dialog-title",class:"ui-card ui-screens-dialog","data-screens-dialog":""},el("strong",{id:"screens-dialog-title",text:b.dialog.title}),el("p",{text:b.dialog.content}),close);
+     dlg.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();dispatch({type:"close"},"dialog-open")}});w.append(dlg)}}
+   else if(b.template==="grid")w.append(el("ul",{class:"ui-screens-grid"},...b.cards.map(c=>el("li",{class:"ui-card",text:c}))));
+   else if(b.template==="asyncState"){
+    const btn=el("button",{class:"ui-button",type:"button","data-screens-start":"",disabled:b.loading,text:b.action});btn.addEventListener("click",()=>dispatch({type:"start"}));
+    w.append(btn);w.dataset.loading=String(b.loading);
+    w.append(b.loading?el("progress",{"aria-label":"…","data-screens-progress":""}):"")}
+   else if(b.template==="settings"){
+    const sw=el("input",{type:"checkbox",role:"switch",id:"screens-switch","data-screens-switch":""});sw.checked=b.enabled;sw.addEventListener("change",()=>dispatch({type:"toggle",value:sw.checked},"switch"));sw.setAttribute("data-focus","switch");
+    w.append(el("p",{},sw," ",el("label",{for:"screens-switch",text:b.option})),el("p",{class:"ui-muted",text:b.subtitle}),el("p",{},el("strong",{text:b.theme})," · "+b.system))}
+   return w};
+  const renderScreen=()=>{
+   const v=screenView(id,locale,state);frame(v);
+   stage.append(back(v.back),el("h3",{"data-screens-title":"",text:v.title}),el("p",{class:"ui-screens-headline",text:v.headline}),el("p",{class:"ui-muted",text:v.subline}));
+   if(v.chips.length)stage.append(chips(v.chips));
+   if(v.tabs){stage.append(tabBar(v.tabs,v.tab,(t,i)=>dispatch({type:"tab",tab:t},"ctab-"+i),"ctab"));stage.append(v.tab==="usecase"?useCase(v.useCase):body(v.body))}
+   else stage.append(body(v.body));
+   stage.dataset.kind="generic";done()};
+  const renderHub=()=>{
+   const hub=screenHub(locale,query,mode);frame(hub);
+   const input=el("input",{class:"ui-input",type:"search",id:"screens-hub-query",autocomplete:"off",maxlength:"10000","data-screens-query":"",placeholder:hub.hint,"aria-label":hub.hint});input.value=query;
+   const count=el("span",{role:"status","aria-live":"polite","data-screens-count":""}),clearBtn=el("button",{class:"ui-button",type:"button","data-screens-clear":""}),empty=el("p",{class:"ui-muted","data-screens-empty":""}),list=el("ul",{class:"ui-screens-items","data-screens-items":""});
+   const fill=()=>{
+    const h=screenHub(locale,input.value,mode);query=input.value;
+    count.textContent=h.count;empty.textContent=h.empty||"";empty.hidden=!h.empty;clearBtn.hidden=input.value==="";clearBtn.textContent=screenText(locale,"clipboardWorkbench.clear");
+    list.dataset.mode=mode;box.dataset.mode=mode;box.dataset.count=String(h.items.length);
+    list.replaceChildren(...h.items.map(i=>el("li",{},el("a",{class:"ui-card ui-screens-item",href:"#screen"+i.id,"data-screen":String(i.id)},el("span",{class:"ui-screens-emoji","aria-hidden":"true",text:i.emoji}),el("strong",{text:i.heading}),el("span",{class:"ui-muted",text:i.subtitle}),mode==="list"?el("span",{class:"ui-muted",text:i.description}):""))))};
+   input.addEventListener("input",fill);
+   clearBtn.addEventListener("click",()=>{input.value="";fill();input.focus()});
+   const modes=el("div",{class:"ui-screens-bar",role:"group","aria-label":hub.title});
+   for(const m of["list","grid"]){const b=el("button",{class:"ui-button",type:"button","data-screens-mode":m,"aria-pressed":String(m===mode),text:hub.tooltips[m]});b.addEventListener("click",()=>{mode=m;renderHub();stage.querySelector('[data-screens-mode="'+m+'"]').focus()});modes.append(b)}
+   modes.append(el("a",{class:"ui-button",href:"./mcp-lab.html",text:hub.tooltips.mcp}),el("a",{class:"ui-button",href:"./api-stub.html",text:hub.tooltips.api}),el("a",{class:"ui-button",href:"./index.html",text:hub.home}));
+   stage.append(el("h3",{"data-screens-title":"",text:hub.title}),modes,input,clearBtn,count,empty,list);
+   stage.dataset.kind="hub";fill();done()};
+  const renderLinks=()=>{
+   const v=screenLinksView(id,locale);frame({locale:v.locale,lang:"ja",dir:"ltr"});
+   stage.append(back(screenText(locale,"generic.backToHub")),el("h3",{"data-screens-title":"",text:v.title}),el("p",{text:v.note}),el("p",{class:"ui-muted","data-screens-limit":"",text:v.limitation}),
+    el("ul",{class:"ui-screens-links"},...v.links.map(l=>el("li",{},el("a",{href:l.url,rel:"noopener noreferrer",target:"_blank","data-screens-link":"",text:l.label})," ",el("code",{text:l.path})))),
+    el("p",{},el("a",{href:"./"+v.page+"#patterns-run-title","data-screens-reference":"",text:"Run the "+v.family+" reference here (patterns page)"})));
+   stage.dataset.kind="links";done()};
+  const renderNativePage=()=>{
+   frame({locale,lang:"ja",dir:"ltr"});
+   stage.append(back(screenText(locale,"generic.backToHub")),nativeCard(id));stage.dataset.kind="native";done()};
+  const renderDedicated=r=>{
+   frame({locale,lang:"en",dir:"ltr"});
+   stage.append(back(screenText(locale,"generic.backToHub")),el("h3",{"data-screens-title":"",text:"Screen "+r.screen+": "+r.widget}),
+    el("p",{"data-screens-dedicated":"",text:"In the original, /screen"+r.screen+" opens "+r.widget+": a list of URL-parameter cases read through GetX. It is not part of this page."}));stage.dataset.kind="dedicated";done()};
+  const show=()=>{
+   clearTimer();id=parse();state=null;box.dataset.route=id?String(id):"";
+   if(!id){renderHub();return}
+   const r=screenRoute(id);
+   if(r.kind==="dedicated")renderDedicated(r);
+   else if(r.kind==="validation"||r.kind==="conversion")renderLinks();
+   else if(r.kind==="parallel"||r.kind==="interactive")renderNativePage();
+   else{state=screenInitial();renderScreen()}};
+  pick.addEventListener("change",()=>{locale=screenLocale(pick.value);say(locale);show()});
+  window.addEventListener("hashchange",show);
+  gallery.replaceChildren(...NATIVE_NUMBERS.map(n=>{const card=nativeCard(n);card.id="native-"+n;return card}));
+  gallery.dataset.count=String(NATIVE_NUMBERS.length);
+  show();box.dataset.screens_ready="";return box})}
+globalThis.webUiScreens={run:screensRun,screenView,screenHub,screenStep,screenInitial,screenRoute,screenText,screenLocale,screenSearch,screensCatalogue,screenRow,nativeInitial,nativeStep,nativeView,nativeParallel,parseValues,runInWorker,bindScreens,nativeCard,LOCALES,NATIVE_NUMBERS,SCREEN_COUNT,ScreenError};
+if(typeof document!=="undefined")bindScreens();
+"""
+
+_JS["screens.js"] = ("/* web-ui screens: the Hub, the 198 numbered screens and the native examples of flutter_navigation_basic in the page (memory only; nothing is sent). The rules are Python's "
+                     "(web_ui.screen_*, native_*); this must agree on every request, with the same refusal text. The page on top is the browser's: routes in the address, a Web Worker for patterns 136-137, "
+                     "pointer drags with a half-second hold for 173 and 184 and a button for every drag. */\n" + _screens_core_js() + _SCREENS_PAGE_SRC)
+
+
 # --- The patterns page: the catalogue to search and every reference to run ------------------------------------------------------------------------
 # ``PATTERN_TWINS`` are the families that ``patterns.js`` runs in the page (the rest stay in Python: search, convert and validate lean on CPython's Unicode case folding, int parsing and
 # urlsplit; the five JavaScript-born families run there as the originals do, on real promises and timers). ``PATTERN_EXAMPLES`` holds one request per family; the page shows what Python answers to it, computed when the page is made.
-PATTERN_TWINS = ("collection", "concurrency", "event_loop", "future", "interaction", "order", "page", "query", "reduce", "score", "select", "stream", "structure", "text", "transform", "window", "workflow")
+PATTERN_TWINS = ("collection", "concurrency", "event_loop", "future", "interaction", "native", "order", "page", "query", "reduce", "score", "screen", "select", "stream", "structure", "text", "transform", "window", "workflow")
 PATTERN_EXAMPLES: dict[str, Any] = {
     "collection": {"mode": "selectable", "commands": [["select", "b"], ["select", "c"]]},
     "concurrency": {"mode": "semaphore", "tasks": [{"value": "a", "delay_ms": 10}, {"value": "b"}, {"value": "c", "delay_ms": 5}], "concurrency": 2},
     "event_loop": {"mode": "microtask", "values": []},
     "future": {"mode": "wait", "tasks": [{"value": "slow", "delay_ms": 25}, {"value": "fast"}]},
     "interaction": {"operation": "debounce", "delay_ms": 20, "calls": [{"at_ms": 0, "value": "first"}, {"at_ms": 5, "value": "last"}, {"at_ms": 60, "value": "x"}, {"at_ms": 61, "cancel": True}]},
+    "contract": {"operation": "layout", "viewport": {"width": 390, "height": 844},
+                 "boxes": {"title": {"x": 16, "y": 8, "width": 200, "height": 48}, "home": {"x": 232, "y": 8, "width": 48, "height": 48}, "menu": {"x": 326, "y": 9, "width": 48, "height": 48},
+                           "actions": {"x": 16, "y": 56, "width": 358, "height": 48}},
+                 "within": ["title", "home", "menu"], "aligned": ["title", "home", "menu"], "stacked": [{"name": "actions", "below": ["title", "home", "menu"], "min_height": 40}]},
     "convert": {"operation": "mask", "value": "1234567890", "keep_last": 4},
+    "native": {"pattern": 171, "actions": [{"type": "reorder", "old": 0, "new": 3}]},
     "order": {"mode": "priority"},
     "page": {"operation": "cursor", "items": [1, 2, 3, 4, 5], "limit": 2},
     "query": {"operation": "stable_sort", "items": [{"name": "b", "n": 2}, {"name": "a", "n": 1}, {"name": "c", "n": 2}], "key": "n", "descending": True},
     "reduce": {"mode": "redux", "initial": 10, "actions": [{"type": "increment", "value": 5}, {"type": "decrement", "value": 3}, {"type": "reset"}]},
     "score": {"operation": "minheap", "values": [5, 1, 3, 1], "pops": 2},
+    "screen": {"operation": "view", "screen": 37, "locale": "jpn", "events": [{"type": "input", "value": "こんにちは"}, {"type": "submit"}]},
     "search": {"operation": "fuzzy", "query": "cat", "values": ["cats", "car", "dog", "cat"], "max_distance": 1},
     "select": {"operation": "distinct", "values": [1, "1", True, 1, None, None]},
     "stream": {"mode": "window", "events": [{"at_ms": 0, "value": 1}, {"at_ms": 10, "value": 2}, {"at_ms": 20, "value": 3}], "size": 2},
@@ -8005,12 +10471,19 @@ _CSS["patterns.css"] = ("@layer components{.ui-patterns h3{margin:24px 0 8px}.ui
                         ".ui-patterns pre{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.ui-patterns-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}}")
 
 
-def patterns_html() -> str:
-    """The patterns page as semantic HTML: a search over the 792 patterns and a runner for the reference of each family."""
+def patterns_html(bridge: str | None = None) -> str:
+    """The patterns page as semantic HTML: a search over the 792 patterns and a runner for the reference of each family. ``bridge`` is the path prefix of a Python bridge
+    (``PATTERN_BRIDGE_PREFIX`` when ``--pattern-serve`` serves the page): the families that stay in Python then run there, instead of showing their example."""
+    _pat_need(bridge is None or bridge == PATTERN_BRIDGE_PREFIX, "bridge must be None or the bridge's own prefix")
+    stay = sorted(set(PATTERN_RUNNERS) - set(PATTERN_TWINS))
+    names = ", ".join(stay[:-1]) + " and " + stay[-1]
+    note = (f'<p class="ui-muted" data-patterns-bridge-note>{names.capitalize()} run in Python through the local bridge that serves this page.</p>' if bridge else
+            f'<p class="ui-muted">{len(PATTERN_TWINS)} families run in this page. {names.capitalize()} stay in Python: the page shows what Python answers to their example '
+            '(<code>python3 web_ui.py --pattern-serve</code> serves this page with a bridge that runs them).</p>')
     categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
     families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
     run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
-    return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns><h2>792 patterns</h2>'
+    return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns' + (f' data-patterns-bridge="{bridge}"' if bridge else "") + '><h2>792 patterns</h2>'
             '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
             '<label for="patterns-query">Search (id, title or theme)</label>'
             '<input class="ui-input" id="patterns-query" data-patterns-query type="search" autocomplete="off" placeholder="filter, D003, ページング">'
@@ -8019,16 +10492,181 @@ def patterns_html() -> str:
             f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
             '<ol class="ui-patterns-list" data-patterns-list></ol>'
             '<h3 id="patterns-run-title">Run a reference</h3>'
-            f'<p class="ui-muted">{len(PATTERN_TWINS)} families run in this page. Search, convert and validate stay in Python: the page shows what Python answers to their example.</p>'
+            + note +
             f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
             '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
             '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
             '<p class="ui-patterns-status" role="status" aria-live="polite" data-patterns-status></p><pre data-patterns-result></pre></section>')
 
 
-def patterns_document(*, theme: str = "modern") -> str:
-    """A single-file page for the patterns."""
-    return render_document(trusted_html='<main class="ui-page">' + patterns_html() + "</main>" + module_script(_JS["patterns.js"]), title="792 patterns", theme=theme, css=bundled_css())
+def patterns_document(*, theme: str = "modern", bridge: str | None = None) -> str:
+    """A single-file page for the patterns; with ``bridge`` it talks to the Python bridge of ``--pattern-serve`` for the families that stay in Python."""
+    return render_document(trusted_html='<main class="ui-page">' + patterns_html(bridge) + "</main>" + module_script(_JS["patterns.js"]), title="792 patterns", theme=theme, css=bundled_css())
+
+
+# --- The pattern bridge: the references over loopback HTTP, for the pages that cannot run them -------------------------------------------------------------------
+# Succeeds python/validation_http.py, the opt-in local HTTP bridge that let a page reach the Python validation producer of patterns 091-099: ``web_ui.py --pattern-serve`` serves the
+# patterns page and answers ``POST /pattern/FAMILY`` with what ``--pattern FAMILY`` prints, for every family, so the ones that stay in Python (search, convert, validate, contract and
+# score's tf-idf) run from the page too. It binds 127.0.0.1 only. Kept from the original: the Host header must name the bound loopback address and port (no DNS rebinding); a browser's
+# Origin must be the bridge's own origin (either loopback name) or one that ``--allow-origin`` lists, and a CORS answer repeats that one origin, never ``*``; the body must be JSON
+# (``Content-Type: application/json``), at most 64 KiB, and arrive within ten seconds; nothing is cached. Differences: (1) every family, not only validation, and a refusal says why
+# (``{"error": text}`` with the CLI's text, status 400); (2) no extra origin is allowed unless asked for (the original allowed the Flutter dev server on :8080); (3) a body over the cap
+# is 413, a missing or chunked length 411 (the original answered 400 for both); (4) the page it serves is the patterns page itself, not a form of its own.
+PATTERN_BRIDGE_PREFIX = "/pattern/"
+PATTERN_BRIDGE_MAX_BODY = 65536
+PATTERN_BRIDGE_TIMEOUT = 10
+PATTERN_BRIDGE_PORT = 8765
+PATTERN_BRIDGE_PAGES = ("/", "/patterns.html")
+
+
+def bridge_origin(value: Any) -> str:
+    """A browser origin (``scheme://host[:port]``) for ``--allow-origin``; a wildcard, a path, a query, credentials or a space is a ``ValueError``."""
+    if not isinstance(value, str) or "*" in value or any(c.isspace() for c in value):
+        raise ValueError(f"not an origin: {value!r}")
+    parts = urlsplit(value)
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError(f"not an origin: {value!r}") from None
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.path != "" or parts.query or parts.fragment or parts.username or parts.password or value.endswith(("?", "#", "/")):
+        raise ValueError(f"not an origin: {value!r}")
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return f"{parts.scheme}://{host}{f':{port}' if port else ''}"
+
+
+class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "web-ui-pattern-bridge"
+    sys_version = ""
+    timeout = PATTERN_BRIDGE_TIMEOUT          # a body that never arrives is answered 408 below; otherwise the socket would just close
+
+    def log_message(self, format: str, *args: Any) -> None:         # nothing is logged: a request line may carry a family name a visitor made up
+        return
+
+    def _names(self) -> set[str]:
+        port = self.server.server_address[1]
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _origins(self) -> set[str]:
+        return {"http://" + name for name in self._names()} | set(self.server.allowed_origins)
+
+    def _trusted(self) -> bool:
+        """Reject DNS-rebinding Hosts and foreign Origins. A browser sends Origin on its own POSTs too, so the bridge's own origin is accepted."""
+        origin = self.headers.get("Origin")
+        return self.headers.get("Host") in self._names() and (origin is None or origin in self._origins())
+
+    def _send(self, status: int, body: bytes, content_type: str, *, cors: bool = False, extra: tuple[tuple[str, str], ...] = ()) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if cors:
+            origin = self.headers.get("Origin")
+            if origin is not None and origin in self._origins():
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+        for name, value in extra:
+            self.send_header(name, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, status: int, payload: Any, *, cors: bool = False, extra: tuple[tuple[str, str], ...] = ()) -> None:
+        self._send(status, json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8"), "application/json; charset=utf-8", cors=cors, extra=extra)
+
+    def _fail(self, status: int, message: str, **kwargs: Any) -> None:
+        self.close_connection = True
+        self._json(status, {"error": message}, **kwargs)
+
+    def do_GET(self) -> None:
+        if not self._trusted():
+            return self._fail(403, "origin not allowed")
+        path = self.path.split("?", 1)[0]
+        if path in PATTERN_BRIDGE_PAGES:
+            return self._send(200, self.server.page, "text/html; charset=utf-8", extra=(("X-Frame-Options", "DENY"),))
+        if path == PATTERN_BRIDGE_PREFIX:
+            return self._json(200, {"families": sorted(PATTERN_RUNNERS), "browser": sorted(PATTERN_TWINS), "max_body": PATTERN_BRIDGE_MAX_BODY}, cors=True)
+        self._fail(404, "not found")
+
+    def do_OPTIONS(self) -> None:
+        if not self._trusted():
+            return self._fail(403, "origin not allowed")
+        extra = [("Allow", "GET, POST, OPTIONS"), ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"), ("Access-Control-Allow-Headers", "Content-Type")]
+        if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true" and self.headers.get("Origin") is not None:
+            extra.append(("Access-Control-Allow-Private-Network", "true"))   # a page on another origin that --allow-origin lists may reach this loopback address
+        self._send(204, b"", "text/plain; charset=utf-8", cors=True, extra=tuple(extra))
+
+    def _not_allowed(self) -> None:
+        if not self._trusted():
+            return self._fail(403, "origin not allowed")
+        self._fail(405, "method not allowed", extra=(("Allow", "GET, POST, OPTIONS"),))
+
+    do_PUT = do_PATCH = do_DELETE = do_HEAD = _not_allowed
+
+    def do_POST(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if not self._trusted():
+            return self._fail(403, "origin not allowed")
+        if not path.startswith(PATTERN_BRIDGE_PREFIX):
+            return self._fail(404, "not found")
+        family = path[len(PATTERN_BRIDGE_PREFIX):]
+        if family not in PATTERN_RUNNERS:
+            return self._fail(404, "unknown pattern family", cors=True)
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return self._fail(415, "unsupported media type", cors=True)
+        if self.headers.get("Transfer-Encoding") is not None or self.headers.get("Content-Length") is None:
+            return self._fail(411, "a Content-Length is required", cors=True)
+        length_text = self.headers.get("Content-Length", "")
+        if not length_text.isascii() or not length_text.isdigit() or not 0 < int(length_text) <= 10 ** 9:
+            return self._fail(400, "invalid Content-Length", cors=True)
+        length = int(length_text)
+        if length > PATTERN_BRIDGE_MAX_BODY:
+            return self._fail(413, f"request is larger than {PATTERN_BRIDGE_MAX_BODY} bytes", cors=True)
+        try:
+            raw = self.rfile.read(length)
+        except (TimeoutError, OSError):
+            return self._fail(408, "request timed out", cors=True)
+        if len(raw) != length:
+            return self._fail(400, "the request body ended early", cors=True)
+        try:
+            answer = pattern_run(family, pattern_parse(raw.decode("utf-8")))
+            body = json.dumps(answer, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        except (ValueError, UnicodeError) as error:
+            text = str(error)
+            return self._fail(400, text if len(text) <= 1000 else text[:999] + "…", cors=True)
+        except Exception:                                                # a reference that fails in a way no request should cause: say so, not why
+            return self._fail(500, "internal error", cors=True)
+        self._send(200, body.encode("utf-8"), "application/json; charset=utf-8", cors=True)
+
+
+def pattern_bridge(port: int = PATTERN_BRIDGE_PORT, allow_origins: Any = ()) -> http.server.ThreadingHTTPServer:
+    """The bridge, bound to 127.0.0.1 (port 0 picks a free one) and not yet serving: ``serve_forever()`` starts it. ``allow_origins`` are extra browser origins (see ``bridge_origin``)."""
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise ValueError("port must be an integer from 0 to 65535")
+    origins = frozenset(bridge_origin(origin) for origin in allow_origins)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _PatternBridgeHandler)
+    server.daemon_threads = True
+    server.allowed_origins = origins
+    server.page = patterns_document(bridge=PATTERN_BRIDGE_PREFIX).encode("utf-8")
+    return server
+
+
+def _bridge_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    try:
+        server = pattern_bridge(args.port, args.allow_origin or ())
+    except OSError as error:
+        parser.error(f"cannot bind 127.0.0.1:{args.port}: {error.strerror or error}")
+    except ValueError as error:
+        parser.error(str(error))
+    print(f"listening http://127.0.0.1:{server.server_address[1]}/", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
 
 
 # --- Image studio: layers of shapes, text, emoji, photos, clocks, arrows and heatmaps in one scene, its JSON, its SVG, its undo history --------------
@@ -10446,7 +13084,7 @@ def _patterns_js_constants() -> str:
     return "".join(f"export const {name}=" + json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", chr(92) + "u003c") + ";\n" for name, value in data.items())
 
 
-_JS["patterns.js"] = "/* web-ui patterns: the pattern references of flutter_navigation_basic in the page (query, page, score's min-heap, reduce, workflow, transform, select, order, text, window, collection, structure) and the 792-pattern catalogue. Python (web_ui.pattern_*) is the reference; this must agree on every request, with the same refusal text. Three families (search, convert, validate) stay in Python: they lean on CPython's Unicode case folding, int parsing and urlsplit. JSON cannot tell 1 from 1.0 here: an integral number is an int, so a float written 1.0 reads as 1. */\n" + _SHA_JS + _TEXT_JS + _patterns_js_constants() + r"""export class PatternError extends Error{}
+_JS["patterns.js"] = "/* web-ui patterns: the pattern references of flutter_navigation_basic in the page (query, page, score's min-heap, reduce, workflow, transform, select, order, text, window, collection, structure) and the 792-pattern catalogue. Python (web_ui.pattern_*) is the reference; this must agree on every request, with the same refusal text. Three families (search, convert, validate) stay in Python: they lean on CPython's Unicode case folding, int parsing and urlsplit. JSON cannot tell 1 from 1.0 here: an integral number is an int, so a float written 1.0 reads as 1. */\n" + _SHA_JS + _TEXT_JS + _patterns_js_constants() + _screens_core_js() + r"""export class PatternError extends Error{}
 const need=(c,m)=>{if(!c)throw new PatternError(m)};
 const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
 const isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
@@ -11044,7 +13682,8 @@ const runCollection=r=>{
  need(isObj(r)&&typeof r.mode==="string","mode required");const commands=has(r,"commands")?r.commands:[];
  need(Array.isArray(commands)&&commands.length<=1000&&commands.every(c=>Array.isArray(c)&&(c.length===1||c.length===2)&&c.every(p=>typeof p==="string")),"commands must be [command] or [command, item]");
  let state=patternCollectionInitial(r.mode);for(const c of commands)state=patternCollectionStep(state,...c);return patternCollectionRender(state)};
-export const PATTERN_RUNNERS={query:patternQuery,page:patternPage,score:patternScore,reduce:patternReduce,workflow:patternWorkflow,transform:patternTransform,select:patternSelect,order:runOrder,
+const viaScreens=(family,r)=>{try{return webUiScreensCore.screensRun(family,r)}catch(e){throw e instanceof webUiScreensCore.ScreenError?new PatternError(e.message):e}};
+export const PATTERN_RUNNERS={query:patternQuery,native:r=>viaScreens("native",r),screen:r=>viaScreens("screen",r),page:patternPage,score:patternScore,reduce:patternReduce,workflow:patternWorkflow,transform:patternTransform,select:patternSelect,order:runOrder,
  text:r=>patternText(isObj(r)?r.mode:null),window:runWindow,collection:runCollection,structure:r=>patternStructure(isObj(r)?r.mode:null),future:patternFuture,stream:patternStream,concurrency:patternConcurrency,event_loop:patternEventLoop,interaction:patternInteraction};
 const pyRepr=s=>s.includes("'")&&!s.includes('"')?'"'+s.replace(/\\/g,"\\\\")+'"':"'"+s.replace(/\\/g,"\\\\").replace(/'/g,"\\'")+"'";
 export function patternRun(family,request){
@@ -11099,12 +13738,23 @@ export function bindPatterns(root=document){return[...root.querySelectorAll("[da
  const search=()=>{found=patternFind(rows,q.value,cat.value,fam.value);shown=PAGE;draw()};
  q.addEventListener("input",search);cat.addEventListener("change",search);fam.addEventListener("change",search);more.addEventListener("click",()=>{shown+=PAGE;draw()});
  let runs=0;
+ const bridge=box.dataset.patternsBridge||"";
  const runFam=$("[data-patterns-run-family]"),req=$("[data-patterns-request]"),out=$("[data-patterns-result]"),status=$("[data-patterns-status]");
  const run=()=>{
   const family=runFam.value;let request;
   box.dataset.family=family;box.dataset.runs=String((Number(box.dataset.runs)||0)+1);
   try{request=JSON.parse(req.value)}catch{status.textContent="Not JSON.";out.textContent="";box.dataset.run="invalid";return}
   const example=PATTERN_EXAMPLES[family],pythonOnly=!PATTERN_TWINS.includes(family)||(family==="score"&&request!==null&&typeof request==="object"&&request.operation==="tfidf");
+  if(pythonOnly&&bridge){
+   box.dataset.engine="bridge";const ticket=++runs;out.textContent="";status.textContent="Asking Python…";box.dataset.run="running";
+   fetch(bridge+encodeURIComponent(family),{method:"POST",headers:{"Content-Type":"application/json"},body:req.value,cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer"})
+    .then(r=>r.text().then(text=>{let data=null,json=false;try{data=JSON.parse(text);json=true}catch{}return{code:r.status,data,json}}))
+    .then(({code,data,json})=>{if(ticket!==runs)return;
+     if(code===200&&json){out.textContent=pretty(data);status.textContent="Run by Python through the local bridge.";box.dataset.run="ok"}
+     else if(code===400&&data&&typeof data.error==="string"){out.textContent="";status.textContent="Refused: "+data.error;box.dataset.run="refused"}
+     else{out.textContent="";status.textContent="The bridge answered "+code+(data&&typeof data.error==="string"?": "+data.error:"")+".";box.dataset.run="error"}},
+     ()=>{if(ticket!==runs)return;out.textContent="";status.textContent="The Python bridge cannot be reached; start it with: python3 web_ui.py --pattern-serve";box.dataset.run="unreachable"});
+   return}
   if(pythonOnly){
    box.dataset.engine="python";
    if(pyJson(request)===pyJson(example.request)){out.textContent=pretty(example.result);status.textContent="Computed by Python when this page was made; this page does not run "+family+" itself.";box.dataset.run="ok"}
@@ -12550,6 +15200,7 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
             '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article>'
             '<article class="ui-card"><h2>792 patterns</h2><p><a href="./patterns.html">The flutter_navigation_basic catalogue and the processing behind it: filter, sort, page, validate, convert, workflow</a>.</p></article>'
+            '<article class="ui-card"><h2>198 screens</h2><p><a href="./screens.html">The Hub and every numbered screen of flutter_navigation_basic in eleven languages, and its native examples: counters, drag to reorder or swap, insert, select, a sum in a Web Worker</a>.</p></article>'
             '<article class="ui-card"><h2>Image studio</h2><p><a href="./image-studio.html">Layer shapes, text, photos and heatmaps; export SVG, PNG or Base64; keep the history</a>.</p></article></section>')
 
 
@@ -12590,6 +15241,7 @@ def example_pages() -> dict[str, str]:
         "examples/test-report.html": report_document(),
         "examples/mcp-lab.html": mcp_document(),
         "examples/patterns.html": patterns_document(),
+        "examples/screens.html": screens_document(),
         "examples/image-studio.html": imagestudio_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
@@ -13040,6 +15692,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
     parser.add_argument("--pattern", metavar="FAMILY", help="run one pattern reference on the JSON request in stdin and print its JSON result (see PATTERN_RUNNERS); `list` names the families, `catalogue` prints the 792 patterns")
     parser.add_argument("--url", metavar="URL", help="with --btk-adapter: the address of the page to check (default: the local example server)")
+    parser.add_argument("--pattern-serve", action="store_true", help="serve the patterns page and run every pattern reference over HTTP on 127.0.0.1 only (POST /pattern/FAMILY with JSON); stop with Ctrl-C")
+    parser.add_argument("--port", type=int, default=PATTERN_BRIDGE_PORT, metavar="N", help="with --pattern-serve: the port (default %(default)s; 0 picks a free one)")
+    parser.add_argument("--allow-origin", action="append", default=None, metavar="ORIGIN", help="with --pattern-serve: one more browser origin (scheme://host[:port], no wildcard) that may call the bridge; repeat for more")
     parser.add_argument("--site", type=Path, metavar="DIR",
                         help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
     parser.add_argument("--theme-wall", type=int, metavar="N",
@@ -13091,6 +15746,10 @@ def main(argv: list[str] | None = None) -> int:
     studio.add_argument("--force", action="store_true", help="with --output: replace an existing file")
     parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.pattern_serve:
+        return _bridge_main(parser, args)
+    if args.port != PATTERN_BRIDGE_PORT or args.allow_origin:
+        parser.error("--port and --allow-origin go with --pattern-serve")
     if args.studio_render or args.studio_heatmap or args.studio_base64:
         return _studio_main(parser, args)
     if args.junit or args.flutter_events or args.run_tests or args.expect_exit:

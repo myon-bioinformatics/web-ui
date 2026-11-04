@@ -5,6 +5,7 @@ on:
       - web_ui.py
       - 'tool/studio-audio/**'
       - tool/flutter_migration_inventory.py
+      - docs/flutter-migration-inventory.json
       - tests/test_successor_tools.py
       - tests/integration/successor_browser.py
       - .github/workflows/successor-studios.yml

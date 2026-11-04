@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -3510,6 +3511,7 @@ class McpBrowserTests(unittest.TestCase):
 
 
 PATTERN_GOLDEN = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_golden.json').read_text(encoding='utf-8'))
+SCREENS_FIXTURE = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'screens_asset.json').read_text(encoding='utf-8'))['screens']
 PATTERN_ASSETS = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_assets.json').read_text(encoding='utf-8'))
 
 
@@ -3755,10 +3757,110 @@ def pat_js_request(family, r):
     return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
 
 
+PAT_SCREEN_TEXTS = ['', 'a', 'Screen 5', 'screen5', ' 7 ', 'Transformed Result List', 'ナビ', 'ＡＢＣ', 'İ', 'ǅ', '\u00a0x\u00a0', '\u3000検索\u3000', 'ß', 'A', 'api', 'NAVIGATION', 'drawer', '🍎',
+                    'é', '\ufeffscreen', '\u200bx', 'x' * 40, 'Drawer', 'ui', 'Data', 'form', '15', 'LIST', '\t\n x \r', '\u0085y\u0085', 'ΑΣ']
+PAT_SCREEN_LOCALES = ['eng', 'jpn', 'fra', 'spa', 'por', 'ara', 'zho', 'rus', 'ind', 'deu', 'swa', 'en', 'ja', 'in', ' JPN ', 'ENG', 'zz', 'ja-JP', '', None, 5, True, ['eng'], 'ＪＰＮ', '\u3000ara\u3000']
+PAT_SCREEN_ARGS = ['n', 'title', 'v', 'screenDataId', 'value', 'query', 'route', 'x', '', 'urlParamCaseId', 'example']
+
+
+def pat_screen_events(r, screen, count):
+    """Events for a screen: mostly the ones its template has, some it does not, some malformed."""
+    import web_ui
+    row = web_ui.screen_row(screen)
+    template = web_ui.screen_template(screen, row['templateOverride'])
+    own = {'tab': {'type': 'tab', 'tab': r.choice(['usecase', 'ui', 'x'])}, 'input': {'type': 'input', 'value': r.choice(PAT_SCREEN_TEXTS)}, 'clear': {'type': 'clear'}, 'submit': {'type': 'submit'},
+           'select': {'type': 'select', 'index': r.choice([0, 1, 2, 3, -1])}, 'open': {'type': 'open'}, 'close': {'type': 'close'}, 'start': {'type': 'start'}, 'tick': {'type': 'tick', 'ms': r.choice([0, 100, 250, 499, 500, 501, 60000, 60001, -1])},
+           'toggle': {'type': 'toggle', 'value': r.choice([True, False, 1, None])}}
+    useful = [kind for kind in own if kind in {'input', 'tab', 'clear'} or kind == {'form': 'submit', 'tabs': 'select', 'bottomNavigation': 'select', 'dialog': 'open', 'asyncState': 'start', 'settings': 'toggle'}.get(template)]
+    useful += {'dialog': ['close'], 'asyncState': ['tick', 'tick']}.get(template, [])
+    events = []
+    for _ in range(count):
+        c = r.random()
+        if c < 0.75 and useful:
+            events.append(dict(own[r.choice(useful)]))
+        elif c < 0.9:
+            events.append(dict(own[r.choice(list(own))]))
+        else:
+            events.append(r.choice([{'type': 'zoom'}, {'type': 5}, {}, [], 'tab', None, {'type': 'input', 'value': 5}, {'type': 'submit', 'extra': 1}, {'type': 'tick', 'ms': 'x'}, {'type': 'constructor'}, {'type': '__proto__'}]))
+    return events
+
+
+def pat_screen_request(r):
+    import web_ui
+    op = r.choice(['view', 'view', 'view', 'hub', 'search', 'text', 'route', 'links', 'bogus'])
+    screen = r.choice([r.randint(1, 198), r.randint(1, 198), r.choice([6, 5, 91, 99, 103, 110, 136, 171, 198]), r.choice([0, 199, -1, 'a', None, True, 3.5])])
+    request = {'operation': op}
+    if op == 'view':
+        request.update(screen=screen, locale=r.choice(PAT_SCREEN_LOCALES), events=pat_screen_events(r, screen, r.randint(0, 9)) if isinstance(screen, int) and 1 <= screen <= 198 and screen is not True else [])
+        if screen == 6 and r.random() < 0.7:
+            request['events'] = [{'type': 'input', 'value': r.choice(PAT_SCREEN_TEXTS)}] + ([{'type': 'clear'}] if r.random() < 0.3 else [])
+        if r.random() < 0.15:
+            del request['locale']
+    elif op == 'hub':
+        request.update(locale=r.choice(PAT_SCREEN_LOCALES), query=r.choice(PAT_SCREEN_TEXTS + [5, None]), mode=r.choice(['list', 'grid', 'grid', 'x', None]))
+        for key in r.sample(['locale', 'query', 'mode'], r.randint(0, 2)):
+            del request[key]
+    elif op == 'search':
+        request['query'] = r.choice(PAT_SCREEN_TEXTS + [5, None])
+    elif op == 'text':
+        keys = list(web_ui.SCREEN_TEXT_KEYS) + ['constructor', '__proto__', 'toString', '', 'nope', 5]
+        request.update(key=r.choice(keys), locale=r.choice(PAT_SCREEN_LOCALES), arguments=[[r.choice(PAT_SCREEN_ARGS), r.choice([None, 'v', 5, -5, 0, 2 ** 53, -2 ** 53, '{n}', True, 0.5, [1]])] for _ in range(r.randint(0, 4))])
+        if r.random() < 0.15:
+            request['arguments'] = r.choice([[['n']], [5], 'n', [['n', 1, 2]], [[5, 1]], [['n', 1]] * 21])
+    elif op == 'route':
+        request['screen'] = screen
+    elif op == 'links':
+        request.update(screen=r.choice([r.randint(91, 99), r.choice([103, 104, 105, 107, 109, 110]), screen]), locale=r.choice(PAT_SCREEN_LOCALES))
+    if r.random() < 0.12:
+        request[r.choice(['x', 'extra', 'events'])] = r.choice([1, 'a', [], None])
+    return request
+
+
+def pat_native_request(r):
+    import web_ui
+    number = r.choice(web_ui.NATIVE_NUMBERS) if r.random() < 0.93 else r.choice([0, 1, 150, 164, 176, 5, 'a', None, True, 171.5])
+    if number in (136, 137):
+        values = r.choice([[1, 2, 3, 4, 5], [], [0], [-3, 4], [r.randint(-50, 50) for _ in range(r.randint(0, 8))], [94906265], [94906266], [94906265, 1], [0.5], [True], ['1'], None, 'x', [1] * 4097, [3] * 5000])
+        request = {'pattern': number}
+        if values is not None:
+            request['values'] = values
+        if r.random() < 0.6:
+            request['engine'] = r.choice(['worker', 'fallback', 'fallback', 'x', None, 5])
+        return request
+    if number in web_ui.NATIVE_STATE:
+        kind = web_ui.NATIVE_STATE[number][0]
+        pool = ['left', 'right'] if kind in ('scope', 'model', 'atom') else ['increment', 'reset']
+        actions = [r.choice(pool) if r.random() < 0.97 else r.choice(['increment', 'left', 'reset', 'x', '', 5, None, {'type': 'insert'}, ['increment']]) for _ in range(r.randint(0, 9))]
+    elif number in web_ui.NATIVE_INTERACTIVE:
+        names = ['A', 'B', 'C', 'A', 'B', 'C', 'N1', 'N2', 'N3', 'Z', '']
+        index = lambda: r.randint(0, 3) if r.random() < 0.88 else r.choice([4, -1, 5, 0.5, 'a', None])
+        makers = {'reorder': lambda: {'type': 'reorder', 'old': index(), 'new': index()}, 'swap': lambda: {'type': 'swap', 'a': r.choice(names + [5]), 'b': r.choice(names + [None])},
+                  'insert': lambda: {'type': 'insert'}, 'remove': lambda: {'type': 'remove'}, 'select': lambda: {'type': 'select', 'item': r.choice(names), 'value': r.choice([True, False, False, 1, None])},
+                  'delete_selected': lambda: {'type': 'delete_selected'}}
+        own = {171: ['reorder'], 172: ['reorder'], 184: ['reorder'], 173: ['swap'], 174: ['insert'], 175: ['remove'], 183: ['select', 'select', 'delete_selected']}[number]
+        actions = []
+        for _ in range(r.randint(0, 9)):
+            c = r.random()
+            action = makers[r.choice(own)]() if c < 0.94 else makers[r.choice(list(makers))]() if c < 0.98 else r.choice([{}, {'type': 5}, 'insert', [], {'type': 'insert', 'x': 1}, {'type': 'reorder', 'old': 0}])
+            actions.append(action)
+    else:
+        actions = []
+    request = {'pattern': number, 'actions': actions}
+    if r.random() < 0.08:
+        request['x'] = 1
+    if r.random() < 0.05:
+        request['actions'] = r.choice([None, 'a', {}, [None] * 1001])
+    return request
+
+
 def pat_request(family, r):
     """A seeded request for ``family``: mostly well formed, some broken, none that JSON in a page would read differently from Python (no 1.0, no huge ints)."""
     if family in PAT_ASYNC or family == 'interaction':
         return pat_js_request(family, r)
+    if family == 'screen':
+        return pat_screen_request(r)
+    if family == 'native':
+        return pat_native_request(r)
     if family == 'query':
         op = r.choice(['stable_sort', 'custom_sort', 'group_by', 'facet', 'tag', 'range', 'geo', 'bogus'])
         n = r.randint(0, 6)
@@ -3931,7 +4033,7 @@ class PatternBrowserTests(unittest.TestCase):
     """The patterns page in a real browser: its twins give Python's answer to every request (the recorded original outputs, and seeded random requests, including the refusals and their
     text), the catalogue and its search agree, and the page works."""
 
-    FAMILIES = ('collection', 'interaction', 'order', 'page', 'query', 'reduce', 'score', 'select', 'structure', 'text', 'transform', 'window', 'workflow')
+    FAMILIES = ('collection', 'interaction', 'native', 'order', 'page', 'query', 'reduce', 'score', 'screen', 'select', 'structure', 'text', 'transform', 'window', 'workflow')
 
     def setUp(self):
         from web_ui import patterns_document
@@ -4037,7 +4139,7 @@ class PatternBrowserTests(unittest.TestCase):
                 python = self.python_outcome(name, request)
                 ok += 'ok' in python
                 self.same(name, request, python, outcome)
-            minimum = {'structure': 400, 'text': 400}.get(family, 120)
+            minimum = {'structure': 400, 'text': 400, 'native': 500, 'screen': 400}.get(family, 120)
             self.assertGreaterEqual(ok, minimum, (family, 'answers'))
             self.assertGreaterEqual(len(jobs) - ok, 20 if family not in ('structure', 'text') else 40, (family, 'refusals'))
 
@@ -4414,6 +4516,809 @@ def studio_damage(r, scene):
     else:
         layers.append(layers[0])
     return scene
+
+
+def bridge_mutate(rng, value, depth=0):
+    """A seeded random change of a JSON request: numbers, strings, flags, list members and keys; what the family then says (an answer or a refusal) is Python's to decide."""
+    kind = rng.random()
+    if isinstance(value, bool):
+        return (not value) if kind < 0.3 else value
+    if isinstance(value, (int, float)):
+        return rng.choice([0, 1, -1, 2, 7, 100, 0.5, -2.5, 1e21, 2 ** 53, 2 ** 60, value, value, value]) if kind < 0.5 else value
+    if isinstance(value, str):
+        return rng.choice(['', 'a', 'É', 'ｱｲｳ', '😀', ' x ', 'abc', '{x}', '1', value, value, value]) if kind < 0.5 else value
+    if isinstance(value, list):
+        items = [bridge_mutate(rng, item, depth + 1) for item in value]
+        if items and kind < 0.15:
+            items.pop(rng.randrange(len(items)))
+        elif items and kind < 0.3:
+            items.append(items[rng.randrange(len(items))])
+        elif kind < 0.35:
+            items.append(rng.choice([None, 1, 'x', [], {}]))
+        return items
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if kind < 0.1 and rng.random() < 0.3:
+                continue
+            out[key] = bridge_mutate(rng, item, depth + 1)
+        if kind > 0.95:
+            out['extra'] = 1
+        return out
+    return value
+
+
+def bridge_expected(family, text):
+    """What Python says to the request text, the way a page shows it: ``("ok", value)`` or ``("refused", message)``; numbers past 2**53 are doubles, as in the page."""
+    import web_ui
+    try:
+        answer = web_ui.pattern_run(family, web_ui.pattern_parse(text))
+        return 'ok', json.loads(json.dumps(answer, ensure_ascii=False, allow_nan=False), parse_int=lambda s: int(s) if abs(int(s)) <= 2 ** 53 else float(s))
+    except ValueError as error:
+        return 'refused', str(error)
+
+
+class PatternBridgeBrowserTests(unittest.TestCase):
+    """``web_ui.py --pattern-serve`` in a real browser: the patterns page it serves runs the families that stay in Python through the bridge and shows exactly Python's answer; the bridge
+    does not answer a page of another origin, a form post, a rebinding host or a request that is not JSON."""
+
+    def setUp(self):
+        import web_ui
+        self.web_ui = web_ui
+        self.bridges = []
+        self.server = self.start_bridge()
+        self.port = self.server.server_address[1]
+        self.origin = f'http://127.0.0.1:{self.port}'
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external, self.posts = [], [], []
+
+    def start_bridge(self, allow=()):
+        server = self.web_ui.pattern_bridge(0, allow)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.bridges.append(server)
+        return server
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        for server in self.bridges:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self, url=None, context=None):
+        page = (context or self.context).new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.posts.append((request.method, request.url)) if request.method == 'POST' else None)
+        own = (self.origin + '/', f'http://localhost:{self.port}/')
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(own) else None)
+        page.goto(url or self.origin + '/')
+        page.wait_for_selector('[data-patterns-ready]')
+        self.settled(page)
+        return page
+
+    @staticmethod
+    def settled(page, runs=None):
+        page.wait_for_function('([n]) => { const d = document.querySelector("#patterns").dataset; return d.run !== "running" && (n === null || Number(d.runs) === n) }', arg=[runs])
+
+    def send(self, page, family, text):
+        """Choose the family, put the request text in the box and run it; the box's own example run (made by choosing the family) is finished first."""
+        if page.input_value('[data-patterns-run-family]') != family:
+            page.select_option('[data-patterns-run-family]', family)
+            self.settled(page)
+        page.fill('[data-patterns-request]', text)
+        runs = int(page.get_attribute('#patterns', 'data-runs')) + 1
+        page.click('[data-patterns-run]')
+        self.settled(page, runs)
+        return page.get_attribute('#patterns', 'data-run'), page.get_attribute('#patterns', 'data-engine'), page.text_content('[data-patterns-status]'), page.text_content('[data-patterns-result]')
+
+    def test_the_families_that_stay_in_python_run_there_and_show_its_answer(self):
+        web_ui = self.web_ui
+        page = self.page()
+        self.assertEqual(page.get_attribute('#patterns', 'data-patterns-bridge'), '/pattern/')
+        self.assertIn('run in Python through the local bridge', page.text_content('[data-patterns-bridge-note]'))
+        stays = sorted(set(web_ui.PATTERN_RUNNERS) - set(web_ui.PATTERN_TWINS))
+        self.assertEqual(stays, ['contract', 'convert', 'search', 'validate'])
+        for family in stays + ['score']:
+            example = web_ui.PATTERN_EXAMPLES[family] if family != 'score' else {'operation': 'tfidf', 'documents': ['a b', 'b c']}
+            before = len(self.posts)
+            outcome, engine, status, result = self.send(page, family, json.dumps(example))
+            self.assertEqual((outcome, engine, status), ('ok', 'bridge' if family in stays or family == 'score' else 'browser', 'Run by Python through the local bridge.'), family)
+            kind, expected = bridge_expected(family, json.dumps(example))
+            self.assertEqual((kind, pat_canon(json.loads(result))), ('ok', pat_canon(expected)), family)
+            self.assertGreaterEqual(len(self.posts) - before, 1, family)
+            self.assertTrue(all(url == self.origin + '/pattern/' + family for method, url in self.posts[before:]), self.posts[before:])
+
+    def test_twins_still_run_in_the_page_and_ask_nobody(self):
+        web_ui = self.web_ui
+        page = self.page()
+        before = len(self.posts)
+        for family in ('query', 'page', 'screen', 'native', 'select'):
+            outcome, engine, status, result = self.send(page, family, json.dumps(web_ui.PATTERN_EXAMPLES[family]))
+            self.assertEqual((outcome, engine, status), ('ok', 'browser', 'Run in this page.'), family)
+        self.assertEqual(len(self.posts), before, 'a family the page runs itself is not sent anywhere')
+        # score is a twin except for tf-idf, which goes to Python
+        outcome, engine, status, result = self.send(page, 'score', '{"operation": "minheap", "values": [3, 1, 2], "pops": 1}')
+        self.assertEqual((outcome, engine), ('ok', 'browser'))
+        self.assertEqual(len(self.posts), before)
+        outcome, engine, status, result = self.send(page, 'score', '{"operation": "tfidf", "documents": ["a b", "b c"]}')
+        self.assertEqual((outcome, engine), ('ok', 'bridge'))
+        self.assertEqual(len(self.posts), before + 1)
+
+    def test_random_requests_get_the_answer_or_the_refusal_python_gives(self):
+        web_ui = self.web_ui
+        rng = random.Random('bridge-page')
+        page = self.page()
+        bases = {family: web_ui.PATTERN_EXAMPLES[family] for family in ('contract', 'convert', 'search', 'validate')}
+        bases['score'] = {'operation': 'tfidf', 'documents': ['the cat', 'the dog sat'], 'query': 'cat'}
+        seen = {'ok': 0, 'refused': 0}
+        for _ in range(25):
+            for family, base in bases.items():
+                text = json.dumps(bridge_mutate(rng, base), ensure_ascii=rng.random() < 0.5)
+                kind, expected = bridge_expected(family, text)
+                outcome, engine, status, result = self.send(page, family, text)
+                seen[kind] += 1
+                if kind == 'ok':
+                    self.assertEqual((outcome, engine, pat_canon(json.loads(result))), ('ok', 'bridge', pat_canon(expected)), (family, text))
+                elif family == 'score' and 'tfidf' not in text:
+                    continue
+                else:
+                    self.assertEqual((outcome, engine, status, result), ('refused', 'bridge', 'Refused: ' + expected, ''), (family, text))
+        self.assertGreaterEqual(min(seen.values()), 20, seen)
+
+    def test_a_request_that_is_not_json_is_not_sent_and_a_big_one_is_told_why(self):
+        page = self.page()
+        page.select_option('[data-patterns-run-family]', 'search')
+        self.settled(page)
+        before = len(self.posts)
+        outcome, engine, status, result = self.send(page, 'search', '{"operation": ')
+        self.assertEqual((outcome, status), ('invalid', 'Not JSON.'))
+        self.assertEqual(len(self.posts), before)
+        big = json.dumps({'operation': 'stem', 'text': 'a' * 70000})
+        outcome, engine, status, result = self.send(page, 'search', big)
+        self.assertEqual((outcome, status), ('error', 'The bridge answered 413: request is larger than 65536 bytes.'))
+        outcome, engine, status, result = self.send(page, 'search', json.dumps({'operation': 'stem', 'text': 'walking ' * 5000}))
+        self.assertEqual(outcome, 'ok', 'a request of 40 KB is run')
+
+    def test_without_the_bridge_the_page_says_how_to_start_it(self):
+        page = self.page()
+        page.select_option('[data-patterns-run-family]', 'search')
+        self.settled(page)
+        self.bridges[0].shutdown()
+        self.bridges[0].server_close()
+        outcome, engine, status, result = self.send(page, 'search', json.dumps(self.web_ui.PATTERN_EXAMPLES['search']))
+        self.assertEqual((outcome, engine, result), ('unreachable', 'bridge', ''))
+        self.assertEqual(status, 'The Python bridge cannot be reached; start it with: python3 web_ui.py --pattern-serve')
+        outcome, engine, status, result = self.send(page, 'query', json.dumps(self.web_ui.PATTERN_EXAMPLES['query']))
+        self.assertEqual((outcome, engine), ('ok', 'browser'), 'the page still runs what it can run itself')
+
+    def test_a_later_answer_does_not_overwrite_a_newer_request(self):
+        page = self.page()
+        slow = threading.Event()
+        original = self.web_ui.pattern_run
+
+        def held(family, request):
+            if family == 'search' and isinstance(request, dict) and request.get('operation') == 'stem' and request.get('text') == 'slow':
+                slow.wait(10)
+            return original(family, request)
+        with mock.patch.object(self.web_ui, 'pattern_run', held):
+            page.select_option('[data-patterns-run-family]', 'search')
+            self.settled(page)
+            page.fill('[data-patterns-request]', json.dumps({'operation': 'stem', 'text': 'slow'}))
+            page.click('[data-patterns-run]')
+            self.assertEqual(page.get_attribute('#patterns', 'data-run'), 'running')
+            page.fill('[data-patterns-request]', json.dumps({'operation': 'stem', 'text': 'walking'}))
+            page.click('[data-patterns-run]')
+            page.wait_for_function('document.querySelector("#patterns").dataset.run === "ok"')
+            fast = page.text_content('[data-patterns-result]')
+            slow.set()
+            page.wait_for_timeout(500)
+            self.assertEqual(page.text_content('[data-patterns-result]'), fast, 'the first, slower answer arrived last and was dropped')
+            self.assertIn('walk', fast)
+
+    def test_the_request_is_sent_as_typed_not_as_the_page_reads_it(self):
+        """JSON.parse reads 1e999 as Infinity and JSON.stringify would write it null; Python refuses the number, and the page must show that, not an answer to another request."""
+        page = self.page()
+        for text in ('{"operation": "stem", "text": "walking", "n": 1e999}', '[1e999]', '{"operation": "stem", "text": "walking", "n": -1e999}'):
+            kind, expected = bridge_expected('search', text)
+            self.assertEqual(kind, 'refused', text)
+            outcome, engine, status, result = self.send(page, 'search', text)
+            self.assertEqual((outcome, engine, status, result), ('refused', 'bridge', 'Refused: ' + expected, ''), text)
+        self.assertEqual(expected, 'JSON number out of range')
+
+    def test_the_request_carries_neither_cookies_nor_a_referrer(self):
+        self.context.add_cookies([{'name': 'session', 'value': 'secret', 'url': self.origin}])
+        sent = []
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('requestfinished', lambda request: sent.append(request) if request.method == 'POST' else None)
+        page.goto(self.origin + '/')
+        page.wait_for_selector('[data-patterns-ready]')
+        self.settled(page)
+        outcome, engine, status, result = self.send(page, 'search', json.dumps(self.web_ui.PATTERN_EXAMPLES['search']))
+        self.assertEqual((outcome, engine), ('ok', 'bridge'))
+        self.assertGreaterEqual(len(sent), 1)
+        for request in sent:
+            headers = {name.lower(): value for name, value in request.all_headers().items()}
+            self.assertNotIn('cookie', headers)
+            self.assertNotIn('referer', headers)
+            self.assertEqual(headers['content-type'], 'application/json')
+
+    def test_an_answer_that_is_null_is_an_answer_and_a_200_that_is_not_json_is_not(self):
+        page = self.page()
+        page.select_option('[data-patterns-run-family]', 'search')
+        self.settled(page)
+        with mock.patch.object(self.web_ui, 'pattern_run', return_value=None):
+            outcome, engine, status, result = self.send(page, 'search', '{"operation": "stem", "text": "walking"}')
+        self.assertEqual((outcome, engine, status, result), ('ok', 'bridge', 'Run by Python through the local bridge.', 'null'))
+        page.route('**/pattern/search', lambda route: route.fulfill(status=200, content_type='text/html', body='<html>not the bridge</html>'))
+        outcome, engine, status, result = self.send(page, 'search', '{"operation": "stem", "text": "walking"}')
+        self.assertEqual((outcome, status, result), ('error', 'The bridge answered 200.', ''))
+        page.unroute('**/pattern/search')
+
+    def test_a_late_failure_does_not_overwrite_a_newer_answer(self):
+        page = self.page()
+        page.select_option('[data-patterns-run-family]', 'search')
+        self.settled(page)
+        held = []
+
+        def route(r):
+            if not held:
+                held.append(r)
+            else:
+                r.continue_()
+        page.route('**/pattern/search', route)
+        page.fill('[data-patterns-request]', json.dumps({'operation': 'stem', 'text': 'first'}))
+        page.click('[data-patterns-run]')
+        page.wait_for_function('document.querySelector("#patterns").dataset.run === "running"')
+        page.wait_for_function('([n]) => Number(document.querySelector("#patterns").dataset.runs) === n', arg=[int(page.get_attribute('#patterns', 'data-runs'))])
+        deadline = 100
+        while not held and deadline:
+            page.wait_for_timeout(50)
+            deadline -= 1
+        self.assertEqual(len(held), 1)
+        page.fill('[data-patterns-request]', json.dumps({'operation': 'stem', 'text': 'walking'}))
+        page.click('[data-patterns-run]')
+        page.wait_for_function('document.querySelector("#patterns").dataset.run === "ok"')
+        newer = page.text_content('[data-patterns-result]')
+        held[0].abort()
+        page.wait_for_timeout(500)
+        self.assertEqual((page.get_attribute('#patterns', 'data-run'), page.text_content('[data-patterns-result]'), page.text_content('[data-patterns-status]')), ('ok', newer, 'Run by Python through the local bridge.'))
+        page.unroute('**/pattern/search')
+
+    def other_origin(self, allow=()):
+        """A second server, on another port: a page there is another origin as far as the browser is concerned."""
+        server, origin = WorldBrowserTests.serve({'other.html': '<!doctype html><title>other</title><body>other</body>'})
+        self.addCleanup(server.shutdown)
+        return origin
+
+    def foreign_fetch(self, page, url, **options):
+        return page.evaluate('async ([url, options]) => { try { const r = await fetch(url, options); return {status: r.status, text: await r.text()} } catch (e) { return {error: e.name} } }', [url, options])
+
+    def test_a_page_of_another_origin_cannot_run_anything(self):
+        calls = []
+        original = self.web_ui.pattern_run
+        with mock.patch.object(self.web_ui, 'pattern_run', lambda *a: (calls.append(a), original(*a))[1]):
+            origin = self.other_origin()
+            page = self.context.new_page()
+            page.goto(origin + '/other.html')
+            url = self.origin + '/pattern/search'
+            body = json.dumps(self.web_ui.PATTERN_EXAMPLES['search'])
+            json_post = self.foreign_fetch(page, url, method='POST', headers={'Content-Type': 'application/json'}, body=body)
+            self.assertEqual(json_post, {'error': 'TypeError'}, 'the preflight is refused, so the request is never sent')
+            simple = self.foreign_fetch(page, url, method='POST', mode='no-cors', headers={'Content-Type': 'text/plain'}, body=body)
+            self.assertIn(simple.get('status', 0), (0,), 'a "simple" request gets an opaque answer, if any')
+            read = self.foreign_fetch(page, self.origin + '/pattern/', method='GET')
+            self.assertEqual(read, {'error': 'TypeError'}, 'nor can it read the family list')
+            page.evaluate('([url, body]) => { const f = document.createElement("form"); f.method = "post"; f.action = url; f.enctype = "text/plain"; f.target = "sink"; const i = document.createElement("input"); i.name = body; i.value = ""; f.append(i); const w = document.createElement("iframe"); w.name = "sink"; document.body.append(w, f); f.submit() }', [url, body])
+            page.wait_for_timeout(500)
+            self.assertEqual(calls, [], 'no reference was run for any of them')
+            self.assertEqual(self.posts, [])
+
+    def test_a_page_of_an_origin_that_was_asked_for_may_call_it(self):
+        origin = self.other_origin()
+        server = self.start_bridge([origin])
+        url = f'http://127.0.0.1:{server.server_address[1]}/pattern/search'
+        page = self.context.new_page()
+        page.goto(origin + '/other.html')
+        body = json.dumps(self.web_ui.PATTERN_EXAMPLES['search'])
+        allowed = self.foreign_fetch(page, url, method='POST', headers={'Content-Type': 'application/json'}, body=body)
+        self.assertEqual((allowed['status'], pat_canon(json.loads(allowed['text']))), (200, pat_canon(self.web_ui.pattern_run('search', self.web_ui.PATTERN_EXAMPLES['search']))))
+        self.assertEqual(self.foreign_fetch(page, self.origin + '/pattern/search', method='POST', headers={'Content-Type': 'application/json'}, body=body), {'error': 'TypeError'},
+                         'the first bridge was not told about this origin')
+
+    def test_a_host_that_is_not_the_bound_address_is_refused_even_when_it_resolves_to_it(self):
+        if os.environ.get('WEBUI_BROWSER', 'chromium') != 'chromium':
+            self.skipTest('the name is mapped to loopback with a Chromium flag; Python tests send every other Host header')
+        browser = self.playwright.chromium.launch(args=['--host-resolver-rules=MAP rebind.test 127.0.0.1'])
+        try:
+            context = browser.new_context()
+            page = context.new_page()
+            response = page.goto(f'http://rebind.test:{self.port}/')
+            self.assertEqual((response.status, json.loads(page.text_content('body'))), (403, {'error': 'origin not allowed'}))
+            result = page.evaluate('async port => { try { const r = await fetch("http://rebind.test:" + port + "/pattern/"); return r.status } catch (e) { return e.name } }', self.port)
+            self.assertEqual(result, 403)
+        finally:
+            browser.close()
+
+    def test_localhost_is_the_same_loopback_origin_as_127_0_0_1(self):
+        page = self.page(f'http://localhost:{self.port}/')
+        outcome, engine, status, result = self.send(page, 'search', json.dumps(self.web_ui.PATTERN_EXAMPLES['search']))
+        self.assertEqual((outcome, engine), ('ok', 'bridge'))
+
+    def test_the_page_lists_the_families_the_bridge_knows(self):
+        page = self.page()
+        options = page.eval_on_selector_all('[data-patterns-run-family] option', 'els => els.map(e => e.value)')
+        answer = self.foreign_fetch(page, self.origin + '/pattern/', method='GET')
+        self.assertEqual((answer['status'], json.loads(answer['text'])['families']), (200, options))
+
+
+class ScreensBrowserTests(unittest.TestCase):
+    """The screens page in a real browser: the Hub, every kind of screen in several languages, the native examples (a Web Worker, real mouse drags with a long press) and a phone-sized
+    layout. What the page shows is what Python's `screen_*` and `native_*` say; the requests themselves are checked against Python in PatternBrowserTests."""
+
+    def setUp(self):
+        from web_ui import screens_document
+        self.server, self.origin = WorldBrowserTests.serve({'screens.html': screens_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self, hash_='', init=None, context=None):
+        page = (context or self.context).new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('console', lambda message: self.errors.append(message.text) if message.type == 'error' else None)
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        if init:
+            page.add_init_script(init)
+        page.goto(self.origin + '/screens.html' + hash_)
+        page.wait_for_selector('[data-screens_ready]')
+        return page
+
+    def route(self, page, number, locale=None):
+        if locale is not None:
+            page.select_option('[data-screens-locale]', locale)
+        page.evaluate('n => { location.hash = "screen" + n }', number)
+        page.wait_for_function('n => document.querySelector("#screens").dataset.route === String(n)', arg=number)
+
+    def test_the_hub_lists_searches_and_switches_between_list_and_grid(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual((page.text_content('[data-screens-count]'), page.get_attribute('#screens', 'data-count'), page.get_attribute('#screens', 'data-mode')), ('198 / 198', '198', 'grid'))
+        self.assertEqual(page.eval_on_selector_all('[data-screens-items] a', 'els => els.map(e => e.getAttribute("href"))')[:3], ['#screen1', '#screen2', '#screen3'])
+        self.assertEqual(page.text_content('[data-screens-title]'), web_ui.screen_text('eng', 'hub.title'))
+        page.click('[data-screens-mode="list"]')
+        self.assertEqual((page.get_attribute('#screens', 'data-mode'), page.get_attribute('[data-screens-mode="list"]', 'aria-pressed'), page.get_attribute('[data-screens-items]', 'data-mode')), ('list', 'true', 'list'))
+        page.fill('[data-screens-query]', 'Transformed Result List')
+        self.assertEqual((page.text_content('[data-screens-count]'), page.get_attribute('#screens', 'data-count')), ('1 / 198', '1'))
+        page.click('[data-screens-mode="grid"]')
+        self.assertEqual(page.input_value('[data-screens-query]'), 'Transformed Result List', 'the search survives a change of view')
+        page.fill('[data-screens-query]', 'このような画面はありません')
+        self.assertEqual((page.text_content('[data-screens-empty]'), page.is_visible('[data-screens-empty]')), (web_ui.screen_text('eng', 'hub.empty'), True))
+        page.click('[data-screens-clear]')
+        self.assertEqual((page.input_value('[data-screens-query]'), page.text_content('[data-screens-count]'), page.is_hidden('[data-screens-clear]')), ('', '198 / 198', True))
+        page.fill('[data-screens-query]', '  SCREEN198 ')
+        page.click('[data-screens-items] a')
+        page.wait_for_function('document.querySelector("#screens").dataset.route === "198"')
+        self.assertTrue(page.url.endswith('#screen198'))
+        page.click('[data-screens-back]')
+        page.wait_for_function('document.querySelector("#screens").dataset.route === ""')
+        self.assertEqual(page.text_content('[data-screens-title]'), web_ui.screen_text('eng', 'hub.title'))
+        self.assertEqual({page.get_attribute(f'a[href="./{name}.html"]', 'href') for name in ('mcp-lab', 'api-stub', 'index')}, {'./mcp-lab.html', './api-stub.html', './index.html'})
+
+    def test_the_hub_speaks_every_language_and_arabic_runs_right_to_left(self):
+        import web_ui
+        page = self.page()
+        for locale in web_ui.SCREEN_LOCALES:
+            page.select_option('[data-screens-locale]', locale)
+            hub = web_ui.screen_hub(locale)
+            self.assertEqual((page.text_content('[data-screens-title]'), page.get_attribute('[data-screens-stage]', 'lang'), page.get_attribute('[data-screens-stage]', 'dir')), (hub['title'], hub['lang'], hub['dir']), locale)
+            self.assertEqual(page.get_attribute('[data-screens-query]', 'placeholder'), hub['hint'], locale)
+            self.assertEqual(page.get_attribute('[data-screens-mode="list"]', 'title') or page.text_content('[data-screens-mode="list"]'), hub['tooltips']['list'], locale)
+        page.select_option('[data-screens-locale]', 'swa')
+        self.assertEqual(page.get_attribute('[data-screens-stage]', 'dir'), 'ltr')
+        page.select_option('[data-screens-locale]', 'ara')
+        self.assertEqual((page.get_attribute('[data-screens-stage]', 'dir'), page.evaluate('getComputedStyle(document.querySelector("[data-screens-stage]")).direction')), ('rtl', 'rtl'))
+
+    def test_screens_show_what_python_says_in_random_languages(self):
+        import web_ui
+        rng = random.Random('screens-page')
+        page = self.page()
+        generic = [n for n in range(1, 199) if web_ui.screen_route(n)['kind'] == 'generic']
+        for _ in range(40):
+            number, locale = rng.choice(generic), rng.choice(web_ui.SCREEN_LOCALES)
+            self.route(page, number, locale)
+            view = web_ui.screen_view(number, locale)
+            self.assertEqual(page.text_content('[data-screens-title]'), view['title'], (number, locale))
+            self.assertEqual(page.eval_on_selector('.ui-screens-headline', 'e => e.textContent'), view['headline'], (number, locale))
+            self.assertEqual(page.text_content('[data-screens-back]'), '← ' + view['back'], (number, locale))
+            self.assertEqual((page.get_attribute('[data-screens-stage]', 'lang'), page.get_attribute('[data-screens-stage]', 'dir')), (view['lang'], view['dir']))
+            self.assertEqual(page.eval_on_selector_all('[data-screens-tabs="ctab"] [data-tab]', 'els => els.map(e => e.textContent)'), [tab['label'] for tab in view['tabs']] if view['tabs'] else [], (number, locale))
+            if view['body']['template'] == 'tabs':
+                self.assertEqual(page.eval_on_selector_all('[data-template="tabs"] [role="tab"]', 'els => els.map(e => e.textContent)'), view['body']['tabs'], (number, locale))
+            chips = view['chips'] or (view['useCase'] or {}).get('chips') or []
+            self.assertEqual(page.eval_on_selector_all('.ui-screens-chips > li', 'els => els.map(e => e.textContent)'), [f"{c['avatar']} {c['text']}" for c in chips], (number, locale))
+        self.route(page, 3, 'jpn')
+        view = web_ui.screen_view(3, 'jpn')
+        self.assertEqual(page.eval_on_selector_all('.ui-screens-chips > li', 'els => els.map(e => e.textContent)'), [f"{c['avatar']} {c['text']}" for c in view['chips']])
+        self.assertEqual((view['chips'][0]['text'].startswith('ナビゲーション: '), page.text_content('[data-screens-back]')), (True, '← ハブに戻る'))
+        page.click('[data-screens-back]')
+        page.wait_for_function('document.querySelector("#screens").dataset.route === ""')
+
+    def test_each_template_reacts_to_real_clicks_and_typing(self):
+        import web_ui
+        page = self.page()
+        # 22 screens carry a detail: their use case comes first and the template sits on the UI sample tab; every other number shows the template at once
+        self.assertEqual(sorted(n for n in range(1, 199) if SCREENS_FIXTURE[n - 1].get('detail')), [1, 2, 19, 20, 37, 38, 55, 56, 73, 74, 91, 92, 109, 110, 127, 128, 145, 146, 163, 164, 181, 182])
+        # a list and a detail
+        self.route(page, 4)
+        self.assertEqual(page.eval_on_selector_all('.ui-screens-list > li', 'els => els.length'), len(web_ui.screen_view(4, 'eng')['body']['items']))
+        self.route(page, 21)
+        self.assertEqual(page.text_content('[data-template="detail"] p.ui-muted'), web_ui.screen_text('eng', 'patternTemplate.screenIdLabel', (('screenDataId', 21),)))
+        # a detail screen: use case first, the template after a click on the second tab, which keeps the focus
+        self.route(page, 37)
+        self.assertEqual((page.get_attribute('[data-tab="usecase"]', 'aria-selected'), page.is_visible('[data-screens-usecase]'), page.locator('[data-template="form"]').count()), ('true', True, 0))
+        page.click('[data-tab="ui"]')
+        self.assertEqual((page.evaluate('document.activeElement.dataset.tab'), page.locator('[data-screens-usecase]').count(), page.locator('[data-template="form"]').count()), ('ui', 0, 1))
+        page.press('[data-tab="ui"]', 'ArrowLeft')
+        self.assertEqual((page.get_attribute('[data-tab="usecase"]', 'aria-selected'), page.locator('[data-template="form"]').count()), ('true', 0), 'the arrow keys move between the two tabs')
+        # a form, submitted by the button and by Enter
+        self.route(page, 39)
+        page.fill('[data-screens-input]', 'こんにちは')
+        page.click('[data-screens-submit]')
+        self.assertEqual(page.text_content('[data-screens-snackbar]'), web_ui.screen_text('eng', 'patternTemplate.submitted', (('value', 'こんにちは'),)))
+        page.fill('[data-screens-input]', 'again')
+        page.press('[data-screens-input]', 'Enter')
+        self.assertEqual(page.text_content('[data-screens-snackbar]'), web_ui.screen_text('eng', 'patternTemplate.submitted', (('value', 'again'),)))
+        self.assertEqual(page.input_value('[data-screens-input]'), 'again')
+        # a search
+        self.route(page, 57)
+        self.assertEqual(page.text_content('[data-screens-result]'), web_ui.screen_text('eng', 'patternTemplate.typeToFilter'))
+        page.fill('[data-screens-input]', 'abc')
+        self.assertEqual(page.text_content('[data-screens-result]'), web_ui.screen_text('eng', 'patternTemplate.resultFor', (('query', 'abc'),)))
+        page.fill('[data-screens-input]', '   ')
+        self.assertEqual(page.text_content('[data-screens-result]'), web_ui.screen_text('eng', 'patternTemplate.resultFor', (('query', '   '),)), 'only the empty string is no query, as in the original')
+        page.fill('[data-screens-input]', '')
+        self.assertEqual(page.text_content('[data-screens-result]'), web_ui.screen_text('eng', 'patternTemplate.typeToFilter'))
+        # tabs: click, arrow keys and End
+        self.route(page, 75)
+        views = web_ui.screen_view(75, 'eng')['body']
+        page.click('[data-focus="tpl-2"]')
+        self.assertEqual((page.get_attribute('[data-screens-panel]', 'data-screens-panel'), page.get_attribute('[data-focus="tpl-2"]', 'aria-selected')), ('2', 'true'))
+        page.press('[data-focus="tpl-2"]', 'ArrowRight')
+        self.assertEqual((page.get_attribute('[data-screens-panel]', 'data-screens-panel'), page.evaluate('document.activeElement.dataset.focus')), ('0', 'tpl-0'))
+        page.press('[data-focus="tpl-0"]', 'End')
+        self.assertEqual(page.get_attribute('[data-screens-panel]', 'data-screens-panel'), '2')
+        page.press('[data-focus="tpl-2"]', 'Home')
+        self.assertEqual(page.get_attribute('[data-screens-panel]', 'data-screens-panel'), '0')
+        self.assertEqual(page.eval_on_selector_all('[role="tab"]', 'els => els.map(e => e.textContent)'), views['tabs'])
+        # bottom navigation
+        self.route(page, 100)
+        page.click('[data-focus="nav-1"]')
+        self.assertEqual((page.text_content('[data-screens-destination]').startswith('Destination 2'), page.get_attribute('[data-focus="nav-1"]', 'aria-current'), page.get_attribute('[data-focus="nav-0"]', 'aria-current')), (True, 'page', None))
+        # a drawer and a grid
+        self.route(page, 111)
+        self.assertEqual(page.eval_on_selector_all('aside li', 'els => els.map(e => e.textContent)'), ['Home', 'Library', 'Settings'])
+        self.route(page, 147)
+        self.assertEqual(page.eval_on_selector_all('.ui-screens-grid > li', 'els => els.length'), 8)
+        # a dialog: opens, takes the focus, closes by button and by Escape and gives the focus back
+        self.route(page, 129)
+        self.assertEqual(page.locator('[data-screens-dialog]').count(), 0)
+        page.click('[data-screens-open]')
+        self.assertEqual(page.locator('[data-screens-dialog]').count(), 1)
+        self.assertEqual(page.evaluate('document.activeElement.hasAttribute("data-screens-close")'), True)
+        page.click('[data-screens-close]')
+        self.assertEqual((page.locator('[data-screens-dialog]').count(), page.evaluate('document.activeElement.hasAttribute("data-screens-open")')), (0, True))
+        page.click('[data-screens-open]')
+        page.keyboard.press('Escape')
+        self.assertEqual((page.locator('[data-screens-dialog]').count(), page.evaluate('document.activeElement.hasAttribute("data-screens-open")')), (0, True))
+        # an async screen shows its progress for half a second
+        self.route(page, 165)
+        page.click('[data-screens-start]')
+        self.assertEqual((page.is_visible('[data-screens-progress]'), page.is_disabled('[data-screens-start]')), (True, True))
+        page.wait_for_selector('[data-screens-progress]', state='detached', timeout=3000)
+        self.assertTrue(page.is_enabled('[data-screens-start]'))
+        # a settings switch starts on, as the view says
+        self.route(page, 185)
+        self.assertEqual(web_ui.screen_view(185, 'eng')['body']['enabled'], True)
+        self.assertTrue(page.is_checked('[data-screens-switch]'))
+        page.click('[data-screens-switch]')
+        self.assertFalse(page.is_checked('[data-screens-switch]'))
+
+    def test_screen_6_searches_the_real_catalogue_and_opens_a_route(self):
+        import web_ui
+        page = self.page()
+        self.route(page, 6)
+        self.assertEqual(page.text_content('[data-screens-count]'), '198 / 198')
+        page.fill('[data-screens-input]', 'Transformed Result List')
+        self.assertEqual((page.text_content('[data-screens-count]'), page.eval_on_selector_all('[data-screens-items] a', 'els => els.map(e => e.dataset.screen)')), ('1 / 198', ['5']))
+        page.click('[data-screens-items] a')
+        page.wait_for_function('document.querySelector("#screens").dataset.route === "5"')
+        self.assertEqual(page.evaluate('document.querySelector("#screens").dataset.route'), '5')
+        self.assertIn('Screen5Page', page.text_content('[data-screens-dedicated]'))
+        self.route(page, 6, 'jpn')
+        page.fill('[data-screens-input]', '存在しない検索語')
+        self.assertEqual((page.text_content('[data-screens-count]'), page.text_content('[data-screens-empty]')), ('0 / 198', web_ui.screen_text('jpn', 'hub.empty')))
+        page.click('[data-screens-clear]')
+        self.assertEqual((page.text_content('[data-screens-count]'), page.input_value('[data-screens-input]'), page.evaluate('document.activeElement.hasAttribute("data-screens-input")')), ('198 / 198', '', True))
+
+    def test_the_validation_and_conversion_screens_link_to_pinned_sources_and_request_nothing(self):
+        import web_ui
+        page = self.page()
+        for number in (91, 99, 103, 110):
+            self.route(page, number)
+            view = web_ui.screen_links_view(number)
+            self.assertEqual(page.text_content('[data-screens-title]'), view['title'])
+            self.assertEqual(page.eval_on_selector_all('[data-screens-link]', 'els => els.map(e => e.href)'), [link['url'] for link in view['links']])
+            self.assertEqual(page.eval_on_selector_all('[data-screens-link]', 'els => els.every(e => e.rel === "noopener noreferrer" && e.target === "_blank")'), True)
+            self.assertEqual(page.text_content('[data-screens-limit]'), view['limitation'])
+            self.assertIn('patterns.html', page.get_attribute('[data-screens-reference]', 'href'))
+
+    def test_an_address_that_names_no_screen_shows_the_hub(self):
+        for bad in ('#screen0', '#screen199', '#screenx', '#screen1e1', '#something'):
+            page = self.page(bad)
+            self.assertEqual((page.get_attribute('#screens', 'data-route'), page.get_attribute('[data-screens-stage]', 'data-kind')), ('', 'hub'), bad)
+            page.close()
+        page = self.page('#screen37')
+        self.assertEqual((page.get_attribute('#screens', 'data-route'), page.get_attribute('[data-screens-stage]', 'data-kind')), ('37', 'generic'))
+
+    # --- the native examples
+    def card(self, page, number):
+        return page.locator(f'[data-native="{number}"]')
+
+    def test_the_counters_and_pairs_count_like_the_original_widgets(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual(page.get_attribute('[data-screens-native]', 'data-count'), '27')
+        for number in (151, 156, 158, 159, 162, 163, 166, 167, 168, 169):
+            card = self.card(page, number)
+            self.assertEqual(card.locator('h4').text_content(), web_ui.native_view(number, web_ui.native_initial(number))['title'])
+            self.assertIn('カウント: 0', card.text_content())
+            card.locator('[data-native-action="increment"]').click()
+            self.assertEqual((card.get_attribute('data-count'), 'カウント: 1' in card.text_content()), ('1', True), number)
+            card.locator('[data-native-action="reset"]').click()
+            self.assertIn('カウント: 0', card.text_content())
+            self.assertEqual(card.locator('[data-native-run]').count(), 0)
+        notified = lambda number: int(re.search(r'通知回数: (\d+)', self.card(page, number).text_content()).group(1))
+        before = {number: notified(number) for number in (158, 159)}
+        for number in (158, 159):
+            self.card(page, number).locator('[data-native-action="reset"]').click()
+        self.assertEqual(notified(159) - before[159], 0, 'a ValueNotifier does not notify for the value it has')
+        self.assertEqual(notified(158) - before[158], 1, 'a ChangeNotifier notifies on every call')
+        # two values: a scope or a model, an atom or a state: what each rebuilds, taken from Python's own steps
+        for number in (157, 160, 161, 170):
+            card, state = self.card(page, number), web_ui.native_initial(number)
+            for action in ('left', 'right', 'left', 'left'):
+                card.locator(f'[data-native-action="{action}"]').click()
+                state = web_ui.native_step(number, state, action)
+                self.assertEqual(card.get_attribute('data-order') or '', '')
+                shown = card.text_content()
+                for line in web_ui.native_view(number, state)['lines']:
+                    self.assertIn(line, shown, (number, action))
+        self.assertIn('再ビルド left: 3 / right: 1', self.card(page, 161).text_content(), 'a model rebuilds only the side that changed')
+        self.assertIn('再ビルド left: 4 / right: 4', self.card(page, 160).text_content(), 'a scope rebuilds both sides every time')
+
+    def test_a_sum_of_squares_runs_in_a_real_worker_and_says_so_only_then(self):
+        page = self.page(init='window.__workers = 0; const W = window.Worker; window.Worker = function (...a) { window.__workers++; return new W(...a) }')
+        for number, label in ((136, 'Web Worker（別スレッドで実行）'), (137, 'compute（Web Worker）')):
+            card = self.card(page, number)
+            self.assertEqual(card.locator('[data-native-status]').text_content(), '未実行')
+            card.locator('[data-native-run]').click()
+            expect(card).to_have_attribute('data-runs', '1')
+            self.assertEqual((card.locator('[data-native-status]').text_content(), card.get_attribute('data-engine'), card.get_attribute('data-result')), (f'{label}: 55', 'worker', '55'))
+        self.assertEqual(page.evaluate('window.__workers'), 2, 'one real worker per run')
+        card = self.card(page, 136)
+        card.locator('[data-native-values]').fill('3, -4, 12')
+        card.locator('[data-native-run]').click()
+        expect(card).to_have_attribute('data-runs', '2')
+        self.assertEqual(card.get_attribute('data-result'), str(9 + 16 + 144))
+        card.locator('[data-native-values]').fill('94906266')
+        card.locator('[data-native-run]').click()
+        self.assertEqual(card.locator('[data-native-status]').text_content(), '失敗: the sum of squares must not exceed 2**53')
+        card.locator('[data-native-values]').fill('1.5')
+        card.locator('[data-native-run]').click()
+        self.assertEqual(card.locator('[data-native-status]').text_content(), '失敗: values must be integers separated by commas')
+        self.assertEqual(page.evaluate('window.__workers'), 3, 'a refused request starts no worker')
+        page.close()
+        context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        page = self.page(init='delete window.Worker', context=context)
+        card = self.card(page, 137)
+        card.locator('[data-native-run]').click()
+        expect(card).to_have_attribute('data-runs', '1')
+        self.assertEqual((card.locator('[data-native-status]').text_content(), card.get_attribute('data-engine')), ('compute（同期フォールバック・別スレッド保証なし）: 55', 'fallback'), 'without a Worker the page does not claim one')
+        context.close()
+
+    def drag(self, page, source, target, hold=0, to=0.85, steps=20):
+        source.evaluate('e => e.scrollIntoView({block: "center"})')
+        a, b = source.bounding_box(), target.bounding_box()
+        page.mouse.move(a['x'] + a['width'] / 2, a['y'] + a['height'] / 2)
+        page.mouse.down()
+        if hold:
+            page.wait_for_timeout(hold)
+        page.mouse.move(b['x'] + b['width'] / 2, b['y'] + b['height'] * to, steps=steps)
+        page.mouse.up()
+
+    def order(self, page, number):
+        return self.card(page, number).get_attribute('data-order')
+
+    def test_lists_reorder_by_a_real_mouse_drag_and_a_long_press_where_the_original_has_one(self):
+        page = self.page()
+        for number in (171, 172):
+            card = self.card(page, number)
+            self.assertEqual(self.order(page, number), 'A,B,C')
+            self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="C"]'))
+            self.assertEqual(self.order(page, number), 'B,C,A', number)
+            self.assertIn('順序: B, C, A', card.text_content())
+            self.drag(page, card.locator('[data-item="C"] [data-grip]'), card.locator('[data-item="B"]'), to=0.1)
+            self.assertEqual(self.order(page, number), 'C,B,A', number)
+            self.drag(page, card.locator('[data-item="B"] [data-grip]'), card.locator('[data-item="B"]'))
+            self.assertEqual(self.order(page, number), 'C,B,A', 'dropped on its own place')
+        card = self.card(page, 184)
+        self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="C"]'))
+        self.assertEqual(self.order(page, 184), 'A,B,C', 'a drag without the long press is not a reorder')
+        self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="C"]'), hold=700)
+        self.assertEqual(self.order(page, 184), 'B,C,A')
+        page.mouse.move(0, 0)
+        grip = card.locator('[data-item="B"] [data-grip]').bounding_box()
+        page.mouse.move(grip['x'] + 4, grip['y'] + 4)
+        page.mouse.down()
+        page.mouse.move(grip['x'] + 40, grip['y'] + 4, steps=4)
+        page.wait_for_timeout(700)
+        page.mouse.move(grip['x'] + 40, grip['y'] + 200, steps=4)
+        page.mouse.up()
+        self.assertEqual(self.order(page, 184), 'B,C,A', 'moving before the half second is up cancels the press')
+
+    def test_pattern_173_swaps_two_cells_and_follows_the_item_not_the_slot(self):
+        page = self.page()
+        card = self.card(page, 173)
+        self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="B"]'))
+        self.assertEqual(self.order(page, 173), 'A,B,C', 'no long press, no drag')
+        self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="B"]'), hold=700)
+        self.assertEqual(self.order(page, 173), 'B,A,C')
+        self.drag(page, card.locator('[data-item="A"] [data-grip]'), card.locator('[data-item="C"]'), hold=700)
+        self.assertEqual(self.order(page, 173), 'B,C,A')
+        self.assertIn('順序: B, C, A', card.text_content())
+        self.drag(page, card.locator('[data-item="B"] [data-grip]'), card.locator('[data-item="B"]'), hold=700)
+        self.assertEqual(self.order(page, 173), 'B,C,A', 'dropping on itself swaps nothing')
+        self.assertEqual(card.locator('[data-over]').count() + card.locator('[data-dragging]').count(), 0, 'nothing is left marked after a drop')
+
+    def test_every_drag_has_a_button_and_the_other_lists_work(self):
+        page = self.page()
+        card = self.card(page, 171)
+        card.get_by_role('button', name='Move A down').click()
+        self.assertEqual(self.order(page, 171), 'B,A,C')
+        card.get_by_role('button', name='Move C up').click()
+        self.assertEqual(self.order(page, 171), 'B,C,A')
+        self.assertTrue(card.get_by_role('button', name='Move B up').is_disabled())
+        self.assertTrue(card.get_by_role('button', name='Move A down').is_disabled())
+        self.assertEqual(page.evaluate('document.activeElement.getAttribute("aria-label")'), 'Move C up', 'the focus stays on the button that was pressed')
+        card = self.card(page, 173)
+        card.get_by_role('button', name='Swap A with the next').click()
+        card.get_by_role('button', name='Swap A with the next').click()
+        self.assertEqual(self.order(page, 173), 'B,C,A')
+        card = self.card(page, 174)
+        card.locator('[data-native-action="insert"]').click()
+        card.locator('[data-native-action="insert"]').click()
+        self.assertEqual((self.order(page, 174), 'N2' in card.locator('[data-native-items] li').first.text_content()), ('N2,N1,A,B,C', True))
+        self.assertEqual(card.locator('[data-native-items] li').first.get_attribute('data-new'), '')
+        card = self.card(page, 175)
+        for expected in ('B,C', 'C', ''):
+            card.locator('[data-native-action="remove"]').click()
+            self.assertEqual(self.order(page, 175), expected)
+        self.assertTrue(card.locator('[data-native-action="remove"]').is_disabled())
+        card = self.card(page, 183)
+        self.assertTrue(card.locator('[data-native-action="delete_selected"]').is_disabled())
+        card.locator('[data-native-select="A"]').check()
+        card.locator('[data-native-select="C"]').check()
+        self.assertIn('選択数: 2', card.text_content())
+        card.locator('[data-native-select="C"]').uncheck()
+        card.locator('[data-native-action="delete_selected"]').click()
+        self.assertEqual((self.order(page, 183), card.get_attribute('data-selected')), ('B,C', ''))
+        self.assertIn('選択数: 0', card.text_content())
+
+    def test_a_native_route_opens_the_example_on_its_own(self):
+        page = self.page('#screen174')
+        self.assertEqual((page.get_attribute('[data-screens-stage]', 'data-kind'), page.locator('[data-screens-stage] [data-native="174"]').count(), page.locator('[data-screens-stage] [data-native="174"] h4').text_content()), ('native', 1, 'Pattern 174: InsertItem'))
+        page.locator('[data-screens-stage] [data-native-action="insert"]').click()
+        self.assertEqual(page.locator('[data-screens-stage] [data-native="174"]').get_attribute('data-order'), 'N1,A,B,C')
+        page.click('[data-screens-back]')
+        page.wait_for_function('document.querySelector("#screens").dataset.route === ""')
+        page = self.page('#screen136')
+        self.assertEqual(page.locator('[data-screens-stage] [data-native="136"] [data-native-status]').text_content(), '未実行')
+
+    def test_the_page_fits_a_phone_and_a_desktop(self):
+        for width, height in ((320, 700), (390, 844), (1280, 800)):
+            page = self.page('#screen3')
+            page.set_viewport_size({'width': width, 'height': height})
+            for hash_ in ('', '#screen3', '#screen6', '#screen37', '#screen74', '#screen130', '#screen91', '#screen171'):
+                page.evaluate('h => { location.hash = h }', hash_)
+                page.wait_for_timeout(50)
+                self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), width, (width, hash_))
+                self.assertLessEqual(page.evaluate('Math.max(...[...document.querySelectorAll("#screens *")].filter(e => e.offsetParent !== null).map(e => e.getBoundingClientRect().right))'), width + 1, (width, hash_))
+            page.evaluate('location.hash = ""')
+            page.wait_for_timeout(50)
+            gallery = page.evaluate('Math.max(...[...document.querySelectorAll("[data-screens-native] *")].map(e => e.getBoundingClientRect().right))')
+            self.assertLessEqual(gallery, width + 1, (width, 'native gallery'))
+            page.close()
+        page = self.page()
+        page.set_viewport_size({'width': 320, 'height': 700})
+        page.evaluate('location.hash = "#screen171"')
+        small = page.evaluate('[...document.querySelectorAll("#screens button, #screens select, #screens input:not([type=checkbox]), #screens a.ui-button, #screens .ui-screens-checks label")].filter(e => e.offsetParent !== null).map(e => Math.round(e.getBoundingClientRect().height))')
+        self.assertTrue(small and all(h >= 40 for h in small), small)
+        boxes = page.evaluate('[...document.querySelectorAll("#screens input[type=checkbox]")].map(e => Math.round(Math.min(e.getBoundingClientRect().width, e.getBoundingClientRect().height)))')
+        self.assertTrue(boxes and all(h >= 24 for h in boxes), boxes)
+
+
+    def test_a_native_card_has_an_address_the_page_scrolls_to(self):
+        import web_ui
+        for number in web_ui.NATIVE_NUMBERS:
+            page = self.page('#native-' + str(number))
+            page.set_viewport_size({'width': 390, 'height': 664})
+            page.wait_for_timeout(50)
+            page.evaluate('h => { location.hash = ""; location.hash = h }', 'native-' + str(number))
+            page.wait_for_timeout(50)
+            self.assertEqual(page.evaluate('n => document.querySelectorAll("#native-" + n).length', number), 1, number)
+            top = page.evaluate('n => Math.round(document.getElementById("native-" + n).getBoundingClientRect().top)', number)
+            at_end = page.evaluate('window.scrollY + innerHeight >= document.documentElement.scrollHeight - 1')
+            self.assertTrue(abs(top) <= 2 or at_end, (number, top, 'a card near the end of the page cannot reach the top'))
+            self.assertEqual(page.get_attribute('#screens', 'data-route'), '', 'the hub stays; a card address is not a screen route')
+            page.close()
+        page = self.page('#native-9999')
+        self.assertEqual((page.evaluate('window.scrollY'), page.get_attribute('#screens', 'data-route')), (0, ''), 'an address of no card does nothing')
+
+    def test_the_hub_search_stays_inside_the_stage_and_keeps_its_text_and_count_across_resizes(self):
+        """The original's Screen6 specs (stays inside body at 390x500 and 1180x757 by mouse and by keyboard; preserves the search across a resize through the compact boundary) on this page's
+        Hub: the same editor, still focused, with the same text and the count "1 / 198", after every crossing, with the search box and the count fully inside the stage."""
+        query = 'Transformed Result List'
+        for start in ((1180, 757), (1180, 500), (390, 500)):
+            for how in ('keyboard', 'mouse'):
+                page = self.page()
+                page.set_viewport_size({'width': start[0], 'height': start[1]})
+                stage, box, count = page.locator('[data-screens-stage]'), page.locator('[data-screens-query]'), page.locator('[data-screens-count]')
+
+                def inside():
+                    s, b, c = stage.bounding_box(), box.bounding_box(), count.bounding_box()
+                    return all(x['height'] > 0 and x['x'] >= s['x'] - 1 and x['x'] + x['width'] <= s['x'] + s['width'] + 1 for x in (b, c))
+                self.assertTrue(inside(), (start, how))
+                if how == 'mouse':
+                    page.mouse.move(start[0] / 2, start[1] / 2)
+                    page.mouse.wheel(0, 350)
+                    box.scroll_into_view_if_needed()
+                    box.click()
+                else:
+                    box.focus()
+                self.assertTrue(box.evaluate('el => el === document.activeElement'), (start, how))
+                page.keyboard.type(query, delay=20)
+                self.assertEqual((box.input_value(), count.text_content()), (query, '1 / 198'), (start, how))
+                original = box.element_handle()
+                typed = query
+                for size in ((390, 500), (320, 700), (1180, 757), (1180, 500), (320, 500), (1280, 800)):
+                    page.set_viewport_size({'width': size[0], 'height': size[1]})
+                    page.wait_for_timeout(50)
+                    self.assertTrue(box.evaluate('(el, o) => el === o', original), (start, how, size))
+                    self.assertTrue(box.evaluate('el => el === document.activeElement'), (start, how, size))
+                    page.keyboard.type('x')
+                    typed += 'x'
+                    self.assertEqual((box.input_value(), count.text_content(), page.get_attribute('#screens', 'data-count')), (typed, '0 / 198', '0'), (start, how, size))
+                    page.keyboard.press('Backspace')
+                    typed = typed[:-1]
+                    self.assertEqual((box.input_value(), count.text_content()), (typed, '1 / 198'), (start, how, size))
+                    self.assertTrue(inside(), (start, how, size))
+                    self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), size[0], (start, how, size))
+                page.close()
 
 
 class ImageStudioBrowserTests(unittest.TestCase):
