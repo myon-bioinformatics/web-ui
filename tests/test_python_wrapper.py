@@ -3,9 +3,11 @@ import os
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2055,7 +2057,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-image-stamp", "web-ui-image-studio", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -3570,6 +3572,1478 @@ class McpTests(unittest.TestCase):
         self.assertIn("examples/mcp-lab.html", web_ui.example_pages())
         self.assertIn("./mcp-lab.html", web_ui.example_pages()["examples/index.html"])
         self.assertIn("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", html)
+
+
+PATTERN_ASSETS = json.loads((Path(__file__).resolve().parent / "fixtures" / "pattern_assets.json").read_text(encoding="utf-8"))
+PATTERN_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "pattern_golden.json").read_text(encoding="utf-8"))
+
+
+def typed(value):
+    """JSON text that keeps 1, 1.0 and true apart (== does not) and ignores object key order."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+class PatternTests(unittest.TestCase):
+    """The 792-pattern references. The golden values are the original flutter_navigation_basic oracles' own outputs (recorded, never produced by this code)."""
+
+    go = staticmethod(web_ui.pattern_run)
+
+    def refused(self, family, request, message=None):
+        with self.assertRaises(ValueError) as caught:
+            self.go(family, request)
+        if message is not None:
+            self.assertEqual(str(caught.exception), message)
+
+    def test_every_asset_the_dart_app_shows_is_reproduced_exactly(self):
+        assets = PATTERN_ASSETS["assets"]
+        self.assertEqual(len(assets), 34)
+        self.assertEqual({a["family"] for a in assets}, {"collection", "order", "select", "structure", "text", "window"})
+        for asset in assets:
+            with self.subTest(asset["asset"]):
+                self.assertEqual(typed(self.go(asset["family"], asset["request"])), typed(asset["expected"]))
+
+    def test_the_recorded_original_outputs_are_reproduced_exactly(self):
+        cases = PATTERN_GOLDEN["cases"]
+        self.assertGreaterEqual(len(cases), 800)
+        seen: dict[str, set[str]] = {}
+        for index, case in enumerate(cases):
+            kind = "ok" if "ok" in case else "error"
+            seen.setdefault(case["family"], set()).add(kind)
+            with self.subTest(index=index, family=case["family"]):
+                if kind == "ok":
+                    self.assertEqual(typed(self.go(case["family"], case["request"])), typed(case["ok"]))
+                else:
+                    self.refused(case["family"], case["request"], case["error"])
+        self.assertEqual(set(seen), set(web_ui.PATTERN_RUNNERS))
+        for family in set(web_ui.PATTERN_RUNNERS) - {"text", "structure"}:      # the two example-only families have nothing to refuse except an unknown mode
+            self.assertEqual(seen[family], {"ok", "error"}, family)
+
+    # --- query -----------------------------------------------------------------------------------------------------------------------------------
+    def test_sorting_is_stable_in_both_directions(self):
+        items = [{"k": 1, "i": 0}, {"k": 0, "i": 1}, {"k": 1, "i": 2}]
+        order = lambda extra: [row["i"] for row in self.go("query", {"operation": "stable_sort", "items": items, "key": "k", **extra})]
+        self.assertEqual(order({}), [1, 0, 2])
+        self.assertEqual(order({"descending": True}), [0, 2, 1])
+        self.assertEqual([r["i"] for r in self.go("query", {"operation": "custom_sort", "items": items, "key": "k", "comparator": "descending"})], [0, 2, 1])
+        self.refused("query", {"operation": "stable_sort", "items": [{"k": 1}, {"k": "a"}], "key": "k"}, "mixed sort key types")
+        self.refused("query", {"operation": "stable_sort", "items": [{"k": True}], "key": "k"}, "unsupported sort key")
+        self.refused("query", {"operation": "custom_sort", "items": items, "key": "k", "comparator": "lambda"}, "unsupported comparator")
+        self.refused("query", {"operation": "stable_sort", "items": items, "key": "k", "descending": 1}, "descending must be boolean")
+
+    def test_grouping_keeps_one_true_and_one_point_zero_apart(self):
+        groups = self.go("query", {"operation": "group_by", "key": "g", "items": [{"g": 1}, {"g": 1.0}, {"g": True}, {"g": 1}, {"g": None}]})
+        self.assertEqual([typed(g["value"]) for g in groups], ["1", "1.0", "true", "null"])
+        self.assertEqual([len(g["items"]) for g in groups], [2, 1, 1, 1])
+        self.refused("query", {"operation": "group_by", "key": "g", "items": [{"g": [1]}]}, "group key must be scalar")
+
+    def test_filters_and_the_geographic_radius(self):
+        rows = [{"c": "a", "t": ["x"], "v": 1}, {"c": "b", "t": ["y", "z"], "v": 5}, {"c": "a", "t": [], "v": 9}]
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "facet", "items": rows, "key": "c", "selected": ["a"]})], [1, 9])
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "tag", "items": rows, "key": "t", "selected": ["z", "x"]})], [1, 5])
+        self.assertEqual([r["v"] for r in self.go("query", {"operation": "range", "items": rows, "key": "v", "minimum": 5, "maximum": 9})], [5, 9])
+        places = [{"name": "Yokohama", "latitude": 35.4437, "longitude": 139.6380}, {"name": "Osaka", "latitude": 34.6937, "longitude": 135.5023}]
+        near = lambda radius: [p["name"] for p in self.go("query", {"operation": "geo", "items": places, "latitude": 35.6762, "longitude": 139.6503, "radius_km": radius})]
+        self.assertEqual(near(30), ["Yokohama"])
+        self.assertEqual(near(20), [])
+        self.assertEqual(near(500), ["Yokohama", "Osaka"])
+        self.refused("query", {"operation": "geo", "items": [], "latitude": 91, "longitude": 0, "radius_km": 1}, "invalid geographic search")
+        self.refused("query", {"operation": "drop", "items": []}, "unsupported operation")
+
+    # --- search ----------------------------------------------------------------------------------------------------------------------------------
+    def test_search_helpers(self):
+        search = lambda **request: self.go("search", request)
+        self.assertEqual(search(operation="tokenize", text="Ｃａｆé, naïve!"), ["café", "naïve"])
+        self.assertEqual(search(operation="stem", text="Running walked cats files go"), ["runn", "walk", "cat", "fil", "go"])
+        self.assertEqual(search(operation="history", events=["a", "b", "A", "c"]), ["c", "A", "b"])
+        self.assertEqual(search(operation="history", events=["a", "b", "c"], limit=2), ["c", "b"])
+        self.assertEqual(search(operation="fuzzy", query="cat", values=["cats", "car", "dog", "cat"], max_distance=1), ["cat", "cats", "car"])
+        self.assertEqual(search(operation="autocomplete", query="ＡＰ", values=["Apple", "apricot", "banana"], limit=1), ["Apple"])
+        self.assertEqual(search(operation="autocomplete", query="", values=["Apple"]), [])
+        self.assertEqual(search(operation="highlight", query="NAIVE", text="a naive test"), {"matched": True, "text": "a naive test"})
+        self.refused("search", {"operation": "history", "events": [], "limit": 0}, "invalid history limit")
+        self.refused("search", {"operation": "regex"}, "unsupported search operation")
+
+    # --- page ------------------------------------------------------------------------------------------------------------------------------------
+    def test_pages_by_offset_and_by_cursor_recover_the_dataset(self):
+        items = list(range(7))
+        self.assertEqual(self.go("page", {"operation": "offset", "items": items, "limit": 3, "offset": 6}), {"items": [6], "has_more": False, "next_offset": None})
+        self.assertEqual(self.go("page", {"operation": "offset", "items": items, "limit": 3}), {"items": [0, 1, 2], "has_more": True, "next_offset": 3})
+        for mode in ("cursor", "infinite"):
+            got, cursor = [], None
+            for _ in range(10):
+                request = {"operation": mode, "items": items, "limit": 3}
+                if cursor is not None:
+                    request["cursor"] = cursor
+                page = self.go("page", request)
+                got.extend(page["items"])
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            self.assertEqual(got, items, mode)
+
+    def test_a_cursor_is_bound_to_the_exact_dataset(self):
+        first = self.go("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1})
+        cursor = first["next_cursor"]
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 4], "limit": 1, "cursor": cursor}, "cursor does not match dataset")
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1, "cursor": cursor[:-2]}, "invalid cursor")
+        self.refused("page", {"operation": "cursor", "items": [1, 2, 3], "limit": 1, "cursor": ""}, "invalid cursor")
+        self.refused("page", {"operation": "cursor", "items": [1], "limit": 1, "offset": 0}, "cursor mode does not accept offset")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1, "cursor": cursor}, "offset mode does not accept cursor")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1, "offset": 2}, "page position beyond dataset")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": 1001}, "limit too large")
+        self.refused("page", {"operation": "offset", "items": [1], "limit": True}, "limit must be an integer >= 1")
+
+    # --- score -----------------------------------------------------------------------------------------------------------------------------------
+    def test_tfidf_and_minheap(self):
+        first, second = self.go("score", {"operation": "tfidf", "documents": ["a b", "a c"]})
+        self.assertAlmostEqual(first["a"], 0.5)
+        self.assertAlmostEqual(first["b"], 0.5 * (math.log(3 / 2) + 1))
+        self.assertEqual(sorted(second), ["a", "c"])
+        self.assertEqual(self.go("score", {"operation": "tfidf", "documents": [""]}), [{}])
+        self.assertEqual(self.go("score", {"operation": "minheap", "values": [5, 1, 3, 1], "pops": 2}), {"popped": [1, 1], "remaining_sorted": [3, 5]})
+        values = [3, 1, 2]
+        self.go("score", {"operation": "minheap", "values": values, "pops": 3})
+        self.assertEqual(values, [3, 1, 2], "the request is never changed")
+        self.refused("score", {"operation": "minheap", "values": [1], "pops": 2}, "invalid pop count")
+        self.refused("score", {"operation": "minheap", "values": [True]}, "heap values must be finite numbers")
+
+    # --- reduce ----------------------------------------------------------------------------------------------------------------------------------
+    def test_reducing_actions_into_a_history(self):
+        actions = [{"type": "increment", "value": 5}, {"type": "decrement", "value": 3}, {"type": "set", "value": 100}, {"type": "reset"}]
+        self.assertEqual(self.go("reduce", {"mode": "redux", "initial": 10, "actions": actions}), {"schema": "state-reducer/1", "mode": "redux", "state": 10, "history": [10, 15, 12, 100, 10]})
+        for bad, message in (({"type": "multiply", "value": 2}, "action requires known type"), ({"type": "set", "value": True}, "action value must be integer"),
+                             ({"type": "reset", "value": 1}, "action fields do not match type"), ({"type": "increment", "value": 10 ** 9 + 1}, "action value out of bounds")):
+            self.refused("reduce", {"mode": "event_state", "initial": 0, "actions": [bad]}, message)
+        self.refused("reduce", {"mode": "event_state", "initial": 10 ** 9, "actions": [{"type": "increment", "value": 1}]}, "result out of bounds")
+        self.refused("reduce", {"mode": "getx", "initial": 0, "actions": []}, "unsupported mode")
+
+    # --- convert ---------------------------------------------------------------------------------------------------------------------------------
+    def test_conversions(self):
+        convert = lambda **request: self.go("convert", request)["value"]
+        self.assertEqual(convert(operation="normalize", value="  Ａｂｃ ", case="lower"), "abc")
+        self.assertEqual(convert(operation="normalize", value="e" + chr(0x301), form="NFC"), "é")
+        self.assertEqual((convert(operation="coerce", target="int", value="+12"), convert(operation="coerce", target="float", value="1e3")), (12, 1000.0))
+        self.assertEqual([convert(operation="coerce", target="bool", value=v) for v in ("true", "0", True, 1, 0)], [True, False, True, True, False])
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 1.0}, "invalid boolean")
+        self.refused("convert", {"operation": "coerce", "target": "int", "value": "1_0"}, "invalid integer")
+        self.refused("convert", {"operation": "coerce", "target": "int", "value": "9" * 5000}, "invalid integer")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": "1e999"}, "non-finite float")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": "nan"}, "invalid float")
+        self.assertEqual((convert(operation="date", value="20240229", source="compact", target="iso"), convert(operation="date", value="2024-02-29", target="compact")), ("2024-02-29", "20240229"))
+        self.refused("convert", {"operation": "date", "value": "2023-02-29"}, "invalid iso date")
+        self.refused("convert", {"operation": "date", "value": "2024-W01-1"}, "invalid iso date")
+        self.assertEqual((convert(operation="unit", value=1, **{"from": "km", "to": "m"}), convert(operation="unit", value=500, **{"from": "g", "to": "kg"})), (1000.0, 0.5))
+        self.refused("convert", {"operation": "unit", "value": 1, "from": "kg", "to": "m"}, "incompatible units")
+        self.refused("convert", {"operation": "unit", "value": 1e-320, "from": "cm", "to": "km"}, "unit conversion underflow")
+        self.refused("convert", {"operation": "unit", "value": 10 ** 400, "from": "m", "to": "m"}, "unit value must be finite number")
+        self.assertEqual(convert(operation="encoding", mode="utf8_to_base64", value="héllo"), "aMOpbGxv")
+        self.assertEqual(convert(operation="encoding", mode="base64_to_utf8", value="aMOpbGxv"), "héllo")
+        self.refused("convert", {"operation": "encoding", "mode": "base64_to_utf8", "value": "aMOpbGx"}, "invalid base64 utf8")
+        self.refused("convert", {"operation": "encoding", "mode": "utf8_to_base64", "value": chr(0xD800)}, "invalid utf8 input")
+        self.assertEqual((convert(operation="mask", value="1234567890"), convert(operation="mask", value="abc"), convert(operation="mask", value="日本語テスト", keep_last=2)), ("******7890", "***", "****スト"))
+        self.refused("convert", {"operation": "mask", "value": "x", "keep_last": 33}, "invalid keep_last")
+
+    # --- validate --------------------------------------------------------------------------------------------------------------------------------
+    def test_validation_rules(self):
+        valid = lambda operation, value, **options: self.go("validate", {"operation": operation, "value": value, **({"options": options} if options else {})})["valid"]
+        self.assertEqual([valid("required", v) for v in (None, "", "  ", "x", 0, False)], [False, False, False, True, True, True])
+        self.assertEqual([valid("email", v) for v in ("a@b.co", "a@b", "a b@c.de", 5)], [True, False, False, False])
+        self.assertEqual([valid("password", v) for v in ("abcdefgh1234", "abcdefghijkl", "short1a")], [True, False, False])
+        self.assertEqual([valid("phone", v) for v in ("+8190123456", "0901234567", "123")], [True, True, False])
+        self.assertEqual([valid("url", v) for v in ("https://a.b/c", "ftp://a.b", "https://u:p@a.b", "https://a.b:0", "https://a b")], [True, False, False, False, False])
+        self.assertEqual([valid("date", v) for v in ("2024-02-29", "2023-02-29", "2024-2-9")], [True, False, False])
+        self.assertEqual([valid("range", v, minimum=1, maximum=5) for v in (1, 5, 6, True, "3")], [True, True, False, False, False])
+        self.assertEqual([valid("regex", v, pattern="hex_color") for v in ("#ABCDEF", "#abcdeg", "ABCDEF")], [True, False, False])
+        self.refused("validate", {"operation": "regex", "value": "x", "options": {"pattern": "(a+)+$"}}, "unknown named regex")
+        self.refused("validate", {"operation": "range", "value": 1, "options": {"minimum": 3, "maximum": 1}}, "invalid numeric range")
+        form = self.go("validate", {"operation": "form", "fields": [{"name": "mail", "rule": "email", "value": "a@b.co"}, {"name": "tel", "rule": "phone", "value": "12"}]})
+        self.assertEqual(form, {"valid": False, "fields": [{"name": "mail", "valid": True}, {"name": "tel", "valid": False}]})
+        self.refused("validate", {"operation": "form", "fields": []}, "form requires fields")
+
+    # --- workflow --------------------------------------------------------------------------------------------------------------------------------
+    def test_workflow_operations(self):
+        flow = lambda **request: self.go("workflow", request)["result"]
+        self.assertEqual(flow(operation="swap", values=[1, 2, 3], a=0, b=2), [3, 2, 1])
+        self.assertEqual((flow(operation="move_top", values=[1, 2, 3], index=2), flow(operation="move_bottom", values=[1, 2, 3], index=0)), ([3, 1, 2], [2, 3, 1]))
+        self.assertEqual(flow(operation="insert_sorted", values=[1, 3, 5], value=4), [1, 3, 4, 5])
+        self.refused("workflow", {"operation": "insert_sorted", "values": [3, 1], "value": 2}, "input not sorted")
+        undo = flow(operation="undo_redo", values=[1], commands=[{"type": "append", "value": 2}, {"type": "append", "value": 3}, {"type": "undo"}, {"type": "undo"}, {"type": "redo"}])
+        self.assertEqual((undo["values"], undo["cursor"], undo["history"]), ([1, 2], 1, [[1], [1, 2], [1, 2, 3]]))
+        branch = flow(operation="command", values=[], commands=[{"type": "append", "value": 1}, {"type": "undo"}, {"type": "append", "value": 9}])
+        self.assertEqual((branch["history"], branch["cursor"]), ([[], [9]], 1), "a new command discards the redo branch")
+        self.refused("workflow", {"operation": "memento", "values": [], "commands": [{"type": "undo"}]}, "cannot undo")
+        self.refused("workflow", {"operation": "memento", "values": [], "commands": [{"type": "redo"}]}, "cannot redo")
+        self.assertEqual(flow(operation="batch", values=[1, 2, 3, 4, 5], batch_size=2), [[1, 2], [3, 4], [5]])
+        self.assertEqual(flow(operation="scheduler", values=[1], schedule=[0, 500]), [{"at_ms": 0, "values": [1]}, {"at_ms": 500, "values": [1]}])
+        commands = [{"type": "append", "value": 2}, {"type": "append", "value": 3}]
+        self.assertEqual(flow(operation="transaction", values=[1], commands=commands), {"committed": True, "values": [1, 2, 3], "applied": [0, 1], "rolled_back": False})
+        self.assertEqual(flow(operation="saga", values=[1], commands=commands, fail_at=1), {"committed": False, "values": [1], "applied": [0], "rolled_back": True})
+        events = [{"type": "append", "value": "x"}]
+        self.assertEqual(flow(operation="pubsub", values=[], events=events, subscribers=2), {"subscribers": [events, events], "state": ["x"]})
+        self.assertEqual(flow(operation="cqrs", values=[1], events=events), {"write_state": [1, "x"], "read_projection": [1, "x"]})
+        self.assertEqual(flow(operation="checkpoint", values=[1, 2, 3], checkpoint=1), {"processed": [1], "remaining": [2, 3], "checkpoint": 1})
+        self.refused("workflow", {"operation": "swap", "values": [1], "a": 0, "b": 1}, "index out of range")
+        self.refused("workflow", {"operation": "drop", "values": []}, "unknown operation")
+
+    # --- transform and select --------------------------------------------------------------------------------------------------------------------
+    def test_transformations_keep_json_types_apart(self):
+        make = lambda **request: self.go("transform", request)["values"]
+        self.assertEqual(make(operation="constraint", values=[1, 1.0, True, "1"], condition={"operator": "equals", "value": 1}), [True, False, False, False])
+        self.assertEqual(make(operation="partition", values=[1, 5, 3], condition={"operator": "greater_than", "value": 2}), {"matched": [5, 3], "unmatched": [1]})
+        schema = {"type": "object", "required": ["id"], "properties": {"id": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}}, "additional_properties": False}
+        self.assertEqual(make(operation="schema_validation", schema=schema, values=[{"id": 1}, {"id": 1.0}, {"id": 2, "tags": ["a", 1]}, {"id": 3, "x": 1}, {}]), [True, False, False, False, False])
+        self.assertEqual(make(operation="pipeline", values=[" A ", "b"], steps=[{"operation": "strip"}, {"operation": "lower"}]), ["a", "b"])
+        self.assertEqual(make(operation="pipeline", values=[1, 2], steps=[{"operation": "add", "value": 1}, {"operation": "multiply", "value": 2}]), [4, 6])
+        self.assertEqual(make(operation="map_reduce", key="k", reducer="sum", values=[{"k": "a", "value": 1}, {"k": "b", "value": 2}, {"k": "a", "value": 3}]), [{"key": "a", "value": 4}, {"key": "b", "value": 2}])
+        self.assertEqual(make(operation="flatten", values=[1, [2, [3, []]]]), [1, 2, 3])
+        self.assertEqual(make(operation="zip", values=[1, 2, 3], other=["a", "b"]), [[1, "a"], [2, "b"]])
+        self.refused("transform", {"operation": "zip", "values": [1], "other": [], "strict": True}, "strict zip lengths differ")
+        self.refused("transform", {"operation": "flatten", "values": self._nested(101)}, "nested arrays exceed 100 levels")
+        self.assertEqual(make(operation="flatten", values=self._nested(99)), [])
+        self.refused("transform", {"operation": "constraint", "values": [], "condition": {"operator": "greater_than", "value": "a"}}, "ordered comparisons require numbers")
+
+    @staticmethod
+    def _nested(depth):
+        value = []
+        for _ in range(depth):
+            value = [value]
+        return [value]
+
+    def test_selection_filters_distinct_values_and_reports_duplicates(self):
+        pick = lambda **request: self.go("select", request)["values"]
+        self.assertEqual(pick(values=[1, 2, 1], equals=1), [1, 1])
+        rows = [{"name": "A", "profile": {"tags": ["blue"]}}, {"name": "B", "profile": {"tags": ["red"]}}, {"name": "C", "profile": {"tags": ["blue", "red"]}}]
+        condition = lambda path, equals: {"path": path, "equals": equals}
+        self.assertEqual([r["name"] for r in pick(values=rows, conditions=[condition(["profile", "tags", 0], "blue")])], ["A", "C"])
+        self.assertEqual([r["name"] for r in pick(values=rows, match="any", conditions=[condition(["name"], "B"), condition(["profile", "tags", 1], "red")])], ["B", "C"])
+        self.assertEqual([r["name"] for r in pick(values=rows, match="all", conditions=[condition(["name"], "C"), condition(["profile", "tags", 1], "red")])], ["C"])
+        self.assertEqual(typed(pick(operation="distinct", values=[{"a": 1, "b": 2}, {"b": 2, "a": 1}, 1, 1.0, True, [1], [1], None, None])), typed([{"a": 1, "b": 2}, 1, 1.0, True, [1], None]))
+        self.assertEqual(pick(operation="deduplicate_report", values=["a", "b", "a", "a"]), [{"input_count": 4, "unique_count": 2, "duplicate_count": 2, "has_duplicates": True}])
+        self.refused("select", {"values": [], "conditions": []}, "conditions must be a non-empty list")
+        self.refused("select", {"values": [], "conditions": [{"path": ["a", -1], "equals": 1}]}, "path must contain literal keys or non-negative integer indices")
+        self.refused("select", {"values": [], "equals": 1, "conditions": [{"equals": 1}]}, "use equals or conditions, not both")
+        self.refused("select", {"values": [], "operation": "sort"}, "operation must be filter, distinct or deduplicate_report")
+
+    # --- order, text, window, collection, structure ----------------------------------------------------------------------------------------------
+    def test_ordering_examples_and_custom_values(self):
+        order = lambda mode, values=None: self.go("order", {"mode": mode, **({} if values is None else {"values": values})})["values"]
+        self.assertEqual(order("basic"), [1, 2, 3, 5, 9])
+        self.assertEqual(order("reverse", [1, 3, 2]), [3, 2, 1])
+        self.assertEqual(order("sorted-set"), [1, 2, 3, 5])
+        self.assertEqual(order("top-n", [7, 1, 9, 3, 8, 2]), [9, 8, 7])
+        self.assertEqual([r["name"] for r in order("priority")], ["critical", "urgent", "normal", "later"])
+        self.assertEqual([r["name"] for r in order("multi")], ["A3", "A1", "B2", "B1"])
+        self.refused("order", {"mode": "basic", "values": [1, True]}, "basic ordering requires numbers")
+        self.refused("order", {"mode": "shuffle"}, "unsupported ordering mode")
+
+    def test_text_search_is_an_and_over_an_inverted_index(self):
+        docs = web_ui.PATTERN_TEXT_DOCUMENTS
+        self.assertEqual(web_ui.pattern_text_search(docs, "portable search"), ["doc-2"])
+        self.assertEqual(web_ui.pattern_text_search(docs, "the PORTABLE"), ["doc-1", "doc-2"])
+        self.assertEqual(web_ui.pattern_text_search(docs, "and the"), [])
+        self.assertEqual(web_ui.pattern_inverted_index(docs)["search"], ["doc-2", "doc-3"])
+        self.assertEqual(web_ui.pattern_tokens("Ａ b_c 12"), ["b", "c", "12"], "ASCII alphanumerics only")
+        with self.assertRaises(TypeError):
+            web_ui.pattern_tokens(5)
+        with self.assertRaises(ValueError):
+            web_ui.pattern_inverted_index([{"id": "", "text": "x"}])
+        self.refused("text", {"mode": "fuzzy"}, "unsupported text-processing mode")
+
+    def test_windows_clamp_and_keyset_follows_the_last_item(self):
+        window = lambda mode, *commands: self.go("window", {"mode": mode, "commands": list(commands)})
+        self.assertEqual((window("load-more")["values"], window("load-more", "next")["state"]["offset"]), (["item-01", "item-02", "item-03", "item-04"], 4))
+        self.assertEqual(window("load-more", "next", "next", "next", "next")["state"]["offset"], 8, "the last window ends at the end")
+        self.assertEqual(window("keyset", "next")["state"]["cursor"], "item-04")
+        self.assertEqual(window("keyset", "next", "reset")["state"]["cursor"], "item-04", "reset moves back to the start but leaves the cursor as it was")
+        self.assertEqual(window("page-size", "page-size-3")["state"]["limit"], 3)
+        self.assertEqual(window("offset-limit", "offset-6")["values"], ["item-07", "item-08", "item-09", "item-10"])
+        self.assertEqual(window("load-more", "refresh", "refresh")["state"]["revision"], 2)
+        self.assertEqual((window("window", "next")["page"], window("window")["pages"]), (2, 3))
+        self.refused("window", {"mode": "scroll"}, "unsupported mode")
+        self.refused("window", {"mode": "window", "commands": ["jump"]}, "unsupported command")
+        self.refused("window", {"mode": "window", "commands": "next"}, "commands must be strings")
+        state = web_ui.pattern_window_initial("window")
+        self.assertEqual(web_ui.pattern_window_step(state, "next")["offset"], 4)
+        self.assertEqual(state["offset"], 0, "a step never changes the state it is given")
+        self.refused("window", {"mode": "window", "commands": ["x"] * 1001}, "commands must be strings")
+
+    def test_collection_commands(self):
+        run = lambda mode, *commands: self.go("collection", {"mode": mode, "commands": [list(c) for c in commands]})
+        self.assertEqual([v["selected"] for v in run("selectable", ("select", "b"), ("select", "c"), ("select", "b"))["values"]], [False, False, True, False])
+        self.assertEqual(run("swipe-delete", ("select", "a"), ("delete", "a"))["state"], {"mode": "swipe-delete", "items": ["b", "c", "d"], "selected": []})
+        self.assertEqual(run("reorderable", ("move-first", "d"))["state"]["items"], ["d", "a", "b", "c"])
+        self.refused("collection", {"mode": "checklist", "commands": [["toggle", "z"]]}, "unknown item")
+        self.refused("collection", {"mode": "checklist", "commands": [["sort"]]}, "unsupported collection command")
+        self.refused("collection", {"mode": "dragging"}, "unsupported collection mode")
+
+    def test_structure_examples(self):
+        self.assertEqual([(s["header"], [i["id"] for i in s["items"]]) for s in self.go("structure", {"mode": "grouped"})["values"]], [("A", ["a1", "a2"]), ("B", ["b1", "b2"])])
+        self.assertEqual([(n["id"], n["depth"]) for n in self.go("structure", {"mode": "tree"})["values"]], [("root", 0), ("left", 1), ("right", 1), ("leaf", 2)])
+        self.refused("structure", {"mode": "ring"}, "unsupported mode")
+
+    # --- the runner, the parser and the command line ---------------------------------------------------------------------------------------------
+    def test_the_runner_names_unknown_families_and_wraps_crashes(self):
+        with self.assertRaises(ValueError) as unknown:
+            self.go("regex", {})
+        self.assertIn("one of collection, concurrency, convert, event_loop, future, interaction, order", str(unknown.exception))
+        with self.assertRaises(ValueError) as caught:
+            self.go("transform", {"operation": ["unhashable"], "values": []})
+        self.assertTrue(str(caught.exception).startswith("invalid transform request:"))
+        self.refused("order", [])
+        self.refused("window", None)
+
+    def test_the_remaining_refusals(self):
+        self.assertEqual(self.go("convert", {"operation": "normalize", "value": "straße", "case": "upper"}), {"value": "STRASSE"})
+        self.refused("convert", {"operation": "normalize", "value": "x", "case": "title"}, "unsupported case mode")
+        self.refused("convert", {"operation": "coerce", "target": "float", "value": 10 ** 400}, "invalid float")
+        self.refused("convert", {"operation": "date", "value": "20231301", "source": "compact"}, "invalid compact date")
+        self.refused("convert", {"operation": "unit", "value": 1e308, "from": "km", "to": "m"}, "unit conversion overflow")
+        self.assertFalse(self.go("validate", {"operation": "url", "value": "https://[::1"})["valid"], "urlsplit itself refuses an unclosed IPv6 host")
+        with self.assertRaises(TypeError):
+            web_ui.pattern_without_stop_words(["a", 1])
+        with self.assertRaises(TypeError):
+            web_ui.pattern_window_step([], "next")
+        self.assertEqual(web_ui.pattern_owner(199), "undecided")
+        with mock.patch.dict(web_ui.PATTERN_TITLES, {"api": "OnlyOne"}), self.assertRaises(ValueError):
+            web_ui.pattern_catalogue()
+
+    def test_edges_of_every_limit_and_type_check(self):
+        # inclusive bounds
+        self.assertEqual(self.go("query", {"operation": "range", "items": [{"v": 3}, {"v": 4}], "key": "v", "minimum": 3, "maximum": 3}), [{"v": 3}])
+        near = lambda lat, lon, row: self.go("query", {"operation": "geo", "items": [row], "latitude": lat, "longitude": lon, "radius_km": 0})
+        self.assertEqual(near(90, 180, {"latitude": 90, "longitude": 180}), [{"latitude": 90, "longitude": 180}])
+        self.assertEqual(near(-90, -180, {"latitude": -90, "longitude": -180}), [{"latitude": -90, "longitude": -180}])
+        for lat, lon in ((90.5, 0), (-90.5, 0), (0, 180.5), (0, -180.5)):
+            self.refused("query", {"operation": "geo", "items": [], "latitude": lat, "longitude": lon, "radius_km": 1}, "invalid geographic search")
+            self.refused("query", {"operation": "geo", "items": [{"latitude": lat, "longitude": lon}], "latitude": 0, "longitude": 0, "radius_km": 1}, "invalid point coordinates")
+        for key in ("", 5, None):
+            self.refused("query", {"operation": "group_by", "items": [], "key": key}, "group key required")
+        self.assertEqual(self.go("search", {"operation": "history", "events": ["a", "b"], "limit": 1}), ["b"])
+        self.assertEqual(self.go("search", {"operation": "fuzzy", "query": "cat", "values": ["cat", "cap"], "max_distance": 0}), ["cat"])
+        self.refused("search", {"operation": "fuzzy", "query": "cat", "values": [], "max_distance": True}, "invalid edit distance")
+        self.refused("search", {"operation": "fuzzy", "query": "cat", "values": [], "max_distance": 11}, "invalid edit distance")
+        self.assertEqual((web_ui._pat_distance("", "abc"), web_ui._pat_distance("kitten", "sitting"), web_ui._pat_distance("abc", "")), (3, 3, 3))
+        # case folding, not lower-casing; a stem only touches plain ASCII words
+        self.assertEqual(self.go("search", {"operation": "tokenize", "text": "STRASSE Straße"}), ["strasse", "strasse"])
+        self.assertEqual(self.go("search", {"operation": "stem", "text": "cafés 123s"}), ["cafés", "123s"])
+        self.assertEqual(self.go("convert", {"operation": "normalize", "value": "Straße", "case": "lower"}), {"value": "strasse"})
+        first, = self.go("score", {"operation": "tfidf", "documents": ["Straße STRASSE"]})
+        self.assertEqual(first, {"strasse": 2 / 2 * (math.log(2 / 2) + 1)})
+        # a cursor is read strictly and does not depend on the order of an object's keys
+        cursor = self.go("page", {"operation": "cursor", "items": [{"a": 1, "b": 2}, {"x": 0}], "limit": 1})["next_cursor"]
+        self.assertEqual(self.go("page", {"operation": "cursor", "items": [{"b": 2, "a": 1}, {"x": 0}], "limit": 1, "cursor": cursor})["items"], [{"x": 0}])
+        for junk in (cursor[:3] + "!" + cursor[3:], cursor[:3] + "\n" + cursor[3:], cursor + "===="):
+            self.refused("page", {"operation": "cursor", "items": [{"a": 1, "b": 2}, {"x": 0}], "limit": 1, "cursor": junk}, "invalid cursor")
+        # convert
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 0.0}, "invalid boolean")
+        self.refused("convert", {"operation": "coerce", "target": "bool", "value": 2}, "invalid boolean")
+        self.assertEqual(self.go("convert", {"operation": "unit", "value": 0, "from": "km", "to": "m"}), {"value": 0.0})
+        self.refused("convert", {"operation": "encoding", "mode": "base64_to_utf8", "value": "aMOp!bGxv"}, "invalid base64 utf8")
+        self.assertEqual([self.go("convert", {"operation": "mask", "value": "abcd", "keep_last": k})["value"] for k in (0, 1, 32)], ["****", "***d", "****"])
+        self.refused("convert", {"operation": "mask", "value": "abcd", "keep_last": -1}, "invalid keep_last")
+        # validate
+        url = lambda n: "https://a.bc/" + "x" * (n - len("https://a.bc/"))
+        self.assertEqual([self.go("validate", {"operation": "url", "value": url(n)})["valid"] for n in (2048, 2049)], [True, False])
+        self.assertEqual([self.go("validate", {"operation": "regex", "value": "1" * n, "options": {"pattern": "digits"}})["valid"] for n in (4096, 4097)], [True, False])
+        # workflow
+        self.refused("workflow", {"operation": "swap", "values": [1, 2], "a": True, "b": 0}, "index out of range")
+        self.refused("workflow", {"operation": "swap", "values": [1, 2], "a": 0.5, "b": 0}, "index out of range")
+        append = {"type": "append", "value": 1}
+        self.assertEqual(len(self.go("workflow", {"operation": "undo_redo", "values": [], "commands": [append] * 1000})["result"]["values"]), 1000)
+        self.refused("workflow", {"operation": "undo_redo", "values": [], "commands": [append] * 1001}, "commands must be array <=1000")
+        self.refused("workflow", {"operation": "transaction", "values": [], "commands": [append] * 1001}, "commands must be array <=1000")
+        self.assertEqual(len(self.go("workflow", {"operation": "batch", "values": list(range(1000)), "batch_size": 1000})["result"]), 1)
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": 1001}, "invalid batch size")
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": True}, "invalid batch size")
+        self.refused("workflow", {"operation": "batch", "values": [1], "batch_size": 0}, "invalid batch size")
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [True]}, "invalid schedule")
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [60001]}, "invalid schedule")
+        self.assertEqual(len(self.go("workflow", {"operation": "scheduler", "values": [], "schedule": [60000] * 1000})["result"]), 1000)
+        self.refused("workflow", {"operation": "scheduler", "values": [], "schedule": [0] * 1001}, "invalid schedule")
+        self.refused("workflow", {"operation": "saga", "values": [], "commands": [{"type": "append", "value": 1}], "fail_at": 1}, "invalid fail_at")
+        event = {"type": "append", "value": 1}
+        self.assertEqual(len(self.go("workflow", {"operation": "queue", "values": [], "events": [event] * 1000})["result"]["state"]), 1000)
+        self.refused("workflow", {"operation": "queue", "values": [], "events": [event] * 1001}, "events must be array <=1000")
+        self.refused("workflow", {"operation": "queue", "values": [0], "events": [event] * 1000}, "result too large")
+        self.refused("workflow", {"operation": "swap", "values": list(range(1001)), "a": 0, "b": 1}, "values must be array <=1000")
+        self.assertEqual(self.go("workflow", {"operation": "checkpoint", "values": [1, 2], "checkpoint": 0})["result"], {"processed": [], "remaining": [1, 2], "checkpoint": 0})
+        # transform
+        none = {"type": "null"}
+        self.assertEqual(self.go("transform", {"operation": "schema_validation", "schema": none, "values": [None, 0, False, ""]})["values"], [True, False, False, False])
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "type", "type": "null"}, "values": [None, 0]})["values"], [True, False])
+        loose = {"type": "object", "properties": {"a": {"type": "integer"}}}
+        self.assertEqual(self.go("transform", {"operation": "schema_validation", "schema": loose, "values": [{"a": 1, "b": 2}, {"a": "x"}]})["values"], [True, False])
+        less = lambda operator, values: self.go("transform", {"operation": "constraint", "condition": {"operator": operator, "value": 2}, "values": values})["values"]
+        self.assertEqual((less("less_than", [1, 2, 3]), less("greater_than", [1, 2, 3])), ([True, False, False], [False, False, True]))
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": {"a": 1, "b": 2}}, "values": [{"b": 2, "a": 1}]})["values"], [True])
+        with self.assertRaises(ValueError):
+            self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": 1}, "values": [float("nan")]})
+        with self.assertRaises(ValueError):
+            self.go("select", {"operation": "distinct", "values": [float("nan")]})
+        # windows and collections
+        window = lambda **state: web_ui.pattern_window_step({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state}, "next")
+        self.assertEqual(window(limit=1)["offset"], 1)
+        for bad in ({"limit": 0}, {"offset": -1}, {"total": -1}, {"offset": True}, {"limit": 0.5}, {"total": "12"}):
+            with self.assertRaises(ValueError, msg=bad):
+                window(**bad)
+        step = lambda command, **state: web_ui.pattern_window_step({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state}, command)["offset"]
+        self.assertEqual((step("page-size-3", total=3), step("page-size-3", total=2), step("offset-6", total=4), step("offset-6", total=3)), (0, 0, 0, 0))
+        self.assertEqual(web_ui.pattern_window_render({"mode": "window", "offset": 0, "limit": 4, "total": 0}), {"schema": "collection-window/1", "mode": "window", "state": {"mode": "window", "offset": 0, "limit": 4, "total": 0}, "page": 0, "pages": 0, "values": []})
+        self.assertEqual(web_ui.pattern_window_render({"mode": "window", "offset": 8, "limit": 4, "total": 10})["pages"], 3)
+        for state in ([], None, {"mode": "dragging", "items": [], "selected": []}, {"mode": "checklist", "items": "ab", "selected": []}, {"mode": "checklist", "items": ["a"], "selected": "a"},
+                      {"mode": "checklist", "items": ["a", "a"], "selected": []}, {"mode": "checklist", "items": ["a", 1], "selected": []}, {"mode": "checklist", "items": ["a"], "selected": ["z"]}):
+            with self.assertRaises(ValueError, msg=state):
+                web_ui.pattern_collection_step(state, "toggle", "a")
+        self.assertEqual(len(self.go("window", {"mode": "window", "commands": ["next"] * 1000})["values"]), 4)
+        self.refused("window", {"mode": "window", "commands": ["next"] * 1001}, "commands must be strings")
+        self.refused("window", {"mode": "window", "commands": ["next", 5]}, "commands must be strings")
+        self.assertEqual(self.go("collection", {"mode": "checklist", "commands": [["toggle"]] * 1000})["state"]["selected"], [])
+        self.refused("collection", {"mode": "checklist", "commands": [["toggle"]] * 1001}, "commands must be [command] or [command, item]")
+        for commands in ("toggle", [["toggle", "a", "b"]], [[]], [["toggle", 5]], [5]):
+            self.refused("collection", {"mode": "checklist", "commands": commands}, "commands must be [command] or [command, item]")
+        # more edges: result limits, the e-mail length, and the shape of a window's page counts
+        self.assertEqual(len(self.go("search", {"operation": "autocomplete", "query": "a", "values": ["a"] * 1001, "limit": 1000})), 1000)
+        self.refused("search", {"operation": "autocomplete", "query": "a", "values": [], "limit": 1001}, "invalid result limit")
+        mail = lambda n: "a" * (n - len("@b.co")) + "@b.co"
+        self.assertEqual([self.go("validate", {"operation": "email", "value": mail(n)})["valid"] for n in (254, 255)], [True, False])
+        self.assertEqual(step("next", total=4), 0)
+        self.assertEqual(step("next", total=0), 0)
+        render = lambda **state: web_ui.pattern_window_render({"mode": "window", "offset": 0, "limit": 4, "total": 12, **state})
+        self.assertEqual([(render(offset=o, total=t)["page"], render(offset=o, total=t)["pages"]) for o, t in ((0, 8), (4, 8), (8, 12), (4, 12), (0, 1), (0, 4), (0, 5))],
+                         [(1, 2), (2, 2), (3, 3), (2, 3), (1, 1), (1, 1), (1, 2)])
+        with self.assertRaises(ValueError):
+            self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": float("nan")}, "values": [1]})
+        with self.assertRaises(ValueError):
+            self.go("page", {"operation": "cursor", "items": [float("nan")], "limit": 1})
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["top-n"], [7, 1, 9, 3, 8, 2])
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["basic"], [9, 2, 5, 1, 3])
+        self.assertEqual(web_ui.PATTERN_ORDER_EXAMPLES["sorted-set"], [5, 2, 5, 1, 3, 2])
+        self.assertEqual((web_ui._pat_distance("ab", "a"), web_ui._pat_distance("a", "ab"), web_ui._pat_distance("flaw", "lawn"), web_ui._pat_distance("", "")), (1, 1, 2, 0))
+        self.assertEqual(len(self.go("reduce", {"mode": "redux", "initial": 0, "actions": [{"type": "reset"}] * 1000})["history"]), 1001)
+        self.refused("reduce", {"mode": "redux", "initial": 0, "actions": [{"type": "reset"}] * 1001}, "actions must be array of at most 1000")
+        self.assertEqual([self.go("convert", {"operation": "mask", "value": "abcd", "keep_last": k})["value"] for k in (3, 4, 5)], ["*bcd", "****", "****"])
+        self.assertEqual(self.go("convert", {"operation": "mask", "value": "abcd"}), {"value": "****"})
+        with self.assertRaises(ValueError) as caught:
+            self.go("transform", {"operation": "schema_validation", "schema": {"type": ["string"]}, "values": []})
+        self.assertEqual(str(caught.exception), "invalid JSON type")
+        self.refused("transform", {"operation": "schema_validation", "schema": {"type": "string", "items": {"type": "string"}}, "values": ["ab"]}, "items requires array type")
+        self.assertEqual(self.go("transform", {"operation": "constraint", "condition": {"operator": "equals", "value": {"b": 2, "a": 1}}, "values": [{"a": 1, "b": 2}]})["values"], [True])
+        # select
+        self.refused("select", {"values": [], "conditions": [{"path": [True], "equals": 1}]}, "path must contain literal keys or non-negative integer indices")
+        self.assertEqual(self.go("select", {"values": [[7]], "conditions": [{"path": [0], "equals": 7}]})["values"], [[7]])
+        self.assertEqual(self.go("select", {"values": [[7], [8]], "conditions": [{"path": [1], "equals": 8}]})["values"], [])
+
+    def test_the_javascript_references_answer_as_their_node_tests_expect(self):
+        # javascript/tests/future_patterns.test.mjs
+        future = lambda mode, **extra: self.go("future", {"mode": mode, **extra})["value"]
+        self.assertEqual(future("basic", task={"value": "ok"}), "ok")
+        self.assertEqual(future("chain", task={"value": 2}, steps=[{"op": "multiply", "by": 3}, {"op": "add", "by": 1}]), 7)
+        self.assertEqual(future("chain", task={"value": "ab"}, steps=[{"op": "uppercase"}]), "AB")
+        self.assertEqual(future("error", task={"value": None, "reject": "broken"}, fallback="safe"), {"caught": "broken", "fallback": "safe"})
+        self.assertEqual(future("error", task={"value": 1, "reject": "x"}, fallback=None)["fallback"], None)
+        self.assertEqual(future("error", task={"value": 5}, fallback="unused"), 5)
+        self.assertEqual(future("wait", tasks=[{"value": "slow", "delay_ms": 25}, {"value": "fast"}]), ["slow", "fast"])
+        self.assertEqual(future("any", tasks=[{"value": "slow", "delay_ms": 30}, {"value": "fast"}]), "fast")
+        self.refused("future", {"mode": "any", "tasks": [{"value": "late", "delay_ms": 30}, {"value": None, "reject": "first"}]}, "first")
+        self.refused("future", {"mode": "wait", "tasks": [{"value": 1, "reject": "b", "delay_ms": 9}, {"value": 2, "reject": "a", "delay_ms": 3}, {"value": 3}]}, "a")
+        self.assertEqual(future("any", tasks=[{"value": "one", "delay_ms": 1}, {"value": "zero"}]), "one", "a timer of 0 ms waits 1 ms, so the earlier created wins a tie")
+        self.refused("future", {"mode": "timeout", "task": {"value": 1, "delay_ms": 30}, "timeout_ms": 5}, "timeout")
+        self.assertEqual(future("timeout", task={"value": 1}, timeout_ms=100), 1)
+        self.assertEqual(future("timeout", task={"value": 1, "delay_ms": 5}, timeout_ms=5), 1, "a tie goes to the task")
+        self.refused("future", {"mode": "timeout", "task": {"value": 1, "reject": "late"}, "timeout_ms": 5}, "late")
+        for request, message in (({"mode": "basic", "task": {"value": 1}, "other": 2}, "unknown field other"), ({"mode": "chain", "task": {"value": 1}, "steps": [{"op": "uppercase"}]}, "string input required"),
+                                 ({"mode": "chain", "task": {"value": 1}, "steps": [{"op": "add"}]}, "numeric by required"), ({"mode": "wait", "tasks": []}, "tasks must contain 1..32 tasks"),
+                                 ({"mode": "any", "tasks": [{"value": 1, "delay_ms": -1}]}, "delay_ms must be an integer 0..1000"), ({"mode": "timeout", "task": {"value": 1}, "timeout_ms": 0}, "timeout_ms must be 1..1000"),
+                                 ({"mode": "error", "task": {"value": 1}}, "fallback required"), ({"mode": "basic", "task": {"delay_ms": 1}}, "missing field value"),
+                                 ({"mode": "basic", "task": {"value": 1, "reject": ""}}, "reject must be a nonempty string"), ({"mode": "basic", "task": {"value": 1}, "9": 1, "a": 1}, "unknown field 9"),
+                                 ({"mode": "nope"}, "unsupported mode"), ([], "request must be an object")):
+            self.refused("future", request, message)
+        self.assertEqual(future("basic", task={"value": 1, "delay_ms": 4.0}), 1, "JavaScript reads 4.0 as the integer 4")
+        # javascript/tests/stream_patterns.test.mjs
+        e = lambda *pairs: [{"at_ms": at, "value": value} for at, value in pairs]
+        stream = lambda mode, **extra: self.go("stream", {"mode": mode, **extra})
+        self.assertEqual(stream("basic", events=e((0, 1), (1, 2)))["events"], e((0, 1), (1, 2)))
+        self.assertEqual(stream("controller", commands=[{"op": "add", "value": 1}, {"op": "close"}])["events"], e((0, 1)))
+        self.assertEqual(stream("broadcast", events=e((0, 1)), subscribers=2)["subscribers"], [e((0, 1)), e((0, 1))])
+        self.assertEqual(stream("transform", events=e((0, [1, 2])), steps=[{"op": "expand"}, {"op": "map_add", "value": 1}, {"op": "where_equals", "value": 3}])["events"], e((0, 3)))
+        self.assertEqual(stream("merge", streams=[e((0, "a"), (2, "b")), e((1, "x"), (2, "y"))])["events"],
+                         [{"at_ms": 0, "value": "a", "source": 0}, {"at_ms": 1, "value": "x", "source": 1}, {"at_ms": 2, "value": "b", "source": 0}, {"at_ms": 2, "value": "y", "source": 1}])
+        self.assertEqual(stream("debounce", events=e((0, "a"), (5, "b"), (11, "c"), (20, "d")), duration_ms=6)["events"], e((11, "c"), (20, "d")))
+        self.assertEqual(stream("throttle", events=e((0, 1), (4, 2), (5, 3)), duration_ms=5)["events"], e((0, 1), (5, 3)))
+        self.assertEqual(stream("buffer", events=e((0, 1), (1, 2), (2, 3)), size=2)["events"], e((1, [1, 2]), (2, [3])))
+        self.assertEqual(stream("window", events=e((0, 1), (1, 2), (2, 3)), size=2)["events"], e((1, [1, 2]), (2, [2, 3])))
+        self.assertEqual(stream("window", events=e((0, 1), (1, 2), (2, 3), (3, 4)), size=3, step=1)["events"], e((2, [1, 2, 3]), (3, [2, 3, 4])))
+        self.assertEqual(stream("transform", events=e((0, {"a": 1, "b": 2})), steps=[{"op": "where_equals", "value": {"b": 2, "a": 1}}])["events"], [], "the JSON text is compared, so key order matters")
+        self.assertEqual(stream("transform", events=e((0, 1)), steps=[{"op": "where_equals"}])["events"], [])
+        for request, message in (({"mode": "basic", "events": e((2, 1), (1, 2))}, "sorted event time"), ({"mode": "controller", "commands": [{"op": "close"}, {"op": "add", "value": 1}]}, "invalid add"),
+                                 ({"mode": "controller", "commands": [{"op": "add", "value": 1}]}, "close required"), ({"mode": "controller", "commands": [{"op": "close"}, {"op": "close"}]}, "closed twice"),
+                                 ({"mode": "buffer", "events": [], "size": 0}, "size"), ({"mode": "debounce", "events": [], "duration_ms": 0}, "duration"),
+                                 ({"mode": "basic", "events": [{"at_ms": 1}]}, "event shape"), ({"mode": "merge", "streams": []}, "streams"), ({"mode": "transform", "events": [], "steps": []}, "steps"),
+                                 ({"mode": "transform", "events": e((0, 1)), "steps": [{"op": "expand"}]}, "expand array"), ({"mode": "transform", "events": e((0, 1)), "steps": [{"op": "map_add", "value": "x"}]}, "map_add numbers"),
+                                 ({"mode": "broadcast", "events": [], "subscribers": 17}, "subscribers"), ({"mode": "x"}, "mode")):
+            self.refused("stream", request, message)
+        self.assertEqual(stream("basic", events=e((-1, 1)))["events"], e((-1, 1)), "the first event may be at -1: the original starts its order check there")
+        # javascript/tests/concurrency_patterns.test.mjs
+        task = lambda value, delay_ms=0: {"value": value, "delay_ms": delay_ms}
+        conc = lambda mode, **extra: self.go("concurrency", {"mode": mode, **extra})["result"]
+        self.assertEqual(conc("work_queue", tasks=[task("a", 9), task("b"), task("c")]), {"values": ["a", "b", "c"], "max_active": 1})
+        self.assertEqual(conc("semaphore", concurrency=2, tasks=[task(1, 12), task(2, 12), task(3)]), {"values": [1, 2, 3], "max_active": 2})
+        self.assertEqual(conc("semaphore", concurrency=5, tasks=[task(1)]), {"values": [1], "max_active": 1})
+        self.assertEqual(conc("semaphore", concurrency=5, tasks=[]), {"values": [], "max_active": 0})
+        self.assertEqual(conc("mutex", increments=[3, -1, 4]), {"value": 6, "history": [3, 2, 6]})
+        self.assertEqual(conc("cancelable", task=task("a"), cancel=True), {"status": "cancelled"})
+        self.assertEqual(conc("cancelable", task=task("a"), cancel=False), {"status": "completed", "value": "a"})
+        self.assertEqual(conc("parallel_map", concurrency=2, tasks=[task("slow", 12), task("fast"), task("last")]), {"values": ["slow", "fast", "last"], "max_active": 2})
+        self.assertEqual(conc("progress", tasks=[task(1), task(2)])["progress"], [{"completed": 1, "total": 2}, {"completed": 2, "total": 2}])
+        for request, message in (({"mode": "semaphore", "tasks": [task(1)], "concurrency": 0}, "concurrency 1..32"), ({"mode": "work_queue", "tasks": [task(1, -1)]}, "delay_ms must be 0..50"),
+                                 ({"mode": "cancelable", "task": task(1), "cancel": "true"}, "cancel flag required"), ({"mode": "mutex", "increments": [1.5]}, "increments"),
+                                 ({"mode": "parallel_map", "tasks": [], "concurrency": 33}, "concurrency 1..32"), ({"mode": "mutex", "increments": [2 ** 53 - 1, 1]}, "overflow"),
+                                 ({"mode": "mutex", "increments": [], "tasks": []}, "unknown request keys"), ({"mode": "work_queue", "tasks": [{"delay_ms": 1}]}, "task keys"),
+                                 ({"mode": "work_queue", "tasks": [5]}, "task object required"), ({"mode": "work_queue", "tasks": [task(1)] * 33}, "tasks must be an array (max 32)"),
+                                 ({"mode": "nope"}, "unsupported mode"), ([], "request object")):
+            self.refused("concurrency", request, message)
+        # javascript/tests/event_loop_patterns.test.mjs
+        loop = lambda mode, **extra: self.go("event_loop", {"mode": mode, **extra})["result"]
+        self.assertEqual(loop("reactive", values=[1, 2, 3], steps=[{"op": "map_add", "value": 1}, {"op": "where_equals", "value": 3}]), [3])
+        self.assertEqual([step["phase"] for step in loop("event_loop", values=["x"])], ["sync", "microtask", "timer"])
+        self.assertEqual(loop("microtask", values=[]), ["sync", "microtask", "promise", "timer"])
+        self.assertEqual(loop("suspend_resume", values=[1, 2, 3], pause_after=1), {"values": [1, 2, 3], "trace": ["paused", "resumed"]})
+        self.assertEqual(loop("suspend_resume", values=[1, 2, 3], pause_after=3)["trace"], ["paused", "resumed"])
+        self.assertEqual(loop("async_generator", values=[1, "b", None]), [1, "b", None])
+        for request, message in (({"mode": "reactive", "values": [1], "steps": []}, "steps"), ({"mode": "reactive", "values": [1], "steps": [{"op": "map_add", "value": "bad"}]}, "numbers required"),
+                                 ({"mode": "suspend_resume", "values": [1], "pause_after": 2}, "pause_after"), ({"mode": "microtask", "values": [], "extra": 1}, "unknown field"),
+                                 ({"mode": "reactive", "values": [1]}, "missing field"), ({"mode": "x", "values": 5}, "values must be array <=1000"), ({"mode": "x", "values": []}, "unsupported mode"),
+                                 ({"mode": "reactive", "values": [1], "steps": [{"op": "x", "value": 1}]}, "unsupported reactive step"), ([], "object required")):
+            self.refused("event_loop", request, message)
+        # javascript/tests/interaction_patterns.test.mjs: virtualWindow
+        window = lambda **params: self.go("interaction", {"operation": "virtual_window", **params})["result"]
+        self.assertEqual(window(count=100, itemHeight=20, scrollTop=200, viewportHeight=100, overscan=1), {"start": 9, "end": 16, "topPadding": 180, "bottomPadding": 1680})
+        self.assertEqual(window(count=0, itemHeight=20, scrollTop=0, viewportHeight=100), {"start": 0, "end": 0, "topPadding": 0, "bottomPadding": 0})
+        self.assertEqual(window(count=10, itemHeight=20, scrollTop=0, viewportHeight=40), {"start": 0, "end": 4, "topPadding": 0, "bottomPadding": 120})
+        self.refused("interaction", {"operation": "virtual_window", "count": 10, "itemHeight": 0, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport configuration")
+        self.refused("interaction", {"operation": "virtual_window", "count": 10.5, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport configuration")
+        self.refused("interaction", {"operation": "virtual_window", "count": -1, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 100}, "invalid viewport number")
+        self.refused("interaction", {"operation": "virtual_window", "count": 1, "itemHeight": 1, "scrollTop": 0}, "invalid viewport number")
+        self.refused("interaction", {"operation": "virtual_window", "count": 1, "itemHeight": 1, "scrollTop": 0, "viewportHeight": 1, "overscan": None}, "invalid viewport number")
+        self.refused("interaction", {"operation": "nope"}, "unsupported operation")
+
+    def test_the_debounce_follows_the_node_test_with_fake_timers(self):
+        callbacks, seen, ids = {}, [], [0]
+
+        def set_timeout(fn, ms):
+            ids[0] += 1
+            callbacks[ids[0]] = fn
+            return ids[0]
+        trigger = web_ui.PatternDebouncer(seen.append, 20, set_timeout, lambda key: callbacks.pop(key, None))
+        trigger("first")
+        trigger("last")
+        self.assertEqual(len(callbacks), 1)
+        key, callback = next(iter(callbacks.items()))
+        del callbacks[key]
+        callback()
+        self.assertEqual(seen, ["last"])
+        trigger("cancelled")
+        trigger.cancel()
+        self.assertEqual(len(callbacks), 0)
+        for args in ((None, 1), (seen.append, -1), (seen.append, float("nan")), (seen.append, "5"), (seen.append, None)):
+            with self.assertRaises(TypeError, msg=args):
+                web_ui.PatternDebouncer(args[0], args[1], set_timeout, lambda key: None)
+        run = lambda calls, delay=20: self.go("interaction", {"operation": "debounce", "delay_ms": delay, "calls": calls})["result"]
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 5, "value": "b"}, {"at_ms": 60, "value": "c"}]), [{"at_ms": 25, "value": "b"}, {"at_ms": 80, "value": "c"}])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 20, "value": "b"}]), [{"at_ms": 40, "value": "b"}], "a call at the moment the timer is due still replaces it")
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 21, "value": "b"}]), [{"at_ms": 20, "value": "a"}, {"at_ms": 41, "value": "b"}])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}, {"at_ms": 5, "cancel": True}]), [])
+        self.assertEqual(run([{"at_ms": 0, "value": "a"}], delay=0), [{"at_ms": 0, "value": "a"}])
+        for calls, message in (([{"at_ms": 5, "value": 1}, {"at_ms": 1, "value": 2}], "sorted call time"), ([{"at_ms": 1}], "call shape"), ([{"at_ms": 1, "cancel": False}], "call shape"),
+                               ([{"at_ms": 1, "value": 1, "cancel": True}], "call shape"), (5, "calls must be array <=1000")):
+            self.refused("interaction", {"operation": "debounce", "delay_ms": 5, "calls": calls}, message)
+        self.refused("interaction", {"operation": "debounce", "delay_ms": 60001, "calls": []}, "delay_ms must be 0..60000")
+
+    def test_strict_parsing(self):
+        parse = web_ui.pattern_parse
+        self.assertEqual(typed(parse('{"a":[1,1.0,true,null]}')), '{"a": [1, 1.0, true, null]}')
+        for text in ("NaN", "[Infinity]", '{"a":-Infinity}', "1e999", "[1e400]", "[" * 100000):
+            with self.subTest(text=text[:12]), self.assertRaises(ValueError):
+                parse(text)
+
+    def test_the_command_line(self):
+        run = lambda *args, **kw: subprocess.run([sys.executable, "-S", str(ROOT / "web_ui.py"), *args], capture_output=True, timeout=60, **kw)
+        done = run("--pattern", "reduce", input=json.dumps({"mode": "redux", "initial": 1, "actions": [{"type": "increment", "value": 2}]}).encode())
+        self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {"history": [1, 3], "mode": "redux", "schema": "state-reducer/1", "state": 3}))
+        for stdin in (b'{"mode":"redux","initial":NaN,"actions":[]}', b"[1", b'{"mode":"x"}', "{\"a\":\"".encode() + b"\xff\"}", b" " * (web_ui.PATTERN_MAX_INPUT + 1)):
+            done = run("--pattern", "reduce", input=stdin)
+            self.assertEqual((done.returncode, done.stdout), (2, b""), stdin[:20])
+            self.assertTrue(done.stderr.startswith(b"invalid pattern request: "))
+        self.assertEqual(run("--pattern", "list").stdout.decode().split(), sorted(web_ui.PATTERN_RUNNERS))
+        done = run("--pattern", "nonsense", input=b"{}")
+        self.assertEqual(done.returncode, 2)
+        self.assertIn(b"unknown pattern family", done.stderr)
+        rows = json.loads(run("--pattern", "catalogue").stdout)
+        self.assertEqual((len(rows), rows[0]["id"], rows[-1]["id"]), (792, "A001", "D198"))
+
+    # --- the catalogue ---------------------------------------------------------------------------------------------------------------------------
+    def test_the_catalogue_lists_all_792_patterns(self):
+        rows = web_ui.pattern_catalogue()
+        self.assertEqual(len(rows), 792)
+        self.assertEqual(len({r["id"] for r in rows}), 792)
+        for key, letter, _ in web_ui.PATTERN_CATEGORIES:
+            own = [r for r in rows if r["category"] == key]
+            self.assertEqual([r["number"] for r in own], list(range(1, 199)))
+            self.assertTrue(all(r["id"] == f"{letter}{r['number']:03d}" for r in own))
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual((by_id["A001"]["title"], by_id["A001"]["theme"]), ("BasicPush", "基本ナビゲーション (Push/Pop/Replace)"))
+        self.assertEqual(by_id["D003"]["title"], "FilterNested")
+        self.assertEqual(by_id["D198"]["title"], "FullPipeline")
+        self.assertTrue(all(r["title"].isascii() and r["title"].isalnum() and r["theme"] for r in rows))
+        self.assertEqual({r["id"] for r in rows if "family" in r}, {r["id"] for r in rows if r["category"] == "data"})
+
+    def test_themes_follow_the_ranges_of_patterns_md(self):
+        for key, ranges in web_ui.PATTERN_THEMES.items():
+            self.assertEqual(ranges[0][0], 1, key)
+            self.assertEqual(ranges[-1][1], 198, key)
+            self.assertTrue(all(a[1] + 1 == b[0] for a, b in zip(ranges, ranges[1:])), key)
+        theme = web_ui.pattern_theme
+        self.assertEqual((theme("data", 30), theme("data", 31), theme("data", 185), theme("data", 186)), ("フィルタリング・ソート・検索", "ページング・無限スクロール・仮想化", "並び替え・追加・入れ替え機能", "バッチ処理・トランザクション・イベント駆動"))
+        self.assertEqual(theme("ui", 175), "プラットフォーム固有 (iOS/Android/Web/macOS)")
+        with self.assertRaises(ValueError):
+            theme("data", 199)
+
+    def test_every_reference_function_belongs_to_the_patterns_that_the_original_assigned(self):
+        families: dict[str, list[int]] = {}
+        for number in range(1, 199):
+            family = web_ui.pattern_family(number)
+            if family:
+                families.setdefault(family, []).append(number)
+        self.assertEqual(set(families), set(web_ui.PATTERN_RUNNERS))
+        self.assertEqual(families["select"], [1, 2, 3, 30, 86, 113])
+        self.assertEqual(families["query"], [11, 12, 14, 15, 16, 17, 18])
+        self.assertEqual(families["window"], [34, 36, 37, 38, 39, 40, 41, 42, 43, 44])
+        self.assertEqual(families["workflow"], list(range(176, 183)) + list(range(185, 199)))
+        self.assertEqual(families["validate"], list(range(91, 100)))
+        self.assertEqual(families["reduce"], [164, 165])
+        self.assertEqual((families["future"], families["concurrency"], families["event_loop"], families["interaction"]), (list(range(121, 127)), list(range(138, 144)), list(range(146, 151)), [4, 35]))
+        self.assertEqual(families["stream"], list(range(127, 136)) + [144, 145])
+        owner = web_ui.pattern_owner
+        self.assertEqual([owner(n) for n in (4, 35, 121, 135, 138, 150)], ["javascript"] * 6)
+        self.assertEqual([owner(n) for n in (136, 137, 151, 163, 166, 170, 171, 184)], ["flutter_native"] * 8)
+        self.assertEqual([owner(n) for n in (50, 60, 61, 90, 91, 112)], ["python_assets / flutter_layout", "python_assets / flutter_layout", "python_cache / runtime_specific", "python_cache / runtime_specific", "python", "python_validation / flutter_form"])
+        self.assertEqual((owner(8), owner(113), owner(35)), ("python", "python", "javascript"), "the first row that contains a number decides (35 is JavaScript, not a window)")
+        self.assertEqual(web_ui.pattern_family(35), "interaction")
+
+    def test_finding_patterns(self):
+        rows = web_ui.pattern_catalogue()
+        ids = lambda **kw: [r["id"] for r in web_ui.pattern_find(rows, **kw)]
+        self.assertEqual(ids(query="filternested"), ["D003"])
+        self.assertEqual(ids(query="ＦＩＬＴＥＲ ｎｅｓｔｅｄ"), ["D003"], "NFKC and case folded")
+        self.assertEqual(ids(query="d003"), ["D003"])
+        self.assertEqual(ids(query="", category="api")[:2], ["B001", "B002"])
+        self.assertEqual(len(ids(category="data", family="select")), 6)
+        self.assertEqual(len(ids()), 792)
+        self.assertEqual(ids(query="no such pattern"), [])
+        self.assertIn("D030", ids(query="フィルタリング"))
+        self.assertEqual(len(ids(query="フィルタリング")), 30)
+
+    # --- the patterns page -----------------------------------------------------------------------------------------------------------------------
+    def test_every_family_has_an_example_and_the_page_runs_seventeen_of_them(self):
+        examples = web_ui.pattern_examples()
+        self.assertEqual(sorted(examples), sorted(web_ui.PATTERN_RUNNERS))
+        self.assertEqual(set(web_ui.PATTERN_RUNNERS) - set(web_ui.PATTERN_TWINS), {"search", "convert", "validate"})
+        for family, example in examples.items():
+            with self.subTest(family):
+                self.assertEqual(typed(example["result"]), typed(self.go(family, web_ui.PATTERN_EXAMPLES[family])))
+                json.dumps(example, allow_nan=False)
+        for family in web_ui.PATTERN_TWINS:
+            self.assertNotIn("1.0", json.dumps(web_ui.PATTERN_EXAMPLES[family]), "a page reads 1.0 as 1")
+
+    def test_the_page_is_one_self_contained_document(self):
+        page = web_ui.patterns_document()
+        self.assertEqual(page.count('<script type="module">'), 1)
+        self.assertEqual(page.count('id="patterns"'), 1)
+        self.assertNotRegex(page, r"https?://")
+        for hook in ("data-patterns-query", "data-patterns-category", "data-patterns-family", "data-patterns-count", "data-patterns-more", "data-patterns-list", "data-patterns-run-family",
+                     "data-patterns-request", "data-patterns-run", "data-patterns-example", "data-patterns-status", "data-patterns-result", 'id="patterns-run-title"'):
+            self.assertEqual(page.count(hook) if hook.startswith("id=") else len(re.findall(r"(?<= )%s(?=[ >])" % re.escape(hook), page)), 1, hook)
+        self.assertEqual(len(re.findall(r'<option value="(?:%s)"' % "|".join(web_ui.PATTERN_RUNNERS), page)), 2 * len(web_ui.PATTERN_RUNNERS))
+        self.assertIn('<option value="query" selected>', page)
+        self.assertEqual(len(re.findall(r'<option value="(?:navigation|api|ui|data)">', page)), 4)
+        self.assertIn("globalThis.webUiPatterns=api", page)
+        self.assertIn(".ui-patterns", web_ui.bundled_css())
+        self.assertTrue(all(int(px) % 8 == 0 for px in re.findall(r"(\d+)px", web_ui._CSS["patterns.css"])), "pixel sizes are multiples of 8")
+        self.assertIn("examples/patterns.html", web_ui.example_pages())
+        self.assertIn('href="./patterns.html"', web_ui.example_pages()["examples/index.html"])
+
+    def test_the_js_constants_are_the_python_values(self):
+        source = web_ui._JS["patterns.js"]
+        want = {"PATTERN_CATEGORIES": web_ui.PATTERN_CATEGORIES, "PATTERN_THEMES": web_ui.PATTERN_THEMES, "PATTERN_TITLES": web_ui.PATTERN_TITLES,
+                "PATTERN_PRODUCERS": [[list(n), r, f] for n, r, f in web_ui.PATTERN_PRODUCERS], "PATTERN_NATIVE": sorted(web_ui.PATTERN_NATIVE),
+                "PATTERN_GESTURES": sorted(web_ui.PATTERN_GESTURES), "PATTERN_FAMILIES": sorted(web_ui.PATTERN_RUNNERS), "PATTERN_TWINS": list(web_ui.PATTERN_TWINS),
+                "PATTERN_EXAMPLES": web_ui.pattern_examples()}
+        for name, value in want.items():
+            found = re.search(r"^export const %s=(.*);$" % name, source, re.M)
+            self.assertIsNotNone(found, name)
+            self.assertEqual(typed(json.loads(found.group(1))), typed(json.loads(json.dumps(value))), name)
+        self.assertNotIn("</script", source.lower())
+        self.assertNotIn('"""', source)
+
+    def test_the_platform_adapters_check_the_page(self):
+        for name, fragment in (("web-ui-patterns", None), ("web-ui-pattern-run", "patterns-run-title")):
+            adapter = web_ui.btk_adapter(name)
+            self.assertEqual(adapter["url"], "http://127.0.0.1:8000/examples/patterns.html" + ("" if fragment is None else "#" + fragment))
+            self.assertNotEqual(adapter["click"]["before"], adapter["click"]["after"])
+            self.assertTrue(all(selector.startswith("#patterns") for selector in adapter["elements"]))
+        self.assertEqual((web_ui.BTK_ADAPTERS["web-ui-patterns"]["click"]["before"], web_ui.BTK_ADAPTERS["web-ui-patterns"]["click"]["after"]), ("48", "96"))
+
+    # --- invariants on random input --------------------------------------------------------------------------------------------------------------
+    def test_random_invariants(self):
+        rng = random.Random(792)
+        for _ in range(300):
+            items = [{"k": rng.randint(0, 4), "i": i} for i in range(rng.randint(0, 12))]
+            descending = rng.random() < 0.5
+            result = self.go("query", {"operation": "stable_sort", "items": items, "key": "k", "descending": descending})
+            self.assertEqual(sorted(r["i"] for r in result), list(range(len(items))), "a permutation")
+            for a, b in zip(result, result[1:]):
+                self.assertTrue(a["k"] > b["k"] or (a["k"] == b["k"] and a["i"] < b["i"]) if descending else a["k"] < b["k"] or (a["k"] == b["k"] and a["i"] < b["i"]))
+            data = list(range(rng.randint(0, 20)))
+            limit = rng.randint(1, 6)
+            got, offset = [], 0
+            while True:
+                page = self.go("page", {"operation": "offset", "items": data, "limit": limit, "offset": offset})
+                got += page["items"]
+                if page["next_offset"] is None:
+                    break
+                offset = page["next_offset"]
+            self.assertEqual(got, data)
+            values = [rng.choice([1, 2, 3, "a", None, [1], 1.5]) for _ in range(rng.randint(0, 8))]
+            unique = self.go("select", {"operation": "distinct", "values": values})["values"]
+            report = self.go("select", {"operation": "deduplicate_report", "values": values})["values"][0]
+            self.assertEqual((report["input_count"], report["unique_count"]), (len(values), len(unique)))
+            self.assertEqual(typed(self.go("select", {"operation": "distinct", "values": unique})["values"]), typed(unique), "distinct is idempotent")
+
+
+STUDIO_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "studio_golden.json").read_text(encoding="utf-8"))
+
+
+def studio_norm(value):
+    """JavaScript cannot tell 1 from 1.0, so integral floats compare as integers."""
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else value
+    if isinstance(value, (list, tuple)):
+        return [studio_norm(v) for v in value]
+    if isinstance(value, dict):
+        return {k: studio_norm(v) for k, v in value.items()}
+    return value
+
+
+def studio_canon(value):
+    return json.dumps(studio_norm(value), sort_keys=True, ensure_ascii=False)
+
+
+def studio_call(fn, arg):
+    """The Python reference for each function recorded from Ironmate's studio/core.js."""
+    if fn == "jsnum":
+        return web_ui.js_number(arg)
+    if fn == "jsjson":
+        return web_ui.js_json(arg)
+    if fn == "heatColor":
+        return web_ui.studio_heat_color(*arg)
+    if fn == "matrix":
+        return web_ui.studio_matrix(arg)
+    if fn == "validate":
+        return web_ui.studio_validate(arg)
+    if fn == "mosaic":
+        return list(web_ui.studio_mosaic_rgba(bytes(arg[0]), *arg[1:]))
+    if fn == "arrow":
+        return web_ui.studio_arrow_geometry(*arg)
+    if fn == "outputSize":
+        return web_ui.studio_output_size(*arg)
+    if fn == "pngPayload":
+        return web_ui.studio_png_payload(bytes(arg))
+    if fn == "textLayout":
+        return web_ui.studio_text_layout(arg)
+    if fn == "layerSVG":
+        return web_ui.studio_layer_svg(arg)
+    if fn == "svg":
+        return web_ui.studio_svg(arg[0], None, arg[1])
+    if fn == "words":
+        return web_ui.studio_words(arg)
+    if fn == "graphemes":
+        return web_ui.studio_graphemes(arg)
+    if fn == "sincos":
+        return [web_ui.studio_sin(arg), web_ui.studio_cos(arg)]
+    if fn in ("demo", "stampDemo"):
+        scene = web_ui.studio_demo_scene() if fn == "demo" else web_ui.studio_stamp_demo_scene()
+        for i, layer in enumerate(scene["layers"]):
+            layer["id"] = f"L{i}"
+        return scene
+    if fn == "history":
+        history = None
+        states = []
+        for op, scene in arg:
+            if op == "new":
+                history = web_ui.StudioHistory(scene)
+            elif op == "commit":
+                history.commit(scene)
+            elif op == "undo":
+                history.undo()
+            else:
+                history.redo()
+            states.append([history.index, len(history.items)])
+        return {"states": states, "items": history.items, "workspace": web_ui.studio_workspace_text(history)}
+    raise AssertionError(fn)
+
+
+class ImageStudioTests(unittest.TestCase):
+    """The Ironmate image studio. The golden values are Ironmate's studio/core.js own outputs (recorded by Node, never produced by this code)."""
+
+    def blank(self, **patch):
+        return {"schema": web_ui.STUDIO_SCHEMA, "width": 64, "height": 64, "background": "none", "layers": [], **patch}
+
+    def history(self):
+        history = web_ui.StudioHistory(self.blank())
+        following = history.current
+        following["background"] = "#123456"
+        history.commit(following)
+        history.undo()
+        return history
+
+    def run_cli(self, *argv, stdin=None):
+        done = subprocess.run([sys.executable, "-S", str(Path(web_ui.__file__)), *map(str, argv)], input=stdin, capture_output=True, timeout=60, cwd=ROOT)
+        return done.returncode, done.stdout, done.stderr.decode("utf-8")
+
+    def test_cli_ignores_site_customization_and_parent_working_directory(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            tmp = Path(tmp)
+            marker = tmp / "site-loaded"
+            (tmp / "sitecustomize.py").write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('loaded')\n",
+                encoding="utf-8",
+            )
+            scene = tmp / "scene.json"
+            scene.write_text(web_ui.js_json(self.blank()), encoding="utf-8")
+            relative_scene = os.path.relpath(scene, ROOT)
+            with mock.patch.dict(os.environ, {"PYTHONPATH": str(tmp)}):
+                # Prove this interpreter would load the hook without -S.
+                control = subprocess.run([sys.executable, "-c", "pass"], cwd=ROOT,
+                                         capture_output=True, timeout=60)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(marker.exists())
+                marker.unlink()
+                previous = Path.cwd()
+                try:
+                    os.chdir(tmp)
+                    code, out, err = self.run_cli("--studio-render", relative_scene)
+                finally:
+                    os.chdir(previous)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(out.decode("utf-8"), web_ui.studio_render(self.blank()) + "\n")
+                self.assertFalse(marker.exists(), "CLI must skip site customization")
+
+    # --- the originals' own outputs -------------------------------------------------------------------------------------------------------------
+    def test_every_recorded_core_js_output_is_reproduced_exactly(self):
+        counts = {}
+        for case in STUDIO_GOLDEN["cases"]:
+            fn, arg = case["fn"], case["arg"]
+            counts[fn] = counts.get(fn, 0) + 1
+            with self.subTest(fn=fn, n=counts[fn]):
+                if "error" in case:
+                    with self.assertRaises(web_ui.StudioError) as caught:
+                        studio_call(fn, arg)
+                    self.assertEqual(str(caught.exception), case["error"])
+                else:
+                    got, expect = studio_call(fn, arg), case["ok"]
+                    self.assertEqual(got if isinstance(expect, str) else studio_canon(got), expect if isinstance(expect, str) else studio_canon(expect))
+        self.assertGreaterEqual(len(counts), 15, "every function core.js has is covered")
+        self.assertGreaterEqual(len(STUDIO_GOLDEN["cases"]), 500)
+
+    # --- Ironmate's tests/test_image_studio.py -------------------------------------------------------------------------------------------------
+    def test_heatmap_keeps_values_gaps_labels_and_source(self):
+        source = {"data": [{"type": "heatmap", "z": [[-2.123456789012345, None, 4], [0, 1, 2]], "x": [2024, 2025, 2026], "y": ["中日", "巨人"], "zmin": -4, "zmax": 8}], "layout": {"title": {"text": "source"}}}
+        scene = web_ui.studio_heatmap_scene(source)
+        layer = scene["layers"][0]
+        self.assertEqual((layer["z"], layer["xlabels"], layer["ylabels"], layer["low"], layer["high"]), ([[-2.123456789012345, None, 4], [0, 1, 2]], [2024, 2025, 2026], ["中日", "巨人"], -4, 8))
+        self.assertIs(scene["source"], source)
+        self.assertIsNone(layer["z"][0][1])
+        self.assertEqual(web_ui.studio_validate(scene), scene, "a scene made from a matrix is already valid")
+
+    def test_unsafe_or_empty_matrices_are_refused(self):
+        for source in ([[True]], [[float("inf")]], [[2 ** 53]], [[1e100]], [[2 ** 1024]], [[1], [1, 2]], [], {"data": []}):
+            with self.subTest(source=repr(source)[:30]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_heatmap_scene(source)
+
+    def test_transparent_rgb_does_not_pollute_a_block_average(self):
+        # one opaque red pixel and one fully transparent blue pixel average to half-transparent red, not purple
+        got = web_ui.studio_mosaic_rgba(bytes([255, 0, 0, 255, 0, 0, 255, 0]), 2, 1, 2, 256)
+        self.assertEqual(list(got), [255, 0, 0, 128] * 2)
+
+    def test_svg_escapes_text_and_keeps_gaps_visible(self):
+        scene = web_ui.studio_heatmap_scene([[1, None, 2]])
+        scene["layers"].append({"id": "text", "kind": "text", "name": "custom", "x": 10, "y": 20, "w": 500, "h": 100, "opacity": 0.5, "rotation": 30, "fontSize": 40, "fill": "#112233", "text": "<script>alert(1)</script> & 🌱\n次へ"})
+        svg = web_ui.studio_svg(scene)
+        self.assertNotIn("<script>", svg)
+        self.assertIn("&lt;script&gt;", svg)
+        self.assertIn("欠測", svg)
+        self.assertIn("🌱", svg)
+
+    def test_history_saves_a_copy_undoes_and_branches(self):
+        scene = web_ui.studio_heatmap_scene([[1, None, 2]])
+        history = web_ui.StudioHistory(scene)
+        edit = history.current
+        edit["layers"][0]["levels"] = 4
+        history.commit(edit)
+        edit["layers"][0]["z"][0][0] = 999
+        self.assertEqual(history.current["layers"][0]["z"][0][0], 1, "an edit after the commit does not reach the history")
+        self.assertEqual(history.undo(), scene)
+        history.redo()
+        history.undo()
+        branch = history.current
+        branch["layers"].pop()
+        history.commit(branch)
+        self.assertEqual(len(history.redo()["layers"]), 0, "a new edit after undo drops the redo branch")
+        self.assertEqual(len(history.items), 2)
+        history.commit(history.current)
+        self.assertEqual(len(history.items), 2, "an edit that changes nothing is not recorded")
+
+    def test_forty_states_at_most(self):
+        history = web_ui.StudioHistory(self.blank())
+        for i in range(60):
+            scene = history.current
+            scene["width"] = 64 + i + 1
+            history.commit(scene)
+        self.assertEqual((len(history.items), history.index, history.items[0]["width"], history.items[-1]["width"]), (40, 39, 64 + 21 + 0, 64 + 60))
+
+    def test_untrusted_scenes_with_outside_images_or_bad_geometry_are_refused(self):
+        scene = web_ui.studio_heatmap_scene([[1]])
+        nan = web_ui.studio_clone(scene)
+        nan["layers"][0]["rotation"] = float("nan")
+        outside = web_ui.studio_clone(scene)
+        outside["layers"][0] = {**outside["layers"][0], "kind": "image", "src": "https://example.com/a.png", "cell": 1, "levels": 256}
+        twin = web_ui.studio_clone(scene)
+        twin["layers"].append(web_ui.studio_clone(twin["layers"][0]))
+        for bad in (nan, outside, twin):
+            with self.assertRaises(web_ui.StudioError):
+                web_ui.studio_svg(bad)
+
+    # --- Ironmate's tests/studio_workspace.test.cjs ---------------------------------------------------------------------------------------------
+    def test_workspace_restores_index_redo_branch_unicode_and_is_detached(self):
+        history = self.history()
+        history.items[1]["source"] = {"note": "🌱日本語"}
+        text = web_ui.studio_workspace_text(history)
+        restored = web_ui.studio_workspace_history(text)
+        self.assertEqual(restored.index, 0)
+        self.assertEqual(restored.current, history.current)
+        self.assertEqual(restored.redo(), history.items[1])
+        restored.items[1]["source"]["note"] = "changed"
+        self.assertEqual(history.items[1]["source"]["note"], "🌱日本語")
+        self.assertIn("🌱日本語", text, "Unicode is written as it is")
+
+    def test_workspace_validates_index_schema_count_and_every_scene(self):
+        record = json.loads(web_ui.studio_workspace_text(self.history()))
+        for patch in ({"schema": "wrong"}, {"index": -1}, {"index": 2}, {"index": 0.5}, {"items": []}, {"items": [self.blank()] * 41}, {"items": [self.blank(), self.blank(width=-1)]}, {"items": "x"}, {"index": True}):
+            with self.subTest(patch=str(patch)[:40]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_workspace_history(json.dumps({**record, **patch}))
+        history = web_ui.StudioHistory(self.blank())
+        history.index = 1
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_workspace_text(history)
+        for bad in (None, 5, b"{}", "", "[]", "{", "null"):
+            with self.subTest(bad=repr(bad)), self.assertRaises((web_ui.StudioError, ValueError)):
+                web_ui.studio_workspace_history(bad)
+
+    def test_workspace_limit_is_32_mib_of_utf8_inclusive(self):
+        text = web_ui.studio_workspace_text(self.history())
+        limit = web_ui.STUDIO_WORKSPACE_MAX_BYTES
+        exact = text + " " * (limit - len(text.encode("utf-8")))
+        self.assertEqual(len(exact.encode("utf-8")), limit)
+        self.assertEqual(web_ui.studio_workspace_history(exact).current, self.blank())
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_history(exact + " ")
+        # below 32M characters yet above 32 MiB as UTF-8
+        large = json.loads(text)
+        large["items"][0]["source"] = "🌱" * 8_388_608
+        multibyte = json.dumps(large, ensure_ascii=False)
+        self.assertLess(len(multibyte), limit)
+        self.assertGreater(len(multibyte.encode("utf-8")), limit)
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_history(multibyte)
+
+    def test_writer_refuses_repeated_images_over_budget_and_accepts_a_trimmed_history(self):
+        scene = self.blank()
+        scene["layers"].append({"id": "img", "kind": "image", "x": 0, "y": 0, "w": 64, "h": 64, "rotation": 0, "opacity": 1, "src": "data:image/png;base64," + "A" * 8_000_000, "cell": 1, "levels": 256})
+        history = web_ui.StudioHistory(scene)
+        history.items = [scene] * 5
+        history.index = 2
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_text(history)
+        self.assertEqual(len(history.items), 5, "a refused save does not touch the history")
+        trimmed = web_ui.StudioHistory(history.current)
+        self.assertEqual(web_ui.studio_workspace_history(web_ui.studio_workspace_text(trimmed)).current, history.current)
+
+    # --- the scene and its parts ---------------------------------------------------------------------------------------------------------------
+    def test_refusal_messages_are_the_originals_japanese_text(self):
+        cases = [(self.blank(schema="x"), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）"), (self.blank(width=0), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")]
+        for scene, message in cases:
+            with self.assertRaises(web_ui.StudioError) as caught:
+                web_ui.studio_validate(scene)
+            self.assertEqual(str(caught.exception), message)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_validate(self.blank(layers=[web_ui.studio_base_layer("rect", "a")] * 101))
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_validate(self.blank(width=4096, height=4096))
+        self.assertEqual(web_ui.studio_validate(self.blank(width=2048, height=2048))["width"], 2048)
+
+    def test_a_click_places_every_tool_where_it_was_pressed(self):
+        for tool in ("rect", "ellipse", "triangle", "text", "stamp", "arrow", "clock"):
+            layer = web_ui.studio_place(tool, "a", 123.5, 45, text="x")
+            self.assertEqual((layer["x"], layer["y"]), (123.5, 45), tool)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_place("star", "a", 0, 0)
+
+    def test_the_two_demo_scenes_are_valid_and_drawn(self):
+        for scene in (web_ui.studio_demo_scene(), web_ui.studio_stamp_demo_scene(), web_ui.studio_blank()):
+            self.assertEqual(web_ui.studio_validate(scene), scene)
+            svg = web_ui.studio_svg(scene)
+            self.assertTrue(svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"'))
+            ET.fromstring(svg)
+        kinds = {layer["kind"] for layer in web_ui.studio_demo_scene()["layers"]} | {layer["kind"] for layer in web_ui.studio_stamp_demo_scene()["layers"]}
+        self.assertGreaterEqual(len(kinds), 4)
+
+    def test_every_layer_kind_is_drawn_as_well_formed_svg(self):
+        scene = self.blank(width=400, height=300, background="#FFFFFF")
+        scene["layers"] = [web_ui.studio_place(tool, tool, 40 + 8 * i, 40 + 8 * i) for i, tool in enumerate(("rect", "ellipse", "triangle", "arrow", "clock"))]
+        scene["layers"].append(web_ui.studio_text_layer("Hello, 世界 🌱", "t", 20, 200))
+        scene["layers"].append(web_ui.studio_matrix_layer([[1, 2], [3, None]], "h", 400, 300))
+        document = ET.fromstring(web_ui.studio_svg(scene))
+        self.assertEqual(document.get("width"), "400")
+        ids = [g.get("data-layer") for g in document.iter("{http://www.w3.org/2000/svg}g") if g.get("data-layer")]
+        self.assertEqual(ids, ["rect", "ellipse", "triangle", "arrow", "clock", "t", "h"])
+
+    def test_scale_and_output_size(self):
+        self.assertEqual(web_ui.studio_output_size(self.blank(width=333, height=720), 2), {"width": 666, "height": 1440})
+        for scale in (0.2, 9, "x", 0):
+            with self.assertRaises(web_ui.StudioError):
+                web_ui.studio_output_size(self.blank(), scale)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_output_size(self.blank(width=4096, height=4096), 8)
+        svg = web_ui.studio_svg(self.blank(width=100, height=64), None, 4)
+        self.assertIn('width="400" height="256" viewBox="0 0 100 64"', svg)
+
+    def test_text_wraps_by_words_and_by_characters_for_long_words(self):
+        layer = {**web_ui.studio_text_layer("a very long line of ordinary words that should wrap into several lines", "t", 0, 0, wrap=True), "w": 120, "fontSize": 16}
+        paragraphs = web_ui.studio_text_layout(layer)
+        self.assertEqual(len(paragraphs), 1)
+        lines = paragraphs[0]
+        self.assertGreater(len(lines), 2)
+        self.assertEqual("".join(lines).replace(" ", ""), layer["text"].replace(" ", ""))
+        self.assertTrue(all(web_ui.studio_measure(line, layer) <= layer["w"] for line in lines))
+        glued = web_ui.studio_text_layout({**layer, "text": "x" * 40, "w": 100})[0]
+        self.assertTrue(all(web_ui.studio_measure(line, layer) <= 100 for line in glued) and "".join(glued) == "x" * 40)
+        self.assertEqual(web_ui.studio_words("Hello, world! can't stop 3.14"), ["Hello", ",", " ", "world", "!", " ", "can't", " ", "stop", " ", "3.14"])
+        self.assertEqual(web_ui.studio_graphemes("é🇯🇵👨‍👩‍👧x"), ["é", "🇯🇵", "👨‍👩‍👧", "x"])
+
+    def test_a_line_may_be_exactly_as_wide_as_the_box(self):
+        measure = lambda text: len(text) * 10
+        layer = {**web_ui.studio_text_layer("abcd efgh ij", "t", 0, 0, wrap=True), "fontSize": 10}
+        for width, want in ((40, ["abcd", "efgh", "ij"]), (39, ["abc", "d", "efg", "h", "ij"]), (50, ["abcd", "efgh", "ij"]), (90, ["abcd efgh", "ij"]), (89, ["abcd", "efgh ij"]), (110, ["abcd efgh", "ij"]),
+                           (120, ["abcd efgh ij"]), (119, ["abcd efgh", "ij"])):
+            self.assertEqual(web_ui.studio_text_layout({**layer, "w": width}, measure), [want], width)
+        # a word longer than the box is cut between characters, and a character exactly filling the box stays
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "abcdefghij", "w": 30}, measure), [["abc", "def", "ghi", "j"]])
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "abcdefghij", "w": 25}, measure), [["ab", "cd", "ef", "gh", "ij"]])
+        self.assertEqual(web_ui.studio_text_layout({**layer, "text": "ab", "w": 5}, measure), [["a", "b"]], "a glyph wider than the box is never squeezed")
+
+    def test_the_workspace_writer_stops_at_exactly_32_mib(self):
+        limit = web_ui.STUDIO_WORKSPACE_MAX_BYTES
+        scene = self.blank(source="")
+        empty = len(web_ui.studio_workspace_text(web_ui.StudioHistory(scene)).encode("utf-8"))
+        fits = web_ui.StudioHistory(self.blank(source="x" * (limit - empty)))
+        self.assertEqual(len(web_ui.studio_workspace_text(fits).encode("utf-8")), limit)
+        over = web_ui.StudioHistory(self.blank(source="x" * (limit - empty + 1)))
+        with self.assertRaisesRegex(web_ui.StudioError, "32MiB"):
+            web_ui.studio_workspace_text(over)
+
+    def test_clock_hands_use_the_fdlibm_sin_and_cos_of_node(self):
+        # Node 22's Math.sin and Math.cos; glibc gives -0.5984721441039565 for sin(-2.5), one bit away, and other engines and versions differ in the last bit too
+        for x, sin, cos in ((0.5, 0.479425538604203, 0.8775825618903728), (1, 0.8414709848078965, 0.5403023058681398), (-2.5, -0.5984721441039564, -0.8011436155469337),
+                            (7.9, 0.998941341839772, -0.04600212563953695), (0.5235987755982988, 0.49999999999999994, 0.8660254037844387),
+                            (1.0471975511965976, 0.8660254037844386, 0.5000000000000001), (5.497787143782139, -0.707106781186547, 0.707106781186548),
+                            (0.1, 0.09983341664682815, 0.9950041652780257), (2.356194490192345, 0.7071067811865476, -0.7071067811865475)):
+            self.assertEqual((web_ui.studio_sin(x), web_ui.studio_cos(x)), (sin, cos), x)
+        for x in (0, math.pi / 2, math.pi, -math.pi, 2 * math.pi, 6.9):
+            self.assertAlmostEqual(web_ui.studio_sin(x), math.sin(x), places=12)
+            self.assertAlmostEqual(web_ui.studio_cos(x), math.cos(x), places=12)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_sin(12345.6789)
+
+    def test_studio_json_is_read_the_way_json_parse_reads_it(self):
+        self.assertEqual(web_ui.studio_parse("[9007199254740993, 9007199254740995, 1e2, -0, 1.5]"), [9007199254740992, 9007199254740996.0, 100.0, 0, 1.5])
+        self.assertEqual(web_ui.js_number(web_ui.studio_parse("9007199254740995")), "9007199254740996")
+        for text in ("1" + "0" * 400, "1e999", "NaN", "Infinity", "-Infinity", "[" * 100000):
+            with self.subTest(text=text[:12]), self.assertRaises(ValueError):
+                web_ui.studio_parse(text)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_heatmap_scene([[2 ** 1024]])
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.json"
+            big.write_text('[[1' + '0' * 400 + ']]', encoding="utf-8")
+            self.assertEqual(self.run_cli("--studio-heatmap", big)[0], 2)
+            self.assertEqual(self.run_cli("--studio-render", big)[0], 2)
+
+    def test_javascript_number_and_json_text(self):
+        self.assertEqual([web_ui.js_number(x) for x in (1.0, 0.1 + 0.2, 1e21, 1e-7, 123456789.123456789, -0.0, 100, 2 ** 53)], ["1", "0.30000000000000004", "1e+21", "1e-7", "123456789.12345679", "0", "100", "9007199254740992"])
+        self.assertEqual(web_ui.js_json({"b": 1, "2": 2, "1": 3, "a": [1.0, None, True, "é\n\""]}), '{"1":3,"2":2,"b":1,"a":[1,null,true,"é\\n\\""]}')
+        self.assertEqual(web_ui.js_json({"a": [1, {"b": 2}], "c": []}, 2), '{\n  "a": [\n    1,\n    {\n      "b": 2\n    }\n  ],\n  "c": []\n}')
+
+    # --- images --------------------------------------------------------------------------------------------------------------------------------
+    def test_png_codec_round_trips_and_refuses_what_it_cannot_read(self):
+        rng = random.Random(7)
+        rgba = bytes(rng.randrange(256) for _ in range(5 * 3 * 4))
+        data = web_ui.studio_png_encode(5, 3, rgba)
+        self.assertEqual(web_ui.studio_png_decode(data), (5, 3, rgba))
+        self.assertEqual(web_ui.studio_png_payload(data)["mimeType"], "image/png")
+        broken = bytearray(data)
+        broken[-20] ^= 1
+        for bad in (b"GIF89a", bytes(broken), data[:30], b"\x89PNG\r\n\x1a\n"):
+            with self.subTest(bad=bad[:12]), self.assertRaises(web_ui.StudioError):
+                web_ui.studio_png_decode(bad)
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_png_encode(2, 2, b"\0" * 5)
+
+    def test_png_filters_and_colour_types_that_browsers_write_are_read(self):
+        def png(width, height, color, rows, palette=b"", trns=b""):
+            chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+            out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color, 0, 0, 0))
+            out += (chunk(b"PLTE", palette) if palette else b"") + (chunk(b"tRNS", trns) if trns else b"")
+            return out + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b"")
+        # RGB, grey, grey+alpha and palette, each with the filter a browser might choose
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 2, [b"\x00" + bytes([1, 2, 3, 4, 5, 6])]))[2], bytes([1, 2, 3, 255, 4, 5, 6, 255]))
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 0, [b"\x00" + bytes([9, 200])]))[2], bytes([9, 9, 9, 255, 200, 200, 200, 255]))
+        self.assertEqual(web_ui.studio_png_decode(png(1, 1, 4, [b"\x00" + bytes([7, 128])]))[2], bytes([7, 7, 7, 128]))
+        self.assertEqual(web_ui.studio_png_decode(png(2, 1, 3, [b"\x00" + bytes([1, 0])], palette=bytes([10, 20, 30, 40, 50, 60]), trns=bytes([255, 100])))[2], bytes([40, 50, 60, 100, 10, 20, 30, 255]))
+        sub = web_ui.studio_png_decode(png(3, 1, 0, [b"\x01" + bytes([10, 5, 5])]))[2]
+        self.assertEqual(sub, bytes([10, 10, 10, 255, 15, 15, 15, 255, 20, 20, 20, 255]))
+        up = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x02" + bytes([1, 2])]))[2]
+        self.assertEqual(up[8:], bytes([11, 11, 11, 255, 22, 22, 22, 255]))
+        average = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x03" + bytes([4, 4])]))[2]
+        self.assertEqual(average[8:], bytes([9, 9, 9, 255, 18, 18, 18, 255]))
+        paeth = web_ui.studio_png_decode(png(2, 2, 0, [b"\x00" + bytes([10, 20]), b"\x04" + bytes([1, 1])]))[2]
+        self.assertEqual(paeth[8:], bytes([11, 11, 11, 255, 21, 21, 21, 255]))
+        with self.assertRaises(web_ui.StudioError):
+            web_ui.studio_png_decode(png(1, 1, 0, [b"\x09" + bytes([0])]))
+
+    def png_file(self, width, height, color, rows, depth=8, interlace=0, palette=b"", trns=b"", crc_ok=True, iend=True, idat=True):
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) if crc_ok else 0)
+        out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace))
+        out += (chunk(b"PLTE", palette) if palette else b"") + (chunk(b"tRNS", trns) if trns else b"")
+        out += chunk(b"IDAT", zlib.compress(b"".join(rows))) if idat else b""
+        return out + (chunk(b"IEND", b"") if iend else b"")
+
+    def filtered(self, kind, raw, previous, bpp):
+        """One scanline written with PNG filter ``kind`` (the encoder side, written here on its own)."""
+        out = bytearray()
+        for i, value in enumerate(raw):
+            a = raw[i - bpp] if i >= bpp else 0
+            b = previous[i]
+            c = previous[i - bpp] if i >= bpp else 0
+            if kind == 0:
+                predictor = 0
+            elif kind == 1:
+                predictor = a
+            elif kind == 2:
+                predictor = b
+            elif kind == 3:
+                predictor = (a + b) // 2
+            else:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                predictor = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            out.append((value - predictor) & 255)
+        return bytes([kind]) + bytes(out)
+
+    def test_every_colour_type_and_filter_is_read_as_an_independent_encoder_and_pillow_read_it(self):
+        import io
+        from PIL import Image
+        rng = random.Random(404)
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+        palette = bytes(rng.randrange(256) for _ in range(3 * 6))
+        trns = bytes([255, 0, 128])
+        for color, bpp in channels.items():
+            for kind in range(5):
+                for width, height in ((1, 1), (2, 3), (5, 4), (9, 2), (3, 7)):
+                    samples = [bytes(rng.randrange(6) if color == 3 else rng.randrange(256) for _ in range(width * bpp)) for _ in range(height)]
+                    rows, previous = [], bytes(width * bpp)
+                    for row in samples:
+                        rows.append(self.filtered(kind, row, previous, bpp))
+                        previous = row
+                    data = self.png_file(width, height, color, rows, palette=palette if color == 3 else b"", trns=trns if color == 3 else b"")
+                    got_width, got_height, rgba = web_ui.studio_png_decode(data)
+                    self.assertEqual((got_width, got_height), (width, height))
+                    with Image.open(io.BytesIO(data)) as image:
+                        image.load()
+                        self.assertEqual(rgba, image.convert("RGBA").tobytes(), (color, kind, width, height))
+        # all five filters on the rows of one image, each row its own
+        rows, previous = [], bytes(12)
+        for kind in range(5):
+            row = bytes(rng.randrange(256) for _ in range(12))
+            rows.append(self.filtered(kind, row, previous, 4))
+            previous = row
+        data = self.png_file(3, 5, 6, rows)
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            self.assertEqual(web_ui.studio_png_decode(data)[2], image.convert("RGBA").tobytes())
+
+    def test_a_png_the_studio_cannot_use_is_refused_with_its_reason(self):
+        zeros = lambda w, h, c=4: [b"\x00" + bytes(w * c)] * h
+        ok = self.png_file(2, 2, 6, zeros(2, 2))
+        self.assertEqual(web_ui.studio_png_decode(ok)[:2], (2, 2))
+        unsupported = "8ビット・非インターレースの4MP以下のPNGに対応しています"
+        broken = "PNGが壊れています"
+        cases = [(self.png_file(2, 2, 6, zeros(2, 2), depth=16), unsupported), (self.png_file(2, 2, 6, zeros(2, 2), interlace=1), unsupported), (self.png_file(2, 2, 1, zeros(2, 2)), unsupported),
+                 (self.png_file(2, 2, 5, zeros(2, 2)), unsupported), (self.png_file(2048, 2049, 6, zeros(1, 1)), unsupported), (self.png_file(0, 2, 6, []), unsupported),
+                 (self.png_file(2, 2, 6, zeros(2, 2), crc_ok=False), broken), (self.png_file(2, 2, 6, zeros(2, 2), idat=False), broken), (self.png_file(2, 2, 6, zeros(2, 3)), broken),
+                 (self.png_file(2, 2, 6, zeros(2, 1)), broken), (self.png_file(2, 2, 6, [b"\x09" + bytes(8)] * 2), broken), (ok[:-3], broken), (ok[:20], broken), (b"\x89PNG\r\n\x1a\n", broken),
+                 (b"GIF89a" + bytes(40), "PNGではありません")]
+        for data, message in cases:
+            with self.assertRaises(web_ui.StudioError) as caught:
+                web_ui.studio_png_decode(data)
+            self.assertEqual(str(caught.exception), message)
+        self.assertEqual(web_ui.studio_png_decode(self.png_file(2048, 2048, 0, [b"\x00" + bytes(2048)] * 2048))[:2], (2048, 2048), "4 MP exactly is fine")
+        self.assertEqual(web_ui.studio_png_decode(self.png_file(2, 2, 6, zeros(2, 2), iend=False))[:2], (2, 2), "a file that stops after its image data is still read")
+        trailing = ok + b"junk"
+        self.assertEqual(web_ui.studio_png_decode(trailing)[:2], (2, 2))
+
+    def test_every_limit_is_exact(self):
+        def refused(call, message=None):
+            with self.assertRaises(web_ui.StudioError) as caught:
+                call()
+            if message:
+                self.assertEqual(str(caught.exception), message)
+        # the PNG hand-off: 32 MiB exactly, one byte over, the signature, eight bytes at least
+        signature = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+        limit = 32 * 1024 * 1024
+        self.assertEqual(web_ui.studio_png_payload(signature + bytes(limit - 8))["bytes"], limit)
+        refused(lambda: web_ui.studio_png_payload(signature + bytes(limit - 7)), "32MiB以下のPNGが必要です")
+        self.assertEqual(web_ui.studio_png_payload(signature)["bytes"], 8)
+        refused(lambda: web_ui.studio_png_payload(signature[:7]))
+        refused(lambda: web_ui.studio_png_payload(b"x" * 20))
+        # numbers in a matrix: 2**53 - 1 is the largest safe whole number
+        self.assertEqual(web_ui.studio_matrix([[2 ** 53 - 1, -(2 ** 53 - 1)]])["high"], 2 ** 53 - 1)
+        for bad in (2 ** 53, -(2 ** 53), float(2 ** 53), 2.0 ** 60, 2 ** 54):
+            refused(lambda: web_ui.studio_matrix([[bad]]))
+        refused(lambda: web_ui.studio_matrix({"z": [[1]], "zmin": 2 ** 53}), "色の範囲には有限の安全な数値を指定してください")
+        self.assertEqual(web_ui.studio_matrix([[None, None]])["low"], 0)
+        self.assertEqual(web_ui.studio_matrix([[None, None]])["high"], 1)
+        # sizes of a scene: 64 to 4096 a side, 4 MP, 100 layers, ids of 100 UTF-16 units
+        for width, height, ok in ((64, 64, True), (63, 64, False), (64, 63, False), (4096, 1024, True), (4096, 1025, False), (4097, 64, False), (2048, 2048, True), (2049, 2048, False)):
+            scene = self.blank(width=width, height=height)
+            if ok:
+                self.assertEqual(web_ui.studio_validate(scene)["width"], width)
+            else:
+                refused(lambda: web_ui.studio_validate(scene), "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
+        layer = lambda i: web_ui.studio_base_layer("rect", f"r{i}") | {"fill": "none", "stroke": "none", "strokeWidth": 0}
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(i) for i in range(100)]))["layers"]), 100)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(i) for i in range(101)])))
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "x" * 100}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "x" * 101}])), "レイヤーのIDまたは種類が不正です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "😀" * 50}]))["layers"]), 1, "100 UTF-16 units")
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {"id": "😀" * 51}])))
+        for field, low, high in (("x", -8192, 8192), ("y", -8192, 8192), ("w", 1, 8192), ("h", 1, 8192), ("rotation", -360, 360), ("opacity", 0, 1), ("strokeWidth", 0, 64)):
+            for value, ok in ((low, True), (high, True), (low - 1, False), (high + 1, False)):
+                call = lambda: web_ui.studio_validate(self.blank(layers=[layer(0) | {field: value}]))
+                self.assertEqual(call()["layers"][0][field], value) if ok else refused(call)
+        # text: 2000 UTF-16 units, 4 to 512 px
+        text = web_ui.studio_text_layer("a", "t", 0, 0)
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[text | {"text": "a" * 2000}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[text | {"text": "a" * 2001}])), "テキストが不正です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[text | {"text": "😀" * 1000}]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[text | {"text": "😀" * 1001}])))
+        for size, ok in ((4, True), (512, True), (3.9, False), (512.1, False)):
+            call = lambda: web_ui.studio_validate(self.blank(layers=[text | {"fontSize": size}]))
+            self.assertEqual(call()["layers"][0]["fontSize"], size) if ok else refused(call, "テキストが不正です")
+        # images: a PNG data URI of at most 12,000,000 characters, 20,000,000 in all; a mosaic cell 1..512 and 2..256 levels
+        image = lambda n, i=0: web_ui.studio_image_layer("data:image/png;base64," + "A" * (n - 22), 1, 1, f"i{i}") | {"w": 1, "h": 1}
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(12000000)]))["layers"]), 1)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(12000001)])), "画像は埋め込みPNGが必要です")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(10000000, 0), image(10000000, 1)]))["layers"]), 2)
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(10000000, 0), image(10000001, 1)])), "シーンの画像合計は20MB以下にしてください")
+        self.assertEqual(len(web_ui.studio_validate(self.blank(layers=[image(100, 0), image(100, 1)]))["layers"]), 2, "the total starts from zero")
+        for field, low, high in (("cell", 1, 512), ("levels", 2, 256)):
+            for value, ok in ((low, True), (high, True), (low - 1, False), (high + 1, False), (low + 0.5, False)):
+                call = lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {field: value}]))
+                self.assertEqual(call()["layers"][0][field], value) if ok else refused(call, "モザイク設定が不正です")
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {"cell": 0, "levels": 256}])))
+        refused(lambda: web_ui.studio_validate(self.blank(layers=[image(100) | {"cell": 1, "levels": 1}])))
+        # a workspace holds 1 to 40 states
+        for count, ok in ((1, True), (40, True), (41, False), (0, False)):
+            record = json.dumps({"schema": web_ui.STUDIO_WORKSPACE_SCHEMA, "items": [self.blank()] * count, "index": 0})
+            self.assertEqual(len(web_ui.studio_workspace_history(record).items), count) if ok else refused(lambda: web_ui.studio_workspace_history(record), "作業履歴の形式が不正です")
+        history = web_ui.StudioHistory(self.blank())
+        history.items = [self.blank()] * 40
+        self.assertEqual(len(json.loads(web_ui.studio_workspace_text(history))["items"]), 40)
+        history.items = [self.blank()] * 41
+        refused(lambda: web_ui.studio_workspace_text(history), "作業履歴の形式が不正です")
+        # the mosaic's own checks
+        for args in ((b"\0" * 4, 1, 1, 0), (b"\0" * 4, 1, 1, 513), (b"\0" * 4, 1, 1, 1, 1), (b"\0" * 4, 1, 1, 1, 257), (b"\0" * 4, 0, 1, 1), (b"\0" * 4, 1, 0, 1), (b"\0" * 3, 1, 1, 1), (b"\0" * 4, 1.5, 1, 1)):
+            refused(lambda: web_ui.studio_mosaic_rgba(*args), "モザイク入力が不正です")
+        self.assertEqual(len(web_ui.studio_mosaic_rgba(b"\0" * 4, 1, 1, 512, 2)), 4)
+        self.assertEqual(len(web_ui.studio_mosaic_rgba(b"\0" * 4 * 4, 2, 2, 1, 256)), 16)
+
+    def test_defaults_text_boxes_and_json_text(self):
+        arrow = web_ui.studio_place("arrow", "a", 1, 2)
+        self.assertEqual((arrow["headStyle"], arrow["headPlacement"], arrow["fill"], arrow["stroke"], arrow["headSize"], arrow["strokeWidth"]), ("beginner", "tip", web_ui.STUDIO_FILL, web_ui.STUDIO_STROKE, 28, 4))
+        clock = web_ui.studio_place("clock", "c", 1, 2)
+        self.assertEqual((clock["hour"], clock["minute"], clock["name"], clock["w"], clock["h"]), (10, 10, "時計 10:10", 160, 160))
+        text = web_ui.studio_place("text", "t", 1, 2)
+        self.assertEqual((text["mono"], text["wrap"], text["font"], text["text"]), (True, False, "sans", ""))
+        rect = web_ui.studio_place("rect", "r", 1, 2)
+        self.assertEqual((rect["fill"], rect["w"], rect["h"], rect["outline"] if "outline" in rect else None), (web_ui.STUDIO_FILL, 180, 120, None))
+        # a text stamp is as wide as its longest line (48 px a character, 120 to 700) and as high as its lines (62.4 px each, 70 at least)
+        for value, w, h in (("", 120, 70), ("ab", 120, 70), ("abc", 144, 70), ("a" * 14, 672, 70), ("a" * 15, 700, 70), ("a\nbcde", 192, 2 * 48 * 1.3), ("ab\nc\nd", 120, 3 * 48 * 1.3), ("😀😀😀", 144, 70)):
+            layer = web_ui.studio_text_layer(value, "t", 0, 0)
+            self.assertEqual((layer["w"], layer["h"]), (w, h), value)
+        self.assertEqual(web_ui.studio_text_layer("123456789012345", "t", 0, 0)["name"], "文字 / 123456789012")
+        self.assertEqual(web_ui.studio_text_layer("😀" * 14, "t", 0, 0)["name"], "文字 / " + "😀" * 12, "a name takes twelve characters, not twelve UTF-16 units")
+        self.assertEqual(web_ui.js_json({"é": "日本", "k": "\u2028"}), '{"é":"日本","k":"\u2028"}'.replace("\\u2028", "\u2028"))
+        self.assertEqual(web_ui.js_json({"b": 1, "a": {"2": 1, "1": 2, "x": 3}}), '{"b":1,"a":{"1":2,"2":1,"x":3}}')
+        self.assertEqual(web_ui.js_json([float("nan"), float("inf")]), "[null,null]")
+
+    def test_an_image_layer_is_mosaicked_from_its_embedded_original(self):
+        rgba = bytes([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255])
+        src = "data:image/png;base64," + base64.b64encode(web_ui.studio_png_encode(2, 2, rgba)).decode("ascii")
+        scene = self.blank(width=64, height=64, layers=[web_ui.studio_image_layer(src, 2, 2, "img", 64)])
+        plain = web_ui.studio_render(scene)
+        self.assertIn(src, plain, "a layer that keeps every pixel passes its image through")
+        scene["layers"][0]["cell"] = 2
+        mosaic = web_ui.studio_render(scene)
+        self.assertNotIn(src, mosaic)
+        one = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", mosaic).group(1)
+        width, height, pixels = web_ui.studio_png_decode(base64.b64decode(one))
+        self.assertEqual((width, height), (2, 2))
+        self.assertEqual(pixels, bytes(web_ui.studio_mosaic_rgba(rgba, 2, 2, 2, 256)))
+        self.assertEqual(len(set(pixels[i:i + 4] for i in range(0, 16, 4))), 1)
+
+    # --- the command line ----------------------------------------------------------------------------------------------------------------------
+    def test_cli_renders_svg_json_heatmap_and_base64(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            scene = tmp / "scene.json"
+            scene.write_text(web_ui.js_json(web_ui.studio_demo_scene(), 2), encoding="utf-8")
+            code, out, err = self.run_cli("--studio-render", scene)
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(out.decode("utf-8"), web_ui.studio_render(web_ui.studio_demo_scene()) + "\n")
+            code, out, _ = self.run_cli("--studio-render", scene, "--scale", "2")
+            self.assertIn('width="2560" height="1440"', out.decode("utf-8"))
+            code, out, _ = self.run_cli("--studio-render", scene, "--format", "json")
+            self.assertEqual(json.loads(out), web_ui.studio_validate(web_ui.studio_demo_scene()))
+            matrix = tmp / "matrix.json"
+            matrix.write_text("[[1,null,3]]", encoding="utf-8")
+            result = tmp / "scene-out.json"
+            code, out, err = self.run_cli("--studio-heatmap", matrix, "-o", result)
+            self.assertEqual((code, out), (0, b""))
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["layers"][0]["z"], [[1, None, 3]])
+            old = result.read_bytes()
+            code, _, err = self.run_cli("--studio-heatmap", matrix, "-o", result)
+            self.assertEqual(code, 2)
+            self.assertIn("--force", err)
+            self.assertEqual(result.read_bytes(), old, "an existing file is never replaced without --force")
+            matrix.write_text("[[2,3]]", encoding="utf-8")
+            self.assertEqual(self.run_cli("--studio-heatmap", matrix, "-o", result, "--force")[0], 0)
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["layers"][0]["z"], [[2, 3]])
+            png = tmp / "a.png"
+            png.write_bytes(web_ui.studio_png_encode(1, 1, bytes([1, 2, 3, 4])))
+            code, out, _ = self.run_cli("--studio-base64", png)
+            self.assertEqual(base64.b64decode(out.strip()), png.read_bytes())
+            code, out, _ = self.run_cli("--studio-base64", png, "--data-uri")
+            self.assertTrue(out.startswith(b"data:image/png;base64,"))
+
+    def test_cli_bad_input_is_exit_2_with_a_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bad = tmp / "bad.json"
+            for text in ("{", "[1]", '{"schema":"ironmate-image-studio/1"}', "﻿", "nan"):
+                bad.write_text(text, encoding="utf-8")
+                for option in ("--studio-render", "--studio-heatmap"):
+                    with self.subTest(text=text, option=option):
+                        code, out, err = self.run_cli(option, bad)
+                        self.assertEqual((code, out), (2, b""))
+                        self.assertTrue(err.startswith("invalid studio input: "))
+            self.assertEqual(self.run_cli("--studio-render", tmp / "missing.json")[0], 2)
+            text = tmp / "t.png"
+            text.write_bytes(b"not a png")
+            code, _, err = self.run_cli("--studio-base64", text)
+            self.assertEqual(code, 2)
+            big = tmp / "big.json"
+            big.write_bytes(b" " * 20_000_001)
+            self.assertEqual(self.run_cli("--studio-render", big)[0], 2)
+
+    # --- the page ------------------------------------------------------------------------------------------------------------------------------
+    def test_the_page_is_one_self_contained_document_with_every_control_the_script_uses(self):
+        page = web_ui.imagestudio_document()
+        self.assertEqual(page.count('<script type="module">'), 1)
+        self.assertEqual(page.count('id="imagestudio"'), 1)
+        self.assertNotRegex(page, r"https?://(?!www\.w3\.org/2000/svg)")
+        html = web_ui.imagestudio_html()
+        names = re.findall(r'data-is="([a-z0-9]+)"', html)
+        self.assertEqual(len(names), len(set(names)), "every control has its own name")
+        source = web_ui._JS["imagestudio.js"]
+        used = set(re.findall(r"\bel\.([a-z0-9]+)\b", source)) | set(re.findall(r'"([a-z]+)"', " ".join(re.findall(r"for\((?:const|let) \w+ of ?\[([^\]]*)\]\)el\[", source))))
+        self.assertEqual(used - set(names), set(), "the script uses only controls the page has")
+        self.assertEqual(set(names) - used, set(), "every control is used by the script")
+        self.assertEqual(len(re.findall(r'name="is-tool"', html)), len(web_ui.STUDIO_TOOLS))
+        self.assertEqual(len(re.findall(r"data-stamp=", html)), len(web_ui.STUDIO_EMOJI) + len(web_ui.STUDIO_KAOMOJI))
+        self.assertIn("globalThis.webUiImageStudio=api", page)
+        self.assertIn(".ui-imagestudio", web_ui.bundled_css())
+        self.assertTrue(all(int(px) % 8 == 0 for px in re.findall(r"(\d+)px", web_ui._CSS["imagestudio.css"])), "pixel sizes are multiples of 8")
+        self.assertIn("examples/image-studio.html", web_ui.example_pages())
+        self.assertIn('href="./image-studio.html"', web_ui.example_pages()["examples/index.html"])
+        self.assertNotIn("</script", source.lower())
+        self.assertNotIn('"""', source)
+
+    def test_the_js_constants_are_the_python_values(self):
+        source = web_ui._JS["imagestudio.js"]
+        want = {"SCHEMA": web_ui.STUDIO_SCHEMA, "WORKSPACE_SCHEMA": web_ui.STUDIO_WORKSPACE_SCHEMA, "WORKSPACE_MAX_BYTES": web_ui.STUDIO_WORKSPACE_MAX_BYTES, "PALETTE": list(web_ui.STUDIO_PALETTE),
+                "FILL": web_ui.STUDIO_FILL, "STROKE": web_ui.STUDIO_STROKE, "BACKGROUND": web_ui.STUDIO_BACKGROUND, "WSPACE": web_ui._STU_WSPACE, "MIDLETTER": web_ui._STU_MIDLETTER,
+                "MIDNUM": web_ui._STU_MIDNUM, "MIDNUMLET": web_ui._STU_MIDNUMLET, "NEWLINE": web_ui._STU_NEWLINE, "KATAKANA": [list(r) for r in web_ui._STU_KATAKANA],
+                "HAN_HIRAGANA": [list(r) for r in web_ui._STU_HAN_HIRAGANA], "PICTOGRAPHIC": [list(r) for r in web_ui._STU_PICTOGRAPHIC], "WORD_OVERRIDES": [[k, [list(r) for r in rs]] for k, rs in web_ui._STU_WORD_OVERRIDES],
+                "GRAPHEME_OVERRIDES": [[k, [list(r) for r in rs]] for k, rs in web_ui._STU_GRAPHEME_OVERRIDES]}
+        text = web_ui._studio_js_constants()
+        self.assertIn(text, source, "the module starts from these lines")
+        found, decoder = {}, json.JSONDecoder()
+        for line in text.splitlines():
+            position = len(line) - len(line.removeprefix("export ").removeprefix("const "))
+            while True:
+                name = re.compile(r"([A-Z_]+)=").match(line, position)
+                value, position = decoder.raw_decode(line, name.end())
+                found[name.group(1)] = value
+                if line[position] == ";":
+                    break
+                position += 1
+        self.assertEqual(found, want)
+
+    def test_the_platform_adapters_check_the_page(self):
+        for name, fragment in (("web-ui-image-studio", None), ("web-ui-image-stamp", "is-tools-title")):
+            adapter = web_ui.btk_adapter(name)
+            self.assertEqual(adapter["url"], "http://127.0.0.1:8000/examples/image-studio.html" + ("" if fragment is None else "#" + fragment))
+            self.assertNotEqual(adapter["click"]["before"], adapter["click"]["after"])
+            self.assertTrue(all("imagestudio" in selector or selector.startswith("#is-") for selector in adapter["elements"]))
+            self.assertFalse(any(selector.startswith("select") or "[data-is=\"scale\"]" in selector for selector in adapter["elements"]), "a select is covered through its label")
+        self.assertEqual(len(web_ui.studio_demo_scene()["layers"]), int(web_ui.BTK_ADAPTERS["web-ui-image-studio"]["click"]["before"]))
+
+    def test_random_scenes_survive_validation_and_a_workspace_round_trip(self):
+        rng = random.Random(2026)
+        kinds = ("rect", "ellipse", "triangle", "arrow", "clock")
+        for _ in range(60):
+            scene = self.blank(width=rng.randint(64, 900), height=rng.randint(64, 700), background=rng.choice(["none", "#FFFFFF", "#18A7A1"]))
+            for i in range(rng.randint(0, 6)):
+                scene["layers"].append(web_ui.studio_place(rng.choice(kinds), f"L{i}", rng.randint(-50, 900), rng.randint(-50, 700), outline=rng.random() < 0.5))
+            history = web_ui.StudioHistory(scene)
+            checked = history.current
+            edit = web_ui.studio_clone(checked)
+            edit["layers"].append(web_ui.studio_text_layer(rng.choice(["a", "日本語", "x y z", "🌱"]), "text", rng.randint(0, 100), rng.randint(0, 100)))
+            history.commit(edit)
+            restored = web_ui.studio_workspace_history(web_ui.studio_workspace_text(history))
+            self.assertEqual((restored.index, restored.items), (history.index, history.items))
+            ET.fromstring(web_ui.studio_svg(restored.current))
 
 
 if __name__ == '__main__':

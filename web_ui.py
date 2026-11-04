@@ -14,6 +14,7 @@ import colorsys
 import errno
 import functools
 import hashlib
+import heapq
 import hmac
 import http.client
 import importlib.util
@@ -21,11 +22,15 @@ import json
 import math
 import base64
 import os
+from collections import Counter, defaultdict
+from datetime import date
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -4176,6 +4181,17 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     # The request form is lower on the page, so this one opens at its label (#mcp-method-label) to keep everything on the first screen.
     "web-ui-mcp-send": {"page": "mcp-lab.html", "fragment": "mcp-method-label", "elements": ["#mcp-method-label", "#mcp-path", "#mcp-headers", "#mcp-body", "#mcp [data-mcp-send]"],
                         "click": {"target": "#mcp [data-mcp-send]", "observe": "#mcp", "attribute": "data-http-status", "before": None, "after": "400"}},
+    "web-ui-patterns": {"page": "patterns.html", "elements": ["#patterns h2", "#patterns [data-patterns-query]", "#patterns [data-patterns-count]", "#patterns [data-patterns-more]"],
+                        "click": {"target": "#patterns [data-patterns-more]", "observe": "#patterns", "attribute": "data-shown", "before": "48", "after": "96"}},
+    # The runner is lower on the page, so this one opens at its heading (#patterns-run-title) to keep everything on the first screen.
+    "web-ui-pattern-run": {"page": "patterns.html", "fragment": "patterns-run-title",
+                           "elements": ["#patterns-run-title", "#patterns [data-patterns-request]", "#patterns [data-patterns-run]", "#patterns [data-patterns-example]"],
+                           "click": {"target": "#patterns [data-patterns-run]", "observe": "#patterns", "attribute": "data-runs", "before": "1", "after": "2"}},
+    "web-ui-image-studio": {"page": "image-studio.html", "elements": ["#imagestudio h2", "#imagestudio [data-is=\"board\"]", "#imagestudio [data-is=\"undo\"]", "#imagestudio [data-is=\"blank\"]"],
+                            "click": {"target": "#imagestudio [data-is=\"blank\"]", "observe": "#imagestudio", "attribute": "data-layers", "before": "8", "after": "0"}},
+    # The tools are lower on the page, so this one opens at their heading (#is-tools-title) to keep everything on the first screen.
+    "web-ui-image-stamp": {"page": "image-studio.html", "fragment": "is-tools-title", "elements": ["#is-tools-title", "#imagestudio [data-is=\"text\"]", "#imagestudio [data-stamp=\"🌱\"]"],
+                           "click": {"target": "#imagestudio [data-stamp=\"🌱\"]", "observe": "#imagestudio", "attribute": "data-tool", "before": "select", "after": "stamp"}},
     "web-ui-test-report": {"page": "test-report.html", "elements": ["#report h2", "#report-input", "#report [data-report-run]", "#report [data-report-status]"],
                            "click": {"target": "#report [data-report-run]", "observe": "#report [data-report-status]", "attribute": "textContent", "before": "Nothing read yet.",
                                      "after": "Nothing to read: paste a report first."}},
@@ -5510,11 +5526,11 @@ def report_html() -> str:
     return ('<section class="ui-panel ui-report" id="report" data-ui-report><h2>Test report</h2>'
             '<p class="ui-muted">Paste or open JUnit XML or Flutter JSONL (one event per line). Nothing is sent.</p>'
             '<label for="report-input">Current run</label><textarea class="ui-input" id="report-input" data-report-input spellcheck="false" autocomplete="off" rows="4"></textarea>'
-            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
             '<p><button class="ui-button" type="button" data-report-run>Read the report</button> <button class="ui-button" type="button" data-report-copy>Copy summary</button> '
             '<button class="ui-button" type="button" data-report-convert hidden>Copy as JUnit XML</button> <label class="ui-report-check"><input type="checkbox" data-report-messages> Show failure messages</label></p>'
             '<p class="ui-report-status ui-muted" role="status" aria-live="polite" data-report-status>Nothing read yet.</p>'
             '<p class="ui-report-line" data-report-line></p>'
+            '<label for="report-file">Or choose a file</label><input class="ui-input" id="report-file" data-report-file type="file" accept=".xml,.json,.jsonl,.txt,application/xml,text/xml,application/json">'
             '<details class="ui-report-more"><summary>Compare with a previous run</summary><label for="report-previous">Previous run (JUnit XML): what is new, recurring or resolved</label>'
             '<textarea class="ui-input" id="report-previous" data-report-previous spellcheck="false" autocomplete="off" rows="4"></textarea></details>'
             '<div data-report-out></div></section>')
@@ -6281,6 +6297,2924 @@ def mcp_html() -> str:
 def mcp_document(*, theme: str = "modern") -> str:
     """A single-file page for the MCP lab."""
     return render_document(trusted_html='<main class="ui-page">' + mcp_html() + "</main>" + module_script(_JS["mcp.js"]), title="MCP lab", theme=theme, css=bundled_css())
+
+
+# --- Pattern references: the portable processing behind flutter_navigation_basic's 792-pattern catalogue ---------------------------------------
+# Absorbs the Python producers that stand behind the catalogue's data-processing patterns (python/collection_query_patterns.py, search_patterns.py, pagination_patterns.py,
+# scoring_heap_patterns.py, state_reducer.py, conversion_patterns.py, validation_patterns.py, workflow_patterns.py, collection_transform.py, list_selection.py, list_ordering.py,
+# text_processing.py, collection_window.py, collection_structure.py). Their Python tests (python/tests/test_*) are the golden values, and the 34 files of assets/data_processing/ that
+# the Dart app displays are their checked-in outputs (tests/fixtures/pattern_assets.json). Each takes a JSON request and returns a JSON result or raises ``ValueError``; nothing is
+# evaluated, nothing is persisted. Python is the reference; ``patterns.js`` equals it for the families that need no Python-only behaviour (see the README for which).
+# Differences from the originals: none of behaviour on any request they accept or refuse with ValueError; where they crashed with a TypeError (an unhashable ``operation``, say) these raise ValueError too.
+# Their command-line wrappers became ``web_ui.py --pattern FAMILY``, reading one JSON request from stdin.
+PATTERN_MAX_INPUT = 2_000_000
+_PAT_MISSING = object()
+_PAT_TYPES = {"null": lambda x: x is None, "boolean": lambda x: type(x) is bool, "integer": lambda x: type(x) is int, "number": lambda x: type(x) in (int, float),
+              "string": lambda x: isinstance(x, str), "array": lambda x: isinstance(x, list), "object": lambda x: isinstance(x, dict)}
+_PAT_FLOAT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_PAT_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_PAT_NAMED_REGEX = {"ascii_identifier": r"[A-Za-z_][A-Za-z_0-9]*", "hex_color": r"#[0-9a-fA-F]{6}", "digits": r"[0-9]+"}
+
+
+def _pat_need(condition: Any, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def _pat_finite(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def pattern_query(req: Any) -> Any:
+    """Pure collection operations (catalogue 011, 012, 014-018): ``stable_sort``, ``custom_sort`` (a named comparator, never code), ``group_by``, ``facet``, ``tag``, ``range`` and ``geo``
+    (haversine, in km). Sorting is stable; mixed key types are refused."""
+    _pat_need(isinstance(req, dict) and isinstance(req.get("items"), list), "items must be a list")
+    items = req["items"]
+    op = req.get("operation")
+    if op in ("stable_sort", "custom_sort"):
+        key = req.get("key")
+        _pat_need(isinstance(key, str) and key, "sort key required")
+        _pat_need(not any(not isinstance(row, dict) or key not in row for row in items), "missing sort key")
+        values = [row[key] for row in items]
+        _pat_need(not any(type(v) not in (str, int, float) or (type(v) is float and not math.isfinite(v)) for v in values), "unsupported sort key")
+        _pat_need(len({type(v) for v in values}) <= 1, "mixed sort key types")
+        descending = req.get("descending", False)
+        _pat_need(type(descending) is bool, "descending must be boolean")
+        if op == "custom_sort":
+            comparator = req.get("comparator")      # a named comparator, not executable input or arbitrary eval
+            _pat_need(comparator in ("ascending", "descending"), "unsupported comparator")
+            descending = comparator == "descending"
+        return sorted(items, key=lambda row: row[key], reverse=descending)
+    if op == "group_by":
+        key = req.get("key")
+        _pat_need(isinstance(key, str) and key, "group key required")
+        groups: list[dict[str, Any]] = []
+        for item in items:
+            _pat_need(isinstance(item, dict) and key in item, "missing group key")
+            value = item[key]
+            _pat_need(type(value) in (str, int, float, bool, type(None)), "group key must be scalar")
+            group = next((g for g in groups if type(g["value"]) is type(value) and g["value"] == value), None)
+            if group is None:
+                group = {"value": value, "items": []}
+                groups.append(group)
+            group["items"].append(item)
+        return groups
+    if op in ("facet", "tag"):
+        key, selected = req.get("key"), req.get("selected")
+        _pat_need(isinstance(key, str) and isinstance(selected, list), "key and selected list required")
+        _pat_need(not any(type(v) not in (str, int, float, bool) for v in selected), "invalid selected value")
+        def matches(item: Any) -> bool:
+            _pat_need(isinstance(item, dict) and key in item, "missing filter key")
+            value = item[key]
+            if op == "tag":
+                _pat_need(isinstance(value, list), "tags must be a list")
+                return any(tag in value for tag in selected)
+            return value in selected
+        return [item for item in items if matches(item)]
+    if op == "range":
+        key, low, high = req.get("key"), req.get("minimum"), req.get("maximum")
+        _pat_need(isinstance(key, str) and _pat_finite(low) and _pat_finite(high) and low <= high, "invalid numeric range")
+        result = []
+        for item in items:
+            _pat_need(isinstance(item, dict) and key in item, "missing range key")
+            _pat_need(_pat_finite(item[key]), "invalid range value")
+            if low <= item[key] <= high:
+                result.append(item)
+        return result
+    if op == "geo":
+        lat, lon, radius = (req.get(k) for k in ("latitude", "longitude", "radius_km"))
+        _pat_need(all(_pat_finite(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
+        def distance(row: Any) -> float:
+            _pat_need(isinstance(row, dict), "invalid point")
+            a, b = row.get("latitude"), row.get("longitude")
+            _pat_need(_pat_finite(a) and _pat_finite(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
+            p1, p2 = math.radians(lat), math.radians(a)
+            dp, dl = p2 - p1, math.radians(b - lon)
+            h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+            return 6371.0088 * 2 * math.asin(min(1, math.sqrt(h)))
+        return [row for row in items if distance(row) <= radius]
+    raise ValueError("unsupported operation")
+
+
+def _pat_normalized(text: Any) -> str:
+    _pat_need(isinstance(text, str), "expected string")
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def _pat_distance(a: str, b: str) -> int:
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        nxt = [i]
+        for j, cb in enumerate(b, 1):
+            nxt.append(min(nxt[-1] + 1, row[j] + 1, row[j - 1] + (ca != cb)))
+        row = nxt
+    return row[-1]
+
+
+def _pat_stem(token: str) -> str:
+    token = _pat_normalized(token)
+    if not token.isascii() or not token.isalpha():
+        return token
+    for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[:-len(suffix)]
+    return token
+
+
+def pattern_search(request: Any) -> Any:
+    """Pure search helpers (006-008, 021-023): ``tokenize``, ``stem`` (a limited English suffix heuristic, not a linguistic stemmer), ``history`` (newest first, de-duplicated),
+    ``fuzzy`` (normalized edit distance), ``autocomplete`` and ``highlight`` (match status, not offsets into normalized text)."""
+    _pat_need(isinstance(request, dict), "expected request object")
+    op = request.get("operation")
+    if op in ("tokenize", "stem"):
+        text = request.get("text")
+        _pat_need(isinstance(text, str), "text required")
+        tokens = re.findall(r"\w+", _pat_normalized(text), flags=re.UNICODE)
+        return [_pat_stem(t) for t in tokens] if op == "stem" else tokens
+    if op == "history":
+        events = request.get("events")
+        _pat_need(isinstance(events, list) and all(isinstance(e, str) for e in events), "events must be strings")
+        limit = request.get("limit", 20)
+        _pat_need(type(limit) is int and 1 <= limit <= 1000, "invalid history limit")
+        result, seen = [], set()
+        for value in reversed(events):
+            key = _pat_normalized(value)
+            if key and key not in seen:
+                result.append(value)
+                seen.add(key)
+                if len(result) == limit:
+                    break
+        return result
+    if op in ("fuzzy", "autocomplete", "highlight"):
+        query = _pat_normalized(request.get("query"))
+        if op == "highlight":
+            text = request.get("text")
+            _pat_need(isinstance(text, str) and query, "text and query required")
+            return {"matched": query in _pat_normalized(text), "text": text}
+        values = request.get("values")
+        _pat_need(isinstance(values, list) and all(isinstance(v, str) for v in values), "values must be strings")
+        if not query:
+            return []
+        limit = request.get("limit", 10)
+        _pat_need(type(limit) is int and 1 <= limit <= 1000, "invalid result limit")
+        if op == "autocomplete":
+            return [v for v in values if _pat_normalized(v).startswith(query)][:limit]
+        max_distance = request.get("max_distance", 2)
+        _pat_need(type(max_distance) is int and 0 <= max_distance <= 10, "invalid edit distance")
+        ranked = [(_pat_distance(query, _pat_normalized(v)), i, v) for i, v in enumerate(values)]
+        return [v for d, i, v in sorted(ranked) if d <= max_distance][:limit]
+    raise ValueError("unsupported search operation")
+
+
+def _pat_check_int(value: Any, name: str, minimum: int = 0) -> int:
+    _pat_need(type(value) is int and value >= minimum, f"{name} must be an integer >= {minimum}")
+    return value
+
+
+def _pat_digest(items: list[Any]) -> str:
+    payload = json.dumps(items, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _pat_cursor_encode(index: int, digest: str) -> str:
+    return base64.urlsafe_b64encode(json.dumps({"v": 1, "i": index, "h": digest}, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _pat_cursor_decode(cursor: Any, digest: str) -> int:
+    _pat_need(isinstance(cursor, str) and cursor and len(cursor) <= 512, "invalid cursor")
+    try:
+        obj = json.loads(base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("invalid cursor") from exc
+    _pat_need(isinstance(obj, dict) and set(obj) == {"v", "i", "h"} and type(obj["v"]) is int and obj["v"] == 1 and obj["h"] == digest, "cursor does not match dataset")
+    return _pat_check_int(obj["i"], "cursor index")
+
+
+def pattern_page(request: Any) -> dict[str, Any]:
+    """Deterministic, stateless pagination (031-033): ``offset``, ``cursor`` and ``infinite``. A cursor is an opaque position token bound to the exact dataset (a SHA-256
+    fingerprint), so a changed dataset is refused; infinite scrolling consumes successive pages, it does not imply scrolling."""
+    _pat_need(isinstance(request, dict) and not (set(request) - {"operation", "items", "limit", "offset", "cursor"}), "invalid request fields")
+    mode = request.get("operation")
+    _pat_need(mode in ("offset", "cursor", "infinite"), "invalid pagination operation")
+    items = request.get("items")
+    _pat_need(isinstance(items, list), "items must be a list")
+    limit = _pat_check_int(request.get("limit"), "limit", 1)
+    _pat_need(limit <= 1000, "limit too large")
+    if mode == "offset":
+        _pat_need("cursor" not in request, "offset mode does not accept cursor")
+        start = _pat_check_int(request.get("offset", 0), "offset")
+    else:
+        _pat_need("offset" not in request, "cursor mode does not accept offset")
+        digest = _pat_digest(items)
+        start = _pat_cursor_decode(request["cursor"], digest) if request.get("cursor") is not None else 0
+    _pat_need(start <= len(items), "page position beyond dataset")
+    end = min(start + limit, len(items))
+    result: dict[str, Any] = {"items": items[start:end], "has_more": end < len(items)}
+    if mode == "offset":
+        result["next_offset"] = end if end < len(items) else None
+    else:
+        result["next_cursor"] = _pat_cursor_encode(end, digest) if end < len(items) else None
+    return result
+
+
+def pattern_score(payload: Any) -> Any:
+    """TF-IDF (025) and a minimum heap (028). TF-IDF is ``tf * (ln((n + 1) / (df + 1)) + 1)`` over lower-cased ``\\w+`` tokens; the heap keeps duplicates and never changes its input."""
+    _pat_need(isinstance(payload, dict), "request must be object")
+    operation = payload.get("operation")
+    if operation == "tfidf":
+        _pat_need(set(payload) == {"operation", "documents"}, "unexpected TF-IDF fields")
+        documents = payload["documents"]
+        _pat_need(isinstance(documents, list) and all(isinstance(d, str) for d in documents), "documents must be strings")
+        tokens = [re.findall(r"\w+", d.casefold()) for d in documents]
+        count = len(tokens)
+        df = Counter(word for doc in tokens for word in set(doc))
+        return [{word: (freq / len(doc)) * (math.log((count + 1) / (df[word] + 1)) + 1) for word, freq in sorted(Counter(doc).items())} for doc in tokens]
+    if operation == "minheap":
+        _pat_need(not (set(payload) - {"operation", "values", "pops"}), "unexpected heap fields")
+        values, pops = payload.get("values"), payload.get("pops", 0)
+        _pat_need(isinstance(values, list) and all(_pat_finite(x) for x in values), "heap values must be finite numbers")
+        _pat_need(type(pops) is int and 0 <= pops <= len(values), "invalid pop count")
+        heap = values.copy()
+        heapq.heapify(heap)
+        removed = [heapq.heappop(heap) for _ in range(pops)]
+        return {"popped": removed, "remaining_sorted": sorted(heap)}
+    raise ValueError("unsupported operation")
+
+
+def _pat_state_int(value: Any, label: str) -> int:
+    _pat_need(type(value) is int, f"{label} must be integer")
+    _pat_need(abs(value) <= 1_000_000_000, f"{label} out of bounds")
+    return value
+
+
+def pattern_reduce(payload: Any) -> dict[str, Any]:
+    """A pure JSON state transition / event reduction (164-165): ``set``, ``increment``, ``decrement`` and ``reset`` over an integer, in order, with the whole history. No lifecycle,
+    GetX or Redux middleware is implied; ``mode`` (``event_state`` or ``redux``) is only echoed."""
+    _pat_need(isinstance(payload, dict) and set(payload) == {"mode", "initial", "actions"}, "expected mode, initial and actions")
+    mode = payload["mode"]
+    _pat_need(mode in ("event_state", "redux"), "unsupported mode")
+    state = initial = _pat_state_int(payload["initial"], "initial")
+    actions = payload["actions"]
+    _pat_need(isinstance(actions, list) and len(actions) <= 1000, "actions must be array of at most 1000")
+    history = [state]
+    for raw in actions:
+        _pat_need(isinstance(raw, dict) and raw.get("type") in ("set", "increment", "decrement", "reset"), "action requires known type")
+        op = raw["type"]
+        _pat_need(set(raw) == ({"type", "value"} if op != "reset" else {"type"}), "action fields do not match type")
+        if op == "reset":
+            state = initial
+        else:
+            value = _pat_state_int(raw["value"], "action value")
+            state = _pat_state_int(value if op == "set" else state + value if op == "increment" else state - value, "result")
+        history.append(state)
+    return {"schema": "state-reducer/1", "mode": mode, "state": state, "history": history}
+
+
+def pattern_convert(req: Any) -> dict[str, Any]:
+    """Safe data conversion (103-105, 107, 109-110): ``normalize`` (NFC/NFKC, case), ``coerce`` (int, float, bool, ASCII notation only), ``date`` (ISO or compact, a real calendar date),
+    ``unit`` (length and mass, overflow and underflow refused), ``encoding`` (UTF-8 <-> strict Base64) and ``mask`` (keep the last characters; never reveal a value that is not longer)."""
+    _pat_need(isinstance(req, dict), "request must be object")
+    op, value = req.get("operation"), req.get("value")
+    if op == "normalize":
+        _pat_need(isinstance(value, str), "normalize expects string")
+        form = req.get("form", "NFKC")
+        _pat_need(form in ("NFC", "NFKC"), "unsupported normalization form")
+        result = unicodedata.normalize(form, value.strip())
+        case = req.get("case", "preserve")
+        if case == "lower":
+            result = result.casefold()
+        elif case == "upper":
+            result = result.upper()
+        else:
+            _pat_need(case == "preserve", "unsupported case mode")
+        return {"value": result}
+    if op == "coerce":
+        target = req.get("target")
+        if target == "int":
+            _pat_need(not isinstance(value, bool) and isinstance(value, (str, int)), "unsafe integer coercion")
+            text = str(value)
+            _pat_need(re.fullmatch(r"[+-]?[0-9]+", text), "invalid integer")
+            try:     # CPython caps int(str) at 4300 digits; keep our own message
+                return {"value": int(text)}
+            except ValueError as exc:
+                raise ValueError("invalid integer") from exc
+        if target == "float":
+            _pat_need(not isinstance(value, bool) and isinstance(value, (str, int, float)), "unsafe float coercion")
+            _pat_need(not isinstance(value, str) or _PAT_FLOAT.fullmatch(value), "invalid float")
+            try:
+                result = float(value)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError("invalid float") from exc
+            _pat_need(math.isfinite(result), "non-finite float")
+            return {"value": result}
+        if target == "bool":      # exact types only: 1.0 == 1 and must not count as a boolean
+            if value is True or value in ("true", "1") or (type(value) is int and value == 1):
+                return {"value": True}
+            if value is False or value in ("false", "0") or (type(value) is int and value == 0):
+                return {"value": False}
+            raise ValueError("invalid boolean")
+        raise ValueError("unsupported target")
+    if op == "date":
+        _pat_need(isinstance(value, str), "date expects string")
+        source = req.get("source", "iso")
+        if source == "iso":
+            _pat_need(_PAT_ISO_DATE.fullmatch(value), "invalid iso date")      # fromisoformat also takes week dates and YYYYMMDD
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError("invalid iso date") from exc
+        elif source == "compact":
+            _pat_need(re.fullmatch(r"[0-9]{8}", value), "invalid compact date")
+            try:
+                parsed = date(int(value[:4]), int(value[4:6]), int(value[6:]))
+            except ValueError as exc:
+                raise ValueError("invalid compact date") from exc
+        else:
+            raise ValueError("unsupported date format")
+        target = req.get("target", "iso")
+        if target == "iso":
+            out = parsed.isoformat()
+        elif target == "compact":
+            out = f"{parsed.year:04d}{parsed.month:02d}{parsed.day:02d}"
+        else:
+            raise ValueError("unsupported target format")
+        return {"value": out}
+    if op == "unit":
+        unit_from, unit_to = req.get("from"), req.get("to")
+        try:      # math.isfinite converts ints to float: huge ints raise OverflowError
+            finite = type(value) in (int, float) and math.isfinite(value)
+        except OverflowError:
+            finite = False
+        _pat_need(finite, "unit value must be finite number")
+        factors = {"m": 1.0, "km": 1000.0, "cm": 0.01, "kg": 1.0, "g": 0.001}
+        groups = [{"m", "km", "cm"}, {"kg", "g"}]
+        _pat_need(unit_from in factors and unit_to in factors and any({unit_from, unit_to} <= g for g in groups), "incompatible units")
+        result = value * factors[unit_from] / factors[unit_to]      # an int too large for a float was refused above, so this cannot raise
+        _pat_need(math.isfinite(result), "unit conversion overflow")
+        _pat_need(not (value != 0 and result == 0), "unit conversion underflow")
+        return {"value": result}
+    if op == "encoding":
+        _pat_need(isinstance(value, str), "encoding expects string")
+        mode = req.get("mode")
+        if mode == "utf8_to_base64":
+            try:      # lone surrogates cannot be UTF-8 encoded
+                raw = value.encode("utf-8")
+            except UnicodeError as exc:
+                raise ValueError("invalid utf8 input") from exc
+            return {"value": base64.b64encode(raw).decode("ascii")}
+        if mode == "base64_to_utf8":
+            try:
+                return {"value": base64.b64decode(value, validate=True).decode("utf-8")}
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("invalid base64 utf8") from exc
+        raise ValueError("unsupported encoding mode")
+    if op == "mask":
+        _pat_need(isinstance(value, str), "mask expects string")
+        keep = req.get("keep_last", 4)
+        _pat_need(type(keep) is int and 0 <= keep <= 32, "invalid keep_last")
+        if len(value) <= keep:      # never reveal a value shorter than the suffix
+            return {"value": "*" * len(value)}
+        return {"value": "*" * (len(value) - keep) + (value[-keep:] if keep else "")}
+    raise ValueError("unsupported operation")
+
+
+def _pat_validate_one(operation: Any, value: Any, options: Any = None) -> bool:
+    options = options or {}
+    _pat_need(isinstance(options, dict), "options must be an object")
+    number = lambda v: type(v) is int or (type(v) is float and math.isfinite(v))     # exact for huge ints, never a float conversion
+    if operation == "required":
+        return value is not None and (not isinstance(value, str) or bool(value.strip()))
+    if operation == "email":
+        return isinstance(value, str) and len(value) <= 254 and bool(re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", value))
+    if operation == "password":      # a heuristic only: never a claim of resistance to leaked or common passwords
+        return isinstance(value, str) and 12 <= len(value) <= 1024 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+    if operation == "phone":
+        return isinstance(value, str) and bool(re.fullmatch(r"\+?[0-9]{8,15}", value))
+    if operation == "url":
+        if not isinstance(value, str) or len(value) > 2048 or any(c.isspace() for c in value):
+            return False
+        try:
+            parts = urlsplit(value)
+            return parts.scheme in ("http", "https") and bool(parts.hostname) and not parts.username and not parts.password and parts.port != 0
+        except ValueError:
+            return False
+    if operation == "date":
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return False
+        try:
+            return date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            return False
+    if operation == "range":
+        low, high = options.get("minimum"), options.get("maximum")
+        _pat_need(number(low) and number(high) and low <= high, "invalid numeric range")
+        return number(value) and low <= value <= high
+    if operation == "regex":
+        name = options.get("pattern")
+        _pat_need(name in _PAT_NAMED_REGEX, "unknown named regex")      # a fixed allowlist, never a user-provided pattern
+        return isinstance(value, str) and len(value) <= 4096 and bool(re.fullmatch(_PAT_NAMED_REGEX[name], value))
+    raise ValueError("unsupported validation operation")
+
+
+def pattern_validate(request: Any) -> dict[str, Any]:
+    """Small, deterministic validation (091-099): ``required``, ``email``, ``password``, ``phone``, ``url``, ``date``, ``range`` and a named ``regex``; ``form`` checks several fields and
+    reports each. Not a security-grade verifier."""
+    _pat_need(isinstance(request, dict), "request must be an object")
+    operation = request.get("operation")
+    if operation == "form":
+        fields = request.get("fields")
+        _pat_need(isinstance(fields, list) and fields, "form requires fields")
+        results = []
+        for field in fields:
+            _pat_need(isinstance(field, dict) and isinstance(field.get("name"), str) and field["name"], "invalid form field")
+            results.append({"name": field["name"], "valid": _pat_validate_one(field.get("rule"), field.get("value"), field.get("options"))})
+        return {"valid": all(r["valid"] for r in results), "fields": results}
+    return {"valid": _pat_validate_one(operation, request.get("value"), request.get("options"))}
+
+
+_PAT_WORKFLOW_OPS = {"swap", "move_top", "move_bottom", "insert_sorted", "undo_redo", "command", "memento", "position_swap", "batch", "transaction", "event_driven", "pubsub", "queue",
+                     "saga", "outbox", "event_sourcing", "cqrs", "scheduler", "worker", "checkpoint", "pipeline"}
+
+
+def _pat_keys(req: dict[str, Any], permitted: Any, required: Any = ()) -> None:
+    _pat_need(set(req) <= set(permitted) and set(required) <= set(req), "invalid keys")
+
+
+def _pat_index(value: Any, size: int, allow_end: bool = False) -> int:
+    _pat_need(type(value) is int and 0 <= value < size + int(allow_end), "index out of range")
+    return value
+
+
+def _pat_mutate(xs: list[Any], command: Any) -> list[Any]:
+    _pat_need(isinstance(command, dict), "request must be object")
+    kind = command.get("type")
+    if kind == "append":
+        _pat_keys(command, ("type", "value"), ("type", "value"))
+        xs.append(command["value"])
+    elif kind == "remove_last":
+        _pat_keys(command, ("type",), ("type",))
+        _pat_need(bool(xs), "empty list")
+        xs.pop()
+    elif kind == "replace":
+        _pat_keys(command, ("type", "index", "value"), ("type", "index", "value"))
+        xs[_pat_index(command["index"], len(xs))] = command["value"]
+    else:
+        raise ValueError("unknown command")
+    _pat_need(len(xs) <= 1000, "list too large")
+    return xs
+
+
+def pattern_workflow(request: Any) -> dict[str, Any]:
+    """Bounded JSON list operations and in-memory workflow references (176-182, 185-198): swap, move, sorted insert, undo/redo (also as command and memento), batch, worker, scheduler, checkpoint,
+    transaction/saga/pipeline with a controlled failure and rollback, and event-driven/pubsub/queue/outbox/event-sourcing/CQRS projections. Deterministic and single-process: not a
+    database, a broker, a distributed transaction engine or a scheduler."""
+    r = request
+    _pat_need(isinstance(r, dict), "request must be object")
+    operation = r.get("operation")
+    _pat_need(type(operation) is str and operation in _PAT_WORKFLOW_OPS, "unknown operation")
+    _pat_keys(r, ("operation", "values", "a", "b", "index", "value", "commands", "batch_size", "subscribers", "events", "fail_at", "checkpoint", "schedule"))
+    xs: list[Any] = []
+    values = r.get("values")
+    _pat_need(isinstance(values, list) and len(values) <= 1000, "values must be array <=1000")
+    xs = list(values)
+    if operation in ("swap", "position_swap"):
+        _pat_keys(r, ("operation", "values", "a", "b"), ("operation", "values", "a", "b"))
+        a, b = _pat_index(r["a"], len(xs)), _pat_index(r["b"], len(xs))
+        xs[a], xs[b] = xs[b], xs[a]
+        result: Any = xs
+    elif operation in ("move_top", "move_bottom"):
+        _pat_keys(r, ("operation", "values", "index"), ("operation", "values", "index"))
+        v = xs.pop(_pat_index(r["index"], len(xs)))
+        xs.insert(0 if operation == "move_top" else len(xs), v)
+        result = xs
+    elif operation == "insert_sorted":
+        _pat_keys(r, ("operation", "values", "value"), ("operation", "values", "value"))
+        _pat_need(all(type(x) in (int, float) for x in xs + [r["value"]]), "numeric sort only")
+        _pat_need(all(xs[i] <= xs[i + 1] for i in range(len(xs) - 1)), "input not sorted")
+        xs.append(r["value"])
+        xs.sort()
+        result = xs
+    elif operation in ("undo_redo", "command", "memento"):
+        _pat_keys(r, ("operation", "values", "commands"), ("operation", "values", "commands"))
+        history, cursor = [list(xs)], 0
+        commands = r["commands"]
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands must be array <=1000")
+        for cmd in commands:
+            if isinstance(cmd, dict) and cmd.get("type") == "undo":
+                _pat_keys(cmd, ("type",), ("type",))
+                _pat_need(cursor > 0, "cannot undo")
+                cursor -= 1
+            elif isinstance(cmd, dict) and cmd.get("type") == "redo":
+                _pat_keys(cmd, ("type",), ("type",))
+                _pat_need(cursor + 1 < len(history), "cannot redo")
+                cursor += 1
+            else:
+                history = history[:cursor + 1]
+                history.append(list(_pat_mutate(list(history[-1]), cmd)))
+                cursor += 1
+        result = {"values": history[cursor], "history": history, "cursor": cursor}
+    elif operation in ("batch", "worker", "scheduler"):
+        _pat_keys(r, ("operation", "values", "batch_size", "schedule"))
+        size = r.get("batch_size", 2)
+        _pat_need(type(size) is int and 1 <= size <= 1000, "invalid batch size")
+        if operation == "scheduler":
+            schedule = r.get("schedule", [])
+            _pat_need(isinstance(schedule, list) and len(schedule) <= 1000 and all(type(t) is int and 0 <= t <= 60000 for t in schedule), "invalid schedule")
+            result = [{"at_ms": t, "values": list(xs)} for t in schedule]
+        else:
+            result = [xs[i:i + size] for i in range(0, len(xs), size)]
+    elif operation in ("transaction", "saga", "pipeline"):
+        _pat_keys(r, ("operation", "values", "commands", "fail_at"), ("operation", "values", "commands"))
+        commands = r["commands"]
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands must be array <=1000")
+        failed = r.get("fail_at")
+        _pat_need(failed is None or (type(failed) is int and 0 <= failed < len(commands)), "invalid fail_at")
+        original, log = list(xs), []
+        for i, c in enumerate(commands):
+            if i == failed:
+                xs = list(original)
+                result = {"committed": False, "values": xs, "applied": log, "rolled_back": True}
+                break
+            _pat_mutate(xs, c)
+            log.append(i)
+        else:
+            result = {"committed": True, "values": xs, "applied": log, "rolled_back": False}
+    elif operation in ("event_driven", "pubsub", "queue", "outbox", "event_sourcing", "cqrs"):
+        _pat_keys(r, ("operation", "values", "events", "subscribers"), ("operation", "values", "events"))
+        events = r["events"]
+        _pat_need(isinstance(events, list) and len(events) <= 1000, "events must be array <=1000")
+        for e in events:
+            _pat_need(isinstance(e, dict) and set(e) == {"type", "value"} and e["type"] == "append", "invalid event")
+        log, current = list(events), list(xs)
+        for event in events:
+            current.append(event["value"])
+        _pat_need(len(current) <= 1000, "result too large")
+        if operation == "pubsub":
+            n = r.get("subscribers", 1)
+            _pat_need(type(n) is int and 1 <= n <= 16, "invalid subscribers")
+            result = {"subscribers": [list(log) for _ in range(n)], "state": current}
+        elif operation in ("outbox", "queue"):
+            result = {"pending": log, "state": current}
+        elif operation == "cqrs":
+            result = {"write_state": current, "read_projection": list(current)}
+        else:
+            result = {"log": log, "state": current}
+    else:
+        _pat_keys(r, ("operation", "values", "checkpoint"), ("operation", "values", "checkpoint"))
+        cursor = r.get("checkpoint", 0)
+        _pat_need(type(cursor) is int and 0 <= cursor <= len(xs), "invalid checkpoint")
+        result = {"processed": xs[:cursor], "remaining": xs[cursor:], "checkpoint": cursor}
+    return {"schema": "workflow-patterns/1", "operation": operation, "result": result}
+
+
+def _pat_type(value: Any, name: Any) -> bool:
+    _pat_need(isinstance(name, str) and name in _PAT_TYPES, "invalid JSON type")
+    return _PAT_TYPES[name](value)
+
+
+_PAT_SCHEMA_KEYS = {"required", "properties", "items", "additional_properties"}
+
+
+def _pat_object_keys(obj: Any, required: set[str], optional: Any = frozenset()) -> dict[str, Any]:
+    _pat_need(isinstance(obj, dict), "expected JSON object")
+    _pat_need(required <= obj.keys(), f"missing keys: {sorted(required - obj.keys())}")
+    _pat_need(not (obj.keys() - required - set(optional)), "unknown keys")
+    return obj
+
+
+def _pat_schema_spec(spec: Any) -> None:
+    _pat_need(isinstance(spec, dict) and "type" in spec, "invalid schema definition")
+    _pat_type(None, spec["type"])
+    _pat_object_keys(spec, {"type"}, _PAT_SCHEMA_KEYS)
+    if "properties" in spec:
+        _pat_need(isinstance(spec["properties"], dict), "invalid properties")
+        for child in spec["properties"].values():
+            _pat_schema_spec(child)
+    if "items" in spec:
+        _pat_schema_spec(spec["items"])
+
+
+def _pat_schema(value: Any, definition: Any) -> bool:
+    spec = _pat_object_keys(definition, {"type"}, _PAT_SCHEMA_KEYS)
+    if not _pat_type(value, spec["type"]):
+        return False
+    if spec["type"] == "object":
+        props, required, additional = spec.get("properties", {}), spec.get("required", []), spec.get("additional_properties", True)
+        _pat_need(isinstance(props, dict) and all(isinstance(k, str) for k in props), "invalid properties")
+        _pat_need(isinstance(required, list) and all(isinstance(k, str) for k in required) and len(set(required)) == len(required), "invalid required")
+        _pat_need(type(additional) is bool, "invalid additional_properties")
+        for child in props.values():
+            _pat_schema_spec(child)
+        if not set(required) <= value.keys():
+            return False
+        if not additional and set(value) - set(props):
+            return False
+        return all(_pat_schema(v, props[k]) for k, v in value.items() if k in props)
+    if spec["type"] == "array" and "items" in spec:
+        _pat_schema_spec(spec["items"])
+        return all(_pat_schema(v, spec["items"]) for v in value)
+    _pat_need("properties" not in spec and "required" not in spec and "additional_properties" not in spec or spec["type"] == "object", "object options require object type")
+    _pat_need("items" not in spec or spec["type"] == "array", "items requires array type")
+    return True
+
+
+def _pat_condition(condition: Any) -> dict[str, Any]:
+    """Validate the predicate contract even when there are no input values."""
+    spec = _pat_object_keys(condition, {"operator"}, {"value", "type"})
+    op = spec["operator"]
+    _pat_need(isinstance(op, str) and op in {"equals", "not_equals", "greater_than", "less_than", "type", "not_null"}, "unknown constraint")
+    if op == "not_null":
+        _pat_need(set(spec) == {"operator"}, "not_null accepts no operand")
+    elif op == "type":
+        _pat_need("type" in spec and "value" not in spec, "type requires type")
+        _pat_need(isinstance(spec["type"], str) and spec["type"] in _PAT_TYPES, "invalid JSON type")
+    else:
+        _pat_need("value" in spec and "type" not in spec, "missing constraint value")
+        if op in ("greater_than", "less_than"):
+            _pat_need(type(spec["value"]) in (int, float), "ordered comparisons require numbers")
+    return spec
+
+
+def _pat_predicate(value: Any, condition: Any) -> bool:
+    spec = _pat_condition(condition)
+    op = spec["operator"]
+    if op == "not_null":
+        return value is not None
+    if op == "type":
+        return _pat_type(value, spec["type"])
+    other = spec["value"]
+    if op in ("equals", "not_equals"):
+        same = json.dumps(value, sort_keys=True, allow_nan=False) == json.dumps(other, sort_keys=True, allow_nan=False)
+        return same if op == "equals" else not same
+    _pat_need(type(value) in (int, float) and type(other) in (int, float), "ordered comparisons require numbers")
+    return value > other if op == "greater_than" else value < other
+
+
+def _pat_flatten(values: list[Any], depth: int = 0) -> list[Any]:
+    _pat_need(depth <= 100, "nested arrays exceed 100 levels")
+    out: list[Any] = []
+    for value in values:
+        out.extend(_pat_flatten(value, depth + 1) if isinstance(value, list) else [value])
+    return out
+
+
+def pattern_transform(payload: Any) -> dict[str, Any]:
+    """Stdlib JSON transformations (114-120): ``schema_validation`` (a small typed schema), ``constraint`` (a named predicate per value), ``pipeline`` (strip, lower, upper, add, multiply),
+    ``map_reduce`` (count or sum by key), ``flatten``, ``partition`` and ``zip``. JSON types stay distinct: ``true``, ``1`` and ``1.0`` are three different values."""
+    obj = _pat_object_keys(payload, {"operation"}, {"values", "schema", "condition", "steps", "key", "reducer", "other", "strict"})
+    op = obj["operation"]
+    _pat_need(op in {"schema_validation", "constraint", "pipeline", "map_reduce", "flatten", "partition", "zip"}, "unsupported operation")
+    _pat_need("values" in obj and isinstance(obj["values"], list), "values must be array")
+    allowed = {"schema_validation": {"operation", "values", "schema"}, "constraint": {"operation", "values", "condition"}, "pipeline": {"operation", "values", "steps"},
+               "map_reduce": {"operation", "values", "key", "reducer"}, "flatten": {"operation", "values"}, "partition": {"operation", "values", "condition"},
+               "zip": {"operation", "values", "other", "strict"}}
+    _pat_need(set(obj) <= allowed[op], "unexpected fields for operation")
+    values = obj["values"]
+    if op == "schema_validation":
+        _pat_need("schema" in obj, "schema is required")
+        _pat_schema_spec(obj["schema"])
+        result: Any = [_pat_schema(x, obj["schema"]) for x in values]
+    elif op == "constraint":
+        _pat_need("condition" in obj, "condition is required")
+        _pat_condition(obj["condition"])
+        result = [_pat_predicate(x, obj["condition"]) for x in values]
+    elif op == "pipeline":
+        steps = obj.get("steps", _PAT_MISSING)
+        _pat_need(steps is not _PAT_MISSING, "steps is required")
+        _pat_need(isinstance(steps, list) and steps, "steps must be nonempty list")
+        result = list(values)
+        for spec in steps:
+            step = _pat_object_keys(spec, {"operation"}, {"value"})
+            kind = step["operation"]
+            _pat_need(kind in {"strip", "lower", "upper", "add", "multiply"}, "unsupported pipeline step")
+            if kind in {"strip", "lower", "upper"}:
+                _pat_need(set(step) == {"operation"} and all(isinstance(x, str) for x in result), "text step requires strings")
+                result = [getattr(x, kind)() for x in result]
+            else:
+                _pat_need("value" in step and type(step["value"]) in (int, float) and all(type(x) in (int, float) for x in result), "numeric step requires numbers")
+                result = [x + step["value"] if kind == "add" else x * step["value"] for x in result]
+    elif op == "map_reduce":
+        _pat_need(obj.get("reducer") in ("count", "sum"), "reducer must be count or sum")
+        key = obj.get("key")
+        _pat_need(isinstance(key, str) and key, "key must be a nonempty field")
+        grouped: dict[str, dict[str, Any]] = {}
+        for x in values:
+            _pat_need(isinstance(x, dict) and key in x, "rows must contain group key")
+            value = x[key]
+            _pat_need(type(value) in (str, int, float, bool) or value is None, "group key must be scalar")
+            token = json.dumps(value, sort_keys=True)
+            if token not in grouped:
+                grouped[token] = {"key": value, "value": 0}
+            if obj["reducer"] == "sum":
+                amount = x.get("value", _PAT_MISSING)
+                _pat_need(type(amount) in (int, float), "sum rows require numeric value")
+                grouped[token]["value"] += amount
+            else:
+                grouped[token]["value"] += 1
+        result = list(grouped.values())
+    elif op == "flatten":
+        result = _pat_flatten(values)
+    elif op == "partition":
+        _pat_need("condition" in obj, "condition is required")
+        _pat_condition(obj["condition"])
+        yes: list[Any] = []
+        no: list[Any] = []
+        for item in values:
+            (yes if _pat_predicate(item, obj["condition"]) else no).append(item)
+        result = {"matched": yes, "unmatched": no}
+    else:
+        other = obj.get("other")
+        _pat_need(isinstance(other, list), "other must be array")
+        strict = obj.get("strict", False)
+        _pat_need(type(strict) is bool, "strict must be boolean")
+        _pat_need(not strict or len(values) == len(other), "strict zip lengths differ")
+        result = [[a, b] for a, b in zip(values, other)]
+    return {"schema": "collection-transform/1", "operation": op, "values": result}
+
+
+def _pat_distinct(values: list[Any]) -> list[Any]:
+    """First occurrences by canonical JSON (object key order is ignored; ``true``, ``1`` and ``1.0`` stay distinct; arrays are ordered). Full keys, not hashes, so nothing is lost to a collision."""
+    seen: set[str] = set()
+    result = []
+    for value in values:
+        key = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
+
+
+def pattern_select(payload: Any) -> dict[str, Any]:
+    """Select JSON values (001-003, 030, 086, 113): an equality ``filter`` (one ``equals`` or several ``conditions`` on a literal path, ``match`` all or any), a stable ``distinct`` and a
+    ``deduplicate_report``. A path is literal keys and indices, never an expression."""
+    _pat_need(isinstance(payload, dict), "input must be a JSON object")
+    values = payload.get("values")
+    _pat_need(isinstance(values, list), "values must be a JSON list")
+    operation = payload.get("operation", "filter")
+    if operation in ("distinct", "deduplicate_report"):
+        _pat_need(not (set(payload) - {"operation", "values"}), f"{operation} accepts only operation and values")
+        if operation == "distinct":
+            return {"values": _pat_distinct(values)}
+        unique = _pat_distinct(values)
+        duplicates = len(values) - len(unique)
+        return {"values": [{"input_count": len(values), "unique_count": len(unique), "duplicate_count": duplicates, "has_duplicates": duplicates > 0}]}
+    _pat_need(operation == "filter", "operation must be filter, distinct or deduplicate_report")
+    if "conditions" not in payload:
+        _pat_need("equals" in payload, "equals is required")
+        _pat_need("match" not in payload, "match requires conditions")
+        return {"values": [value for value in values if value == payload["equals"]]}
+    _pat_need("equals" not in payload, "use equals or conditions, not both")
+    conditions = payload["conditions"]
+    _pat_need(isinstance(conditions, list) and conditions, "conditions must be a non-empty list")
+    match = payload.get("match", "all")
+    _pat_need(match in ("all", "any"), "match must be all or any")
+    for condition in conditions:      # every condition is validated before filtering, even with no input values
+        _pat_need(isinstance(condition, dict) and "equals" in condition and not (set(condition) - {"path", "equals"}), "each condition accepts only path and required equals")
+        path = condition.get("path", [])
+        _pat_need(isinstance(path, list) and all(isinstance(p, str) or (type(p) is int and p >= 0) for p in path), "path must contain literal keys or non-negative integer indices")
+    def found(value: Any, condition: dict[str, Any]) -> bool:
+        for part in condition.get("path", []):
+            if isinstance(part, str) and isinstance(value, dict):
+                value = value.get(part, _PAT_MISSING)
+            elif type(part) is int and isinstance(value, list) and part < len(value):
+                value = value[part]
+            else:
+                return False
+        return value is not _PAT_MISSING and value == condition["equals"]
+    combine = all if match == "all" else any
+    return {"values": [value for value in values if combine(found(value, c) for c in conditions)]}
+
+
+PATTERN_ORDER_EXAMPLES: dict[str, list[Any]] = {
+    "basic": [9, 2, 5, 1, 3], "reverse": [9, 2, 5, 1, 3],
+    "multi": [{"group": "b", "score": 2, "name": "B2"}, {"group": "a", "score": 1, "name": "A1"}, {"group": "b", "score": 1, "name": "B1"}, {"group": "a", "score": 3, "name": "A3"}],
+    "sorted-set": [5, 2, 5, 1, 3, 2],
+    "priority": [{"priority": 2, "name": "normal"}, {"priority": 1, "name": "urgent"}, {"priority": 3, "name": "later"}, {"priority": 1, "name": "critical"}],
+    "top-n": [7, 1, 9, 3, 8, 2],
+}
+
+
+def pattern_order(mode: str, values: list[Any] | None = None) -> dict[str, Any]:
+    """Ordering (009, 010, 013, 026, 027, 029): ``basic``, ``reverse``, ``multi`` (group ascending, score descending), ``sorted-set``, ``priority`` and ``top-n`` (the three largest).
+    Without ``values`` the pattern's own example is used."""
+    if mode not in PATTERN_ORDER_EXAMPLES:
+        raise ValueError("unsupported ordering mode")
+    values = PATTERN_ORDER_EXAMPLES[mode] if values is None else values
+    _pat_need(isinstance(values, list), "values must be a list")
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    if mode in ("basic", "reverse", "sorted-set", "top-n"):
+        _pat_need(all(num(v) for v in values), {"basic": "basic ordering requires numbers", "reverse": "reverse ordering requires numbers", "sorted-set": "sorted-set requires numbers", "top-n": "top-n requires numbers"}[mode])
+        out = sorted(values) if mode == "basic" else sorted(values, reverse=True) if mode == "reverse" else sorted(set(values)) if mode == "sorted-set" else sorted(values, reverse=True)[:3]
+    elif mode == "multi":
+        _pat_need(all(isinstance(v, dict) and isinstance(v.get("group"), str) and num(v.get("score")) for v in values), "multi ordering requires group/score records")
+        out = sorted(values, key=lambda v: (v["group"], -v["score"]))
+    else:
+        _pat_need(all(isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("priority"), int) and not isinstance(v.get("priority"), bool) for v in values),
+                  "priority ordering requires name/priority records")
+        out = sorted(values, key=lambda v: (v["priority"], v["name"]))
+    return {"schema": "list-ordering/1", "mode": mode, "values": out}
+
+
+PATTERN_TEXT_DOCUMENTS = [{"id": "doc-1", "text": "Flutter renders portable user interfaces"}, {"id": "doc-2", "text": "Python processes portable data and search indexes"},
+                          {"id": "doc-3", "text": "Search indexes make repeated search fast"}]
+_PAT_STOP_WORDS = {"and", "the", "a", "an"}
+_PAT_TOKEN = re.compile(r"[0-9A-Za-z]+", re.ASCII)
+
+
+def pattern_tokens(text: Any) -> list[str]:
+    """ASCII alphanumeric tokens, lower-cased; stop words (and, the, a, an) removed by ``pattern_without_stop_words``."""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return [match.group(0).lower() for match in _PAT_TOKEN.finditer(text)]
+
+
+def pattern_without_stop_words(tokens: list[str]) -> list[str]:
+    if not all(isinstance(token, str) for token in tokens):
+        raise TypeError("tokens must contain strings")
+    return [token for token in tokens if token not in _PAT_STOP_WORDS]
+
+
+def pattern_inverted_index(documents: list[dict[str, str]]) -> dict[str, list[str]]:
+    index: dict[str, set[str]] = defaultdict(set)
+    for document in documents:
+        doc_id, text = document.get("id"), document.get("text")
+        if not isinstance(doc_id, str) or not doc_id or not isinstance(text, str):
+            raise ValueError("documents require non-empty id and text")
+        for token in pattern_without_stop_words(pattern_tokens(text)):
+            index[token].add(doc_id)
+    return {token: sorted(ids) for token, ids in sorted(index.items())}
+
+
+def pattern_text_search(documents: list[dict[str, str]], query: str) -> list[str]:
+    """Documents that contain every non-stop-word term of the query (an AND search over the inverted index)."""
+    terms = pattern_without_stop_words(pattern_tokens(query))
+    if not terms:
+        return []
+    index = pattern_inverted_index(documents)
+    matches = set(index.get(terms[0], []))
+    for term in terms[1:]:
+        matches.intersection_update(index.get(term, []))
+    return sorted(matches)
+
+
+def pattern_text(mode: str) -> dict[str, Any]:
+    """The text-search examples (005, 019, 020, 024: ``search``, ``tokens``, ``text-index``, ``inverted-index``) over three fixed documents."""
+    if mode == "search":
+        values: Any = pattern_text_search(PATTERN_TEXT_DOCUMENTS, "portable search")
+    elif mode == "tokens":
+        values = pattern_without_stop_words(pattern_tokens("Python and Flutter search the data"))
+    elif mode == "text-index":
+        values = [{"id": d["id"], "tokens": pattern_without_stop_words(pattern_tokens(d["text"]))} for d in PATTERN_TEXT_DOCUMENTS]
+    elif mode == "inverted-index":
+        values = [{"term": term, "documents": ids} for term, ids in pattern_inverted_index(PATTERN_TEXT_DOCUMENTS).items()]
+    else:
+        raise ValueError("unsupported text-processing mode")
+    return {"schema": "text-processing/1", "mode": mode, "values": values}
+
+
+PATTERN_WINDOW_MODES = ("load-more", "lazy-list", "prefetch", "page-indicator", "page-size", "offset-limit", "keyset", "window", "bidirectional")
+PATTERN_COLLECTION_MODES = ("selectable", "swipe-delete", "reorderable", "checklist")
+PATTERN_WINDOW_ITEMS = [f"item-{index:02d}" for index in range(1, 13)]
+
+
+def pattern_window_initial(mode: str) -> dict[str, Any]:
+    if mode not in PATTERN_WINDOW_MODES:
+        raise ValueError("unsupported mode")
+    state: dict[str, Any] = {"mode": mode, "offset": 0, "limit": 4, "total": len(PATTERN_WINDOW_ITEMS)}
+    if mode == "keyset":
+        state["cursor"] = None
+    return state
+
+
+def pattern_window_step(state: Any, command: str) -> dict[str, Any]:
+    """One transition of a collection window (034, 036-044): ``next``/``load-more``/``prefetch``, ``previous``, ``page-size-3``, ``offset-6``, ``refresh`` (bumps ``revision``) and ``reset``."""
+    if not isinstance(state, dict):
+        raise TypeError("state must be an object")
+    mode = state.get("mode")
+    offset, limit, total = state.get("offset"), state.get("limit"), state.get("total")
+    _pat_need(mode in PATTERN_WINDOW_MODES, "invalid mode")
+    _pat_need(all(isinstance(v, int) and not isinstance(v, bool) for v in (offset, limit, total)), "invalid bounds")
+    _pat_need(offset >= 0 and limit > 0 and total >= 0, "invalid bounds")
+    result = dict(state)
+    if command in ("next", "load-more", "prefetch"):
+        result["offset"] = min(offset + limit, max(0, total - limit))
+        if mode == "keyset":
+            result["cursor"] = PATTERN_WINDOW_ITEMS[result["offset"] - 1] if result["offset"] else None
+    elif command == "page-size-3":
+        result["limit"] = 3
+        result["offset"] = min((offset // 3) * 3, max(0, total - 3))
+    elif command == "offset-6":
+        result["offset"] = min(6, max(0, total - limit))
+    elif command == "refresh":
+        result["offset"] = 0
+        result["revision"] = state.get("revision", 0) + 1
+    elif command == "previous":
+        result["offset"] = max(0, offset - limit)
+    elif command == "reset":
+        result["offset"] = 0
+    else:
+        raise ValueError("unsupported command")
+    return result
+
+
+def pattern_window_render(state: dict[str, Any]) -> dict[str, Any]:
+    offset, limit, total = state["offset"], state["limit"], state["total"]
+    return {"schema": "collection-window/1", "mode": state["mode"], "state": state, "page": offset // limit + 1 if total else 0, "pages": (total + limit - 1) // limit if total else 0,
+            "values": PATTERN_WINDOW_ITEMS[offset:min(offset + limit, total)]}
+
+
+def pattern_collection_initial(mode: str) -> dict[str, Any]:
+    if mode not in PATTERN_COLLECTION_MODES:
+        raise ValueError("unsupported collection mode")
+    return {"mode": mode, "items": ["a", "b", "c", "d"], "selected": []}
+
+
+def pattern_collection_step(state: Any, command: str, item: str = "b") -> dict[str, Any]:
+    """One command on a list (051-054: selectable, swipe-delete, reorderable, checklist): ``select``/``toggle`` flips selection, ``delete`` removes the item (and its selection), ``move-first``."""
+    _pat_need(isinstance(state, dict) and state.get("mode") in PATTERN_COLLECTION_MODES, "invalid collection state")
+    items, selected = state.get("items"), state.get("selected")
+    _pat_need(isinstance(items, list) and isinstance(selected, list) and all(isinstance(x, str) for x in items + selected) and len(items) == len(set(items)) and set(selected).issubset(items),
+              "invalid collection items")
+    _pat_need(item in items, "unknown item")
+    result = {"mode": state["mode"], "items": items.copy(), "selected": selected.copy()}
+    if command in ("select", "toggle"):
+        if item in result["selected"]:
+            result["selected"].remove(item)
+        else:
+            result["selected"].append(item)
+    elif command == "delete":
+        result["items"].remove(item)
+        if item in result["selected"]:
+            result["selected"].remove(item)
+    elif command == "move-first":
+        result["items"].remove(item)
+        result["items"].insert(0, item)
+    else:
+        raise ValueError("unsupported collection command")
+    return result
+
+
+def pattern_collection_render(state: dict[str, Any]) -> dict[str, Any]:
+    return {"schema": "collection-command/1", "mode": state["mode"], "state": state, "values": [{"id": item, "selected": item in state["selected"]} for item in state["items"]]}
+
+
+_PAT_STRUCTURE_ROWS = [{"id": "a1", "group": "A", "label": "Alpha"}, {"id": "a2", "group": "A", "label": "Amber"}, {"id": "b1", "group": "B", "label": "Beta"}, {"id": "b2", "group": "B", "label": "Blue"}]
+_PAT_STRUCTURE_TREE = [{"id": "root", "label": "Root", "children": [{"id": "left", "label": "Left", "children": []},
+                                                                      {"id": "right", "label": "Right", "children": [{"id": "leaf", "label": "Leaf", "children": []}]}]}]
+
+
+def pattern_structure(mode: str) -> dict[str, Any]:
+    """Portable collection structures (045-049): sections for ``sticky``/``section``/``grouped``, a depth-first list for ``tree``/``flat``."""
+    def flatten(nodes: list[dict[str, Any]], depth: int = 0) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for node in nodes:
+            out.append({"id": node["id"], "label": node["label"], "depth": depth})
+            out.extend(flatten(node.get("children", []), depth + 1))
+        return out
+    if mode in ("sticky", "section", "grouped"):
+        sections: list[dict[str, Any]] = []
+        for row in _PAT_STRUCTURE_ROWS:
+            if not sections or sections[-1]["header"] != row["group"]:
+                sections.append({"header": row["group"], "items": []})
+            sections[-1]["items"].append({"id": row["id"], "label": row["label"]})
+        values: Any = sections
+    elif mode in ("tree", "flat"):
+        values = flatten(_PAT_STRUCTURE_TREE)
+    else:
+        raise ValueError("unsupported mode")
+    return {"schema": "collection-structure/1", "mode": mode, "values": values}
+
+
+# --- The JavaScript references of the catalogue (patterns 4, 35 and 121-150), as deterministic models ------------------------------------------------
+# flutter_navigation_basic keeps these in javascript/*.mjs (future_patterns, stream_patterns, concurrency_patterns, event_loop_patterns, interaction_patterns) because their subject is
+# the JavaScript event loop; each takes one JSON request and answers one JSON result. Python models them without a clock: a task has a delay in milliseconds, and what finishes first is
+# a sort on (delay, creation order), which is what Node's timers do (a timer of 0 ms is 1 ms, so 0 and 1 tie and the earlier created wins). The originals are the golden values:
+# they were run on thousands of seeded requests (``tests/fixtures/pattern_golden.json`` holds a recorded sample) and every answer and refusal text is the same. Numbers follow
+# JavaScript, as the originals read them from JSON: ``1.0`` is the integer 1. A refusal is a ``ValueError`` with the original's ``TypeError``/``RangeError`` text.
+_PAT_JS_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
+
+
+def _pat_js_int(value: Any) -> bool:
+    """Number.isInteger for a JSON number."""
+    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
+
+
+def _pat_js_num(value: Any) -> bool:
+    """typeof value === "number" && Number.isFinite(value)."""
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _pat_js_json(value: Any) -> str:
+    """JSON.stringify(value): key order kept, an integral number written as an int."""
+    def plain(v: Any) -> Any:
+        if type(v) is float and math.isfinite(v) and v.is_integer():
+            return int(v)
+        if isinstance(v, list):
+            return [plain(x) for x in v]
+        if isinstance(v, dict):
+            return {k: plain(x) for k, x in v.items()}
+        return v
+    return json.dumps(plain(value), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _pat_js_keys_of(obj: dict[str, Any]) -> list[str]:
+    """Object.keys order: array-index keys ascending first, then the rest as written."""
+    indexes = sorted((k for k in obj if _PAT_JS_INDEX.fullmatch(k) and int(k) < 2 ** 32 - 1), key=int)
+    return indexes + [k for k in obj if k not in indexes]
+
+
+def _pat_js_object(value: Any, name: str) -> dict[str, Any]:
+    _pat_need(isinstance(value, dict), name + " must be an object")
+    return value
+
+
+def _pat_js_fields(obj: dict[str, Any], allowed: Any, required: Any = ()) -> None:
+    for key in _pat_js_keys_of(obj):
+        _pat_need(key in allowed, "unknown field " + key)
+    for key in required:
+        _pat_need(key in obj, "missing field " + key)
+
+
+def _pat_future_task(raw: Any, index: int) -> dict[str, Any]:
+    task = _pat_js_object(raw, "task")
+    _pat_js_fields(task, ("value", "delay_ms", "reject"), ("value",))
+    delay = task.get("delay_ms")
+    delay = 0 if delay is None else delay
+    _pat_need(_pat_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
+    _pat_need("reject" not in task or (isinstance(task["reject"], str) and task["reject"] != ""), "reject must be a nonempty string")
+    return {"value": task["value"], "at": max(1, int(delay)), "reject": task.get("reject"), "rejects": "reject" in task, "index": index}
+
+
+def _pat_future_settle(job: dict[str, Any]) -> Any:
+    if job["rejects"]:
+        raise ValueError(job["reject"])
+    return job["value"]
+
+
+def pattern_future(request: Any) -> dict[str, Any]:
+    """Promise basics (121-126): ``basic``, ``chain`` (add, multiply, uppercase), ``error`` (a rejection caught into a fallback), ``wait`` (Promise.all: values in input order, else the
+    first rejection in time), ``any`` (Promise.race: the first to settle, a rejection included) and ``timeout`` (a race against a timer that does not cancel the task)."""
+    req = _pat_js_object(request, "request")
+    _pat_js_fields(req, ("mode", "task", "tasks", "steps", "timeout_ms", "fallback"), ("mode",))
+    mode = req["mode"]
+    _pat_need(mode in ("basic", "chain", "error", "wait", "any", "timeout"), "unsupported mode")
+    if mode in ("wait", "any"):
+        _pat_js_fields(req, ("mode", "tasks"), ("tasks",))
+        _pat_need(isinstance(req["tasks"], list) and 1 <= len(req["tasks"]) <= 32, "tasks must contain 1..32 tasks")
+        jobs = [_pat_future_task(raw, i) for i, raw in enumerate(req["tasks"])]
+        first = min(jobs, key=lambda j: (j["at"], j["index"]))
+        if mode == "any":
+            return {"schema": "future-patterns/1", "mode": mode, "value": _pat_future_settle(first)}
+        rejected = [j for j in jobs if j["rejects"]]
+        if rejected:
+            raise ValueError(min(rejected, key=lambda j: (j["at"], j["index"]))["reject"])
+        return {"schema": "future-patterns/1", "mode": mode, "value": [j["value"] for j in jobs]}
+    allowed = ("mode", "task", "steps") if mode == "chain" else ("mode", "task", "fallback") if mode == "error" else ("mode", "task", "timeout_ms") if mode == "timeout" else ("mode", "task")
+    _pat_js_fields(req, allowed, ("task",))
+    job = _pat_future_task(req["task"], 0)
+    steps: list[dict[str, Any]] = []
+    if mode == "chain":
+        _pat_need(isinstance(req.get("steps"), list) and 1 <= len(req["steps"]) <= 32, "steps must contain 1..32 steps")
+        for raw in req["steps"]:
+            step = _pat_js_object(raw, "step")
+            _pat_js_fields(step, ("op", "by"), ("op",))
+            if step["op"] in ("add", "multiply"):
+                _pat_need(_pat_js_num(step.get("by")), "numeric by required")
+            elif step["op"] == "uppercase":
+                _pat_js_fields(step, ("op",))
+            else:
+                raise ValueError("unsupported step")
+            steps.append(step)
+    if mode == "error":
+        _pat_need("fallback" in req, "fallback required")
+        try:
+            return {"schema": "future-patterns/1", "mode": mode, "value": _pat_future_settle(job)}
+        except ValueError as error:
+            return {"schema": "future-patterns/1", "mode": mode, "value": {"caught": str(error), "fallback": req["fallback"]}}
+    if mode == "timeout":
+        timeout = req.get("timeout_ms")
+        _pat_need(_pat_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
+        _pat_need(job["at"] <= timeout, "timeout")      # a tie goes to the task: its timer was created first
+    value = _pat_future_settle(job)
+    for step in steps:
+        if step["op"] == "uppercase":
+            _pat_need(isinstance(value, str), "string input required")
+            value = value.upper()
+        else:
+            _pat_need(_pat_js_num(value), "numeric input required")
+            value = value + step["by"] if step["op"] == "add" else value * step["by"]
+    return {"schema": "future-patterns/1", "mode": mode, "value": value}
+
+
+def _pat_stream_events(raw: Any) -> list[dict[str, Any]]:
+    _pat_need(isinstance(raw, list) and len(raw) <= 1000, "events must be array <=1000")
+    last = -1
+    for event in raw:
+        _pat_need(isinstance(event, dict) and sorted(event) == ["at_ms", "value"], "event shape")
+        _pat_need(_pat_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
+        last = event["at_ms"]
+    return raw
+
+
+def pattern_stream(request: Any) -> dict[str, Any]:
+    """Stream shapes over events with a time in milliseconds (127-135, 144, 145): ``basic``, ``controller`` (add and close commands), ``broadcast``, ``transform`` (where_equals, expand,
+    map_add), ``merge`` (by time, then stream, then position), ``debounce`` (an event is kept when the next one is later than the duration), ``throttle`` (one per duration), ``buffer`` and
+    ``window`` (sizes and steps). ``where_equals`` compares the JSON text, so key order matters."""
+    _pat_need(isinstance(request, dict) and request.get("mode") in ("basic", "controller", "broadcast", "transform", "merge", "debounce", "throttle", "buffer", "window"), "mode")
+    mode = request["mode"]
+    xs: list[dict[str, Any]] = []
+    if mode == "controller":
+        commands = request.get("commands")
+        _pat_need(isinstance(commands, list) and len(commands) <= 1000, "commands")
+        closed = False
+        for command in commands:
+            _pat_need(isinstance(command, (dict, list)) and command is not None, "command")
+            op = command.get("op") if isinstance(command, dict) else None
+            if op == "close":
+                _pat_need(not closed, "closed twice")
+                closed = True
+            else:
+                _pat_need(op == "add" and not closed and "value" in command, "invalid add")
+                xs.append({"at_ms": len(xs), "value": command["value"]})
+        _pat_need(closed, "close required")
+    elif mode == "merge":
+        streams = request.get("streams")
+        _pat_need(isinstance(streams, list) and 0 < len(streams) <= 16, "streams")
+        tagged = [{**event, "source": i, "index": j} for i, s in enumerate(streams) for j, event in enumerate(_pat_stream_events(s))]
+        tagged.sort(key=lambda e: (e["at_ms"], e["source"], e["index"]))
+        xs = [{k: v for k, v in e.items() if k != "index"} for e in tagged]
+    else:
+        xs = list(_pat_stream_events(request.get("events")))
+    if mode == "transform":
+        steps = request.get("steps")
+        _pat_need(isinstance(steps, list) and 0 < len(steps) <= 16, "steps")
+        for step in steps:
+            _pat_need(isinstance(step, (dict, list)), "step")
+            op = step.get("op") if isinstance(step, dict) else None
+            if op == "where_equals":
+                wanted = _pat_js_json(step["value"]) if "value" in step else None
+                xs = [x for x in xs if wanted is not None and _pat_js_json(x["value"]) == wanted]
+            elif op == "expand":
+                grown = []
+                for x in xs:
+                    _pat_need(isinstance(x["value"], list), "expand array")
+                    grown.extend({**x, "value": value} for value in x["value"])
+                xs = grown
+            elif op == "map_add":
+                moved = []
+                for x in xs:
+                    _pat_need(_pat_js_num(x["value"]) and _pat_js_num(step.get("value")), "map_add numbers")
+                    moved.append({**x, "value": x["value"] + step["value"]})
+                xs = moved
+            else:
+                raise ValueError("step operation")
+    if mode in ("debounce", "throttle"):
+        ms = request.get("duration_ms")
+        _pat_need(_pat_js_int(ms) and 0 < ms <= 60000, "duration")
+        if mode == "debounce":
+            xs = [x for i, x in enumerate(xs) if i + 1 >= len(xs) or xs[i + 1]["at_ms"] - x["at_ms"] > ms]
+        else:
+            last = -math.inf
+            kept = []
+            for x in xs:
+                if x["at_ms"] - last >= ms:
+                    kept.append(x)
+                    last = x["at_ms"]
+            xs = kept
+    if mode in ("buffer", "window"):
+        size = request.get("size")
+        _pat_need(_pat_js_int(size) and 0 < size <= 1000, "size")
+        step = size if mode == "buffer" else (1 if request.get("step") is None else request["step"])
+        _pat_need(_pat_js_int(step) and 0 < step <= 1000, "step")
+        size, step = int(size), int(step)
+        out = []
+        for i in range(0, len(xs), step):
+            part = xs[i:i + size]
+            if (mode == "window" and len(part) < size) or not part:
+                break
+            out.append({"at_ms": part[-1]["at_ms"], "value": [x["value"] for x in part]})
+        xs = out
+    if mode == "broadcast":
+        count = request.get("subscribers")
+        _pat_need(_pat_js_int(count) and 1 <= count <= 16, "subscribers")
+        return {"schema": "stream-patterns/1", "mode": mode, "subscribers": [[dict(x) for x in xs] for _ in range(int(count))]}
+    return {"schema": "stream-patterns/1", "mode": mode, "events": xs}
+
+
+def _pat_concurrency_tasks(raw: Any) -> list[dict[str, Any]]:
+    _pat_need(isinstance(raw, list) and len(raw) <= 32, "tasks must be an array (max 32)")
+    jobs = []
+    for index, item in enumerate(raw):
+        _pat_need(isinstance(item, dict), "task object required")
+        _pat_need(all(k in ("value", "delay_ms") for k in item) and "value" in item, "task keys")
+        delay = item.get("delay_ms")
+        delay = 0 if delay is None else delay
+        _pat_need(_pat_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
+        jobs.append({"value": item["value"], "delay": int(delay), "index": index})
+    return jobs
+
+
+def _pat_safe_int(value: Any) -> bool:
+    return _pat_js_int(value) and abs(value) <= 2 ** 53 - 1
+
+
+def pattern_concurrency(request: Any) -> dict[str, Any]:
+    """Bounded concurrency (138-143): ``work_queue`` (one at a time), ``semaphore`` and ``parallel_map`` (at most ``concurrency`` at once, results in input order, ``max_active`` the
+    most that ran together), ``mutex`` (increments applied one after another), ``cancelable`` (a task and a cancel flag) and ``progress`` (completed/total after each task)."""
+    _pat_need(isinstance(request, dict), "request object")
+    mode = request.get("mode")
+    _pat_need(mode in ("work_queue", "semaphore", "mutex", "cancelable", "parallel_map", "progress"), "unsupported mode")
+    allowed = ("mode", "task", "cancel") if mode == "cancelable" else ("mode", "increments") if mode == "mutex" else ("mode", "tasks") + (("concurrency",) if mode in ("semaphore", "parallel_map") else ())
+    _pat_need(all(k in allowed for k in request), "unknown request keys")
+    if mode == "mutex":
+        increments = request.get("increments")
+        _pat_need(isinstance(increments, list) and len(increments) <= 32 and all(_pat_safe_int(x) for x in increments), "increments")
+        state, history = 0, []
+        for n in increments:
+            state += n
+            _pat_need(_pat_safe_int(state), "overflow")
+            history.append(state)
+        result: Any = {"value": state, "history": history}
+    elif mode == "cancelable":
+        job = _pat_concurrency_tasks([request.get("task")])[0]
+        _pat_need(isinstance(request.get("cancel"), bool), "cancel flag required")
+        result = {"status": "cancelled"} if request["cancel"] else {"status": "completed", "value": job["value"]}
+    else:
+        jobs = _pat_concurrency_tasks(request.get("tasks"))
+        limit = 1 if mode in ("work_queue", "progress") else request.get("concurrency")
+        _pat_need(_pat_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
+        metrics = {"values": [j["value"] for j in jobs], "max_active": min(int(limit), len(jobs))}
+        result = {"values": metrics["values"], "progress": [{"completed": i + 1, "total": len(jobs)} for i in range(len(jobs))]} if mode == "progress" else metrics
+    return {"schema": "concurrency-patterns/1", "mode": mode, "result": result}
+
+
+def _pat_event_fields(obj: Any, allowed: Any, required: Any = ()) -> dict[str, Any]:
+    _pat_need(isinstance(obj, dict), "object required")
+    _pat_need(all(k in allowed for k in obj), "unknown field")
+    _pat_need(all(k in obj for k in required), "missing field")
+    return obj
+
+
+def pattern_event_loop(request: Any) -> dict[str, Any]:
+    """Event-loop shapes (146-150): ``reactive`` (map_add and where_equals over values), ``event_loop`` (the phases sync, microtask, timer), ``microtask`` (sync, microtask, promise,
+    timer), ``suspend_resume`` (a pause after N values leaves the order alone) and ``async_generator`` (values in order)."""
+    req = _pat_event_fields(request, ("mode", "values", "pause_after", "steps"), ("mode", "values"))
+    mode, values = req["mode"], req["values"]
+    _pat_need(isinstance(values, list) and len(values) <= 1000, "values must be array <=1000")
+    _pat_need(mode in ("reactive", "event_loop", "microtask", "suspend_resume", "async_generator"), "unsupported mode")
+    if mode == "reactive":
+        _pat_event_fields(req, ("mode", "values", "steps"), ("mode", "values", "steps"))
+        steps = req["steps"]
+        _pat_need(isinstance(steps, list) and 0 < len(steps) <= 16, "steps")
+        out = list(values)
+        for raw in steps:
+            step = _pat_event_fields(raw, ("op", "value"), ("op", "value"))
+            if step["op"] == "map_add":
+                _pat_need(_pat_js_num(step["value"]) and all(_pat_js_num(x) for x in out), "numbers required")
+                out = [x + step["value"] for x in out]
+            elif step["op"] == "where_equals":
+                out = [x for x in out if _pat_js_json(x) == _pat_js_json(step["value"])]
+            else:
+                raise ValueError("unsupported reactive step")
+        result: Any = out
+    elif mode == "event_loop":
+        _pat_event_fields(req, ("mode", "values"))
+        result = [{"phase": phase, "values": values} for phase in ("sync", "microtask", "timer")]
+    elif mode == "microtask":
+        _pat_event_fields(req, ("mode", "values"))
+        result = ["sync", "microtask", "promise", "timer"]
+    elif mode == "suspend_resume":
+        _pat_event_fields(req, ("mode", "values", "pause_after"), ("mode", "values", "pause_after"))
+        pause = req["pause_after"]
+        _pat_need(_pat_js_int(pause) and 0 <= pause <= len(values), "pause_after")
+        result = {"values": list(values), "trace": ["paused", "resumed"]}
+    else:
+        _pat_event_fields(req, ("mode", "values"))
+        result = list(values)
+    return {"schema": "event-loop-patterns/1", "mode": mode, "result": result}
+
+
+class PatternDebouncer:
+    """The trailing-edge debounce of interaction_patterns.mjs with injected timers: every call replaces the pending one, ``cancel`` drops it. ``set_timeout(fn, ms)`` returns a handle
+    that ``clear_timeout(handle)`` accepts."""
+
+    def __init__(self, callback: Any, delay_ms: Any, set_timeout: Any, clear_timeout: Any) -> None:
+        if not callable(callback) or not _pat_js_num(delay_ms) or delay_ms < 0:
+            raise TypeError("invalid debounce arguments")
+        self.callback, self.delay_ms, self.set_timeout, self.clear_timeout = callback, delay_ms, set_timeout, clear_timeout
+        self.timer: Any = None
+
+    def __call__(self, *args: Any) -> None:
+        if self.timer is not None:
+            self.clear_timeout(self.timer)
+
+        def fire() -> None:
+            self.timer = None
+            self.callback(*args)
+        self.timer = self.set_timeout(fire, self.delay_ms)
+
+    def cancel(self) -> None:
+        if self.timer is not None:
+            self.clear_timeout(self.timer)
+        self.timer = None
+
+
+def pattern_virtual_window(params: Any) -> dict[str, Any]:
+    """The rows to draw in a scrolled list: ``start`` and ``end`` (visible rows plus ``overscan``, clamped to the list) and the padding that stands for the rows left out. A bad number
+    is a ``ValueError`` whose text is JavaScript's RangeError text."""
+    _pat_need(isinstance(params, dict), "invalid viewport number")
+    count, height, top, viewport = (params.get(k) for k in ("count", "itemHeight", "scrollTop", "viewportHeight"))
+    overscan = params["overscan"] if "overscan" in params else 2
+    for value in (count, height, top, viewport, overscan):
+        _pat_need(_pat_js_num(value) and value >= 0, "invalid viewport number")
+    _pat_need(_pat_js_int(count) and _pat_js_int(overscan) and height != 0, "invalid viewport configuration")
+    count, overscan = int(count), int(overscan)
+    start = max(0, min(count, math.floor(top / height) - overscan))
+    end = max(start, min(count, math.ceil((top + viewport) / height) + overscan))
+    return {"start": start, "end": end, "topPadding": start * height, "bottomPadding": (count - end) * height}
+
+
+def pattern_interaction(request: Any) -> dict[str, Any]:
+    """Interaction contracts (4, 35): ``virtual_window`` (the fields of ``pattern_virtual_window``) and ``debounce`` (calls and cancels at given times through a virtual clock: a timer
+    due before the next call fires first, one due at the same time does not)."""
+    _pat_need(isinstance(request, dict), "request object")
+    op = request.get("operation")
+    if op == "virtual_window":
+        _pat_need(all(k in ("operation", "count", "itemHeight", "scrollTop", "viewportHeight", "overscan") for k in request), "unknown request keys")
+        return {"schema": "interaction-patterns/1", "operation": op, "result": pattern_virtual_window({k: v for k, v in request.items() if k != "operation"})}
+    _pat_need(op == "debounce", "unsupported operation")
+    _pat_need(all(k in ("operation", "delay_ms", "calls") for k in request), "unknown request keys")
+    delay, calls = request.get("delay_ms"), request.get("calls")
+    _pat_need(_pat_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
+    _pat_need(isinstance(calls, list) and len(calls) <= 1000, "calls must be array <=1000")
+    last = 0
+    for call in calls:
+        _pat_need(isinstance(call, dict) and "at_ms" in call and (call.keys() == {"at_ms", "value"} or call.keys() == {"at_ms", "cancel"}), "call shape")
+        _pat_need(_pat_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
+        _pat_need("value" in call or call["cancel"] is True, "call shape")
+        last = call["at_ms"]
+    clock = [0]
+    timers: dict[int, tuple[int, Any]] = {}
+    delivered: list[dict[str, Any]] = []
+    handles = [0]
+
+    def set_timeout(fn: Any, ms: Any) -> int:
+        handles[0] += 1
+        timers[handles[0]] = (clock[0] + int(ms), fn)
+        return handles[0]
+
+    def run_due(limit: float) -> None:
+        while True:
+            due = [(at, key) for key, (at, _) in timers.items() if at < limit]
+            if not due:
+                return
+            at, key = min(due)
+            _, fn = timers.pop(key)
+            clock[0] = at
+            fn()
+
+    debounced = PatternDebouncer(lambda value: delivered.append({"at_ms": clock[0], "value": value}), int(delay), set_timeout, lambda key: timers.pop(key, None))
+    for call in calls:
+        run_due(call["at_ms"])
+        clock[0] = call["at_ms"]
+        if "value" in call:
+            debounced(call["value"])
+        else:
+            debounced.cancel()
+    run_due(math.inf)
+    return {"schema": "interaction-patterns/1", "operation": op, "result": delivered}
+
+
+def _pat_run_order(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    return pattern_order(request["mode"], request.get("values"))
+
+
+def _pat_run_window(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    commands = request.get("commands", [])
+    _pat_need(isinstance(commands, list) and len(commands) <= 1000 and all(isinstance(c, str) for c in commands), "commands must be strings")
+    state = pattern_window_initial(request["mode"])
+    for command in commands:
+        state = pattern_window_step(state, command)
+    return pattern_window_render(state)
+
+
+def _pat_run_collection(request: Any) -> Any:
+    _pat_need(isinstance(request, dict) and isinstance(request.get("mode"), str), "mode required")
+    commands = request.get("commands", [])
+    _pat_need(isinstance(commands, list) and len(commands) <= 1000 and all(isinstance(c, list) and len(c) in (1, 2) and all(isinstance(p, str) for p in c) for c in commands),
+              "commands must be [command] or [command, item]")
+    state = pattern_collection_initial(request["mode"])
+    for command in commands:
+        state = pattern_collection_step(state, *command)
+    return pattern_collection_render(state)
+
+
+PATTERN_RUNNERS: dict[str, Any] = {
+    "query": pattern_query, "search": pattern_search, "page": pattern_page, "score": pattern_score, "reduce": pattern_reduce, "convert": pattern_convert, "validate": pattern_validate,
+    "workflow": pattern_workflow, "transform": pattern_transform, "select": pattern_select, "order": _pat_run_order,
+    "text": lambda r: pattern_text(r.get("mode") if isinstance(r, dict) else None), "window": _pat_run_window, "collection": _pat_run_collection,
+    "structure": lambda r: pattern_structure(r.get("mode") if isinstance(r, dict) else None), "future": pattern_future, "stream": pattern_stream, "concurrency": pattern_concurrency,
+    "event_loop": pattern_event_loop, "interaction": pattern_interaction}
+
+
+def pattern_run(family: str, request: Any) -> Any:
+    """Run one family of the pattern references on a JSON request (what ``--pattern FAMILY`` does); an unknown family or an invalid request is a ``ValueError``."""
+    if family not in PATTERN_RUNNERS:
+        raise ValueError(f"unknown pattern family: {family!r}; one of {', '.join(sorted(PATTERN_RUNNERS))}")
+    try:
+        return PATTERN_RUNNERS[family](request)
+    except (TypeError, OverflowError, KeyError) as error:
+        raise ValueError(f"invalid {family} request: {error}") from None
+
+
+def pattern_parse(text: str) -> Any:
+    """Strict JSON for a pattern request: NaN, Infinity and a number beyond the float range are refused, and so is nesting deeper than the interpreter can hold."""
+    def constant(name: str) -> Any:
+        raise ValueError(f"non-finite JSON constant: {name}")
+    def number(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("JSON number out of range")
+        return value
+    try:
+        return json.loads(text, parse_constant=constant, parse_float=number)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply") from None
+
+
+# --- Pattern catalogue: the 792 patterns of flutter_navigation_basic (titles from each pattern's README, themes from PATTERNS.md, producers from its responsibility audit) ---------
+# The catalogue is data: nothing here runs a pattern. ``pattern_family`` names which reference function above implements a data-processing pattern, ``pattern_owner`` says who owns the
+# rest in the original (python, javascript, flutter_native, ...), copied from python/pattern_responsibility_audit.py's rules so the page can show what moved and what did not.
+PATTERN_CATEGORIES = (("navigation", "A", "ナビゲーション画面遷移"), ("api", "B", "API連携"), ("ui", "C", "UI/テーマ"), ("data", "D", "データ処理"))
+PATTERN_THEMES: dict[str, tuple[tuple[int, int, str], ...]] = {
+    "navigation": (
+        (1, 20, "基本ナビゲーション (Push/Pop/Replace)"),
+        (21, 40, "名前付きルート (Named Routes)"),
+        (41, 60, "ディープリンク対応"),
+        (61, 80, "Bottom / Tab / Drawer Navigation"),
+        (81, 100, "Conditional Navigation (条件付き遷移)"),
+        (101, 120, "バックスタック管理・BackPress Handling"),
+        (121, 140, "Nested Navigation / 複数 Navigator"),
+        (141, 160, "Animated Transitions (カスタムアニメーション)"),
+        (161, 180, "Dialog / BottomSheet / Drawer モーダル"),
+        (181, 198, "Advanced Patterns (複合ナビゲーション・状態保持)"),
+    ),
+    "api": (
+        (1, 30, "REST API基本 (GET/POST/PUT/DELETE/PATCH)"),
+        (31, 60, "認証・セキュリティ (JWT/OAuth/API Key)"),
+        (61, 90, "WebSocket通信・Server-Sent Events (SSE)"),
+        (91, 120, "JSON/JSONL/YAML処理と変換"),
+        (121, 150, "エラーハンドリング・リトライ・タイムアウト"),
+        (151, 170, "キャッシング・CacheControl・ETag"),
+        (171, 190, "ファイルアップロード/ダウンロード・マルチパート"),
+        (191, 198, "画像・動画・音声の埋め込みと取得"),
+    ),
+    "ui": (
+        (1, 30, "Material Design基本"),
+        (31, 60, "Cupertino (iOS Style)"),
+        (61, 90, "カスタムテーマ・動的テーマ切り替え"),
+        (91, 120, "ライトモード/ダークモード・ダイナミックカラー"),
+        (121, 150, "レスポンシブデザイン (モバイル/タブレット/Web/Desktop)"),
+        (151, 175, "プラットフォーム固有 (iOS/Android/Web/macOS)"),
+        (176, 190, "アクセシビリティ (セマンティクス・フォントサイズ調整)"),
+        (191, 198, "アニメーション・トランジション・ジェスチャー応答"),
+    ),
+    "data": (
+        (1, 30, "フィルタリング・ソート・検索"),
+        (31, 60, "ページング・無限スクロール・仮想化"),
+        (61, 90, "キャッシング戦略・メモリ管理"),
+        (91, 120, "バリデーション・データ変換・正規化"),
+        (121, 150, "非同期処理 (async/await・Future・Stream)"),
+        (151, 170, "状態管理 (GetX・Provider・Riverpod等)"),
+        (171, 185, "並び替え・追加・入れ替え機能"),
+        (186, 198, "バッチ処理・トランザクション・イベント駆動"),
+    ),
+}
+PATTERN_TITLES: dict[str, str] = {
+    "navigation": (
+        "BasicPush BasicPop BasicReplace PushWithResult PushAndRemoveUntil PushNamed PopUntil OffAll PushWithArguments BackButtonHandler WillPopScope "
+        "NestedNavigator IndexedStack BottomNavBar TabBarView PageView HeroAnimation FadeTransition SlideTransition ScaleTransition NamedRouteBasic "
+        "NamedRouteArguments NamedRouteResult NamedRouteGuard NamedRouteMiddleware NamedRouteRedirect NamedRouteNested NamedRouteTabBar NamedRouteGroup "
+        "NamedRouteDynamic NamedRouteWildcard NamedRouteTransition NamedRouteBinding NamedRouteHistory NamedRouteModal NamedRouteTabIndex NamedRouteAnimation "
+        "NamedRouteObserver NamedRoutePreload NamedRouteLazy DeepLinkBasic DeepLinkArguments DeepLinkUniversal DeepLinkAppLink DeepLinkWebUrl "
+        "DeepLinkQueryParam DeepLinkAuthenticated DeepLinkFallback DeepLinkDynamic DeepLinkBranch DeepLinkNotification DeepLinkShare DeepLinkOnboarding "
+        "DeepLinkWeb DeepLinkDesktop DeepLinkHistory DeepLinkHash DeepLinkRestore DeepLinkAnalytics DeepLinkLocalized BottomNavBasic BottomNavBadge "
+        "BottomNavStatePreserve BottomNavHide BottomNavCustom TabBarFixed TabBarScrollable TabBarIcon TabBarDynamic TabBarNested DrawerBasic DrawerEndDrawer "
+        "DrawerCustom DrawerHeader DrawerPersistent DrawerModal NavigationRail NavigationRailExtended AdaptiveNav MultiLevelNav AuthGuard RoleBasedNav "
+        "OnboardingFlow WizardFlow ConditionalHome FeatureFlag AgeGate NetworkAware PermissionGuard SubscriptionGuard MaintenanceMode ForceUpdate KYC TwoFactor "
+        "ConsentFlow LocationGate DarkModeConditional LanguageRedirect ThemeConditional ProfileCompletion BackStackInspect PopCount ClearStack HomeToRoot "
+        "CustomBackButton BackGesture AndroidBackDouble BackInterceptor PopWithData StackDepth BreadcrumbNav HistoryView NavObserver RouterDelegate RouteInfo "
+        "PopResult ModalBarrier NavigationStack RouteLifecycle StackSnapshot NestedNavBasic NestedNavTab NestedNavBottom NestedNavDrawer MultiNavigatorKey "
+        "GlobalKey NestedNavDeepLink NestedNavState ShellRoute NestedNavGuard TabNestedNav ChildNavigator CrossNavigator NavigatorKey ModalStack "
+        "OverlayNavigator SidePanelNav SplitView NestedNavObserver PopScopeNested AnimatedPageRoute OpenContainer SharedAxisTransition FadeThroughTransition "
+        "MaterialMotion AnimatedSwitcher AnimatedCrossFade CustomSlide RotationTransition FlipTransition CurveAnimation ChainedAnimation StaggeredAnimation "
+        "ImplicitAnimation ExplicitAnimation PredictiveBackAnim ParallaxTransition ZoomTransition WaveTransition GlassTransition AlertDialogBasic CustomDialog "
+        "FullScreenDialog BottomSheetBasic ModalBottomSheet SnackBar Tooltip Popup ContextMenu DropdownMenu DatePicker TimePicker ColorPicker FilePicker "
+        "ConfirmDialog FormDialog SearchDelegate ActionSheet BannerWidget DrawerModal AuthFlow ShoppingCart Onboarding ProfileSetup Subscription MultiStepForm "
+        "StateRestorationNav DeeplinkToNested PinAuth QRScan InAppReview ShareContent PaymentFlow SocialLogin NotificationNav WidgetToRoute MultiWindowNav "
+        "ComprehensiveApp"
+    ),
+    "api": (
+        "HttpGet HttpPost HttpPut HttpDelete HttpPatch QueryParams PathParams JsonParse JsonSerialize NestedJson JsonList Pagination Cursor Filtering Sorting "
+        "Search BatchGet BatchPost BulkUpdate ConditionalGet HttpHead HttpOptions Versioning ContentNeg Accept Cors Redirect Compression Timeout BaseUrl "
+        "ApiKeyHeader BasicAuth BearerToken JwtLogin JwtRefresh JwtDecode OAuth2Code OAuth2Implicit OAuth2ClientCred ApiKeyQuery HmacSign RequestSigning "
+        "TokenStorage AutoRefresh SessionCookie CsrfToken MutualTls Pkce Scopes TokenIntrospect PermissionCheck RateLimitAware IpWhitelist EncryptPayload "
+        "HashPassword TlsVerify CertPin SecureHeaders SamlAssertion LogoutRevoke WebSocketBasic WebSocketSend WebSocketPing WebSocketReconnect WebSocketJson "
+        "WebSocketBinary WebSocketRoom WebSocketBroadcast WebSocketAuth WebSocketStream SseBasic SseReconnect SseEventType SseLastEventId SseJson LongPolling "
+        "ShortPolling HttpStream ChunkedTransfer EventBus WebSocketPool SocketIo Sse404Handling WebSocketCompress WebSocketSubprotocol RealTimeList "
+        "NotificationWs PresenceWs TypingIndicator LiveFeed JsonBasicParse JsonNested JsonList JsonNull JsonToModel ModelToJson JsonDiff JsonMerge JsonPath "
+        "JsonlParse JsonlWrite JsonlStream YamlRead YamlWrite YamlConfig YamlValidate JsonSchema JsonTransform CsvParse CsvWrite XmlParse XmlWrite ProtobufMock "
+        "MessagePack JsonNormalize JsonStringify JsonEncoding JsonStream JsonMask JsonVersioning ErrorHandlingBasic RetryLogic ExponentialBackoff "
+        "CircuitBreaker Fallback Timeout2 ErrorMapping GlobalErrorHandler ErrorBoundary UserFriendlyError ValidationError NetworkError ServerError AuthError "
+        "NotFoundError RateLimitError ConflictError DeadlineExceeded PartialSuccess MultiError ErrorLogging ErrorReporting GracefulDegradation OfflineMode "
+        "SyncRetry AsyncRetry RetryBudget Idempotency ErrorContext ErrorChain HttpCacheBasic EtagCache LastModified CacheControl MemoryCache DiskCache "
+        "CacheExpiry CacheInvalidate StaleWhileRevalidate CacheFirst NetworkFirst CacheOnly NetworkOnly CacheAndNetwork PrefetchCache CacheVersion RequestDedup "
+        "CacheStats NoCacheHeader CdnUrl FileUploadBasic MultipartUpload ChunkedUpload UploadProgress ResumeUpload FileDownload DownloadProgress "
+        "ParallelDownload StreamDownload ZipUpload FileValidation FilePreview DirectUpload TusProtocol S3Presigned BatchDownload CacheDownload SecureDownload "
+        "ContentType Metadata ImageEmbed VideoEmbed AudioEmbed Base64Image SvgEmbed LazyLoadImage ResponsiveImage MediaPlaylist"
+    ),
+    "ui": (
+        "MaterialAppBasic ElevatedButton TextButton OutlinedButton IconButton FloatingActionButton AppBar Card ListTile TextField CheckBox RadioButton Switch "
+        "Slider ProgressIndicator Chip Badge Divider ExpansionTile Stepper DataTable Tooltip2 PopupMenu SegmentedButton NavigationBar NavigationDrawer "
+        "BottomAppBar SearchBar DatePickerM3 TimePickerM3 CupertinoApp CupertinoNavBar CupertinoTabBar CupertinoButton CupertinoTextField CupertinoSwitch "
+        "CupertinoSlider CupertinoPicker CupertinoAlert CupertinoAction CupertinoPage CupertinoList CupertinoContext CupertinoFormRow CupertinoSearch "
+        "CupertinoSegment CupertinoProgress CupertinoDate CupertinoTimer CupertinoScaffold CupertinoTabScaffold CupertinoFullscreen CupertinoScrollbar "
+        "CupertinoRefresh CupertinoTheme AdaptiveWidget PlatformDetect AdaptiveTextField AdaptiveButton AdaptiveDialog CustomThemeBasic ThemeExtension "
+        "ColorScheme TypographyTheme ComponentTheme ThemeToggle AnimatedTheme MultiTheme ThemeProvider ThemePersist BrandTheme SeasonTheme GradientTheme "
+        "NeonTheme MinimalTheme RetroTheme NatureTheme HighContrastTheme M3Theme M2Theme FontFamily FontScale IconTheme DividerTheme CardTheme AppBarTheme "
+        "ButtonTheme InputTheme SnackBarTheme TooltipTheme DarkModeBasic SystemDarkMode ManualDarkMode DarkModeIcon DarkModeImage DarkModeColor DynamicColor "
+        "SystemAccent MaterialYou AMOLED ScheduledTheme LightSensor ColorBlind Sepia Monochrome EyeComfort PrintMode Dim ContrastRatio ColorToken SeedColor "
+        "TonalPalette RoleColor ColorHarmony NightShift SystemBrightness AutoTheme MultiAccent ThemePreview ThemeExport ResponsiveLayout BreakPoint "
+        "FlexibleLayout GridLayout WrapLayout ConstraintLayout AspectRatio FractionallySized LayoutBuilder MediaQuery OrientationLayout TabletLayout "
+        "DesktopLayout WebLayout FoldableLayout SliverList SliverGrid SliverAppBar NestedScroll Scrollbar SafeArea Padding Spacer IntrinsicHeight Stack "
+        "CustomScroll Responsive2Col Responsive3Col AdaptiveFont AdaptiveImage PlatformView IOSStatusBar AndroidBackColor WebScroll WebContextMenu MacOSMenu "
+        "WindowsTitle DesktopCursor MobileHaptic IOSBlur AndroidSplash IOSSplash WebFavicon DesktopIcon StatusBarTransparent FullScreen KeyboardPadding "
+        "SafeAreaPlatform MouseRegion GestureScale ScrollPhysics TextScaleFixed DisplayMode CameraAware SystemFont SemanticsBasic ExcludeSemantics "
+        "MergeSemantics SemanticsLabel FocusTraversal FocusNode AccessibleForm ContrastMode LargeText ReduceMotion ScreenReader InvertColor BoldText "
+        "TouchTarget AccessibilityInspect GestureDetect SwipeAction PinchZoom DragDrop LongPress DoubleTap ShakeDetect AnimatedFeedback"
+    ),
+    "data": (
+        "FilterBasic FilterMultiple FilterNested FilterDebounce SearchBasic SearchFuzzy SearchHighlight SearchHistory SortBasic SortMultiKey SortStable "
+        "SortCustom SortReverse GroupBy FacetFilter RangeFilter TagFilter GeoFilter TextIndex InvertedIndex Autocomplete Tokenize Stemming StopWord TfIdf "
+        "SortedSet PriorityQueue MinHeap TopN DistinctFilter PaginationBasic CursorPagination InfiniteScroll LoadMore VirtualList LazyList PullRefresh Prefetch "
+        "PageIndicator PageSize OffsetLimit KeysetPagination WindowPaging BidirectionalScroll StickyHeader SectionList TreeView FlatList GroupedList "
+        "ThumbnailList SelectableList SwipeToDelete Reorderable ChecklistView TimelineView MasonryGrid CalendarView KanbanBoard ChartData HeatmapData "
+        "MemoryCacheBasic LruCache TtlCache WeakRefCache MultiLevel WriteThrough WriteBack ReadAside RefreshAhead CacheWarmup CacheKey CacheShard CacheEviction "
+        "CacheStats2 CacheSerialization ImageCache ApiCache ComputeCache LazyInit ObjectPool MemoryLimit GcFriendly Dispose StreamBuffer DataCompression "
+        "Deduplication Denormalize SnapshotCache DeltaCache ReadThrough ValidationBasic EmailValidation PasswordStrength PhoneValidation UrlValidation "
+        "DateValidation RangeValidation RegexValidation FormValidation AsyncValidation CrossField SanitizeInput DataNormalize TypeCoercion DateConvert "
+        "CurrencyConvert UnitConvert TimeZone Encoding DataMasking DataEnrich DataClean DataDeduplicate SchemaValidation Constraint Pipeline MapReduce Flatten "
+        "Partition Zip FutureBasic FutureChain FutureError FutureWait FutureAny FutureTimeout StreamBasic StreamController BroadcastStream StreamTransform "
+        "StreamMerge StreamDebounce StreamThrottle StreamBuffer2 StreamWindow Isolate ComputeFunc WorkQueue Semaphore Mutex CancelableOp ParallelMap "
+        "ProgressStream Debounce Throttle RxLike EventLoop MicrotaskQueue SuspendResume AsyncGenerator GetxState GetxObservable GetxController GetxBinding "
+        "GetxWorker GetxService ProviderBasic ChangeNotifier ValueNotifier InheritedWidget InheritedModel StateNotifier Bloc EventState Redux MVC MVVM MVP "
+        "CleanArch AtomState SortableList ReorderList DndGrid InsertItem RemoveItem SwapItems MoveToTop MoveToBottom InsertSorted UndoRedo CommandPattern "
+        "MementoPattern MultiSelect DragReorder PositionSwap BatchProcess Transaction EventDriven PubSub MessageQueue Saga Outbox EventSourcing CQRS Scheduler "
+        "Worker Checkpoint FullPipeline"
+    ),
+}
+# (numbers, runtime in the original, family here): the first row that contains a number decides, as in the original audit. ``order`` and ``text`` have no row there; their
+# producers (list_ordering.py, text_processing.py) are proved by the checked-in assets of patterns 005, 009, 010, 013, 019, 020, 024, 026, 027 and 029.
+PATTERN_PRODUCERS: tuple[tuple[Any, str, str | None], ...] = (
+    ((103, 104, 105, 107, 109, 110), "python", "convert"),
+    (range(91, 100), "python", "validate"),
+    ((4, 35), "javascript", "interaction"),
+    ((25, 28), "python", "score"),
+    ((6, 7, 8, 21, 22, 23), "python", "search"),
+    ((11, 12, 14, 15, 16, 17, 18), "python", "query"),
+    ((31, 32, 33), "python", "page"),
+    ((1, 2, 3, 30, 86, 113), "python", "select"),
+    ((9, 10, 13, 26, 27, 29), "python", "order"),
+    ((5, 19, 20, 24), "python", "text"),
+    (range(34, 45), "python", "window"),
+    (range(45, 50), "python", "structure"),
+    (range(51, 55), "python", "collection"),
+    (range(114, 121), "python", "transform"),
+    (range(121, 127), "javascript", "future"),
+    (range(127, 136), "javascript", "stream"),
+    (range(138, 144), "javascript", "concurrency"),
+    (range(144, 146), "javascript", "stream"),
+    (range(146, 151), "javascript", "event_loop"),
+    (range(164, 166), "python", "reduce"),
+    (range(176, 183), "python", "workflow"),
+    (range(185, 199), "python", "workflow"),
+)
+PATTERN_NATIVE = frozenset(range(151, 164)) | frozenset(range(166, 171)) | frozenset((136, 137))
+PATTERN_GESTURES = frozenset((171, 172, 173, 174, 175, 183, 184))
+
+
+def pattern_theme(category: str, number: int) -> str:
+    """The PATTERNS.md theme of a pattern: the row of its category whose number range contains it."""
+    for low, high, name in PATTERN_THEMES[category]:
+        if low <= number <= high:
+            return name
+    raise ValueError(f"no theme for {category} {number}")
+
+
+def pattern_family(number: int) -> str | None:
+    """The reference function above that implements data-processing pattern ``number`` (None when the original keeps it elsewhere)."""
+    for numbers, _runtime, family in PATTERN_PRODUCERS:
+        if number in numbers:
+            return family
+    return None
+
+
+def pattern_owner(number: int) -> str:
+    """Who owns data-processing pattern ``number`` in the original: the producer's runtime, else the audit's range rule."""
+    for numbers, runtime, _family in PATTERN_PRODUCERS:
+        if number in numbers:
+            return runtime
+    if number in PATTERN_NATIVE or number in PATTERN_GESTURES:
+        return "flutter_native"
+    for limit, owner in ((44, "python_processing / flutter_interaction"), (60, "python_assets / flutter_layout"), (90, "python_cache / runtime_specific"), (113, "python_validation / flutter_form")):
+        if number <= limit:
+            return owner
+    return "undecided"
+
+
+def pattern_catalogue() -> list[dict[str, Any]]:
+    """All 792 patterns in catalogue order: id (A001 ... D198), category, number, title, theme, and for category D its ``family`` here and ``owner`` in the original."""
+    rows: list[dict[str, Any]] = []
+    for key, letter, _label in PATTERN_CATEGORIES:
+        names = PATTERN_TITLES[key].split()
+        if len(names) != 198:
+            raise ValueError(f"{key} must list 198 titles")
+        for number, title in enumerate(names, 1):
+            row: dict[str, Any] = {"id": f"{letter}{number:03d}", "category": key, "number": number, "title": title, "theme": pattern_theme(key, number)}
+            if key == "data":
+                row["family"] = pattern_family(number)
+                row["owner"] = pattern_owner(number)
+            rows.append(row)
+    return rows
+
+
+def pattern_find(rows: list[dict[str, Any]], query: str = "", category: str = "", family: str = "") -> list[dict[str, Any]]:
+    """Filter catalogue rows: every whitespace-separated word of ``query`` must occur (NFKC, case-folded) in the id, title or theme; ``category`` and ``family`` must equal."""
+    words = _pat_normalized(query).split()
+    result = []
+    for row in rows:
+        if category and row["category"] != category:
+            continue
+        if family and row.get("family") != family:
+            continue
+        haystack = _pat_normalized(f"{row['id']} {row['title']} {row['theme']}")
+        if all(word in haystack for word in words):
+            result.append(row)
+    return result
+
+
+
+# --- The patterns page: the catalogue to search and every reference to run ------------------------------------------------------------------------
+# ``PATTERN_TWINS`` are the families that ``patterns.js`` runs in the page (the rest stay in Python: search, convert and validate lean on CPython's Unicode case folding, int parsing and
+# urlsplit; the five JavaScript-born families run there as the originals do, on real promises and timers). ``PATTERN_EXAMPLES`` holds one request per family; the page shows what Python answers to it, computed when the page is made.
+PATTERN_TWINS = ("collection", "concurrency", "event_loop", "future", "interaction", "order", "page", "query", "reduce", "score", "select", "stream", "structure", "text", "transform", "window", "workflow")
+PATTERN_EXAMPLES: dict[str, Any] = {
+    "collection": {"mode": "selectable", "commands": [["select", "b"], ["select", "c"]]},
+    "concurrency": {"mode": "semaphore", "tasks": [{"value": "a", "delay_ms": 10}, {"value": "b"}, {"value": "c", "delay_ms": 5}], "concurrency": 2},
+    "event_loop": {"mode": "microtask", "values": []},
+    "future": {"mode": "wait", "tasks": [{"value": "slow", "delay_ms": 25}, {"value": "fast"}]},
+    "interaction": {"operation": "debounce", "delay_ms": 20, "calls": [{"at_ms": 0, "value": "first"}, {"at_ms": 5, "value": "last"}, {"at_ms": 60, "value": "x"}, {"at_ms": 61, "cancel": True}]},
+    "convert": {"operation": "mask", "value": "1234567890", "keep_last": 4},
+    "order": {"mode": "priority"},
+    "page": {"operation": "cursor", "items": [1, 2, 3, 4, 5], "limit": 2},
+    "query": {"operation": "stable_sort", "items": [{"name": "b", "n": 2}, {"name": "a", "n": 1}, {"name": "c", "n": 2}], "key": "n", "descending": True},
+    "reduce": {"mode": "redux", "initial": 10, "actions": [{"type": "increment", "value": 5}, {"type": "decrement", "value": 3}, {"type": "reset"}]},
+    "score": {"operation": "minheap", "values": [5, 1, 3, 1], "pops": 2},
+    "search": {"operation": "fuzzy", "query": "cat", "values": ["cats", "car", "dog", "cat"], "max_distance": 1},
+    "select": {"operation": "distinct", "values": [1, "1", True, 1, None, None]},
+    "stream": {"mode": "window", "events": [{"at_ms": 0, "value": 1}, {"at_ms": 10, "value": 2}, {"at_ms": 20, "value": 3}], "size": 2},
+    "structure": {"mode": "tree"},
+    "text": {"mode": "search"},
+    "transform": {"operation": "constraint", "values": [1, 5, 3], "condition": {"operator": "greater_than", "value": 2}},
+    "validate": {"operation": "form", "fields": [{"name": "mail", "rule": "email", "value": "a@b.co"}, {"name": "tel", "rule": "phone", "value": "12"}]},
+    "window": {"mode": "keyset", "commands": ["next", "next"]},
+    "workflow": {"operation": "saga", "values": [1], "commands": [{"type": "append", "value": 2}, {"type": "append", "value": 3}], "fail_at": 1},
+}
+
+
+def pattern_examples() -> dict[str, dict[str, Any]]:
+    """One request and Python's answer to it for every family (what the page shows for the families it does not run itself)."""
+    return {family: {"request": PATTERN_EXAMPLES[family], "result": pattern_run(family, PATTERN_EXAMPLES[family])} for family in sorted(PATTERN_RUNNERS)}
+
+
+_CSS["patterns.css"] = ("@layer components{.ui-patterns h3{margin:24px 0 8px}.ui-patterns label{display:block;margin:8px 0}.ui-patterns .ui-input{width:100%;box-sizing:border-box}"
+                        ".ui-patterns textarea{min-height:160px;font-family:var(--ui-font-mono,monospace)}.ui-patterns-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0}.ui-patterns-bar label{display:inline-block;margin:0}.ui-patterns-bar .ui-input{width:auto;min-width:0;flex:1 1 128px}"
+                        ".ui-patterns-list{margin:8px 0;padding-left:24px;max-height:480px;overflow:auto}.ui-patterns-list li{margin:8px 0;overflow-wrap:anywhere}"
+                        ".ui-patterns pre{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto}.ui-patterns-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}}")
+
+
+def patterns_html() -> str:
+    """The patterns page as semantic HTML: a search over the 792 patterns and a runner for the reference of each family."""
+    categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
+    families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns><h2>792 patterns</h2>'
+            '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
+            '<label for="patterns-query">Search (id, title or theme)</label>'
+            '<input class="ui-input" id="patterns-query" data-patterns-query type="search" autocomplete="off" placeholder="filter, D003, ページング">'
+            '<div class="ui-patterns-bar"><span role="status" aria-live="polite" data-patterns-count></span><button class="ui-button" type="button" data-patterns-more>Show more</button></div>'
+            f'<div class="ui-patterns-bar"><label for="patterns-category">Category</label><select class="ui-input" id="patterns-category" data-patterns-category><option value="">All four</option>{categories}</select>'
+            f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
+            '<ol class="ui-patterns-list" data-patterns-list></ol>'
+            '<h3 id="patterns-run-title">Run a reference</h3>'
+            f'<p class="ui-muted">{len(PATTERN_TWINS)} families run in this page. Search, convert and validate stay in Python: the page shows what Python answers to their example.</p>'
+            f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
+            '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
+            '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
+            '<p class="ui-patterns-status" role="status" aria-live="polite" data-patterns-status></p><pre data-patterns-result></pre></section>')
+
+
+def patterns_document(*, theme: str = "modern") -> str:
+    """A single-file page for the patterns."""
+    return render_document(trusted_html='<main class="ui-page">' + patterns_html() + "</main>" + module_script(_JS["patterns.js"]), title="792 patterns", theme=theme, css=bundled_css())
+
+
+# --- Image studio: layers of shapes, text, emoji, photos, clocks, arrows and heatmaps in one scene, its JSON, its SVG, its undo history --------------
+# Absorbs Ironmate's image studio (studio/core.js, image_studio.py, studio_*.py; docs/image-studio.md). Python is the reference; ``studio.js`` must agree. The independent oracle is
+# Ironmate's own core.js, run by Node: ``tests/fixtures/studio_golden.json`` holds its answers (scene validation and its refusal text, heat colors, matrices, mosaics, arrow geometry,
+# output sizes, the whole SVG of seeded scenes, history and workspace JSON), and every function was also run against core.js on thousands of seeded scenes.
+# Deliberate differences: (1) text is wrapped (``wrap: true``) at the segments of ``studio_words`` and ``studio_graphemes`` (Unicode word and grapheme rules for Latin, Hangul and
+# similar scripts, each Han or Hiragana character apart, Katakana runs together) because Intl.Segmenter's Japanese dictionary is not portable; the ASCII and Latin results equal ICU's.
+# (2) the clock's sin and cos are fdlibm's, computed with plain arithmetic (as Node does), so that no engine's libm decides the last digit of an SVG number.
+# (3) a PNG for the CLI is made in the page; here only SVG, JSON and Base64 of PNG bytes are made without a browser. (4) ids of the example scenes are fixed words, not clock readings.
+STUDIO_SCHEMA = "ironmate-image-studio/1"
+STUDIO_WORKSPACE_SCHEMA = "ironmate-studio-workspace/1"
+STUDIO_WORKSPACE_MAX_BYTES = 32 * 1024 * 1024
+STUDIO_PALETTE = ("#440154", "#3B528B", "#21918C", "#5EC962", "#FDE725")
+STUDIO_KINDS = ("rect", "ellipse", "triangle", "text", "image", "heatmap", "arrow", "clock")
+_STU_UNDEFINED = object()
+_STU_COLOR = re.compile(r"#[0-9a-f]{6}|none", re.I)
+_STU_PNG_URI = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
+
+
+def studio_parse(text: str) -> Any:
+    """JSON the way ``JSON.parse`` reads it: every number is a double (so ``9007199254740993`` is ``9007199254740992``), whole numbers up to 2**53 are integers, and NaN, Infinity or a
+    number beyond the double range is refused."""
+    def constant(name: str) -> Any:
+        raise ValueError(f"non-finite JSON constant: {name}")
+
+    def number(raw: str) -> float:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("JSON number out of range")
+        return value
+
+    def whole(raw: str) -> Any:
+        value = number(raw)
+        return int(value) if abs(value) <= 2 ** 53 else value
+    try:
+        return json.loads(text, parse_constant=constant, parse_float=number, parse_int=whole)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply") from None
+
+
+class StudioError(ValueError):
+    """A scene, matrix or request the studio refuses; the text is core.js's (Japanese)."""
+
+
+def _stu_fail(message: str) -> None:
+    raise StudioError(message)
+
+
+def _stu_need(condition: Any, message: str) -> None:
+    if not condition:
+        raise StudioError(message)
+
+
+def _stu_round(x: float) -> int:
+    """Math.round: halves go up."""
+    r = math.floor(x)
+    return r + 1 if x - r >= 0.5 else r
+
+
+def _stu_num(value: Any, low: float, high: float) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def _stu_int(value: Any) -> bool:
+    """Number.isInteger of a JSON value (1.0 is the integer 1 in JavaScript)."""
+    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
+
+
+def _stu_color(value: Any) -> bool:
+    return isinstance(value, str) and _STU_COLOR.fullmatch(value) is not None
+
+
+def _stu_len(text: str) -> int:
+    """String.length: UTF-16 units."""
+    return len(text) + sum(1 for c in text if ord(c) > 0xFFFF)
+
+
+def _stu_get(obj: Any, key: str) -> Any:
+    return obj.get(key, _STU_UNDEFINED) if isinstance(obj, dict) else _STU_UNDEFINED
+
+
+def _stu_defined(obj: Any, key: str) -> bool:
+    return isinstance(obj, dict) and key in obj
+
+
+def js_number(x: Any) -> str:
+    """Number.prototype.toString for a number: whole numbers below 1e21 in full, the shortest digits otherwise, exponent form from 1e21 and below 1e-6."""
+    if type(x) is bool:
+        raise TypeError("not a number")
+    if isinstance(x, int):
+        if abs(x) < 2 ** 53:
+            return str(x)
+        x = float(x)
+    if not math.isfinite(x):
+        return "NaN" if x != x else ("Infinity" if x > 0 else "-Infinity")
+    if x == 0:
+        return "0"
+    parts = Decimal(repr(abs(x))).as_tuple()
+    all_digits = "".join(map(str, parts.digits))
+    n = len(all_digits) + parts.exponent
+    digits = all_digits.rstrip("0")
+    k = len(digits)
+    sign = "-" if x < 0 else ""
+    if k <= n <= 21:
+        return sign + digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * (-n) + digits
+    e = n - 1
+    return f"{sign}{digits[0]}{'.' + digits[1:] if k > 1 else ''}e{'+' if e >= 0 else '-'}{abs(e)}"
+
+
+def js_string(value: Any) -> str:
+    """String(value) for a JSON value."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return js_number(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return ",".join("" if v is None else js_string(v) for v in value)
+    return "[object Object]"
+
+
+def js_json(value: Any, indent: int | None = None, _level: int = 0) -> str:
+    """JSON.stringify(value) or JSON.stringify(value, null, indent): key order kept, numbers as JavaScript writes them."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return "null"
+        return js_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    pad = "\n" + " " * (indent * (_level + 1)) if indent else ""
+    end = "\n" + " " * (indent * _level) if indent else ""
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        return "[" + pad + ("," + pad).join(js_json(v, indent, _level + 1) for v in value) + end + "]"
+    if not value:
+        return "{}"
+    colon = ": " if indent else ":"
+    return "{" + pad + ("," + pad).join(json.dumps(k, ensure_ascii=False) + colon + js_json(value[k], indent, _level + 1) for k in _pat_js_keys_of(value)) + end + "}"
+
+
+def studio_clone(value: Any) -> Any:
+    """JSON.parse(JSON.stringify(value)): a deep copy in which 1.0 has become 1."""
+    return json.loads(js_json(value))
+
+
+def studio_escape(value: Any) -> str:
+    return js_string(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+
+
+# fdlibm's sin and cos with plain arithmetic, for |x| up to 8 (the angles of a clock are below 2 pi): V8 computes these the same way, libm in other engines may differ in the last digit.
+_STU_SIN = (-1.66666666666666324348e-01, 8.33333333332248946124e-03, -1.98412698298579493134e-04, 2.75573137070700676789e-06, -2.50507602534068634195e-08, 1.58969099521155010221e-10)
+_STU_COS = (4.16666666666666019037e-02, -1.38888888888741095749e-03, 2.48015872894767294178e-05, -2.75573143513906633035e-07, 2.08757232129817482790e-09, -1.13596475577881948265e-11)
+_STU_PIO2 = (6.36619772367581382433e-01, 1.57079632673412561417e+00, 6.07710050650619224932e-11, 6.07710050630396597660e-11, 2.02226624879595063154e-21, 2.02226624871116645580e-21,
+             8.47842766036889956997e-32)
+_STU_NPIO2_HW = (0x3FF921FB, 0x400921FB, 0x4012D97C, 0x401921FB, 0x401F6A7A, 0x4022D97C, 0x4025FDBB, 0x402921FB)
+
+
+def _stu_high(x: float) -> int:
+    return struct.unpack(">I", struct.pack(">d", x)[:4])[0]
+
+
+def _stu_ksin(x: float, y: float, iy: int) -> float:
+    z = x * x
+    v = z * x
+    s = _STU_SIN
+    r = s[1] + z * (s[2] + z * (s[3] + z * (s[4] + z * s[5])))
+    return x + v * (s[0] + z * r) if iy == 0 else x - ((z * (0.5 * y - v * r) - y) - v * s[0])
+
+
+def _stu_kcos(x: float, y: float) -> float:
+    ix = _stu_high(x) & 0x7fffffff
+    if ix < 0x3e400000 and int(x) == 0:
+        return 1.0
+    c = _STU_COS
+    z = x * x
+    r = z * (c[0] + z * (c[1] + z * (c[2] + z * (c[3] + z * (c[4] + z * c[5])))))
+    if ix < 0x3FD33333:
+        return 1.0 - (0.5 * z - (z * r - x * y))
+    qx = 0.28125 if ix > 0x3fe90000 else struct.unpack(">d", struct.pack(">II", ix - 0x00200000, 0))[0]
+    return (1.0 - qx) - ((0.5 * z - qx) - (z * r - x * y))
+
+
+def _stu_reduce(x: float) -> tuple[int, float, float]:
+    """x = n * pi/2 + (y0 + y1), as fdlibm's __ieee754_rem_pio2 reduces it for |x| from pi/4 up to 8."""
+    hx = _stu_high(x)
+    ix = hx & 0x7fffffff
+    inv, p1, p1t, p2, p2t, p3, p3t = _STU_PIO2
+    if ix < 0x4002d97c:
+        if hx < 0x80000000:
+            z = x - p1
+            if ix != 0x3ff921fb:
+                y0 = z - p1t
+                return 1, y0, (z - y0) - p1t
+            z -= p2
+            y0 = z - p2t
+            return 1, y0, (z - y0) - p2t
+        z = x + p1
+        if ix != 0x3ff921fb:
+            y0 = z + p1t
+            return -1, y0, (z - y0) + p1t
+        z += p2
+        y0 = z + p2t
+        return -1, y0, (z - y0) + p2t
+    _stu_need(abs(x) <= 8, "角度が大きすぎます")
+    t = abs(x)
+    n = int(t * inv + 0.5)
+    fn = float(n)
+    r = t - fn * p1
+    w = fn * p1t
+    y0 = r - w
+    if not (n < 32 and ix != _STU_NPIO2_HW[n - 1]):
+        j = ix >> 20
+        i = j - ((_stu_high(y0) >> 20) & 0x7ff)
+        if i > 16:
+            t = r
+            w = fn * p2
+            r = t - w
+            w = fn * p2t - ((t - r) - w)
+            y0 = r - w
+            i = j - ((_stu_high(y0) >> 20) & 0x7ff)
+            if i > 49:
+                t = r
+                w = fn * p3
+                r = t - w
+                w = fn * p3t - ((t - r) - w)
+                y0 = r - w
+    y1 = (r - y0) - w
+    return (-n, -y0, -y1) if hx >= 0x80000000 else (n, y0, y1)
+
+
+def studio_sin(x: float) -> float:
+    if _stu_high(x) & 0x7fffffff <= 0x3fe921fb:
+        return _stu_ksin(x, 0.0, 0)
+    n, y0, y1 = _stu_reduce(x)
+    k = n & 3
+    return _stu_ksin(y0, y1, 1) if k == 0 else _stu_kcos(y0, y1) if k == 1 else -_stu_ksin(y0, y1, 1) if k == 2 else -_stu_kcos(y0, y1)
+
+
+def studio_cos(x: float) -> float:
+    if _stu_high(x) & 0x7fffffff <= 0x3fe921fb:
+        return _stu_kcos(x, 0.0)
+    n, y0, y1 = _stu_reduce(x)
+    k = n & 3
+    return _stu_kcos(y0, y1) if k == 0 else -_stu_ksin(y0, y1, 1) if k == 1 else -_stu_kcos(y0, y1) if k == 2 else _stu_ksin(y0, y1, 1)
+
+
+def studio_heat_color(value: Any, low: Any, high: Any, levels: Any = 0) -> str:
+    """A five-stop scale from violet to yellow; ``None`` (missing) is ``"none"``. The value is never changed, only shown."""
+    if value is None:
+        return "none"
+    finite = lambda v: type(v) in (int, float) and math.isfinite(v)
+    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _stu_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
+    levels = int(levels)
+    t = 0.5 if high == low else max(0, min(1, (value - low) / (high - low)))
+    if levels:
+        t = _stu_round(t * (levels - 1)) / (levels - 1)
+    p = t * 4
+    i = min(3, math.floor(p))
+    a, b = (bytes.fromhex(c[1:]) for c in STUDIO_PALETTE[i:i + 2])
+    return "#" + "".join(f"{_stu_round(x + (y - x) * (p - i)):02X}" for x, y in zip(a, b))
+
+
+def studio_matrix(source: Any) -> dict[str, Any]:
+    """A numeric matrix, or the one heatmap trace of a Plotly figure, as the data of a heatmap layer (row zero on top; null is missing)."""
+    if isinstance(source, list):
+        trace: Any = {"z": source}
+    elif isinstance(source, dict) and isinstance(source.get("data"), list):
+        traces = [t for t in source["data"] if isinstance(t, dict) and t.get("type") == "heatmap"]
+        _stu_need(len(traces) == 1, "heatmapトレースは1つにしてください")
+        trace = traces[0]
+    else:
+        trace = source
+    z = trace.get("z") if isinstance(trace, dict) else None
+    cols = len(z[0]) if isinstance(z, list) and z and isinstance(z[0], list) else 0
+    _stu_need(isinstance(z, list) and cols and len(z) * cols <= 4096 and all(isinstance(r, list) and len(r) == cols for r in z), "1〜4096セルの長方形の数値行列が必要です")
+    values = [v for row in z for v in row if v is not None]
+    def safe(v: Any) -> bool:
+        if type(v) is int:
+            return abs(v) <= 2 ** 53 - 1
+        return type(v) is float and math.isfinite(v) and not (v.is_integer() and abs(v) > 2 ** 53 - 1)
+    _stu_need(all(safe(v) for v in values), "有限の数値またはnullを指定してください（巨大な整数は非対応）")
+    low = trace.get("zmin")
+    high = trace.get("zmax")
+    low = (min(values) if values else 0) if low is None else low
+    high = (max(values) if values else 1) if high is None else high
+    _stu_need(safe(low) and safe(high), "色の範囲には有限の安全な数値を指定してください")
+    studio_heat_color(low, low, high)
+    xlabels = trace.get("x")
+    ylabels = trace.get("y")
+    xlabels = list(range(cols)) if xlabels is None else xlabels
+    ylabels = list(range(len(z))) if ylabels is None else ylabels
+    _stu_need(isinstance(xlabels, list) and isinstance(ylabels, list) and len(xlabels) == cols and len(ylabels) == len(z), "軸ラベルの数が一致しません")
+    return {"z": studio_clone(z), "xlabels": studio_clone(xlabels), "ylabels": studio_clone(ylabels), "low": low, "high": high, "levels": 0, "labels": True}
+
+
+def studio_arrow_geometry(w: Any, h: Any, head: Any = 28, placement: Any = "tip") -> dict[str, Any]:
+    """The shaft and the three corners of a triangular head; the head is no larger than the box and sits at the tip or in the middle."""
+    _stu_need(_stu_num(w, 1, 8192) and _stu_num(h, 1, 8192) and _stu_num(head, 1, 512) and placement in ("tip", "middle"), "矢印の寸法が不正です")
+    size = min(head, w, h)
+    cx = w / 2 if placement == "middle" else w - size / 2
+    return {"line": [0, h / 2, w, h / 2], "points": [[cx + size / 2, h / 2], [cx - size / 2, h / 2 + size / 2], [cx - size / 2, h / 2 - size / 2]]}
+
+
+def studio_output_size(scene: Any, scale: Any = 1) -> dict[str, int]:
+    """Pixels of an export at ``scale`` (0.25 to 8): at most 8192 a side and 16 MP."""
+    _stu_need(_stu_num(scale, 0.25, 8), "出力倍率は0.25〜8です")
+    width, height = _stu_round(scene["width"] * scale), _stu_round(scene["height"] * scale)
+    _stu_need(width <= 8192 and height <= 8192 and width * height <= 16777216, "出力は各辺8192px・合計16MP以下にしてください")
+    return {"width": width, "height": height}
+
+
+def studio_png_payload(data: Any) -> dict[str, Any]:
+    """The Base64 forms of PNG bytes for hand-off (standard alphabet, padded, no line breaks): plain and as a data URI."""
+    raw = bytes(data)
+    _stu_need(8 <= len(raw) <= 32 * 1024 * 1024 and raw[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]), "32MiB以下のPNGが必要です")
+    text = base64.b64encode(raw).decode("ascii")
+    return {"base64": text, "dataUri": "data:image/png;base64," + text, "mimeType": "image/png", "bytes": len(raw)}
+
+
+def studio_validate(scene: Any) -> dict[str, Any]:
+    """The scene if it is well formed (at most 100 layers and 4 MP), as a copy; otherwise a StudioError with core.js's text."""
+    width, height = _stu_get(scene, "width"), _stu_get(scene, "height")
+    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _stu_int(width) and _stu_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
+              and width * height <= 4194304 and _stu_color(scene.get("background")) and isinstance(scene.get("layers"), list) and len(scene["layers"]) <= 100,
+              "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
+    ids: set[str] = set()
+    image_bytes = 0
+    for layer in scene["layers"]:
+        _stu_need(isinstance(layer, dict) and isinstance(layer.get("id"), str) and _stu_len(layer["id"]) <= 100 and layer["id"] not in ids and layer.get("kind") in STUDIO_KINDS,
+                  "レイヤーのIDまたは種類が不正です")
+        ids.add(layer["id"])
+        kind = layer["kind"]
+        for field in ("x", "y"):
+            _stu_need(_stu_num(_stu_get(layer, field), -8192, 8192), "位置が不正です")
+        for field in ("w", "h"):
+            _stu_need(_stu_num(_stu_get(layer, field), 1, 8192), "サイズが不正です")
+        _stu_need(_stu_num(_stu_get(layer, "rotation"), -360, 360) and _stu_num(_stu_get(layer, "opacity"), 0, 1), "角度または不透明度が不正です")
+        _stu_need(not _stu_defined(layer, "mono") or type(layer["mono"]) is bool, "単色設定が不正です")
+        _stu_need(not layer.get("mono") or _stu_color(layer.get("fill")), "単色の色が不正です")
+        if kind == "text":
+            _stu_need(not _stu_defined(layer, "wrap") or type(layer["wrap"]) is bool, "折り返しの指定が不正です")
+            _stu_need(not _stu_defined(layer, "bold") or type(layer["bold"]) is bool, "太字の指定が不正です")
+            _stu_need(not _stu_defined(layer, "font") or layer["font"] in ("sans", "mono"), "フォント設定が不正です")
+            _stu_need(isinstance(layer.get("text"), str) and _stu_len(layer["text"]) <= 2000 and _stu_num(layer.get("fontSize"), 4, 512) and _stu_color(layer.get("fill")), "テキストが不正です")
+        elif kind == "image":
+            src = layer.get("src")
+            _stu_need(isinstance(src, str) and _stu_len(src) <= 12000000 and _STU_PNG_URI.fullmatch(src) is not None, "画像は埋め込みPNGが必要です")
+            image_bytes += len(src)
+            _stu_need(image_bytes <= 20000000, "シーンの画像合計は20MB以下にしてください")
+            _stu_need(_stu_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _stu_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
+            _stu_need(not _stu_defined(layer, "sampling") or layer["sampling"] in ("pixelated", "smooth"), "補間方式が不正です")
+        elif kind == "heatmap":
+            studio_matrix({"z": layer.get("z"), "x": layer.get("xlabels"), "y": layer.get("ylabels"), "zmin": layer.get("low"), "zmax": layer.get("high")})
+            studio_heat_color(layer.get("low", _STU_UNDEFINED), layer.get("low", _STU_UNDEFINED), layer.get("high", _STU_UNDEFINED), layer.get("levels", 0))
+        else:
+            _stu_need(_stu_color(layer.get("fill")) and _stu_color(layer.get("stroke")) and _stu_num(layer.get("strokeWidth"), 0, 64), "図形の色または線幅が不正です")
+        if kind == "arrow":
+            head = layer["headSize"] if "headSize" in layer else 28
+            placement = layer["headPlacement"] if "headPlacement" in layer else "tip"
+            studio_arrow_geometry(layer["w"], layer["h"], head, placement)
+            _stu_need(not _stu_defined(layer, "headStyle") or layer["headStyle"] in ("triangle", "beginner"), "矢羽根の形が不正です")
+        if kind == "clock":
+            _stu_need(_stu_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _stu_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
+    return studio_clone(scene)
+
+
+def studio_mosaic_rgba(data: Any, width: Any, height: Any, cell: Any, levels: Any = 256) -> bytes:
+    """Area means of the original's RGBA blocks (``cell`` pixels square, the partial blocks at the right and bottom kept): RGB weighted by alpha so hidden colors of transparent pixels do
+    not tint opaque ones, then each channel cut into ``levels`` steps. Run it on the ORIGINAL each time: a mosaic of a mosaic does not give the detail back."""
+    raw = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    _stu_need(_stu_int(width) and _stu_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
+              and _stu_int(cell) and 1 <= cell <= 512 and _stu_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
+    width, height, cell, levels = int(width), int(height), int(cell), int(levels)
+    out = bytearray(len(raw))
+    steps = levels - 1
+    for y in range(0, height, cell):
+        end_y = min(height, y + cell)
+        for x in range(0, width, cell):
+            end_x = min(width, x + cell)
+            sums, alpha = [0, 0, 0], 0
+            for j in range(y, end_y):
+                base = (j * width + x) * 4
+                for i in range(end_x - x):
+                    n = base + i * 4
+                    a = raw[n + 3]
+                    alpha += a
+                    sums[0] += raw[n] * a
+                    sums[1] += raw[n + 1] * a
+                    sums[2] += raw[n + 2] * a
+            count = (end_x - x) * (end_y - y)
+            rgba = [_stu_round(_stu_round((_stu_round(s / alpha) if alpha else 0) / 255 * steps) / steps * 255) for s in sums] + [_stu_round(alpha / count)]
+            pixel = bytes(rgba)
+            for j in range(y, end_y):
+                base = (j * width + x) * 4
+                out[base:base + (end_x - x) * 4] = pixel * (end_x - x)
+    return bytes(out)
+
+
+# Wrapping text: the segments of a line. Unicode word and grapheme rules (UAX #29) for Latin, Hangul and similar scripts; each Han or Hiragana character stands alone and Katakana
+# runs together, where Intl.Segmenter("ja") uses a dictionary. The ASCII and Latin results are ICU's (checked against Node on random strings).
+_STU_WSPACE = "             　"
+_STU_MIDLETTER = ":··՟״‧︓﹕："
+_STU_MIDNUM = ",;;։،؍߸⁄︐︔﹐﹔，；"
+_STU_MIDNUMLET = ".‘’․﹒＇．'"
+_STU_NEWLINE = "\n\r\x0b\x0c\x85\u2028\u2029"
+_STU_KATAKANA = ((0x30A1, 0x30FA), (0x30FC, 0x30FF), (0x31F0, 0x31FF), (0x32D0, 0x32FE), (0x3300, 0x3357), (0xFF66, 0xFF9D))
+_STU_HAN_HIRAGANA = ((0x2E80, 0x2FDF), (0x3005, 0x3007), (0x3021, 0x3029), (0x3038, 0x303B), (0x3041, 0x3096), (0x309D, 0x309F), (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF),
+                     (0x1B001, 0x1B11F), (0x20000, 0x2FA1F))
+# Extended_Pictographic as ICU 78 (Unicode 17) draws it, read from Intl.Segmenter: a cluster goes on after an emoji and a joiner exactly for these code points (reserved ones included)
+_STU_PICTOGRAPHIC = ((0xA9, 0xA9), (0xAE, 0xAE), (0x203C, 0x203C), (0x2049, 0x2049), (0x2122, 0x2122), (0x2139, 0x2139), (0x2194, 0x2199), (0x21A9, 0x21AA),
+                     (0x231A, 0x231B), (0x2328, 0x2328), (0x23CF, 0x23CF), (0x23E9, 0x23F3), (0x23F8, 0x23FA), (0x24C2, 0x24C2), (0x25AA, 0x25AB), (0x25B6, 0x25B6),
+                     (0x25C0, 0x25C0), (0x25FB, 0x25FE), (0x2600, 0x2604), (0x260E, 0x260E), (0x2611, 0x2611), (0x2614, 0x2615), (0x2618, 0x2618), (0x261D, 0x261D),
+                     (0x2620, 0x2620), (0x2622, 0x2623), (0x2626, 0x2626), (0x262A, 0x262A), (0x262E, 0x262F), (0x2638, 0x263A), (0x2640, 0x2640), (0x2642, 0x2642),
+                     (0x2648, 0x2653), (0x265F, 0x2660), (0x2663, 0x2663), (0x2665, 0x2666), (0x2668, 0x2668), (0x267B, 0x267B), (0x267E, 0x267F), (0x2692, 0x2697),
+                     (0x2699, 0x2699), (0x269B, 0x269C), (0x26A0, 0x26A1), (0x26A7, 0x26A7), (0x26AA, 0x26AB), (0x26B0, 0x26B1), (0x26BD, 0x26BE), (0x26C4, 0x26C5),
+                     (0x26C8, 0x26C8), (0x26CE, 0x26CF), (0x26D1, 0x26D1), (0x26D3, 0x26D4), (0x26E9, 0x26EA), (0x26F0, 0x26F5), (0x26F7, 0x26FA), (0x26FD, 0x26FD),
+                     (0x2702, 0x2702), (0x2705, 0x2705), (0x2708, 0x270D), (0x270F, 0x270F), (0x2712, 0x2712), (0x2714, 0x2714), (0x2716, 0x2716), (0x271D, 0x271D),
+                     (0x2721, 0x2721), (0x2728, 0x2728), (0x2733, 0x2734), (0x2744, 0x2744), (0x2747, 0x2747), (0x274C, 0x274C), (0x274E, 0x274E), (0x2753, 0x2755),
+                     (0x2757, 0x2757), (0x2763, 0x2764), (0x2795, 0x2797), (0x27A1, 0x27A1), (0x27B0, 0x27B0), (0x27BF, 0x27BF), (0x2934, 0x2935), (0x2B05, 0x2B07),
+                     (0x2B1B, 0x2B1C), (0x2B50, 0x2B50), (0x2B55, 0x2B55), (0x3030, 0x3030), (0x303D, 0x303D), (0x3297, 0x3297), (0x3299, 0x3299), (0x1F004, 0x1F004),
+                     (0x1F02C, 0x1F02F), (0x1F094, 0x1F09F), (0x1F0AF, 0x1F0B0), (0x1F0C0, 0x1F0C0), (0x1F0CF, 0x1F0D0), (0x1F0F6, 0x1F0FF), (0x1F170, 0x1F171), (0x1F17E, 0x1F17F),
+                     (0x1F18E, 0x1F18E), (0x1F191, 0x1F19A), (0x1F1AE, 0x1F1E5), (0x1F201, 0x1F20F), (0x1F21A, 0x1F21A), (0x1F22F, 0x1F22F), (0x1F232, 0x1F23A), (0x1F23C, 0x1F23F),
+                     (0x1F249, 0x1F25F), (0x1F266, 0x1F321), (0x1F324, 0x1F393), (0x1F396, 0x1F397), (0x1F399, 0x1F39B), (0x1F39E, 0x1F3F0), (0x1F3F3, 0x1F3F5), (0x1F3F7, 0x1F3FA),
+                     (0x1F400, 0x1F4FD), (0x1F4FF, 0x1F53D), (0x1F549, 0x1F54E), (0x1F550, 0x1F567), (0x1F56F, 0x1F570), (0x1F573, 0x1F57A), (0x1F587, 0x1F587), (0x1F58A, 0x1F58D),
+                     (0x1F590, 0x1F590), (0x1F595, 0x1F596), (0x1F5A4, 0x1F5A5), (0x1F5A8, 0x1F5A8), (0x1F5B1, 0x1F5B2), (0x1F5BC, 0x1F5BC), (0x1F5C2, 0x1F5C4), (0x1F5D1, 0x1F5D3),
+                     (0x1F5DC, 0x1F5DE), (0x1F5E1, 0x1F5E1), (0x1F5E3, 0x1F5E3), (0x1F5E8, 0x1F5E8), (0x1F5EF, 0x1F5EF), (0x1F5F3, 0x1F5F3), (0x1F5FA, 0x1F64F), (0x1F680, 0x1F6C5),
+                     (0x1F6CB, 0x1F6D2), (0x1F6D5, 0x1F6E5), (0x1F6E9, 0x1F6E9), (0x1F6EB, 0x1F6F0), (0x1F6F3, 0x1F6FF), (0x1F7DA, 0x1F7FF), (0x1F80C, 0x1F80F), (0x1F848, 0x1F84F),
+                     (0x1F85A, 0x1F85F), (0x1F888, 0x1F88F), (0x1F8AE, 0x1F8AF), (0x1F8BC, 0x1F8BF), (0x1F8C2, 0x1F8CF), (0x1F8D9, 0x1F8FF), (0x1F90C, 0x1F93A), (0x1F93C, 0x1F945),
+                     (0x1F947, 0x1F9FF), (0x1FA58, 0x1FA5F), (0x1FA6E, 0x1FAFF), (0x1FC00, 0x1FFFD))
+
+
+def _stu_in(cp: int, ranges: Any) -> bool:
+    return any(low <= cp <= high for low, high in ranges)
+
+
+# Where ICU 78 (Unicode 17, Intl.Segmenter in Node 22) puts a code point in another word class than the general rules below: read off its behaviour, one probe string per code point
+_STU_WORD_OVERRIDES: tuple[tuple[str, Any], ...] = (
+    ("AHLetter", ((0xB8, 0xB8), (0x2C2, 0x2C5), (0x2D2, 0x2D7), (0x2DE, 0x2DF), (0x2E5, 0x2EB), (0x2ED, 0x2ED), (0x2EF, 0x2FF),
+      (0x55A, 0x55C), (0x55E, 0x55E), (0x58A, 0x58A), (0x5F3, 0x5F3), (0x600, 0x605), (0x66B, 0x66B), (0x6DD, 0x6DD),
+      (0x70F, 0x70F), (0x890, 0x891), (0x8E2, 0x8E2), (0x109E, 0x109F), (0x19DA, 0x19DA), (0x19DE, 0x19DF), (0x1AA0, 0x1AA6),
+      (0x1AA8, 0x1AAD), (0x24B6, 0x24E9), (0xA708, 0xA716), (0xA720, 0xA721), (0xA789, 0xA78A), (0xAA77, 0xAA79), (0xAADE, 0xAADF),
+      (0xAB5B, 0xAB5B), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x1173A, 0x1173B), (0x1173F, 0x1173F), (0x1F130, 0x1F149), (0x1F150, 0x1F169),
+      (0x1F170, 0x1F189),)),
+    ("Other", ((0xFE10, 0xFE10), (0xFE14, 0xFE14), (0x1AFF0, 0x1AFF3), (0x1AFF5, 0x1AFFB), (0x1AFFD, 0x1AFFE),)),
+    ("Katakana", ((0x3031, 0x3035),)),
+    ("MidNum", ((0x66C, 0x66C),)),
+    ("Extend", ((0xFF9E, 0xFF9F),)),
+)
+
+
+def _stu_word_class(ch: str) -> str:
+    cp = ord(ch)
+    if ch in _STU_NEWLINE:
+        return "NL"
+    if cp == 0x200D:
+        return "ZWJ"
+    for kind, ranges in _STU_WORD_OVERRIDES:
+        if _stu_in(cp, ranges):
+            return kind
+    category = unicodedata.category(ch)
+    if category in ("Mn", "Me", "Mc") or (category == "Cf" and cp != 0x200B) or 0x1F3FB <= cp <= 0x1F3FF:
+        return "Extend"
+    if ch in _STU_WSPACE:
+        return "Space"
+    if 0x1F1E6 <= cp <= 0x1F1FF:
+        return "RI"
+    if _stu_in(cp, _STU_KATAKANA):
+        return "Katakana"
+    if _stu_in(cp, _STU_HAN_HIRAGANA):
+        return "Other"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "Hangul"
+    if cp == 0x22:
+        return "DQ"
+    if category == "Lo" and (0x5D0 <= cp <= 0x5EA or 0x5EF <= cp <= 0x5F2 or 0xFB1D <= cp <= 0xFB4F):
+        return "HL"
+    if category in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nl"):
+        return "AHLetter"
+    if category == "Nd":
+        return "Numeric"
+    if category == "Pc" or cp == 0x202F:
+        return "ExtendNumLet"
+    if ch in _STU_MIDLETTER:
+        return "MidLetter"
+    if ch in _STU_MIDNUM:
+        return "MidNum"
+    if ch in _STU_MIDNUMLET:
+        return "MidNumLetQ"
+    return "Other"
+
+
+def studio_words(text: str) -> list[str]:
+    """Word and space segments of one line of text, in order (they join back to the line)."""
+    clusters: list[list[Any]] = []
+    for ch in text:
+        kind = _stu_word_class(ch)
+        if ch == "\n" and clusters and clusters[-1][0] == "\r":
+            clusters[-1][0] += ch
+            continue
+        if kind in ("Extend", "ZWJ") and clusters and clusters[-1][1] != "NL":
+            clusters[-1][0] += ch
+            clusters[-1][2] = kind == "ZWJ"
+        else:
+            clusters.append([ch, "Other" if kind in ("Extend", "ZWJ") else kind, kind == "ZWJ"])
+    segments: list[str] = []
+    current = ""
+    letter = ("AHLetter", "HL")
+    for i, (chunk, b, _) in enumerate(clusters):
+        if i == 0:
+            current = chunk
+            continue
+        a = clusters[i - 1][1]
+        before = clusters[i - 2][1] if i >= 2 else None
+        after = clusters[i + 1][1] if i + 1 < len(clusters) else None
+        glue = False
+        if a == "NL" or b == "NL":
+            glue = False
+        elif clusters[i - 1][2] and _stu_in(ord(chunk[0]), _STU_PICTOGRAPHIC):
+            glue = True
+        elif a == "Space" and b == "Space" and len(clusters[i - 1][0]) == 1:
+            glue = True
+        elif a in letter and b in letter:
+            glue = True
+        elif a in letter and b in ("MidLetter", "MidNumLetQ") and after in letter:
+            glue = True
+        elif before in letter and a in ("MidLetter", "MidNumLetQ") and b in letter:
+            glue = True
+        elif a == "HL" and b == "MidNumLetQ" and chunk[0] == "'":
+            glue = True
+        elif a == "HL" and b == "DQ" and after == "HL":
+            glue = True
+        elif before == "HL" and a == "DQ" and b == "HL":
+            glue = True
+        elif a == "Numeric" and b == "Numeric":
+            glue = True
+        elif (a in letter and b == "Numeric") or (a == "Numeric" and b in letter):
+            glue = True
+        elif a == "Numeric" and b in ("MidNum", "MidNumLetQ") and after == "Numeric":
+            glue = True
+        elif before == "Numeric" and a in ("MidNum", "MidNumLetQ") and b == "Numeric":
+            glue = True
+        elif a == "Katakana" and b == "Katakana":
+            glue = True
+        elif a == "Hangul" and b == "Hangul" and len(clusters[i - 1][0]) == 1:
+            glue = True
+        elif a in (*letter, "Numeric", "Katakana", "ExtendNumLet") and b == "ExtendNumLet":
+            glue = True
+        elif a == "ExtendNumLet" and b in (*letter, "Numeric", "Katakana"):
+            glue = True
+        elif a == "RI" and b == "RI":
+            run, j = 0, i - 1
+            while j >= 0 and clusters[j][1] == "RI":
+                run += 1
+                j -= 1
+            glue = run % 2 == 1
+        if glue:
+            current += chunk
+        else:
+            segments.append(current)
+            current = chunk
+    if clusters:
+        segments.append(current)
+    return segments
+
+
+def _stu_hangul(cp: int) -> str:
+    if 0x1100 <= cp <= 0x115F or 0xA960 <= cp <= 0xA97C:
+        return "L"
+    if 0x1160 <= cp <= 0x11A7 or 0xD7B0 <= cp <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= cp <= 0x11FF or 0xD7CB <= cp <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "LV" if (cp - 0xAC00) % 28 == 0 else "LVT"
+    return ""
+
+
+# The same for grapheme clusters: Mc marks that do not extend, Prepend characters (they join to what follows), halfwidth voiced marks
+_STU_GRAPHEME_OVERRIDES: tuple[tuple[str, Any], ...] = (
+    ("Extend", ((0xE33, 0xE33), (0xEB3, 0xEB3), (0xFF9E, 0xFF9F),)),
+    ("Prepend", ((0x600, 0x605), (0x6DD, 0x6DD), (0x70F, 0x70F), (0x890, 0x891), (0x8E2, 0x8E2), (0xD4E, 0xD4E), (0x110BD, 0x110BD),
+      (0x110CD, 0x110CD), (0x111C2, 0x111C3), (0x1193F, 0x1193F), (0x11941, 0x11941), (0x11A84, 0x11A89), (0x11D46, 0x11D46), (0x11F02, 0x11F02),)),
+    ("Other", ((0x102B, 0x102C), (0x1038, 0x1038), (0x1062, 0x1064), (0x1067, 0x106D), (0x1083, 0x1083), (0x1087, 0x108C), (0x108F, 0x108F),
+      (0x109A, 0x109C), (0x1A61, 0x1A61), (0x1A63, 0x1A64), (0xAA7B, 0xAA7B), (0xAA7D, 0xAA7D), (0x11720, 0x11721),)),
+)
+
+
+def _stu_grapheme_kind(ch: str) -> str:
+    """Extend (joins to what comes before), SpacingMark (the same), Prepend (joins to what follows) or Other."""
+    cp = ord(ch)
+    for kind, ranges in _STU_GRAPHEME_OVERRIDES:
+        if _stu_in(cp, ranges):
+            return kind
+    category = unicodedata.category(ch)
+    if category in ("Mn", "Me", "Mc") or cp in (0x200C, 0x200D) or 0x1F3FB <= cp <= 0x1F3FF or 0xE0020 <= cp <= 0xE007F:
+        return "Extend"
+    return "Other"
+
+
+def _stu_control(ch: str, kind: str | None = None) -> bool:
+    """A Control character for grapheme clusters: Cc, line and paragraph separators, and format characters that are not joiners, tags or Prepend; nothing joins to it or after it."""
+    category = unicodedata.category(ch)
+    return category in ("Cc", "Zl", "Zp") or (category == "Cf" and (kind or _stu_grapheme_kind(ch)) == "Other")
+
+
+def studio_graphemes(text: str) -> list[str]:
+    """User-perceived characters of ``text``: a letter with its combining marks, a Hangul syllable, an emoji with its modifiers, joiners and tag characters, a flag (a pair of regional
+    indicators), CR LF."""
+    out: list[str] = []
+    ri_run = 0
+    for ch in text:
+        cp = ord(ch)
+        if ch == "\n" and out and out[-1] == "\r":
+            out[-1] += ch
+            ri_run = 0
+            continue
+        kind = _stu_grapheme_kind(ch)
+        if out and not _stu_control(ch, kind) and not _stu_control(out[-1][-1]):
+            last = out[-1]
+            last_cp = ord(last[-1])
+            joined = kind in ("Extend", "SpacingMark") or _stu_grapheme_kind(last[-1]) == "Prepend"
+            if not joined and last_cp == 0x200D and _stu_in(cp, _STU_PICTOGRAPHIC) and _stu_in(ord(last[0]), _STU_PICTOGRAPHIC):
+                joined = True
+            if not joined and 0x1F1E6 <= cp <= 0x1F1FF and ri_run % 2 == 1:
+                joined = True
+            if not joined:
+                a, b = _stu_hangul(last_cp), _stu_hangul(cp)
+                joined = bool(a and b) and ((a == "L" and b in ("L", "V", "LV", "LVT")) or (a in ("LV", "V") and b in ("V", "T")) or (a in ("LVT", "T") and b == "T"))
+            if joined:
+                out[-1] = last + ch
+                ri_run = ri_run + 1 if 0x1F1E6 <= cp <= 0x1F1FF else 0
+                continue
+        out.append(ch)
+        ri_run = ri_run + 1 if 0x1F1E6 <= cp <= 0x1F1FF else 0
+    return out
+
+
+def studio_text_font(layer: dict[str, Any]) -> str:
+    if layer.get("font") == "mono":
+        return ("'MS Gothic', " if layer.get("wrap") else "") + "ui-monospace, 'Noto Sans Mono', monospace"
+    return "Meiryo, 'Noto Sans', 'Noto Color Emoji', sans-serif"
+
+
+def studio_measure(text: str, layer: dict[str, Any]) -> float:
+    """A text's width without a browser: 0.65 em for printable ASCII, 1 em for anything else (what core.js assumes when it has no canvas)."""
+    total = 0
+    for ch in text:
+        total = total + (0.65 if " " <= ch <= "~" else 1)
+    return total * layer["fontSize"]
+
+
+def studio_text_layout(layer: dict[str, Any], measure: Any = None) -> list[list[str]]:
+    """The lines of a text layer, one list per paragraph. Without ``wrap`` a paragraph is one line; with it, words fill a line up to the layer's width, a long word is cut between
+    characters, and spaces at a break are dropped."""
+    measure = measure or (lambda text: studio_measure(text, layer))
+    paragraphs = layer["text"].replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[list[str]] = []
+    for paragraph in paragraphs:
+        if not layer.get("wrap") or not paragraph:
+            result.append([paragraph])
+            continue
+        lines: list[str] = []
+        line = ""
+
+        def flush() -> None:
+            nonlocal line
+            lines.append(line.rstrip(" \t"))
+            line = ""
+        for token in studio_words(paragraph):
+            blank = token.strip(" \t") == "" and token != ""
+            if not line and lines and blank:
+                continue
+            if measure(line + token) <= layer["w"]:
+                line += token
+                continue
+            if line:
+                flush()
+            if lines and blank:
+                continue
+            if measure(token) <= layer["w"]:
+                line = token
+                continue
+            for glyph in studio_graphemes(token):
+                if line and measure(line + glyph) > layer["w"]:
+                    flush()
+                line += glyph
+        if line or not lines:
+            lines.append(line)
+        result.append(lines)
+    return result
+
+
+def _stu_truthy(value: Any) -> bool:
+    """JavaScript truthiness of a JSON value (an empty list or object is true)."""
+    return not (value is None or value is False or value == 0 and not isinstance(value, (list, dict)) or value == "")
+
+
+def _stu_layer_id(layer_id: str) -> str:
+    return "-".join(f"{ord(c):x}" for c in layer_id)
+
+
+def studio_layer_svg(layer: dict[str, Any], image_source: Any = None) -> str:
+    """One layer as SVG: a group at the layer's place, angle and opacity."""
+    n = js_number
+    body = ""
+    kind, w, h = layer["kind"], layer["w"], layer["h"]
+    if kind in ("rect", "ellipse", "triangle"):
+        attrs = f'fill="{layer["fill"]}" stroke="{layer["stroke"]}" stroke-width="{n(layer["strokeWidth"])}"'
+        if kind == "rect":
+            body = f'<rect width="{n(w)}" height="{n(h)}" {attrs}/>'
+        elif kind == "ellipse":
+            body = f'<ellipse cx="{n(w / 2)}" cy="{n(h / 2)}" rx="{n(w / 2)}" ry="{n(h / 2)}" {attrs}/>'
+        else:
+            body = f'<polygon points="{n(w / 2)},0 {n(w)},{n(h)} 0,{n(h)}" {attrs}/>'
+    elif kind == "text":
+        lines = [line for paragraph in studio_text_layout(layer) for line in paragraph]
+        body = (f'<text xml:space="preserve" fill="{layer["fill"]}" font-family="{studio_text_font(layer)}" font-size="{n(layer["fontSize"])}" font-weight="{"700" if layer.get("bold") else "400"}" '
+                'dominant-baseline="text-before-edge">'
+                + "".join(f'<tspan x="0" y="{n(i * layer["fontSize"] * 1.3)}">{studio_escape(line)}</tspan>' for i, line in enumerate(lines)) + "</text>")
+    elif kind == "image":
+        source = image_source(layer) if image_source else layer["src"]
+        body = f'<image href="{studio_escape(source)}" width="{n(w)}" height="{n(h)}" preserveAspectRatio="none" image-rendering="{"auto" if layer.get("sampling") == "smooth" else "pixelated"}"/>'
+    elif kind == "arrow":
+        g = studio_arrow_geometry(w, h, layer.get("headSize", 28), layer.get("headPlacement", "tip"))
+        line = g["line"]
+        body = f'<line x1="{n(line[0])}" y1="{n(line[1])}" x2="{n(line[2])}" y2="{n(line[3])}" stroke="{layer["stroke"]}" stroke-width="{n(layer["strokeWidth"])}"/>'
+        if layer.get("headStyle") == "beginner":
+            size = min(layer.get("headSize", 28), w, h)
+            x, y = g["points"][0][0] - size, h / 2 - size / 2
+            mask = "head-" + _stu_layer_id(layer["id"])
+            body += (f'<svg x="{n(x)}" y="{n(y)}" width="{n(size)}" height="{n(size)}" viewBox="0 0 100 100"><defs><mask id="{mask}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" '
+                     'width="100" height="100"><text x="50" y="50" text-anchor="middle" dominant-baseline="central" font-family="\'Noto Color Emoji\', \'Segoe UI Emoji\', \'Apple Color Emoji\', sans-serif" '
+                     f'font-size="90" transform="rotate(-90 50 50)">🔰</text></mask></defs><rect width="100" height="100" fill="#000000" mask="url(#{mask})"/></svg>')
+        else:
+            body += f'<polygon points="{" ".join(",".join(n(c) for c in p) for p in g["points"])}" fill="{layer["stroke"]}"/>'
+    elif kind == "clock":
+        cx, cy = w / 2, h / 2
+        r = max(0.1, min(w, h) / 2 - layer["strokeWidth"])
+        ink = layer["stroke"]
+
+        def point(angle: float, k: float) -> list[float]:
+            return [cx + studio_sin(angle) * r * k, cy - studio_cos(angle) * r * k]
+
+        def line_of(p: list[float], q: list[float], width: float) -> str:
+            return f'<line x1="{n(p[0])}" y1="{n(p[1])}" x2="{n(q[0])}" y2="{n(q[1])}" stroke="{ink}" stroke-width="{n(width)}"/>'
+        body = f'<circle cx="{n(cx)}" cy="{n(cy)}" r="{n(r)}" fill="{layer["fill"]}" stroke="{ink}" stroke-width="{n(layer["strokeWidth"])}"/>'
+        for i in range(12):
+            body += line_of(point(i * math.pi / 6, 0.85), point(i * math.pi / 6, 0.96), layer["strokeWidth"])
+        body += (line_of([cx, cy], point(((layer["hour"] % 12) + layer["minute"] / 60) * math.pi / 6, 0.52), layer["strokeWidth"] * 1.5)
+                 + line_of([cx, cy], point(layer["minute"] * math.pi / 30, 0.76), layer["strokeWidth"]))
+    elif kind == "heatmap":
+        left, top, right, bottom = 90, 28, 24, 56
+        cw = max(1, w - left - right) / len(layer["z"][0])
+        ch = max(1, h - top - bottom) / len(layer["z"])
+        for y, row in enumerate(layer["z"]):
+            for x, v in enumerate(row):
+                title = f'{js_string(layer["ylabels"][y])} / {js_string(layer["xlabels"][x])}: {"欠測" if v is None else js_string(v)}'
+                body += (f'<rect x="{n(left + x * cw)}" y="{n(top + y * ch)}" width="{n(cw)}" height="{n(ch)}" fill="{studio_heat_color(v, layer["low"], layer["high"], layer.get("levels", 0))}">'
+                         f'<title>{studio_escape(title)}</title></rect>')
+                if _stu_truthy(layer.get("labels")) and cw >= 35 and ch >= 24 and v is not None:
+                    body += (f'<text x="{n(left + (x + 0.5) * cw)}" y="{n(top + (y + 0.5) * ch)}" text-anchor="middle" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12" '
+                             f'fill="#111827" stroke="#FFFFFF" stroke-width="2" paint-order="stroke">{studio_escape(v)}</text>')
+            body += (f'<text x="{n(left - 10)}" y="{n(top + (y + 0.5) * ch)}" text-anchor="end" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12">'
+                     f'{studio_escape(layer["ylabels"][y])}</text>')
+        for x in range(len(layer["z"][0])):
+            body += f'<text x="{n(left + (x + 0.5) * cw)}" y="{n(h - bottom + 20)}" text-anchor="middle" font-family="Meiryo,sans-serif" font-size="12">{studio_escape(layer["xlabels"][x])}</text>'
+        steps = f'{n(layer["levels"])}段階' if layer.get("levels") else "連続色"
+        body += (f'<text x="{n(left)}" y="{n(h - 5)}" font-family="Meiryo,sans-serif" font-size="12">{studio_escape(layer["low"])} → {studio_escape(layer["high"])} ・ {steps} ・ 欠測は透明</text>')
+    if layer.get("mono") and kind in ("text", "image"):
+        mask = "ink-" + _stu_layer_id(layer["id"])
+        body = (f'<defs><mask id="{mask}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="{n(w)}" height="{n(h)}">{body}</mask></defs>'
+                f'<rect width="{n(w)}" height="{n(h)}" fill="{layer["fill"]}" mask="url(#{mask})"/>')
+    return (f'<g data-layer="{studio_escape(layer["id"])}" transform="translate({n(layer["x"])} {n(layer["y"])}) rotate({n(layer["rotation"])} {n(w / 2)} {n(h / 2)})" '
+            f'opacity="{n(layer["opacity"])}">{body}</g>')
+
+
+def studio_svg(scene: Any, image_source: Any = None, scale: Any = 1) -> str:
+    """The whole scene as one SVG, drawn at ``scale`` times its size; every output (SVG, PNG, Base64) comes from this one function."""
+    studio_validate(scene)
+    size = studio_output_size(scene, scale)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size["width"]}" height="{size["height"]}" viewBox="0 0 {js_number(scene["width"])} {js_number(scene["height"])}">'
+            f'<rect width="{js_number(scene["width"])}" height="{js_number(scene["height"])}" fill="{scene["background"]}"/>'
+            + "".join(studio_layer_svg(layer, image_source) for layer in scene["layers"]) + "</svg>")
+
+
+class StudioHistory:
+    """Up to 40 states of a scene and where you are in them; a new edit drops the states you had undone, an edit that changes nothing is not recorded."""
+
+    def __init__(self, scene: Any) -> None:
+        self.items = [studio_validate(scene)]
+        self.index = 0
+
+    @property
+    def current(self) -> dict[str, Any]:
+        return studio_clone(self.items[self.index])
+
+    def commit(self, scene: Any) -> None:
+        following = studio_validate(scene)
+        if js_json(following) == js_json(self.items[self.index]):
+            return
+        self.items = self.items[:self.index + 1] + [following]
+        if len(self.items) > 40:
+            self.items.pop(0)
+        self.index = len(self.items) - 1
+
+    def undo(self) -> dict[str, Any]:
+        self.index = max(0, self.index - 1)
+        return self.current
+
+    def redo(self) -> dict[str, Any]:
+        self.index = min(len(self.items) - 1, self.index + 1)
+        return self.current
+
+
+def _studio_workspace_size(text: str) -> int:
+    size = len(text.encode("utf-8", "replace"))
+    _stu_need(size <= STUDIO_WORKSPACE_MAX_BYTES, "作業履歴は32MiB以下にしてください。履歴を整理して再保存できます")
+    return size
+
+
+def studio_workspace_text(history: StudioHistory) -> str:
+    """The whole history (every state with its images) and the position in it as one JSON text of at most 32 MiB."""
+    _stu_need(len(history.items) >= 1 and len(history.items) <= 40 and isinstance(history.index, int) and 0 <= history.index < len(history.items), "作業履歴の形式が不正です")
+    head = '{"schema":' + js_json(STUDIO_WORKSPACE_SCHEMA) + ',"items":['
+    tail = "],\"index\":" + js_number(history.index) + "}"
+    total = _studio_workspace_size(head) + _studio_workspace_size(tail)
+    parts = [head]
+    for i, item in enumerate(history.items):
+        part = ("," if i else "") + js_json(studio_validate(item))
+        total += _studio_workspace_size(part)
+        _stu_need(total <= STUDIO_WORKSPACE_MAX_BYTES, "作業履歴は32MiB以下にしてください。履歴を整理して再保存できます")
+        parts.append(part)
+    parts.append(tail)
+    return "".join(parts)
+
+
+def studio_workspace_history(text: Any) -> StudioHistory:
+    """The history written by ``studio_workspace_text``; every state is validated, and any damage refuses the whole file."""
+    _stu_need(isinstance(text, str), "作業履歴の形式が不正です")
+    _studio_workspace_size(text)
+    record = studio_parse(text)
+    _stu_need(isinstance(record, dict) and record.get("schema") == STUDIO_WORKSPACE_SCHEMA and isinstance(record.get("items"), list) and 1 <= len(record["items"]) <= 40
+              and _stu_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
+    states = [studio_validate(item) for item in record["items"]]
+    history = StudioHistory(states[0])
+    history.items = states
+    history.index = int(record["index"])
+    return history
+
+
+STUDIO_FILL, STUDIO_STROKE, STUDIO_BACKGROUND = "#18a7a1", "#183c42", "#F8F7F2"
+
+
+def studio_blank() -> dict[str, Any]:
+    """An empty 1280 x 720 scene."""
+    return {"schema": STUDIO_SCHEMA, "width": 1280, "height": 720, "background": STUDIO_BACKGROUND, "layers": []}
+
+
+def studio_base_layer(kind: str, layer_id: str, x: Any = 80, y: Any = 80, w: Any = 180, h: Any = 120) -> dict[str, Any]:
+    return {"id": layer_id, "kind": kind, "name": kind, "x": x, "y": y, "w": w, "h": h, "rotation": 0, "opacity": 1}
+
+
+def studio_text_layer(text: str, layer_id: str, x: Any, y: Any, fill: str = STUDIO_FILL, font: str = "sans", mono: bool = True, wrap: bool = False) -> dict[str, Any]:
+    """A text stamp sized to its text (48 px, at most 700 wide), as the studio places it."""
+    size = 48
+    lines = text.split("\n")
+    layer = studio_base_layer("text", layer_id, x, y, min(700, max(120, max(len(s) for s in lines) * size)), max(70, len(lines) * size * 1.3))
+    layer.update({"name": "文字 / " + text[:12], "text": text, "fill": fill, "fontSize": size, "font": font, "mono": mono, "wrap": wrap})
+    return layer
+
+
+def studio_place(tool: str, layer_id: str, x: Any, y: Any, *, fill: str = STUDIO_FILL, stroke: str = STUDIO_STROKE, outline: bool = False, text: str = "", font: str = "sans",
+                 arrow_style: str = "beginner", arrow_placement: str = "tip", clock_time: str = "10:10", mono: bool = True, wrap: bool = False) -> dict[str, Any]:
+    """The layer a click puts on the canvas for a tool: ``rect``, ``ellipse``, ``triangle``, ``text`` (or ``stamp``), ``arrow`` or ``clock``."""
+    if tool in ("text", "stamp"):
+        return studio_text_layer(text, layer_id, x, y, fill, font, mono, wrap)
+    if tool == "arrow":
+        layer = studio_base_layer("arrow", layer_id, x, y, 200, 80)
+        layer.update({"name": "直線＋矢羽根", "fill": fill, "stroke": stroke, "strokeWidth": 4, "headSize": 28, "headPlacement": arrow_placement, "headStyle": arrow_style})
+        return layer
+    if tool == "clock":
+        hour, minute = (int(part) for part in clock_time.split(":"))
+        layer = studio_base_layer("clock", layer_id, x, y, 160, 160)
+        layer.update({"name": "時計 " + clock_time, "hour": hour, "minute": minute, "fill": fill, "stroke": stroke, "strokeWidth": 3})
+        return layer
+    if tool not in ("rect", "ellipse", "triangle"):
+        raise StudioError("道具が不正です")
+    layer = studio_base_layer(tool, layer_id, x, y)
+    layer.update({"name": {"rect": "四角", "ellipse": "丸", "triangle": "三角"}[tool], "fill": "none" if outline else fill, "stroke": stroke, "strokeWidth": 3})
+    return layer
+
+
+def studio_matrix_layer(source: Any, layer_id: str, scene_width: Any = 1280, scene_height: Any = 720) -> dict[str, Any]:
+    """A heatmap layer for a numeric matrix or a Plotly heatmap figure; the figure itself stays in ``source``."""
+    layer = studio_base_layer("heatmap", layer_id, 80, 100, min(1050, scene_width - 100), min(480, scene_height - 120))
+    layer.update({"name": "ヒートマップ", **studio_matrix(source), "source": studio_clone(source)})
+    return layer
+
+
+def studio_image_layer(src: str, pixel_width: int, pixel_height: int, layer_id: str, scene_width: Any = 1280, name: str = "取り込み画像") -> dict[str, Any]:
+    """A photo layer for an embedded PNG: 65% of the scene wide at most 700, keeping the photo's proportions, kept exactly (no mosaic) until told otherwise."""
+    w = min(700, scene_width * 0.65)
+    layer = studio_base_layer("image", layer_id, 80, 90, w, w * pixel_height / pixel_width)
+    layer.update({"name": name, "src": src, "cell": 1, "levels": 256, "sampling": "pixelated", "mono": False})
+    return layer
+
+
+def studio_demo_scene() -> dict[str, Any]:
+    """The example of stamps and a heatmap (the numbers are invented for the picture)."""
+    scene = studio_blank()
+    text = lambda layer_id, name, value, x, y, w, h, size, fill: {**studio_base_layer("text", layer_id, x, y, w, h), "name": name, "text": value, "fill": fill, "fontSize": size}
+    scene["layers"] = [
+        text("title", "タイトル", "小さな部品から、大きな表現へ。", 64, 40, 900, 60, 38, "#163B3B"),
+        text("subtitle", "サブタイトル", "STAMP / COLOR / MATRIX     —     Ironmate Image Studio", 68, 105, 900, 40, 17, "#56766D"),
+        {**studio_base_layer("rect", "card", 68, 178, 1144, 430), "name": "白いカード", "fill": "#FFFFFF", "stroke": "#D6DFD2", "strokeWidth": 1},
+        {**studio_base_layer("heatmap", "matrix", 90, 220, 680, 350), "name": "色の行列",
+         **studio_matrix({"z": [[2, 3, 4, 6, 8, 9, 10], [1, 3, 5, 7, 9, None, 12], [2, 4, 6, 8, 10, 12, 14], [0, 2, 5, 8, 11, 14, 16]], "x": ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"], "y": ["A", "B", "C", "D"]})},
+        {**studio_base_layer("triangle", "triangle", 890, 264, 170, 150), "name": "三角のスタンプ", "fill": "none", "stroke": "#EFBE4C", "strokeWidth": 7},
+        text("emoji", "絵文字スタンプ", "🌱", 910, 294, 140, 90, 70, "#163B3B"),
+        text("custom", "カスタム文字", "色を置く。\nかたちが生まれる。", 840, 445, 320, 100, 25, "#163B3B"),
+        text("footer", "フッター", "01  COMPOSE                         02  EXPLORE COLOR                         03  EXPORT", 70, 646, 1100, 35, 14, "#71887C"),
+    ]
+    return scene
+
+
+def studio_stamp_demo_scene() -> dict[str, Any]:
+    """The example of a clock, an arrow with a head in the middle, a face and emoji, all kept as shapes and text."""
+    scene = studio_blank()
+    mono = lambda layer_id, value, x, y, w, h, size, fill: {**studio_base_layer("text", layer_id, x, y, w, h), "id": layer_id, "name": value, "text": value, "fontSize": size, "fill": fill, "mono": True}
+    scene["layers"] = [
+        mono("title", "STAMP LAB / 色を変えて、重ねる。", 60, 45, 1160, 70, 38, "#163B3B"),
+        {**studio_base_layer("rect", "card", 60, 150, 1160, 420), "name": "カード", "fill": "#FFFFFF", "stroke": "#D6DFD2", "strokeWidth": 1},
+        {**studio_base_layer("clock", "clock", 100, 210, 230, 230), "name": "10:10の時計", "hour": 10, "minute": 10, "fill": "#F8F7F2", "stroke": "#087D79", "strokeWidth": 4},
+        {**studio_base_layer("arrow", "arrow", 390, 260, 230, 80), "name": "直線＋中央の矢羽根", "headSize": 40, "headPlacement": "middle", "headStyle": "beginner", "fill": "#EFBE4C", "stroke": "#D59C22",
+         "strokeWidth": 6},
+        mono("face", "(・∀・)", 710, 225, 450, 105, 68, "#D05B78"),
+        mono("emoji", "🌱", 750, 365, 160, 130, 100, "#087D79"),
+        mono("emoji2", "❤️", 990, 365, 180, 130, 100, "#D05B78"),
+        mono("footer", "CLOCK     →     LINE + TRIANGLE     →     TEXT / EMOJI / KAOMOJI", 65, 635, 1150, 50, 18, "#56766D"),
+    ]
+    return scene
+
+
+def studio_heatmap_scene(source: Any) -> dict[str, Any]:
+    """An editable 1280 x 720 scene holding one heatmap layer for a matrix (``image_studio.py --heatmap``); the input is kept in ``source`` and never rewritten."""
+    layer = {"id": "heatmap", "kind": "heatmap", "name": "Heatmap", "x": 80, "y": 90, "w": 1120, "h": 520, "rotation": 0, "opacity": 1, **studio_matrix(source)}
+    return {"schema": STUDIO_SCHEMA, "width": 1280, "height": 720, "background": "#FFFFFF", "layers": [layer], "source": source}
+
+
+def studio_png_decode(data: bytes) -> tuple[int, int, bytes]:
+    """Width, height and RGBA bytes of a PNG: 8 bits a sample, not interlaced (what a browser writes and what the studio embeds); anything else is refused."""
+    if data[:8] != bytes([137, 80, 78, 71, 13, 10, 26, 10]):
+        raise StudioError("PNGではありません")
+    pos, header, palette, trns, idat = 8, None, b"", b"", []
+    while pos + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + length]
+        if len(chunk) != length or pos + 12 + length > len(data) or zlib.crc32(kind + chunk) != struct.unpack(">I", data[pos + 8 + length:pos + 12 + length])[0]:
+            raise StudioError("PNGが壊れています")
+        pos += 12 + length
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"PLTE":
+            palette = chunk
+        elif kind == b"tRNS":
+            trns = chunk
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            break
+    if header is None or not idat:
+        raise StudioError("PNGが壊れています")
+    width, height, depth, color, _compression, _filter, interlace = header
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color)
+    if channels is None or depth != 8 or interlace != 0 or not 1 <= width * height <= 4194304:
+        raise StudioError("8ビット・非インターレースの4MP以下のPNGに対応しています")
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error as error:
+        raise StudioError("PNGが壊れています") from error
+    stride = width * channels
+    if len(raw) != height * (stride + 1):
+        raise StudioError("PNGが壊れています")
+    rows: list[bytearray] = []
+    previous = bytearray(stride)
+    for y in range(height):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        if kind == 1:
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 255
+        elif kind == 2:
+            for i in range(stride):
+                line[i] = (line[i] + previous[i]) & 255
+        elif kind == 3:
+            for i in range(stride):
+                line[i] = (line[i] + (((line[i - channels] if i >= channels else 0) + previous[i]) >> 1)) & 255
+        elif kind == 4:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = previous[i]
+                c = previous[i - channels] if i >= channels else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        elif kind != 0:
+            raise StudioError("PNGが壊れています")
+        rows.append(line)
+        previous = line
+    out = bytearray(width * height * 4)
+    for y, line in enumerate(rows):
+        for x in range(width):
+            o = (y * width + x) * 4
+            if color == 6:
+                out[o:o + 4] = line[x * 4:x * 4 + 4]
+            elif color == 2:
+                out[o:o + 4] = bytes(line[x * 3:x * 3 + 3]) + b"\xff"
+            elif color == 0:
+                out[o:o + 4] = bytes((line[x],) * 3) + b"\xff"
+            elif color == 4:
+                out[o:o + 4] = bytes((line[x * 2],) * 3) + bytes((line[x * 2 + 1],))
+            else:
+                index = line[x]
+                out[o:o + 4] = palette[index * 3:index * 3 + 3] + bytes((trns[index] if index < len(trns) else 255,))
+    return width, height, bytes(out)
+
+
+def studio_png_encode(width: int, height: int, rgba: bytes) -> bytes:
+    """RGBA bytes as a PNG (8 bits, no interlace, no filter)."""
+    if len(rgba) != width * height * 4:
+        raise StudioError("PNGの大きさが合いません")
+    stride = width * 4
+    raw = b"".join(b"\x00" + rgba[y * stride:(y + 1) * stride] for y in range(height))
+    chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    return bytes([137, 80, 78, 71, 13, 10, 26, 10]) + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def studio_image_source(scene: dict[str, Any]) -> Any:
+    """For ``studio_svg``: each image layer's PNG after its own mosaic (cell and levels), made from the embedded original; layers that keep every pixel pass their image through."""
+    cache: dict[tuple[str, Any, Any], str] = {}
+
+    def source(layer: dict[str, Any]) -> str:
+        if layer["cell"] == 1 and layer["levels"] == 256:
+            return layer["src"]
+        key = (layer["src"], layer["cell"], layer["levels"])
+        if key not in cache:
+            width, height, rgba = studio_png_decode(base64.b64decode(layer["src"].split(",", 1)[1]))
+            cache[key] = "data:image/png;base64," + base64.b64encode(studio_png_encode(width, height, studio_mosaic_rgba(rgba, width, height, layer["cell"], layer["levels"]))).decode("ascii")
+        return cache[key]
+    return source
+
+
+def studio_render(scene: Any, scale: Any = 1) -> str:
+    """The SVG of a scene as the CLI makes it: validated, images mosaicked as their layers ask."""
+    checked = studio_validate(scene)
+    return studio_svg(checked, studio_image_source(checked), scale)
+
+
+def _studio_write(path: Path | None, text: str, force: bool) -> None:
+    if path is None:
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        return
+    if path.exists() and not force:
+        raise StudioError("出力ファイルが既にあります。置き換えるには --force を付けてください")
+    path.write_text(text, encoding="utf-8")
+
+
+def _studio_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """``--studio-render`` (SVG or the checked scene as JSON), ``--studio-heatmap`` (a matrix into an editable scene), ``--studio-base64`` (PNG bytes as Base64 for hand-off). Exit 2 on a bad input."""
+    try:
+        if args.studio_render:
+            text = args.studio_render.read_text(encoding="utf-8")
+            _stu_need(len(text.encode("utf-8")) <= 20_000_000, "JSONは20MB以下にしてください")
+            scene = studio_parse(text)
+            out = js_json(studio_validate(scene), 2) if args.format == "json" else studio_render(scene, args.scale)
+            _studio_write(args.output, out, args.force)
+        elif args.studio_heatmap:
+            text = args.studio_heatmap.read_text(encoding="utf-8")
+            _stu_need(len(text.encode("utf-8")) <= 2_000_000, "行列JSONは2MB以下にしてください")
+            _studio_write(args.output, js_json(studio_heatmap_scene(studio_parse(text)), 2), args.force)
+        else:
+            payload = studio_png_payload(args.studio_base64.read_bytes())
+            _studio_write(args.output, payload["dataUri"] if args.data_uri else payload["base64"], args.force)
+    except (StudioError, ValueError, OSError, UnicodeError, ArithmeticError) as error:
+        print(f"invalid studio input: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+# --- Image studio page: the Ironmate editor, in the page (memory only) ---------------------------------------------------------------------
+# The scene, its checks, the SVG and the history are the functions above; ``imagestudio.js`` is their twin (Ironmate's own studio/core.js has the same behaviour) with the editor on top:
+# tools, layers, an inspector, PNG/SVG/Base64/JSON export and the workspace history. Nothing is sent or saved by the page itself.
+
+STUDIO_EMOJI = ("❤️", "😊", "🌱", "📊", "✨", "📌", "🔰")
+STUDIO_KAOMOJI = ("(・∀・)", "(｡•̀ᴗ-)✧", "٩(๑❛ᴗ❛๑)۶")
+STUDIO_TOOLS = (("select", "↖ Select"), ("rect", "▭ Rectangle"), ("ellipse", "◯ Ellipse"), ("triangle", "△ Triangle"), ("text", "T Text"), ("stamp", "✦ Stamp"), ("arrow", "→ Arrow"), ("clock", "◷ Clock"))
+
+_CSS["imagestudio.css"] = ("@layer components{.ui-imagestudio h3{margin:24px 0 8px}.ui-imagestudio label{display:block;margin:8px 0}.ui-imagestudio textarea{width:100%;box-sizing:border-box;font-family:var(--ui-font-mono,monospace)}"
+                           ".ui-imagestudio .ui-input{max-width:100%;box-sizing:border-box}.ui-is-status{margin:8px 0;font-weight:600;overflow-wrap:anywhere}.ui-imagestudio[data-error] .ui-is-status{color:var(--ui-danger)}"
+                           ".ui-is-board{position:relative;width:100%;max-width:1280px;overflow:hidden;line-height:0;border:thin solid var(--ui-border);touch-action:pan-y;"
+                           "background:conic-gradient(#fff 25%,#d8d8d8 0 50%,#fff 0 75%,#d8d8d8 0) 0 0/16px 16px}.ui-is-board[data-capture]{touch-action:none}"
+                           ".ui-is-board svg{display:block;width:100%;height:auto}.ui-is-board:focus-visible{outline:medium solid var(--ui-accent);outline-offset:8px}"
+                           ".ui-is-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:8px 0;padding:0;border:0}.ui-is-bar legend{padding:0 0 8px}"
+                           ".ui-is-bar label,.ui-is-bar .ui-input{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;min-width:0;max-width:100%}.ui-is-bar .ui-input{width:auto}"
+                           ".ui-is-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:0 16px}.ui-is-grid>*{min-width:0}.ui-is-grid input[type=number]{width:100%}"
+                           ".ui-imagestudio input[type=range]{width:100%;min-width:0;box-sizing:border-box}"
+                           ".ui-is-layers{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.ui-is-layers button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
+                           ".ui-imagestudio input[type=color]{width:48px;height:40px;padding:0}.ui-is-history{margin:8px 0;padding-left:24px}.ui-is-history li{margin:8px 0}"
+                           ".ui-is-file{max-width:100%;min-width:0}.ui-imagestudio details{margin:8px 0}.ui-imagestudio details summary{cursor:pointer}}")
+
+
+def imagestudio_html() -> str:
+    """The image studio as semantic HTML: a canvas, tools, style, layers, an inspector, ways to add images and matrices, canvas size, export and the history. ``data-is`` names every control for the script."""
+    number = lambda name, label, **attrs: (f'<label>{label}<input class="ui-input" type="number" data-is="{name}" disabled'
+                                           + "".join(f' {k}="{v}"' for k, v in attrs.items()) + "></label>")
+    button = lambda name, label, disabled=False: f'<button class="ui-button" type="button" data-is="{name}"{" disabled" if disabled else ""}>{label}</button>'
+    tools = "".join(f'<label><input type="radio" name="is-tool" value="{value}"{" checked" if value == "select" else ""}> {escape(label)}</label>' for value, label in STUDIO_TOOLS)
+    stamps = "".join(f'<button class="ui-button" type="button" data-stamp="{escape(s, quote=True)}">{escape(s)}</button>' for s in (*STUDIO_EMOJI, *STUDIO_KAOMOJI))
+    return ('<section class="ui-panel ui-imagestudio" id="imagestudio" data-ui-imagestudio><h2>Image studio</h2>'
+            '<p class="ui-muted">Layer shapes, text, photos and heatmaps. The scene stays in this page.</p>'
+            '<p class="ui-is-status" role="status" aria-live="polite" data-is="status">Starting.</p>'
+            '<div class="ui-is-board" data-is="board" tabindex="0" role="group" aria-label="Canvas: press to place or select, drag to move, arrow keys nudge"></div>'
+            f'<div class="ui-is-bar">{button("undo", "Undo", True)}{button("redo", "Redo", True)}{button("blank", "New canvas")}<output data-is="size">1280 × 720</output></div>'
+            '<h3 id="is-tools-title">Tools</h3>'
+            f'<fieldset class="ui-is-bar"><legend>Press the canvas to place</legend>{tools}</fieldset>'
+            f'<div class="ui-is-layers">{stamps}</div><p class="ui-muted" data-is="stampnote">Pick a stamp, then press the canvas.</p>'
+            '<label>Text or custom stamp<textarea class="ui-input" data-is="text" rows="2" spellcheck="false">Hello</textarea></label>'
+            '<div class="ui-is-bar"><label>Fill <input type="color" data-is="fill" value="#18a7a1"></label><label>Line <input type="color" data-is="stroke" value="#183c42"></label>'
+            '<label><input type="checkbox" data-is="outline"> Outline only</label><label>Clock time <input class="ui-input" type="time" data-is="clock" value="10:10"></label></div>'
+            '<h3>Layers</h3><div class="ui-is-layers" data-is="layers"></div>'
+            f'<div class="ui-is-bar">{button("duplicate", "Duplicate", True)}{button("delete", "Delete", True)}{button("front", "Forward", True)}{button("back", "Backward", True)}'
+            f'{button("custom", "Use as stamp", True)}</div>'
+            '<h3 data-is="selection">Select a layer</h3><div class="ui-is-grid">'
+            + number("x", "X") + number("y", "Y") + number("w", "Width", min="1") + number("h", "Height", min="1")
+            + number("rotation", "Rotation", min="-360", max="360") + number("opacity", "Opacity", min="0", max="1", step="0.05") + number("fontsize", "Font size", min="4", max="512") + '</div>'
+            '<div class="ui-is-bar"><label>Font <select class="ui-input" data-is="fontfamily" disabled><option value="sans">Standard</option><option value="mono">Monospace (ASCII art)</option></select></label>'
+            '<label><input type="checkbox" data-is="mono" disabled> Draw text and images in one colour</label>'
+            '<label>Arrow head <select class="ui-input" data-is="arrowstyle" disabled><option value="beginner">🔰 in black</option><option value="triangle">Triangle</option></select></label>'
+            '<label>Head place <select class="ui-input" data-is="arrowplacement" disabled><option value="tip">Tip</option><option value="middle">Middle</option></select></label>'
+            '<label>Image scaling <select class="ui-input" data-is="sampling" disabled><option value="pixelated">Keep the dots</option><option value="smooth">Smooth</option></select></label></div>'
+            '<div class="ui-is-grid"><label>Mosaic cell <output data-is="cellout">1 px</output><input type="range" data-is="cell" min="1" max="128" value="1" disabled></label>'
+            '<label>Colour levels <output data-is="levelsout">256</output><input type="range" data-is="levels" min="2" max="256" value="256" disabled></label></div>'
+            f'<div class="ui-is-bar"><label><input type="checkbox" data-is="labels" checked disabled> Number labels</label>{button("continuous", "Heatmap in continuous colour", True)}{button("apply", "Apply text and colours", True)}</div>'
+            '<p class="ui-muted">Images are recomputed from the kept original; a mosaic never invents lost detail.</p>'
+            '<h3>Add</h3><div class="ui-is-bar"><label>Photo or image <input class="ui-is-file" type="file" accept="image/png,image/jpeg,image/webp" data-is="file"></label>'
+            f'{button("paste", "Paste an image")}</div>'
+            '<label>PNG, JPEG or WebP as Base64 or a data URI<textarea class="ui-input" data-is="b64in" rows="2" spellcheck="false"></textarea></label>'
+            f'<div class="ui-is-bar">{button("b64import", "Add the Base64 image")}</div>'
+            '<label>Numbers (rows, or a Plotly heatmap)<textarea class="ui-input" data-is="matrix" rows="2" spellcheck="false">[[0,1,2,3],[3,2,1,0],[1,null,2,3]]</textarea></label>'
+            f'<div class="ui-is-bar">{button("heatmap", "Add a heatmap")}<label>Matrix file <input class="ui-is-file" type="file" accept=".json,application/json" data-is="matrixfile"></label></div>'
+            '<h3>Canvas</h3><div class="ui-is-bar">' + button("demo", "Example: stamps and a heatmap") + button("stampdemo", "Example: clock, arrow, face") + '</div>'
+            '<div class="ui-is-bar"><label>Background <input type="color" data-is="background" value="#f8f7f2"></label><label><input type="checkbox" data-is="transparent"> Transparent</label>'
+            '<label>Width <input class="ui-input" type="number" data-is="width" min="64" max="4096" value="1280"></label><label>Height <input class="ui-input" type="number" data-is="height" min="64" max="4096" value="720"></label>'
+            f'{button("resize", "Apply size")}</div>'
+            '<h3 id="is-export-title">Export</h3><div class="ui-is-bar"><label>Scale <select class="ui-input" data-is="scale"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>'
+            f'{button("svg", "Save SVG")}{button("png", "Save PNG")}{button("base64", "PNG as Base64")}</div>'
+            '<details data-is="b64panel"><summary>Base64 for hand-off</summary><p class="ui-muted">The PNG as standard Base64. The image and the scene are not sent anywhere.</p>'
+            '<label>Form <select class="ui-input" data-is="b64mode"><option value="dataUri">PNG data URI</option><option value="base64">Base64 only</option></select></label>'
+            '<textarea class="ui-input" data-is="b64text" rows="6" readonly aria-label="Base64 image"></textarea><p class="ui-muted" role="status" data-is="b64status"></p>'
+            f'<div class="ui-is-bar">{button("b64copy", "Copy")}{button("b64save", "Save as text")}</div></details>'
+            '<h3>Scene and history</h3><div class="ui-is-bar">' + button("jsonsave", "Save the scene as JSON")
+            + '<label>Open a scene <input class="ui-is-file" type="file" accept=".json,application/json" data-is="jsonopen"></label></div>'
+            '<div class="ui-is-bar">' + button("wssave", "Save the history") + '<label>Open a history <input class="ui-is-file" type="file" accept=".json,application/json" data-is="wsopen"></label></div>'
+            '<details><summary>History (up to 40 states)</summary><ol class="ui-is-history" data-is="history" aria-label="History"></ol>' + button("trim", "Keep only the current state")
+            + '<p class="ui-muted">A history file can hold your images. Check it before you share it.</p></details></section>')
+
+
+def imagestudio_document(*, theme: str = "modern") -> str:
+    """A single-file page for the image studio."""
+    return render_document(trusted_html='<main class="ui-page">' + imagestudio_html() + "</main>" + module_script(_JS["imagestudio.js"]), title="Image studio", theme=theme, css=bundled_css())
 
 
 # --- Clipboard shelf: classify what was pasted, read image text strictly, build a prompt or a bundle -----------------------------------
@@ -7504,6 +10438,690 @@ if(typeof document!=="undefined")bindMcp();
 """
 
 
+def _patterns_js_constants() -> str:
+    """The catalogue tables, the family lists and the examples as JS constants, taken from the Python values so the two cannot drift."""
+    data = {"PATTERN_CATEGORIES": PATTERN_CATEGORIES, "PATTERN_THEMES": PATTERN_THEMES, "PATTERN_TITLES": PATTERN_TITLES, "PATTERN_PRODUCERS": [[list(n), r, f] for n, r, f in PATTERN_PRODUCERS],
+            "PATTERN_NATIVE": sorted(PATTERN_NATIVE), "PATTERN_GESTURES": sorted(PATTERN_GESTURES), "PATTERN_FAMILIES": sorted(PATTERN_RUNNERS), "PATTERN_TWINS": list(PATTERN_TWINS),
+            "PATTERN_EXAMPLES": pattern_examples()}
+    return "".join(f"export const {name}=" + json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", chr(92) + "u003c") + ";\n" for name, value in data.items())
+
+
+_JS["patterns.js"] = "/* web-ui patterns: the pattern references of flutter_navigation_basic in the page (query, page, score's min-heap, reduce, workflow, transform, select, order, text, window, collection, structure) and the 792-pattern catalogue. Python (web_ui.pattern_*) is the reference; this must agree on every request, with the same refusal text. Three families (search, convert, validate) stay in Python: they lean on CPython's Unicode case folding, int parsing and urlsplit. JSON cannot tell 1 from 1.0 here: an integral number is an int, so a float written 1.0 reads as 1. */\n" + _SHA_JS + _TEXT_JS + _patterns_js_constants() + r"""export class PatternError extends Error{}
+const need=(c,m)=>{if(!c)throw new PatternError(m)};
+const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+const isObj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
+const isInt=v=>typeof v==="number"&&Number.isInteger(v);
+const finite=v=>typeof v==="number"&&Number.isFinite(v);
+const kind=v=>v===null?"null":typeof v==="boolean"?"bool":typeof v==="string"?"str":typeof v==="number"?(Number.isInteger(v)?"int":"float"):Array.isArray(v)?"list":"dict";
+const sameKeys=(o,keys)=>{const k=Object.keys(o);return k.length===keys.length&&keys.every(x=>has(o,x))};
+const pyList=names=>"['"+names.join("', '")+"']";
+const num=v=>typeof v==="number";
+/* strings compare by code point, as Python's do (UTF-16 order differs above the BMP) */
+export function cmpStr(a,b){const x=Array.from(a),y=Array.from(b),n=Math.min(x.length,y.length);for(let i=0;i<n;i++){const p=x[i].codePointAt(0),q=y[i].codePointAt(0);if(p!==q)return p<q?-1:1}return x.length<y.length?-1:x.length>y.length?1:0}
+const cmpNum=(a,b)=>a<b?-1:a>b?1:0;
+/* Python's == on JSON values: true == 1, false == 0, lists and objects by content, a string only equals a string */
+export function pyEq(a,b){
+ if(a===null||b===null)return a===b;
+ if(Array.isArray(a)||Array.isArray(b))return Array.isArray(a)&&Array.isArray(b)&&a.length===b.length&&a.every((x,i)=>pyEq(x,b[i]));
+ if(isObj(a)||isObj(b)){if(!(isObj(a)&&isObj(b)))return false;const k=Object.keys(a);return k.length===Object.keys(b).length&&k.every(x=>has(b,x)&&pyEq(a[x],b[x]))}
+ if(typeof a==="string"||typeof b==="string")return a===b;
+ return Number(a)===Number(b)}
+/* json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")); an integral number is written as an int */
+function pyNum(x){
+ need(Number.isFinite(x),"Out of range float values are not JSON compliant");
+ if(Number.isInteger(x))return Math.abs(x)<1e21?String(x):BigInt(x).toString();
+ const[m,e]=x.toExponential().split("e"),neg=m[0]==="-",digits=m.replace("-","").replace(".",""),exp=Number(e),decpt=exp+1;
+ const out=decpt<=-4||decpt>16?digits[0]+(digits.length>1?"."+digits.slice(1):"")+"e"+(exp<0?"-":"+")+String(Math.abs(exp)).padStart(2,"0"):decpt<=0?"0."+"0".repeat(-decpt)+digits:digits.slice(0,decpt)+"."+digits.slice(decpt);
+ return(neg?"-":"")+out}
+export function pyJson(v){
+ if(v===null)return"null";if(v===true)return"true";if(v===false)return"false";
+ if(typeof v==="number")return pyNum(v);if(typeof v==="string")return JSON.stringify(v);
+ if(Array.isArray(v))return"["+v.map(pyJson).join(",")+"]";
+ return"{"+Object.keys(v).sort(cmpStr).map(k=>JSON.stringify(k)+":"+pyJson(v[k])).join(",")+"}"}
+const checkInt=(value,name,minimum=0)=>{need(isInt(value)&&value>=minimum,name+" must be an integer >= "+minimum);return value};
+
+/* query */
+export function patternQuery(req){
+ need(isObj(req)&&Array.isArray(req.items),"items must be a list");
+ const items=req.items,op=req.operation;
+ if(op==="stable_sort"||op==="custom_sort"){
+  const key=req.key;need(typeof key==="string"&&key!=="","sort key required");
+  need(!items.some(r=>!isObj(r)||!has(r,key)),"missing sort key");
+  const values=items.map(r=>r[key]);
+  need(!values.some(v=>!(typeof v==="string"||finite(v))),"unsupported sort key");
+  need(new Set(values.map(kind)).size<=1,"mixed sort key types");
+  let desc=has(req,"descending")?req.descending:false;need(typeof desc==="boolean","descending must be boolean");
+  if(op==="custom_sort"){need(req.comparator==="ascending"||req.comparator==="descending","unsupported comparator");desc=req.comparator==="descending"}
+  const cmp=typeof values[0]==="string"?cmpStr:cmpNum;
+  return items.slice().sort((a,b)=>desc?cmp(b[key],a[key]):cmp(a[key],b[key]))}
+ if(op==="group_by"){
+  const key=req.key;need(typeof key==="string"&&key!=="","group key required");const groups=[];
+  for(const item of items){need(isObj(item)&&has(item,key),"missing group key");const value=item[key];
+   need(value===null||typeof value==="string"||num(value)||typeof value==="boolean","group key must be scalar");
+   let g=groups.find(g=>kind(g.value)===kind(value)&&g.value===value);if(!g){g={value,items:[]};groups.push(g)}g.items.push(item)}
+  return groups}
+ if(op==="facet"||op==="tag"){
+  const key=req.key,sel=req.selected;need(typeof key==="string"&&Array.isArray(sel),"key and selected list required");
+  need(!sel.some(v=>!(typeof v==="string"||num(v)||typeof v==="boolean")),"invalid selected value");
+  const matches=item=>{need(isObj(item)&&has(item,key),"missing filter key");const value=item[key];
+   if(op==="tag"){need(Array.isArray(value),"tags must be a list");return sel.some(t=>value.some(x=>pyEq(t,x)))}
+   return sel.some(s=>pyEq(value,s))};
+  return items.filter(matches)}
+ if(op==="range"){
+  const key=req.key,low=req.minimum,high=req.maximum;need(typeof key==="string"&&finite(low)&&finite(high)&&low<=high,"invalid numeric range");
+  const out=[];for(const item of items){need(isObj(item)&&has(item,key),"missing range key");need(finite(item[key]),"invalid range value");if(low<=item[key]&&item[key]<=high)out.push(item)}return out}
+ if(op==="geo"){
+  const lat=req.latitude,lon=req.longitude,radius=req.radius_km;
+  need(finite(lat)&&finite(lon)&&finite(radius)&&lat>=-90&&lat<=90&&lon>=-180&&lon<=180&&radius>=0,"invalid geographic search");
+  const R=Math.PI/180;
+  const distance=row=>{need(isObj(row),"invalid point");const a=row.latitude,b=row.longitude;need(finite(a)&&finite(b)&&a>=-90&&a<=90&&b>=-180&&b<=180,"invalid point coordinates");
+   const p1=lat*R,p2=a*R,dp=p2-p1,dl=(b-lon)*R,h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 6371.0088*2*Math.asin(Math.min(1,Math.sqrt(h)))};
+  return items.filter(row=>distance(row)<=radius)}
+ throw new PatternError("unsupported operation")}
+
+/* page */
+const digestOf=items=>sha256Hex(new TextEncoder().encode(pyJson(items))).slice(0,24);
+const cursorEncode=(index,digest)=>btoa('{"v":1,"i":'+index+',"h":"'+digest+'"}').replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function cursorDecode(cursor,digest){
+ need(typeof cursor==="string"&&cursor!==""&&cursor.length<=512,"invalid cursor");
+ let obj;
+ try{const s=cursor.replace(/-/g,"+").replace(/_/g,"/"),padded=s+"=".repeat((4-s.length%4)%4);
+  if(!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(padded))throw 0;
+  obj=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(atob(padded),c=>c.charCodeAt(0))))}catch{throw new PatternError("invalid cursor")}
+ need(isObj(obj)&&sameKeys(obj,["v","i","h"])&&obj.v===1&&obj.h===digest,"cursor does not match dataset");
+ return checkInt(obj.i,"cursor index")}
+export function patternPage(request){
+ need(isObj(request)&&Object.keys(request).every(k=>["operation","items","limit","offset","cursor"].includes(k)),"invalid request fields");
+ const mode=request.operation;need(mode==="offset"||mode==="cursor"||mode==="infinite","invalid pagination operation");
+ const items=request.items;need(Array.isArray(items),"items must be a list");
+ const limit=checkInt(request.limit,"limit",1);need(limit<=1000,"limit too large");
+ let start,digest;
+ if(mode==="offset"){need(!has(request,"cursor"),"offset mode does not accept cursor");start=checkInt(has(request,"offset")?request.offset:0,"offset")}
+ else{need(!has(request,"offset"),"cursor mode does not accept offset");digest=digestOf(items);start=has(request,"cursor")&&request.cursor!==null?cursorDecode(request.cursor,digest):0}
+ need(start<=items.length,"page position beyond dataset");
+ const end=Math.min(start+limit,items.length),result={items:items.slice(start,end),has_more:end<items.length};
+ if(mode==="offset")result.next_offset=end<items.length?end:null;else result.next_cursor=end<items.length?cursorEncode(end,digest):null;
+ return result}
+
+/* score: the min-heap (the TF-IDF stays in Python: it rests on Unicode \w and casefold and on libm's log) */
+export function patternScore(payload){
+ need(isObj(payload),"request must be object");const operation=payload.operation;
+ if(operation==="tfidf")throw new PatternError("tfidf runs in Python only");
+ if(operation==="minheap"){
+  need(Object.keys(payload).every(k=>["operation","values","pops"].includes(k)),"unexpected heap fields");
+  const values=payload.values,pops=has(payload,"pops")?payload.pops:0;
+  need(Array.isArray(values)&&values.every(finite),"heap values must be finite numbers");
+  need(isInt(pops)&&pops>=0&&pops<=values.length,"invalid pop count");
+  const sorted=values.slice().sort(cmpNum);return{popped:sorted.slice(0,pops),remaining_sorted:sorted.slice(pops)}}
+ throw new PatternError("unsupported operation")}
+
+/* reduce */
+function stateInt(value,label){need(isInt(value),label+" must be integer");need(Math.abs(value)<=1000000000,label+" out of bounds");return value}
+export function patternReduce(payload){
+ need(isObj(payload)&&sameKeys(payload,["mode","initial","actions"]),"expected mode, initial and actions");
+ const mode=payload.mode;need(mode==="event_state"||mode==="redux","unsupported mode");
+ let state=stateInt(payload.initial,"initial");const initial=state,actions=payload.actions;
+ need(Array.isArray(actions)&&actions.length<=1000,"actions must be array of at most 1000");
+ const history=[state];
+ for(const raw of actions){
+  need(isObj(raw)&&["set","increment","decrement","reset"].includes(raw.type),"action requires known type");
+  const op=raw.type;need(sameKeys(raw,op!=="reset"?["type","value"]:["type"]),"action fields do not match type");
+  if(op==="reset")state=initial;else{const value=stateInt(raw.value,"action value");state=stateInt(op==="set"?value:op==="increment"?state+value:state-value,"result")}
+  history.push(state)}
+ return{schema:"state-reducer/1",mode,state,history}}
+
+/* workflow */
+const WF_OPS=new Set(["swap","move_top","move_bottom","insert_sorted","undo_redo","command","memento","position_swap","batch","transaction","event_driven","pubsub","queue","saga","outbox","event_sourcing","cqrs","scheduler","worker","checkpoint","pipeline"]);
+function keysIn(req,permitted,required=[]){need(Object.keys(req).every(k=>permitted.includes(k))&&required.every(k=>has(req,k)),"invalid keys")}
+function wfIndex(value,size,allowEnd=false){need(isInt(value)&&value>=0&&value<size+(allowEnd?1:0),"index out of range");return value}
+function wfMutate(xs,command){
+ need(isObj(command),"request must be object");const k=command.type;
+ if(k==="append"){keysIn(command,["type","value"],["type","value"]);xs.push(command.value)}
+ else if(k==="remove_last"){keysIn(command,["type"],["type"]);need(xs.length>0,"empty list");xs.pop()}
+ else if(k==="replace"){keysIn(command,["type","index","value"],["type","index","value"]);xs[wfIndex(command.index,xs.length)]=command.value}
+ else throw new PatternError("unknown command");
+ need(xs.length<=1000,"list too large");return xs}
+export function patternWorkflow(r){
+ need(isObj(r),"request must be object");const operation=r.operation;
+ need(typeof operation==="string"&&WF_OPS.has(operation),"unknown operation");
+ keysIn(r,["operation","values","a","b","index","value","commands","batch_size","subscribers","events","fail_at","checkpoint","schedule"]);
+ const values=r.values;need(Array.isArray(values)&&values.length<=1000,"values must be array <=1000");
+ let xs=values.slice(),result;
+ if(operation==="swap"||operation==="position_swap"){
+  keysIn(r,["operation","values","a","b"],["operation","values","a","b"]);
+  const a=wfIndex(r.a,xs.length),b=wfIndex(r.b,xs.length);[xs[a],xs[b]]=[xs[b],xs[a]];result=xs}
+ else if(operation==="move_top"||operation==="move_bottom"){
+  keysIn(r,["operation","values","index"],["operation","values","index"]);
+  const v=xs.splice(wfIndex(r.index,xs.length),1)[0];xs.splice(operation==="move_top"?0:xs.length,0,v);result=xs}
+ else if(operation==="insert_sorted"){
+  keysIn(r,["operation","values","value"],["operation","values","value"]);
+  need(xs.concat([r.value]).every(num),"numeric sort only");
+  need(xs.every((x,i)=>i===xs.length-1||x<=xs[i+1]),"input not sorted");
+  xs.push(r.value);xs.sort(cmpNum);result=xs}
+ else if(operation==="undo_redo"||operation==="command"||operation==="memento"){
+  keysIn(r,["operation","values","commands"],["operation","values","commands"]);
+  let history=[xs.slice()],cursor=0;const commands=r.commands;
+  need(Array.isArray(commands)&&commands.length<=1000,"commands must be array <=1000");
+  for(const cmd of commands){
+   if(isObj(cmd)&&cmd.type==="undo"){keysIn(cmd,["type"],["type"]);need(cursor>0,"cannot undo");cursor--}
+   else if(isObj(cmd)&&cmd.type==="redo"){keysIn(cmd,["type"],["type"]);need(cursor+1<history.length,"cannot redo");cursor++}
+   else{history=history.slice(0,cursor+1);history.push(wfMutate(history[history.length-1].slice(),cmd).slice());cursor++}}
+  result={values:history[cursor],history,cursor}}
+ else if(operation==="batch"||operation==="worker"||operation==="scheduler"){
+  keysIn(r,["operation","values","batch_size","schedule"]);
+  const size=has(r,"batch_size")?r.batch_size:2;need(isInt(size)&&size>=1&&size<=1000,"invalid batch size");
+  if(operation==="scheduler"){
+   const schedule=has(r,"schedule")?r.schedule:[];
+   need(Array.isArray(schedule)&&schedule.length<=1000&&schedule.every(t=>isInt(t)&&t>=0&&t<=60000),"invalid schedule");
+   result=schedule.map(t=>({at_ms:t,values:xs.slice()}))}
+  else{result=[];for(let i=0;i<xs.length;i+=size)result.push(xs.slice(i,i+size))}}
+ else if(operation==="transaction"||operation==="saga"||operation==="pipeline"){
+  keysIn(r,["operation","values","commands","fail_at"],["operation","values","commands"]);
+  const commands=r.commands;need(Array.isArray(commands)&&commands.length<=1000,"commands must be array <=1000");
+  const failed=has(r,"fail_at")?r.fail_at:null;need(failed===null||(isInt(failed)&&failed>=0&&failed<commands.length),"invalid fail_at");
+  const original=xs.slice(),log=[];let done=true;
+  for(let i=0;i<commands.length;i++){
+   if(i===failed){xs=original.slice();result={committed:false,values:xs,applied:log,rolled_back:true};done=false;break}
+   wfMutate(xs,commands[i]);log.push(i)}
+  if(done)result={committed:true,values:xs,applied:log,rolled_back:false}}
+ else if(["event_driven","pubsub","queue","outbox","event_sourcing","cqrs"].includes(operation)){
+  keysIn(r,["operation","values","events","subscribers"],["operation","values","events"]);
+  const events=r.events;need(Array.isArray(events)&&events.length<=1000,"events must be array <=1000");
+  for(const e of events)need(isObj(e)&&sameKeys(e,["type","value"])&&e.type==="append","invalid event");
+  const log=events.slice(),current=xs.slice();for(const e of events)current.push(e.value);
+  need(current.length<=1000,"result too large");
+  if(operation==="pubsub"){
+   const n=has(r,"subscribers")?r.subscribers:1;need(isInt(n)&&n>=1&&n<=16,"invalid subscribers");
+   result={subscribers:Array.from({length:n},()=>log.slice()),state:current}}
+  else if(operation==="outbox"||operation==="queue")result={pending:log,state:current};
+  else if(operation==="cqrs")result={write_state:current,read_projection:current.slice()};
+  else result={log,state:current}}
+ else{
+  keysIn(r,["operation","values","checkpoint"],["operation","values","checkpoint"]);
+  const cursor=r.checkpoint;need(isInt(cursor)&&cursor>=0&&cursor<=xs.length,"invalid checkpoint");
+  result={processed:xs.slice(0,cursor),remaining:xs.slice(cursor),checkpoint:cursor}}
+ return{schema:"workflow-patterns/1",operation,result}}
+
+/* transform */
+const T_TYPES={null:v=>v===null,boolean:v=>typeof v==="boolean",integer:isInt,number:num,string:v=>typeof v==="string",array:Array.isArray,object:isObj};
+const T_SCHEMA_KEYS=["required","properties","items","additional_properties"];
+function patType(value,name){need(typeof name==="string"&&has(T_TYPES,name),"invalid JSON type");return T_TYPES[name](value)}
+function objectKeys(obj,required,optional=[]){
+ need(isObj(obj),"expected JSON object");
+ const missing=required.filter(k=>!has(obj,k)).sort(cmpStr);need(missing.length===0,"missing keys: "+pyList(missing));
+ need(Object.keys(obj).every(k=>required.includes(k)||optional.includes(k)),"unknown keys");return obj}
+function schemaSpec(spec){
+ need(isObj(spec)&&has(spec,"type"),"invalid schema definition");patType(null,spec.type);objectKeys(spec,["type"],T_SCHEMA_KEYS);
+ if(has(spec,"properties")){need(isObj(spec.properties),"invalid properties");for(const c of Object.values(spec.properties))schemaSpec(c)}
+ if(has(spec,"items"))schemaSpec(spec.items)}
+function patSchema(value,definition){
+ const spec=objectKeys(definition,["type"],T_SCHEMA_KEYS);if(!patType(value,spec.type))return false;
+ if(spec.type==="object"){
+  const props=has(spec,"properties")?spec.properties:{},required=has(spec,"required")?spec.required:[],additional=has(spec,"additional_properties")?spec.additional_properties:true;
+  need(isObj(props),"invalid properties");
+  need(Array.isArray(required)&&required.every(k=>typeof k==="string")&&new Set(required).size===required.length,"invalid required");
+  need(typeof additional==="boolean","invalid additional_properties");
+  for(const c of Object.values(props))schemaSpec(c);
+  if(!required.every(k=>has(value,k)))return false;
+  if(!additional&&Object.keys(value).some(k=>!has(props,k)))return false;
+  return Object.keys(value).every(k=>!has(props,k)||patSchema(value[k],props[k]))}
+ if(spec.type==="array"&&has(spec,"items")){schemaSpec(spec.items);return value.every(v=>patSchema(v,spec.items))}
+ need((!has(spec,"properties")&&!has(spec,"required")&&!has(spec,"additional_properties"))||spec.type==="object","object options require object type");
+ need(!has(spec,"items")||spec.type==="array","items requires array type");return true}
+function patCondition(condition){
+ const spec=objectKeys(condition,["operator"],["value","type"]),op=spec.operator;
+ need(typeof op==="string"&&["equals","not_equals","greater_than","less_than","type","not_null"].includes(op),"unknown constraint");
+ if(op==="not_null")need(Object.keys(spec).length===1,"not_null accepts no operand");
+ else if(op==="type"){need(has(spec,"type")&&!has(spec,"value"),"type requires type");need(typeof spec.type==="string"&&has(T_TYPES,spec.type),"invalid JSON type")}
+ else{need(has(spec,"value")&&!has(spec,"type"),"missing constraint value");if(op==="greater_than"||op==="less_than")need(num(spec.value),"ordered comparisons require numbers")}
+ return spec}
+function patPredicate(value,condition){
+ const spec=patCondition(condition),op=spec.operator;
+ if(op==="not_null")return value!==null;
+ if(op==="type")return patType(value,spec.type);
+ const other=spec.value;
+ if(op==="equals"||op==="not_equals"){const same=pyJson(value)===pyJson(other);return op==="equals"?same:!same}
+ need(num(value)&&num(other),"ordered comparisons require numbers");
+ return op==="greater_than"?value>other:value<other}
+function patFlatten(values,depth=0){
+ need(depth<=100,"nested arrays exceed 100 levels");const out=[];
+ for(const v of values){if(Array.isArray(v)){for(const x of patFlatten(v,depth+1))out.push(x)}else out.push(v)}return out}
+const T_ALLOWED={schema_validation:["operation","values","schema"],constraint:["operation","values","condition"],pipeline:["operation","values","steps"],map_reduce:["operation","values","key","reducer"],
+ flatten:["operation","values"],partition:["operation","values","condition"],zip:["operation","values","other","strict"]};
+export function patternTransform(payload){
+ const obj=objectKeys(payload,["operation"],["values","schema","condition","steps","key","reducer","other","strict"]),op=obj.operation;
+ need(typeof op==="string"&&has(T_ALLOWED,op),"unsupported operation");
+ need(has(obj,"values")&&Array.isArray(obj.values),"values must be array");
+ need(Object.keys(obj).every(k=>T_ALLOWED[op].includes(k)),"unexpected fields for operation");
+ const values=obj.values;let result;
+ if(op==="schema_validation"){need(has(obj,"schema"),"schema is required");schemaSpec(obj.schema);result=values.map(x=>patSchema(x,obj.schema))}
+ else if(op==="constraint"){need(has(obj,"condition"),"condition is required");patCondition(obj.condition);result=values.map(x=>patPredicate(x,obj.condition))}
+ else if(op==="pipeline"){
+  need(has(obj,"steps"),"steps is required");const steps=obj.steps;need(Array.isArray(steps)&&steps.length>0,"steps must be nonempty list");
+  result=values.slice();
+  for(const spec of steps){
+   const step=objectKeys(spec,["operation"],["value"]),k=step.operation;
+   need(typeof k==="string"&&["strip","lower","upper","add","multiply"].includes(k),"unsupported pipeline step");
+   if(k==="strip"||k==="lower"||k==="upper"){
+    need(Object.keys(step).length===1&&result.every(x=>typeof x==="string"),"text step requires strings");
+    result=result.map(x=>k==="strip"?pyStrip(x):k==="lower"?x.toLowerCase():x.toUpperCase())}
+   else{
+    need(has(step,"value")&&num(step.value)&&result.every(num),"numeric step requires numbers");
+    result=result.map(x=>k==="add"?x+step.value:x*step.value)}}}
+ else if(op==="map_reduce"){
+  need(obj.reducer==="count"||obj.reducer==="sum","reducer must be count or sum");
+  const key=obj.key;need(typeof key==="string"&&key!=="","key must be a nonempty field");
+  const grouped=new Map();
+  for(const x of values){
+   need(isObj(x)&&has(x,key),"rows must contain group key");const value=x[key];
+   need(value===null||typeof value==="string"||num(value)||typeof value==="boolean","group key must be scalar");
+   const token=pyJson(value);if(!grouped.has(token))grouped.set(token,{key:value,value:0});
+   if(obj.reducer==="sum"){need(has(x,"value")&&num(x.value),"sum rows require numeric value");grouped.get(token).value+=x.value}
+   else grouped.get(token).value+=1}
+  result=[...grouped.values()]}
+ else if(op==="flatten")result=patFlatten(values);
+ else if(op==="partition"){
+  need(has(obj,"condition"),"condition is required");patCondition(obj.condition);const matched=[],unmatched=[];
+  for(const item of values)(patPredicate(item,obj.condition)?matched:unmatched).push(item);result={matched,unmatched}}
+ else{
+  const other=obj.other;need(Array.isArray(other),"other must be array");
+  const strict=has(obj,"strict")?obj.strict:false;need(typeof strict==="boolean","strict must be boolean");
+  need(!strict||values.length===other.length,"strict zip lengths differ");
+  result=values.slice(0,Math.min(values.length,other.length)).map((a,i)=>[a,other[i]])}
+ return{schema:"collection-transform/1",operation:op,values:result}}
+
+/* select */
+const distinct=values=>{const seen=new Set(),out=[];for(const v of values){const k=pyJson(v);if(!seen.has(k)){seen.add(k);out.push(v)}}return out};
+export function patternSelect(payload){
+ need(isObj(payload),"input must be a JSON object");
+ const values=payload.values;need(Array.isArray(values),"values must be a JSON list");
+ const operation=has(payload,"operation")?payload.operation:"filter";
+ if(operation==="distinct"||operation==="deduplicate_report"){
+  need(Object.keys(payload).every(k=>k==="operation"||k==="values"),operation+" accepts only operation and values");
+  const unique=distinct(values);
+  if(operation==="distinct")return{values:unique};
+  const duplicates=values.length-unique.length;
+  return{values:[{input_count:values.length,unique_count:unique.length,duplicate_count:duplicates,has_duplicates:duplicates>0}]}}
+ need(operation==="filter","operation must be filter, distinct or deduplicate_report");
+ if(!has(payload,"conditions")){
+  need(has(payload,"equals"),"equals is required");need(!has(payload,"match"),"match requires conditions");
+  return{values:values.filter(v=>pyEq(v,payload.equals))}}
+ need(!has(payload,"equals"),"use equals or conditions, not both");
+ const conditions=payload.conditions;need(Array.isArray(conditions)&&conditions.length>0,"conditions must be a non-empty list");
+ const match=has(payload,"match")?payload.match:"all";need(match==="all"||match==="any","match must be all or any");
+ for(const c of conditions){
+  need(isObj(c)&&has(c,"equals")&&Object.keys(c).every(k=>k==="path"||k==="equals"),"each condition accepts only path and required equals");
+  const path=has(c,"path")?c.path:[];
+  need(Array.isArray(path)&&path.every(p=>typeof p==="string"||(isInt(p)&&p>=0)),"path must contain literal keys or non-negative integer indices")}
+ const MISSING=Symbol("missing");
+ const found=(value,c)=>{
+  for(const part of has(c,"path")?c.path:[]){
+   if(typeof part==="string"&&isObj(value))value=has(value,part)?value[part]:MISSING;
+   else if(isInt(part)&&Array.isArray(value)&&part<value.length)value=value[part];
+   else return false}
+  return value!==MISSING&&pyEq(value,c.equals)};
+ return{values:values.filter(v=>match==="all"?conditions.every(c=>found(v,c)):conditions.some(c=>found(v,c)))}}
+
+/* order */
+export const PATTERN_ORDER_EXAMPLES={basic:[9,2,5,1,3],reverse:[9,2,5,1,3],multi:[{group:"b",score:2,name:"B2"},{group:"a",score:1,name:"A1"},{group:"b",score:1,name:"B1"},{group:"a",score:3,name:"A3"}],
+ "sorted-set":[5,2,5,1,3,2],priority:[{priority:2,name:"normal"},{priority:1,name:"urgent"},{priority:3,name:"later"},{priority:1,name:"critical"}],"top-n":[7,1,9,3,8,2]};
+const ORDER_NEEDS={basic:"basic ordering requires numbers",reverse:"reverse ordering requires numbers","sorted-set":"sorted-set requires numbers","top-n":"top-n requires numbers"};
+export function patternOrder(mode,values=null){
+ need(typeof mode==="string"&&has(PATTERN_ORDER_EXAMPLES,mode),"unsupported ordering mode");
+ values=values===null?PATTERN_ORDER_EXAMPLES[mode]:values;need(Array.isArray(values),"values must be a list");
+ let out;
+ if(has(ORDER_NEEDS,mode)){
+  need(values.every(num),ORDER_NEEDS[mode]);
+  out=mode==="basic"?values.slice().sort(cmpNum):mode==="reverse"?values.slice().sort((a,b)=>cmpNum(b,a)):mode==="sorted-set"?[...new Set(values)].sort(cmpNum):values.slice().sort((a,b)=>cmpNum(b,a)).slice(0,3)}
+ else if(mode==="multi"){
+  need(values.every(v=>isObj(v)&&typeof v.group==="string"&&num(v.score)),"multi ordering requires group/score records");
+  out=values.slice().sort((a,b)=>cmpStr(a.group,b.group)||cmpNum(-a.score,-b.score))}
+ else{
+  need(values.every(v=>isObj(v)&&typeof v.name==="string"&&isInt(v.priority)),"priority ordering requires name/priority records");
+  out=values.slice().sort((a,b)=>cmpNum(a.priority,b.priority)||cmpStr(a.name,b.name))}
+ return{schema:"list-ordering/1",mode,values:out}}
+
+/* text */
+export const PATTERN_TEXT_DOCUMENTS=[{id:"doc-1",text:"Flutter renders portable user interfaces"},{id:"doc-2",text:"Python processes portable data and search indexes"},{id:"doc-3",text:"Search indexes make repeated search fast"}];
+const STOP_WORDS=["and","the","a","an"];
+export function patternTokens(text){if(typeof text!=="string")throw new TypeError("text must be a string");return(text.match(/[0-9A-Za-z]+/g)||[]).map(t=>t.toLowerCase())}
+export function patternWithoutStopWords(tokens){if(!tokens.every(t=>typeof t==="string"))throw new TypeError("tokens must contain strings");return tokens.filter(t=>!STOP_WORDS.includes(t))}
+export function patternInvertedIndex(documents){
+ const index=new Map();
+ for(const d of documents){
+  need(typeof d.id==="string"&&d.id!==""&&typeof d.text==="string","documents require non-empty id and text");
+  for(const t of patternWithoutStopWords(patternTokens(d.text))){if(!index.has(t))index.set(t,new Set());index.get(t).add(d.id)}}
+ return[...index.entries()].sort((a,b)=>cmpStr(a[0],b[0])).map(([t,ids])=>[t,[...ids].sort(cmpStr)])}
+export function patternTextSearch(documents,query){
+ const terms=patternWithoutStopWords(patternTokens(query));if(!terms.length)return[];
+ const index=new Map(patternInvertedIndex(documents));let matches=new Set(index.get(terms[0])||[]);
+ for(const t of terms.slice(1)){const ids=new Set(index.get(t)||[]);matches=new Set([...matches].filter(x=>ids.has(x)))}
+ return[...matches].sort(cmpStr)}
+export function patternText(mode){
+ let values;
+ if(mode==="search")values=patternTextSearch(PATTERN_TEXT_DOCUMENTS,"portable search");
+ else if(mode==="tokens")values=patternWithoutStopWords(patternTokens("Python and Flutter search the data"));
+ else if(mode==="text-index")values=PATTERN_TEXT_DOCUMENTS.map(d=>({id:d.id,tokens:patternWithoutStopWords(patternTokens(d.text))}));
+ else if(mode==="inverted-index")values=patternInvertedIndex(PATTERN_TEXT_DOCUMENTS).map(([term,documents])=>({term,documents}));
+ else throw new PatternError("unsupported text-processing mode");
+ return{schema:"text-processing/1",mode,values}}
+
+/* window, collection, structure */
+export const PATTERN_WINDOW_MODES=["load-more","lazy-list","prefetch","page-indicator","page-size","offset-limit","keyset","window","bidirectional"];
+export const PATTERN_COLLECTION_MODES=["selectable","swipe-delete","reorderable","checklist"];
+export const PATTERN_WINDOW_ITEMS=Array.from({length:12},(_,i)=>"item-"+String(i+1).padStart(2,"0"));
+export function patternWindowInitial(mode){
+ need(PATTERN_WINDOW_MODES.includes(mode),"unsupported mode");
+ const state={mode,offset:0,limit:4,total:PATTERN_WINDOW_ITEMS.length};if(mode==="keyset")state.cursor=null;return state}
+export function patternWindowStep(state,command){
+ if(!isObj(state))throw new TypeError("state must be an object");
+ const{mode,offset,limit,total}=state;
+ need(PATTERN_WINDOW_MODES.includes(mode),"invalid mode");
+ need(isInt(offset)&&isInt(limit)&&isInt(total),"invalid bounds");need(offset>=0&&limit>0&&total>=0,"invalid bounds");
+ const result={...state};
+ if(command==="next"||command==="load-more"||command==="prefetch"){
+  result.offset=Math.min(offset+limit,Math.max(0,total-limit));
+  if(mode==="keyset")result.cursor=result.offset?PATTERN_WINDOW_ITEMS[result.offset-1]:null}
+ else if(command==="page-size-3"){result.limit=3;result.offset=Math.min(Math.floor(offset/3)*3,Math.max(0,total-3))}
+ else if(command==="offset-6")result.offset=Math.min(6,Math.max(0,total-limit));
+ else if(command==="refresh"){result.offset=0;result.revision=(has(state,"revision")?state.revision:0)+1}
+ else if(command==="previous")result.offset=Math.max(0,offset-limit);
+ else if(command==="reset")result.offset=0;
+ else throw new PatternError("unsupported command");
+ return result}
+export function patternWindowRender(state){
+ const{offset,limit,total}=state;
+ return{schema:"collection-window/1",mode:state.mode,state,page:total?Math.floor(offset/limit)+1:0,pages:total?Math.floor((total+limit-1)/limit):0,values:PATTERN_WINDOW_ITEMS.slice(offset,Math.min(offset+limit,total))}}
+export function patternCollectionInitial(mode){need(PATTERN_COLLECTION_MODES.includes(mode),"unsupported collection mode");return{mode,items:["a","b","c","d"],selected:[]}}
+export function patternCollectionStep(state,command,item="b"){
+ need(isObj(state)&&PATTERN_COLLECTION_MODES.includes(state.mode),"invalid collection state");
+ const items=state.items,selected=state.selected;
+ need(Array.isArray(items)&&Array.isArray(selected)&&items.concat(selected).every(x=>typeof x==="string")&&new Set(items).size===items.length&&selected.every(x=>items.includes(x)),"invalid collection items");
+ need(items.includes(item),"unknown item");
+ const result={mode:state.mode,items:items.slice(),selected:selected.slice()};
+ if(command==="select"||command==="toggle"){const at=result.selected.indexOf(item);if(at>=0)result.selected.splice(at,1);else result.selected.push(item)}
+ else if(command==="delete"){result.items.splice(result.items.indexOf(item),1);const at=result.selected.indexOf(item);if(at>=0)result.selected.splice(at,1)}
+ else if(command==="move-first"){result.items.splice(result.items.indexOf(item),1);result.items.unshift(item)}
+ else throw new PatternError("unsupported collection command");
+ return result}
+export const patternCollectionRender=state=>({schema:"collection-command/1",mode:state.mode,state,values:state.items.map(id=>({id,selected:state.selected.includes(id)}))});
+const STRUCTURE_ROWS=[{id:"a1",group:"A",label:"Alpha"},{id:"a2",group:"A",label:"Amber"},{id:"b1",group:"B",label:"Beta"},{id:"b2",group:"B",label:"Blue"}];
+const STRUCTURE_TREE=[{id:"root",label:"Root",children:[{id:"left",label:"Left",children:[]},{id:"right",label:"Right",children:[{id:"leaf",label:"Leaf",children:[]}]}]}];
+export function patternStructure(mode){
+ const flatten=(nodes,depth=0)=>{const out=[];for(const n of nodes){out.push({id:n.id,label:n.label,depth});out.push(...flatten(n.children||[],depth+1))}return out};
+ let values;
+ if(mode==="sticky"||mode==="section"||mode==="grouped"){
+  values=[];for(const row of STRUCTURE_ROWS){if(!values.length||values[values.length-1].header!==row.group)values.push({header:row.group,items:[]});values[values.length-1].items.push({id:row.id,label:row.label})}}
+ else if(mode==="tree"||mode==="flat")values=flatten(STRUCTURE_TREE);
+ else throw new PatternError("unsupported mode");
+ return{schema:"collection-structure/1",mode,values}}
+
+/* the JavaScript references of the catalogue (patterns 4, 35 and 121-150): future, stream, concurrency, event loop and interaction. They are the originals' code (javascript/*.mjs of
+   flutter_navigation_basic) with PatternError for their TypeError/RangeError, and a task of 0 ms waits 1 ms as it does in Node; Python models them without a clock. */
+const jsObject=(v,name)=>{need(v!==null&&typeof v==="object"&&!Array.isArray(v),name+" must be an object");return v};
+const jsFields=(obj,allowed,required=[])=>{for(const key of Object.keys(obj))need(allowed.includes(key),"unknown field "+key);for(const key of required)need(has(obj,key),"missing field "+key)};
+const jsSettled=promise=>{promise.catch(()=>{});return promise};
+function futureTask(input){
+ const t=jsObject(input,"task");jsFields(t,["value","delay_ms","reject"],["value"]);
+ const delay=t.delay_ms??0;need(Number.isInteger(delay)&&delay>=0&&delay<=1000,"delay_ms must be an integer 0..1000");
+ need(t.reject===undefined||(typeof t.reject==="string"&&t.reject!==""),"reject must be a nonempty string");
+ return jsSettled(new Promise((resolve,reject)=>setTimeout(()=>t.reject===undefined?resolve(t.value):reject(new PatternError(t.reject)),Math.max(1,delay))))}
+export async function patternFuture(input){
+ const req=jsObject(input,"request");jsFields(req,["mode","task","tasks","steps","timeout_ms","fallback"],["mode"]);
+ const mode=req.mode;need(["basic","chain","error","wait","any","timeout"].includes(mode),"unsupported mode");
+ let value;
+ if(mode==="wait"||mode==="any"){
+  jsFields(req,["mode","tasks"],["tasks"]);need(Array.isArray(req.tasks)&&req.tasks.length>0&&req.tasks.length<=32,"tasks must contain 1..32 tasks");
+  const jobs=req.tasks.map(futureTask);value=mode==="wait"?await Promise.all(jobs):await Promise.race(jobs)}
+ else{
+  const allowed=mode==="chain"?["mode","task","steps"]:mode==="error"?["mode","task","fallback"]:mode==="timeout"?["mode","task","timeout_ms"]:["mode","task"];
+  jsFields(req,allowed,["task"]);let job=futureTask(req.task);
+  if(mode==="chain"){
+   need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=32,"steps must contain 1..32 steps");
+   for(const step of req.steps){
+    jsObject(step,"step");jsFields(step,["op","by"],["op"]);
+    if(step.op==="add"||step.op==="multiply"){
+     need(typeof step.by==="number"&&Number.isFinite(step.by),"numeric by required");const op=step.op;
+     job=jsSettled(job.then(x=>{need(typeof x==="number"&&Number.isFinite(x),"numeric input required");return op==="add"?x+step.by:x*step.by}))}
+    else if(step.op==="uppercase"){jsFields(step,["op"]);job=jsSettled(job.then(x=>{need(typeof x==="string","string input required");return x.toUpperCase()}))}
+    else need(false,"unsupported step")}}
+  if(mode==="error"){need(has(req,"fallback"),"fallback required");job=job.catch(error=>({caught:error.message,fallback:req.fallback}))}
+  if(mode==="timeout"){
+   need(Number.isInteger(req.timeout_ms)&&req.timeout_ms>=1&&req.timeout_ms<=1000,"timeout_ms must be 1..1000");
+   let timer;const timeout=jsSettled(new Promise((_,reject)=>{timer=setTimeout(()=>reject(new PatternError("timeout")),req.timeout_ms)}));
+   try{value=await Promise.race([job,timeout])}finally{clearTimeout(timer)}}
+  else value=await job}
+ return{schema:"future-patterns/1",mode,value}}
+
+const streamEvents=xs=>{
+ need(Array.isArray(xs)&&xs.length<=1000,"events must be array <=1000");let last=-1;
+ return xs.map(x=>{need(x&&typeof x==="object"&&!Array.isArray(x)&&Object.keys(x).sort().join()==="at_ms,value","event shape");need(Number.isInteger(x.at_ms)&&x.at_ms>=last&&x.at_ms<=60000,"sorted event time");last=x.at_ms;return x})};
+async function* streamOf(xs){for(const x of xs)yield x}
+async function streamCollect(xs){const a=[];for await(const x of streamOf(xs))a.push(x);return a}
+export async function patternStream(req){
+ need(req&&typeof req==="object"&&!Array.isArray(req)&&["basic","controller","broadcast","transform","merge","debounce","throttle","buffer","window"].includes(req.mode),"mode");
+ const mode=req.mode;let xs=[];
+ if(mode==="controller"){
+  need(Array.isArray(req.commands)&&req.commands.length<=1000,"commands");
+  let closed=false;
+  for(const cmd of req.commands){need(cmd&&typeof cmd==="object","command");if(cmd.op==="close"){need(!closed,"closed twice");closed=true}else{need(cmd.op==="add"&&!closed&&has(cmd,"value"),"invalid add");xs.push({at_ms:xs.length,value:cmd.value})}}
+  need(closed,"close required")}
+ else if(mode==="merge"){
+  need(Array.isArray(req.streams)&&req.streams.length>0&&req.streams.length<=16,"streams");
+  xs=req.streams.flatMap((s,i)=>streamEvents(s).map((x,j)=>({...x,source:i,index:j}))).sort((a,b)=>a.at_ms-b.at_ms||a.source-b.source||a.index-b.index).map(({index,...x})=>x)}
+ else xs=streamEvents(req.events);
+ if(mode==="transform"){
+  need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=16,"steps");
+  for(const step of req.steps){
+   need(step&&typeof step==="object","step");
+   if(step.op==="where_equals")xs=xs.filter(x=>JSON.stringify(x.value)===JSON.stringify(step.value));
+   else if(step.op==="expand")xs=xs.flatMap(x=>{need(Array.isArray(x.value),"expand array");return x.value.map(value=>({...x,value}))});
+   else if(step.op==="map_add")xs=xs.map(x=>{need(typeof x.value==="number"&&Number.isFinite(x.value)&&typeof step.value==="number"&&Number.isFinite(step.value),"map_add numbers");return{...x,value:x.value+step.value}});
+   else need(false,"step operation")}}
+ if(mode==="debounce"||mode==="throttle"){
+  const ms=req.duration_ms;need(Number.isInteger(ms)&&ms>0&&ms<=60000,"duration");
+  if(mode==="debounce")xs=xs.filter((x,i)=>!xs[i+1]||xs[i+1].at_ms-x.at_ms>ms);
+  else{let last=-Infinity;xs=xs.filter(x=>{if(x.at_ms-last<ms)return false;last=x.at_ms;return true})}}
+ if(mode==="buffer"||mode==="window"){
+  const n=req.size;need(Number.isInteger(n)&&n>0&&n<=1000,"size");
+  const step=mode==="buffer"?n:(req.step??1);need(Number.isInteger(step)&&step>0&&step<=1000,"step");
+  const out=[];for(let i=0;i<xs.length;i+=step){const part=xs.slice(i,i+n);if(mode==="window"&&part.length<n)break;if(!part.length)break;out.push({at_ms:part.at(-1).at_ms,value:part.map(x=>x.value)})}xs=out}
+ xs=await streamCollect(xs);
+ if(mode==="broadcast"){need(Number.isInteger(req.subscribers)&&req.subscribers>=1&&req.subscribers<=16,"subscribers");return{schema:"stream-patterns/1",mode,subscribers:Array.from({length:req.subscribers},()=>xs.map(x=>({...x})))}}
+ return{schema:"stream-patterns/1",mode,events:xs}}
+
+function concurrencyTasks(raw){
+ need(Array.isArray(raw)&&raw.length<=32,"tasks must be an array (max 32)");
+ return raw.map((item,i)=>{
+  need(item!==null&&typeof item==="object"&&!Array.isArray(item),"task object required");
+  need(Object.keys(item).every(k=>["value","delay_ms"].includes(k))&&has(item,"value"),"task keys");
+  const delay=item.delay_ms??0;need(Number.isInteger(delay)&&delay>=0&&delay<=50,"delay_ms must be 0..50");
+  return{value:item.value,delay,index:i}})}
+const concurrencyLatency=job=>new Promise(resolve=>setTimeout(()=>resolve(job.value),job.delay));
+async function concurrencyScheduled(jobs,limit){
+ need(Number.isInteger(limit)&&limit>=1&&limit<=32,"concurrency 1..32");
+ let next=0,active=0,peak=0;const results=new Array(jobs.length);
+ async function worker(){while(next<jobs.length){const j=jobs[next++];active++;peak=Math.max(peak,active);try{results[j.index]=await concurrencyLatency(j)}finally{active--}}}
+ await Promise.all(Array.from({length:Math.min(limit,jobs.length)},worker));
+ return{values:results,max_active:peak}}
+export async function patternConcurrency(request){
+ need(request&&typeof request==="object"&&!Array.isArray(request),"request object");
+ const mode=request.mode;need(["work_queue","semaphore","mutex","cancelable","parallel_map","progress"].includes(mode),"unsupported mode");
+ const allowed=mode==="cancelable"?["mode","task","cancel"]:mode==="mutex"?["mode","increments"]:["mode","tasks",...(mode==="semaphore"||mode==="parallel_map"?["concurrency"]:[])];
+ need(Object.keys(request).every(k=>allowed.includes(k)),"unknown request keys");
+ let result;
+ if(mode==="mutex"){
+  const inc=request.increments;need(Array.isArray(inc)&&inc.length<=32&&inc.every(x=>Number.isSafeInteger(x)),"increments");
+  let state=0;const history=[];for(const n of inc){state+=n;need(Number.isSafeInteger(state),"overflow");history.push(state)}
+  result={value:state,history}}
+ else if(mode==="cancelable"){
+  const list=concurrencyTasks([request.task]);need(typeof request.cancel==="boolean","cancel flag required");
+  const controller=new AbortController();if(request.cancel)controller.abort();const job=list[0];
+  result=await new Promise(resolve=>{
+   if(controller.signal.aborted){resolve({status:"cancelled"});return}
+   const timer=setTimeout(()=>resolve({status:"completed",value:job.value}),job.delay);
+   controller.signal.addEventListener("abort",()=>{clearTimeout(timer);resolve({status:"cancelled"})},{once:true})})}
+ else{
+  const jobs=concurrencyTasks(request.tasks),n=mode==="work_queue"||mode==="progress"?1:request.concurrency,metrics=await concurrencyScheduled(jobs,n);
+  result=mode==="progress"?{values:metrics.values,progress:jobs.map((_,i)=>({completed:i+1,total:jobs.length}))}:metrics}
+ return{schema:"concurrency-patterns/1",mode,result}}
+
+const eventFields=(obj,allowed,required=[])=>{need(obj!==null&&typeof obj==="object"&&!Array.isArray(obj),"object required");need(Object.keys(obj).every(k=>allowed.includes(k)),"unknown field");need(required.every(k=>has(obj,k)),"missing field")};
+async function* eventArray(values){for(const value of values)yield value}
+async function eventCollect(iter){const out=[];for await(const value of iter)out.push(value);return out}
+export async function patternEventLoop(req){
+ eventFields(req,["mode","values","pause_after","steps"],["mode","values"]);
+ const mode=req.mode,input=req.values;need(Array.isArray(input)&&input.length<=1000,"values must be array <=1000");
+ need(["reactive","event_loop","microtask","suspend_resume","async_generator"].includes(mode),"unsupported mode");
+ let result;
+ if(mode==="reactive"){
+  eventFields(req,["mode","values","steps"],["mode","values","steps"]);need(Array.isArray(req.steps)&&req.steps.length>0&&req.steps.length<=16,"steps");
+  let values=input.slice();
+  for(const step of req.steps){
+   eventFields(step,["op","value"],["op","value"]);
+   if(step.op==="map_add"){need(typeof step.value==="number"&&Number.isFinite(step.value)&&values.every(x=>typeof x==="number"&&Number.isFinite(x)),"numbers required");values=values.map(x=>x+step.value)}
+   else if(step.op==="where_equals")values=values.filter(x=>JSON.stringify(x)===JSON.stringify(step.value));
+   else need(false,"unsupported reactive step")}
+  result=await eventCollect(eventArray(values))}
+ else if(mode==="event_loop"){
+  eventFields(req,["mode","values"]);const trace=[];
+  await new Promise(resolve=>{trace.push({phase:"sync",values:input});queueMicrotask(()=>trace.push({phase:"microtask",values:input}));setTimeout(()=>{trace.push({phase:"timer",values:input});resolve()},0)});
+  result=trace}
+ else if(mode==="microtask"){
+  eventFields(req,["mode","values"]);const trace=["sync"];
+  queueMicrotask(()=>trace.push("microtask"));Promise.resolve().then(()=>trace.push("promise"));
+  await new Promise(resolve=>setTimeout(()=>{trace.push("timer");resolve()},0));result=trace}
+ else if(mode==="suspend_resume"){
+  eventFields(req,["mode","values","pause_after"],["mode","values","pause_after"]);need(Number.isInteger(req.pause_after)&&req.pause_after>=0&&req.pause_after<=input.length,"pause_after");
+  const trace=[],values=[];let seen=0;
+  for await(const value of eventArray(input)){if(seen===req.pause_after)trace.push("paused","resumed");values.push(value);seen++}
+  if(seen===req.pause_after)trace.push("paused","resumed");
+  result={values,trace}}
+ else{eventFields(req,["mode","values"]);result=await eventCollect(eventArray(input))}
+ return{schema:"event-loop-patterns/1",mode,result}}
+
+export function debounce(callback,delayMs,{setTimeoutFn=setTimeout,clearTimeoutFn=clearTimeout}={}){
+ if(typeof callback!=="function"||!Number.isFinite(delayMs)||delayMs<0)throw new TypeError("invalid debounce arguments");
+ let timer;
+ const invoke=(...args)=>{if(timer!==undefined)clearTimeoutFn(timer);timer=setTimeoutFn(()=>{timer=undefined;callback(...args)},delayMs)};
+ invoke.cancel=()=>{if(timer!==undefined)clearTimeoutFn(timer);timer=undefined};
+ return invoke}
+export function virtualWindow({count,itemHeight,scrollTop,viewportHeight,overscan=2}){
+ for(const value of[count,itemHeight,scrollTop,viewportHeight,overscan])if(!Number.isFinite(value)||value<0)throw new PatternError("invalid viewport number");
+ if(!Number.isInteger(count)||!Number.isInteger(overscan)||itemHeight===0)throw new PatternError("invalid viewport configuration");
+ const start=Math.max(0,Math.min(count,Math.floor(scrollTop/itemHeight)-overscan)),end=Math.max(start,Math.min(count,Math.ceil((scrollTop+viewportHeight)/itemHeight)+overscan));
+ return{start,end,topPadding:start*itemHeight,bottomPadding:(count-end)*itemHeight}}
+export function patternInteraction(request){
+ need(request!==null&&typeof request==="object"&&!Array.isArray(request),"request object");const op=request.operation;
+ if(op==="virtual_window"){
+  need(Object.keys(request).every(k=>["operation","count","itemHeight","scrollTop","viewportHeight","overscan"].includes(k)),"unknown request keys");
+  const{operation,...params}=request;return{schema:"interaction-patterns/1",operation:op,result:virtualWindow(params)}}
+ need(op==="debounce","unsupported operation");
+ need(Object.keys(request).every(k=>["operation","delay_ms","calls"].includes(k)),"unknown request keys");
+ const delay=request.delay_ms,calls=request.calls;
+ need(Number.isInteger(delay)&&delay>=0&&delay<=60000,"delay_ms must be 0..60000");need(Array.isArray(calls)&&calls.length<=1000,"calls must be array <=1000");
+ let last=0;
+ for(const call of calls){
+  need(call!==null&&typeof call==="object"&&!Array.isArray(call)&&has(call,"at_ms"),"call shape");const keys=Object.keys(call).sort().join();
+  need(keys==="at_ms,value"||keys==="at_ms,cancel","call shape");
+  need(Number.isInteger(call.at_ms)&&call.at_ms>=last&&call.at_ms<=60000,"sorted call time");
+  need(has(call,"value")||call.cancel===true,"call shape");last=call.at_ms}
+ let clock=0,handles=0;const timers=new Map(),delivered=[];
+ const setTimeoutFn=(fn,ms)=>{timers.set(++handles,[clock+ms,fn]);return handles};
+ const runDue=limit=>{for(;;){let best=null;for(const[key,[at]]of timers)if(at<limit&&(best===null||at<best[0]||(at===best[0]&&key<best[1])))best=[at,key];if(best===null)return;const[,fn]=timers.get(best[1]);timers.delete(best[1]);clock=best[0];fn()}};
+ const debounced=debounce(value=>delivered.push({at_ms:clock,value}),delay,{setTimeoutFn,clearTimeoutFn:key=>timers.delete(key)});
+ for(const call of calls){runDue(call.at_ms);clock=call.at_ms;if(has(call,"value"))debounced(call.value);else debounced.cancel()}
+ runDue(Infinity);
+ return{schema:"interaction-patterns/1",operation:op,result:delivered}}
+
+/* the runner */
+const runOrder=r=>{need(isObj(r)&&typeof r.mode==="string","mode required");return patternOrder(r.mode,has(r,"values")?r.values:null)};
+const runWindow=r=>{
+ need(isObj(r)&&typeof r.mode==="string","mode required");const commands=has(r,"commands")?r.commands:[];
+ need(Array.isArray(commands)&&commands.length<=1000&&commands.every(c=>typeof c==="string"),"commands must be strings");
+ let state=patternWindowInitial(r.mode);for(const c of commands)state=patternWindowStep(state,c);return patternWindowRender(state)};
+const runCollection=r=>{
+ need(isObj(r)&&typeof r.mode==="string","mode required");const commands=has(r,"commands")?r.commands:[];
+ need(Array.isArray(commands)&&commands.length<=1000&&commands.every(c=>Array.isArray(c)&&(c.length===1||c.length===2)&&c.every(p=>typeof p==="string")),"commands must be [command] or [command, item]");
+ let state=patternCollectionInitial(r.mode);for(const c of commands)state=patternCollectionStep(state,...c);return patternCollectionRender(state)};
+export const PATTERN_RUNNERS={query:patternQuery,page:patternPage,score:patternScore,reduce:patternReduce,workflow:patternWorkflow,transform:patternTransform,select:patternSelect,order:runOrder,
+ text:r=>patternText(isObj(r)?r.mode:null),window:runWindow,collection:runCollection,structure:r=>patternStructure(isObj(r)?r.mode:null),future:patternFuture,stream:patternStream,concurrency:patternConcurrency,event_loop:patternEventLoop,interaction:patternInteraction};
+const pyRepr=s=>s.includes("'")&&!s.includes('"')?'"'+s.replace(/\\/g,"\\\\")+'"':"'"+s.replace(/\\/g,"\\\\").replace(/'/g,"\\'")+"'";
+export function patternRun(family,request){
+ if(!has(PATTERN_RUNNERS,family)){
+  if(PATTERN_FAMILIES.includes(family))throw new PatternError(family+" runs in Python only: python3 web_ui.py --pattern "+family);
+  throw new PatternError("unknown pattern family: "+pyRepr(String(family))+"; one of "+PATTERN_FAMILIES.join(", "))}
+ const wrap=e=>e instanceof PatternError?e:(e instanceof TypeError||e instanceof RangeError)?new PatternError("invalid "+family+" request: "+e.message):e;
+ try{const out=PATTERN_RUNNERS[family](request);return out instanceof Promise?out.catch(e=>{throw wrap(e)}):out}
+ catch(e){throw wrap(e)}}
+
+/* the catalogue */
+export function patternTheme(category,number){
+ for(const[low,high,name]of PATTERN_THEMES[category])if(low<=number&&number<=high)return name;
+ throw new PatternError("no theme for "+category+" "+number)}
+export function patternFamily(number){for(const[numbers,,family]of PATTERN_PRODUCERS)if(numbers.includes(number))return family;return null}
+export function patternOwner(number){
+ for(const[numbers,runtime]of PATTERN_PRODUCERS)if(numbers.includes(number))return runtime;
+ if(PATTERN_NATIVE.includes(number)||PATTERN_GESTURES.includes(number))return"flutter_native";
+ for(const[limit,owner]of[[44,"python_processing / flutter_interaction"],[60,"python_assets / flutter_layout"],[90,"python_cache / runtime_specific"],[113,"python_validation / flutter_form"]])if(number<=limit)return owner;
+ return"undecided"}
+export function patternCatalogue(){
+ const rows=[];
+ for(const[key,letter]of PATTERN_CATEGORIES){
+  const names=PATTERN_TITLES[key].split(/\s+/).filter(Boolean);need(names.length===198,key+" must list 198 titles");
+  names.forEach((title,i)=>{const number=i+1,row={id:letter+String(number).padStart(3,"0"),category:key,number,title,theme:patternTheme(key,number)};
+   if(key==="data"){row.family=patternFamily(number);row.owner=patternOwner(number)}rows.push(row)})}
+ return rows}
+/* lower-cased where Python case-folds: they differ for a few letters (a sharp s matches itself here, not "ss") */
+const normalized=s=>s.normalize("NFKC").toLowerCase();
+export function patternFind(rows,query="",category="",family=""){
+ const words=normalized(query).split(/\s+/).filter(Boolean);
+ return rows.filter(row=>{
+  if(category&&row.category!==category)return false;
+  if(family&&(row.family===undefined?null:row.family)!==family)return false;
+  const haystack=normalized(row.id+" "+row.title+" "+row.theme);return words.every(w=>haystack.includes(w))})}
+""" + r"""const api={PatternError,cmpStr,pyEq,pyJson,patternQuery,patternPage,patternScore,patternReduce,patternWorkflow,patternTransform,patternSelect,patternOrder,patternTokens,patternWithoutStopWords,patternInvertedIndex,patternTextSearch,patternText,
+ patternWindowInitial,patternWindowStep,patternWindowRender,patternCollectionInitial,patternCollectionStep,patternCollectionRender,patternStructure,patternFuture,patternStream,patternConcurrency,patternEventLoop,patternInteraction,virtualWindow,debounce,patternRun,patternTheme,patternFamily,patternOwner,patternCatalogue,patternFind,
+ PATTERN_RUNNERS,PATTERN_TWINS,PATTERN_FAMILIES,PATTERN_EXAMPLES,PATTERN_ORDER_EXAMPLES,PATTERN_TEXT_DOCUMENTS,PATTERN_WINDOW_MODES,PATTERN_COLLECTION_MODES,PATTERN_WINDOW_ITEMS,sha256Hex};
+globalThis.webUiPatterns=api;
+const el=(tag,props={},...kids)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(props))if(k==="text")e.textContent=v;else e.setAttribute(k,v);e.append(...kids);return e};
+const pretty=v=>JSON.stringify(v,null,2);
+const PAGE=48;
+export function bindPatterns(root=document){return[...root.querySelectorAll("[data-ui-patterns]")].map(box=>{
+ if(box.hasAttribute("data-patterns-ready"))return box;
+ const $=s=>box.querySelector(s);
+ const rows=patternCatalogue(),list=$("[data-patterns-list]"),count=$("[data-patterns-count]"),more=$("[data-patterns-more]"),q=$("[data-patterns-query]"),cat=$("[data-patterns-category]"),fam=$("[data-patterns-family]");
+ let shown=PAGE,found=rows;
+ const draw=()=>{
+  list.replaceChildren(...found.slice(0,shown).map(row=>el("li",{"data-id":row.id},el("b",{text:row.id}),el("span",{text:" "+row.title}),
+   el("span",{class:"ui-muted",text:" · "+row.theme+(row.category==="data"?" · "+(row.family||row.owner):"")}))));
+  count.textContent=found.length===rows.length?rows.length+" patterns":found.length+" of "+rows.length+" patterns";more.hidden=shown>=found.length;box.dataset.found=String(found.length);box.dataset.shown=String(Math.min(shown,found.length))};
+ const search=()=>{found=patternFind(rows,q.value,cat.value,fam.value);shown=PAGE;draw()};
+ q.addEventListener("input",search);cat.addEventListener("change",search);fam.addEventListener("change",search);more.addEventListener("click",()=>{shown+=PAGE;draw()});
+ let runs=0;
+ const runFam=$("[data-patterns-run-family]"),req=$("[data-patterns-request]"),out=$("[data-patterns-result]"),status=$("[data-patterns-status]");
+ const run=()=>{
+  const family=runFam.value;let request;
+  box.dataset.family=family;box.dataset.runs=String((Number(box.dataset.runs)||0)+1);
+  try{request=JSON.parse(req.value)}catch{status.textContent="Not JSON.";out.textContent="";box.dataset.run="invalid";return}
+  const example=PATTERN_EXAMPLES[family],pythonOnly=!PATTERN_TWINS.includes(family)||(family==="score"&&request!==null&&typeof request==="object"&&request.operation==="tfidf");
+  if(pythonOnly){
+   box.dataset.engine="python";
+   if(pyJson(request)===pyJson(example.request)){out.textContent=pretty(example.result);status.textContent="Computed by Python when this page was made; this page does not run "+family+" itself.";box.dataset.run="ok"}
+   else{out.textContent="";status.textContent=family+" runs in Python only: printf '%s' '"+JSON.stringify(request).replace(/'/g,"'\\''")+"' | python3 web_ui.py --pattern "+family;box.dataset.run="python"}
+   return}
+   box.dataset.engine="browser";
+  const ticket=++runs,done=value=>{if(ticket!==runs)return;out.textContent=pretty(value);status.textContent="Run in this page.";box.dataset.run="ok"},
+   refuse=e=>{if(!(e instanceof PatternError))throw e;if(ticket!==runs)return;out.textContent="";status.textContent="Refused: "+e.message;box.dataset.run="refused"};
+  let answer;try{answer=patternRun(family,request)}catch(e){refuse(e);return}
+  if(answer instanceof Promise){out.textContent="";status.textContent="Running…";box.dataset.run="running";answer.then(done,refuse)}else done(answer)};
+ const fill=()=>{req.value=pretty(PATTERN_EXAMPLES[runFam.value].request);run()};
+ runFam.addEventListener("change",fill);$("[data-patterns-example]").addEventListener("click",fill);$("[data-patterns-run]").addEventListener("click",run);
+ draw();fill();box.setAttribute("data-patterns-ready","");return box})}
+if(typeof document!=="undefined")bindPatterns();
+"""
+
+
 _CLIPBOARD_JS = r"""const MAX_IMAGE=32*1024*1024,IMAGE_TYPES=["image/png","image/jpeg","image/webp"];
 """ + _TEXT_JS + r"""export const strip=s=>pyStrip(s.startsWith("\ufeff")?s.slice(1):s);
 const B64=/^[A-Za-z0-9+/]*={0,2}$/,DATA=/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9.+-]+=[a-z0-9.+-]+)*);base64,/i;
@@ -8159,6 +11777,508 @@ if(typeof document!=="undefined")bindPhoto();
 """
 
 
+def _studio_js_constants() -> str:
+    """The constants ``imagestudio.js`` shares with the Python above, written from them so the two cannot drift."""
+    return (f"export const SCHEMA={json.dumps(STUDIO_SCHEMA)},WORKSPACE_SCHEMA={json.dumps(STUDIO_WORKSPACE_SCHEMA)},WORKSPACE_MAX_BYTES={STUDIO_WORKSPACE_MAX_BYTES},PALETTE={json.dumps(list(STUDIO_PALETTE))};\n"
+            f"export const FILL={json.dumps(STUDIO_FILL)},STROKE={json.dumps(STUDIO_STROKE)},BACKGROUND={json.dumps(STUDIO_BACKGROUND)};\n"
+            f"const WSPACE={json.dumps(_STU_WSPACE)},MIDLETTER={json.dumps(_STU_MIDLETTER)},MIDNUM={json.dumps(_STU_MIDNUM)},MIDNUMLET={json.dumps(_STU_MIDNUMLET)},NEWLINE={json.dumps(_STU_NEWLINE)};\n"
+            f"const KATAKANA={json.dumps(_STU_KATAKANA)},HAN_HIRAGANA={json.dumps(_STU_HAN_HIRAGANA)},PICTOGRAPHIC={json.dumps(_STU_PICTOGRAPHIC)};\n"
+            f"const WORD_OVERRIDES={json.dumps(_STU_WORD_OVERRIDES)},GRAPHEME_OVERRIDES={json.dumps(_STU_GRAPHEME_OVERRIDES)};\n")
+
+
+
+
+_JS["imagestudio.js"] = "/* web-ui imagestudio: the Ironmate image studio in the page (memory only). Scene checks, SVG, history, workspace files and the layers a click places are the functions of web_ui.py (studio_*) and give the same text; the editor on top is the page's. Python is the reference; this must agree. Differences: text is measured with the installed fonts here (a fixed 0.65 em / 1 em estimate in Python), words and graphemes follow the same rules as Python (Latin, Hangul, kana and Han; the Japanese dictionary of Intl.Segmenter is not used, so every engine gives the same lines), and the clock hands use fdlibm's sin and cos written out here and in Python (V8's of Node 22), not the engine's Math.sin and Math.cos, which differ in the last bit between engines and versions. */\n" + _CLIPBOARD_JS + _studio_js_constants() + r"""export class StudioError extends Error{}
+const fail=message=>{throw new StudioError(message)};
+export const clone=x=>JSON.parse(JSON.stringify(x));
+export const escape=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&apos;"})[c]);
+const num=(v,lo,hi)=>typeof v==="number"&&Number.isFinite(v)&&v>=lo&&v<=hi,color=c=>typeof c==="string"&&/^(#[0-9a-f]{6}|none)$/i.test(c);
+export function heatColor(v,lo,hi,levels=0){
+ if(v===null)return"none";
+ if(![v,lo,hi].every(Number.isFinite)||lo>hi||!Number.isInteger(levels)||(levels!==0&&(levels<2||levels>256)))fail("色の範囲または段階数が不正です");
+ let t=hi===lo?0.5:Math.max(0,Math.min(1,(v-lo)/(hi-lo)));if(levels)t=Math.round(t*(levels-1))/(levels-1);
+ const p=t*4,i=Math.min(3,Math.floor(p)),a=PALETTE[i].match(/\w\w/g).map(x=>parseInt(x,16)),b=PALETTE[i+1].match(/\w\w/g).map(x=>parseInt(x,16));
+ return"#"+a.map((x,j)=>Math.round(x+(b[j]-x)*(p-i)).toString(16).padStart(2,"0")).join("").toUpperCase()}
+const safe=v=>Number.isFinite(v)&&!(Number.isInteger(v)&&!Number.isSafeInteger(v));
+export function matrix(source){
+ let t;
+ if(Array.isArray(source))t={z:source};
+ else if(Array.isArray(source?.data)){const traces=source.data.filter(t=>t.type==="heatmap");if(traces.length!==1)fail("heatmapトレースは1つにしてください");t=traces[0]}
+ else t=source;
+ const z=t?.z,cols=z?.[0]?.length;
+ if(!Array.isArray(z)||!cols||z.length*cols>4096||z.some(r=>!Array.isArray(r)||r.length!==cols))fail("1〜4096セルの長方形の数値行列が必要です");
+ const values=z.flat().filter(v=>v!==null);
+ if(values.some(v=>!safe(v)))fail("有限の数値またはnullを指定してください（巨大な整数は非対応）");
+ const low=t.zmin??(values.length?Math.min(...values):0),high=t.zmax??(values.length?Math.max(...values):1);
+ if([low,high].some(v=>!safe(v)))fail("色の範囲には有限の安全な数値を指定してください");
+ heatColor(low,low,high);
+ const xlabels=t.x??Array.from({length:cols},(_,i)=>i),ylabels=t.y??Array.from({length:z.length},(_,i)=>i);
+ if(!Array.isArray(xlabels)||!Array.isArray(ylabels)||xlabels.length!==cols||ylabels.length!==z.length)fail("軸ラベルの数が一致しません");
+ return{z:clone(z),xlabels:clone(xlabels),ylabels:clone(ylabels),low,high,levels:0,labels:true}}
+const KINDS=["rect","ellipse","triangle","text","image","heatmap","arrow","clock"];
+export function validate(scene){
+ if(scene?.schema!==SCHEMA||!Number.isInteger(scene.width)||!Number.isInteger(scene.height)||!num(scene.width,64,4096)||!num(scene.height,64,4096)||scene.width*scene.height>4194304||!color(scene.background)||!Array.isArray(scene.layers)||scene.layers.length>100)
+  fail("シーンの形式・サイズが不正です（最大100レイヤー、4MP）");
+ const ids=new Set();let imageBytes=0;
+ for(const l of scene.layers){
+  if(!l||typeof l.id!=="string"||l.id.length>100||ids.has(l.id)||!KINDS.includes(l.kind))fail("レイヤーのIDまたは種類が不正です");
+  ids.add(l.id);
+  for(const f of["x","y"])if(!num(l[f],-8192,8192))fail("位置が不正です");
+  for(const f of["w","h"])if(!num(l[f],1,8192))fail("サイズが不正です");
+  if(!num(l.rotation,-360,360)||!num(l.opacity,0,1))fail("角度または不透明度が不正です");
+  if(l.mono!==undefined&&typeof l.mono!=="boolean")fail("単色設定が不正です");
+  if(l.mono&&!color(l.fill))fail("単色の色が不正です");
+  if(l.kind==="text"){
+   if(l.wrap!==undefined&&typeof l.wrap!=="boolean")fail("折り返しの指定が不正です");
+   if(l.bold!==undefined&&typeof l.bold!=="boolean")fail("太字の指定が不正です");
+   if(l.font!==undefined&&!["sans","mono"].includes(l.font))fail("フォント設定が不正です");
+   if(typeof l.text!=="string"||l.text.length>2000||!num(l.fontSize,4,512)||!color(l.fill))fail("テキストが不正です")}
+  else if(l.kind==="image"){
+   if(typeof l.src!=="string"||l.src.length>12000000||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(l.src))fail("画像は埋め込みPNGが必要です");
+   imageBytes+=l.src.length;if(imageBytes>20000000)fail("シーンの画像合計は20MB以下にしてください");
+   if(!Number.isInteger(l.cell)||!num(l.cell,1,512)||!Number.isInteger(l.levels)||!num(l.levels,2,256))fail("モザイク設定が不正です");
+   if(l.sampling!==undefined&&!["pixelated","smooth"].includes(l.sampling))fail("補間方式が不正です")}
+  else if(l.kind==="heatmap"){matrix({z:l.z,x:l.xlabels,y:l.ylabels,zmin:l.low,zmax:l.high});heatColor(l.low,l.low,l.high,l.levels)}
+  else if(!color(l.fill)||!color(l.stroke)||!num(l.strokeWidth,0,64))fail("図形の色または線幅が不正です");
+  if(l.kind==="arrow"){arrowGeometry(l.w,l.h,l.headSize,l.headPlacement);if(l.headStyle!==undefined&&!["triangle","beginner"].includes(l.headStyle))fail("矢羽根の形が不正です")}
+  if(l.kind==="clock"&&(!Number.isInteger(l.hour)||!num(l.hour,0,23)||!Number.isInteger(l.minute)||!num(l.minute,0,59)))fail("時計の時刻が不正です")}
+ return clone(scene)}
+export function mosaicRGBA(data,width,height,cell,levels=256){
+ if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width*height>4194304||data.length!==width*height*4||!Number.isInteger(cell)||cell<1||cell>512||!Number.isInteger(levels)||levels<2||levels>256)fail("モザイク入力が不正です");
+ const out=new Uint8ClampedArray(data.length);
+ for(let y=0;y<height;y+=cell)for(let x=0;x<width;x+=cell){
+  const endX=Math.min(width,x+cell),endY=Math.min(height,y+cell),sums=[0,0,0];let alpha=0,count=0;
+  for(let j=y;j<endY;j++)for(let i=x;i<endX;i++){const n=(j*width+i)*4,a=data[n+3];alpha+=a;count++;for(let c=0;c<3;c++)sums[c]+=data[n+c]*a}
+  const rgba=sums.map(s=>Math.round(Math.round(((alpha?Math.round(s/alpha):0)/255)*(levels-1))/(levels-1)*255));rgba.push(Math.round(alpha/count));
+  for(let j=y;j<endY;j++)for(let i=x;i<endX;i++)out.set(rgba,(j*width+i)*4)}
+ return out}
+export function arrowGeometry(w,h,head=28,placement="tip"){
+ if(!num(w,1,8192)||!num(h,1,8192)||!num(head,1,512)||!["tip","middle"].includes(placement))fail("矢印の寸法が不正です");
+ const size=Math.min(head,w,h),cx=placement==="middle"?w/2:w-size/2;
+ return{line:[0,h/2,w,h/2],points:[[cx+size/2,h/2],[cx-size/2,h/2+size/2],[cx-size/2,h/2-size/2]]}}
+export function outputSize(scene,scale=1){
+ if(!num(scale,0.25,8))fail("出力倍率は0.25〜8です");
+ const width=Math.round(scene.width*scale),height=Math.round(scene.height*scale);
+ if(width>8192||height>8192||width*height>16777216)fail("出力は各辺8192px・合計16MP以下にしてください");
+ return{width,height}}
+export function pngPayload(bytes){
+ const a=Uint8Array.from(bytes),signature=[137,80,78,71,13,10,26,10];
+ if(a.length<8||a.length>32*1024*1024||signature.some((v,i)=>a[i]!==v))fail("32MiB以下のPNGが必要です");
+ let binary="";for(let i=0;i<a.length;i+=8192)binary+=String.fromCharCode(...a.subarray(i,i+8192));
+ const base64=btoa(binary);return{base64,dataUri:"data:image/png;base64,"+base64,mimeType:"image/png",bytes:a.length}}
+export const textFont=l=>l.font==="mono"?`${l.wrap?"'MS Gothic', ":""}ui-monospace, 'Noto Sans Mono', monospace`:"Meiryo, 'Noto Sans', 'Noto Color Emoji', sans-serif";
+// Text width: the installed font's own metrics once the page asks for them (useCanvasMetrics), otherwise the fixed estimate Python uses (0.65 em printable ASCII, 1 em the rest).
+let canvasContext=null;
+export function useCanvasMetrics(on){canvasContext=on?document.createElement("canvas").getContext("2d"):null;return canvasContext!==null}
+export function measureText(text,l){
+ if(canvasContext){canvasContext.font=`${l.bold?700:400} ${l.fontSize}px ${textFont(l)}`;return canvasContext.measureText(text).width}
+ return Array.from(text).reduce((n,c)=>n+(/^[\x20-\x7e]$/.test(c)?0.65:1),0)*l.fontSize}
+const inRanges=(cp,ranges)=>ranges.some(([low,high])=>low<=cp&&cp<=high),cpOf=ch=>ch.codePointAt(0),count=text=>Array.from(text).length;
+function wordClass(ch){
+ const cp=cpOf(ch);
+ if(NEWLINE.includes(ch))return"NL";
+ if(cp===0x200D)return"ZWJ";
+ for(const[kind,ranges]of WORD_OVERRIDES)if(inRanges(cp,ranges))return kind;
+ if(/[\p{Mn}\p{Me}\p{Mc}]/u.test(ch)||(/\p{Cf}/u.test(ch)&&cp!==0x200B)||(cp>=0x1F3FB&&cp<=0x1F3FF))return"Extend";
+ if(WSPACE.includes(ch))return"Space";
+ if(cp>=0x1F1E6&&cp<=0x1F1FF)return"RI";
+ if(inRanges(cp,KATAKANA))return"Katakana";
+ if(inRanges(cp,HAN_HIRAGANA))return"Other";
+ if(cp>=0xAC00&&cp<=0xD7A3)return"Hangul";
+ if(cp===0x22)return"DQ";
+ if(/\p{Lo}/u.test(ch)&&((cp>=0x5D0&&cp<=0x5EA)||(cp>=0x5EF&&cp<=0x5F2)||(cp>=0xFB1D&&cp<=0xFB4F)))return"HL";
+ if(/[\p{Lu}\p{Ll}\p{Lt}\p{Lm}\p{Lo}\p{Nl}]/u.test(ch))return"AHLetter";
+ if(/\p{Nd}/u.test(ch))return"Numeric";
+ if(/\p{Pc}/u.test(ch)||cp===0x202F)return"ExtendNumLet";
+ if(MIDLETTER.includes(ch))return"MidLetter";
+ if(MIDNUM.includes(ch))return"MidNum";
+ if(MIDNUMLET.includes(ch))return"MidNumLetQ";
+ return"Other"}
+// Word and space segments of one line (Python: studio_words): Unicode word rules for Latin, Hangul and similar scripts, each Han or Hiragana character alone, Katakana runs together. The same in every engine.
+export function words(text){
+ const clusters=[];
+ for(const ch of text){
+  const kind=wordClass(ch),last=clusters[clusters.length-1];
+  if(ch==="\n"&&last&&last[0]==="\r"){last[0]+=ch;continue}
+  if((kind==="Extend"||kind==="ZWJ")&&last&&last[1]!=="NL"){last[0]+=ch;last[2]=kind==="ZWJ"}
+  else clusters.push([ch,kind==="Extend"||kind==="ZWJ"?"Other":kind,kind==="ZWJ"])}
+ const segments=[],letter=["AHLetter","HL"];let current="";
+ clusters.forEach(([chunk,b],i)=>{
+  if(i===0){current=chunk;return}
+  const a=clusters[i-1][1],before=i>=2?clusters[i-2][1]:null,after=i+1<clusters.length?clusters[i+1][1]:null;let glue=false;
+  if(a==="NL"||b==="NL")glue=false;
+  else if(clusters[i-1][2]&&inRanges(cpOf(chunk),PICTOGRAPHIC))glue=true;
+  else if(a==="Space"&&b==="Space"&&count(clusters[i-1][0])===1)glue=true;
+  else if(letter.includes(a)&&letter.includes(b))glue=true;
+  else if(letter.includes(a)&&(b==="MidLetter"||b==="MidNumLetQ")&&letter.includes(after))glue=true;
+  else if(letter.includes(before)&&(a==="MidLetter"||a==="MidNumLetQ")&&letter.includes(b))glue=true;
+  else if(a==="HL"&&b==="MidNumLetQ"&&chunk[0]==="'")glue=true;
+  else if(a==="HL"&&b==="DQ"&&after==="HL")glue=true;
+  else if(before==="HL"&&a==="DQ"&&b==="HL")glue=true;
+  else if(a==="Numeric"&&b==="Numeric")glue=true;
+  else if((letter.includes(a)&&b==="Numeric")||(a==="Numeric"&&letter.includes(b)))glue=true;
+  else if(a==="Numeric"&&(b==="MidNum"||b==="MidNumLetQ")&&after==="Numeric")glue=true;
+  else if(before==="Numeric"&&(a==="MidNum"||a==="MidNumLetQ")&&b==="Numeric")glue=true;
+  else if(a==="Katakana"&&b==="Katakana")glue=true;
+  else if(a==="Hangul"&&b==="Hangul"&&count(clusters[i-1][0])===1)glue=true;
+  else if([...letter,"Numeric","Katakana","ExtendNumLet"].includes(a)&&b==="ExtendNumLet")glue=true;
+  else if(a==="ExtendNumLet"&&[...letter,"Numeric","Katakana"].includes(b))glue=true;
+  else if(a==="RI"&&b==="RI"){let run=0,j=i-1;while(j>=0&&clusters[j][1]==="RI"){run++;j--}glue=run%2===1}
+  if(glue)current+=chunk;else{segments.push(current);current=chunk}});
+ if(clusters.length)segments.push(current);
+ return segments}
+function graphemeKind(ch){
+ const cp=cpOf(ch);
+ for(const[kind,ranges]of GRAPHEME_OVERRIDES)if(inRanges(cp,ranges))return kind;
+ return/[\p{Mn}\p{Me}\p{Mc}]/u.test(ch)||cp===0x200C||cp===0x200D||(cp>=0x1F3FB&&cp<=0x1F3FF)||(cp>=0xE0020&&cp<=0xE007F)?"Extend":"Other"}
+const isControl=(ch,kind=graphemeKind(ch))=>/[\p{Cc}\p{Zl}\p{Zp}]/u.test(ch)||(/\p{Cf}/u.test(ch)&&kind==="Other");
+function hangulClass(cp){
+ if((cp>=0x1100&&cp<=0x115F)||(cp>=0xA960&&cp<=0xA97C))return"L";
+ if((cp>=0x1160&&cp<=0x11A7)||(cp>=0xD7B0&&cp<=0xD7C6))return"V";
+ if((cp>=0x11A8&&cp<=0x11FF)||(cp>=0xD7CB&&cp<=0xD7FB))return"T";
+ if(cp>=0xAC00&&cp<=0xD7A3)return(cp-0xAC00)%28===0?"LV":"LVT";
+ return""}
+// User-perceived characters (Python: studio_graphemes): a letter with its marks, a Hangul syllable, an emoji with modifiers and joiners, a flag.
+export function graphemes(text){
+ const out=[];let riRun=0;
+ for(const ch of text){
+  if(ch==="\n"&&out.length&&out[out.length-1]==="\r"){out[out.length-1]+=ch;riRun=0;continue}
+  const cp=cpOf(ch),kind=graphemeKind(ch),isRI=cp>=0x1F1E6&&cp<=0x1F1FF;
+  const lastChars=out.length?Array.from(out[out.length-1]):[],lastCh=lastChars[lastChars.length-1];
+  if(out.length&&!isControl(ch,kind)&&!isControl(lastCh)){
+   const lastCp=cpOf(lastCh);let joined=kind==="Extend"||kind==="SpacingMark"||graphemeKind(lastCh)==="Prepend";
+   if(!joined&&lastCp===0x200D&&inRanges(cp,PICTOGRAPHIC)&&inRanges(cpOf(lastChars[0]),PICTOGRAPHIC))joined=true;
+   if(!joined&&isRI&&riRun%2===1)joined=true;
+   if(!joined){const a=hangulClass(lastCp),b=hangulClass(cp);joined=!!(a&&b)&&((a==="L"&&["L","V","LV","LVT"].includes(b))||(["LV","V"].includes(a)&&["V","T"].includes(b))||(["LVT","T"].includes(a)&&b==="T"))}
+   if(joined){out[out.length-1]+=ch;riRun=isRI?riRun+1:0;continue}}
+  out.push(ch);riRun=isRI?riRun+1:0}
+ return out}
+export function textLayout(l,measure=text=>measureText(text,l)){
+ return l.text.replace(/\r\n?/g,"\n").split("\n").map(paragraph=>{
+  if(!l.wrap||!paragraph)return[paragraph];
+  const lines=[];let line="";const flush=()=>{lines.push(line.replace(/[ \t]+$/,""));line=""};
+  for(const token of words(paragraph)){
+   if(!line&&lines.length&&/^[ \t]+$/.test(token))continue;
+   if(measure(line+token)<=l.w){line+=token;continue}
+   if(line)flush();
+   if(lines.length&&/^[ \t]+$/.test(token))continue;
+   if(measure(token)<=l.w){line=token;continue}
+   for(const glyph of graphemes(token)){if(line&&measure(line+glyph)>l.w)flush();line+=glyph}}
+  if(line||!lines.length)lines.push(line);
+  return lines})}
+// fdlibm's sin and cos with plain arithmetic (Python: studio_sin, studio_cos), for |x| up to 8: the hands of a clock are drawn with these in every engine, so the SVG text is the same everywhere.
+const F64=new DataView(new ArrayBuffer(8)),SIN=[-1.66666666666666324348e-01,8.33333333332248946124e-03,-1.98412698298579493134e-04,2.75573137070700676789e-06,-2.50507602534068634195e-08,1.58969099521155010221e-10],
+ COS=[4.16666666666666019037e-02,-1.38888888888741095749e-03,2.48015872894767294178e-05,-2.75573143513906633035e-07,2.08757232129817482790e-09,-1.13596475577881948265e-11],
+ PIO2=[6.36619772367581382433e-01,1.57079632673412561417e+00,6.07710050650619224932e-11,6.07710050630396597660e-11,2.02226624879595063154e-21,2.02226624871116645580e-21,8.47842766036889956997e-32],
+ NPIO2_HW=[0x3FF921FB,0x400921FB,0x4012D97C,0x401921FB,0x401F6A7A,0x4022D97C,0x4025FDBB,0x402921FB];
+const high=x=>{F64.setFloat64(0,x);return F64.getUint32(0)};
+function ksin(x,y,iy){const z=x*x,v=z*x,s=SIN,r=s[1]+z*(s[2]+z*(s[3]+z*(s[4]+z*s[5])));return iy===0?x+v*(s[0]+z*r):x-((z*(0.5*y-v*r)-y)-v*s[0])}
+function kcos(x,y){
+ const ix=high(x)&0x7fffffff;if(ix<0x3e400000&&Math.trunc(x)===0)return 1;
+ const c=COS,z=x*x,r=z*(c[0]+z*(c[1]+z*(c[2]+z*(c[3]+z*(c[4]+z*c[5])))));
+ if(ix<0x3FD33333)return 1-(0.5*z-(z*r-x*y));
+ let qx;if(ix>0x3fe90000)qx=0.28125;else{F64.setUint32(0,ix-0x00200000);F64.setUint32(4,0);qx=F64.getFloat64(0)}
+ return(1-qx)-((0.5*z-qx)-(z*r-x*y))}
+function reduce(x){
+ const hx=high(x),ix=hx&0x7fffffff,[inv,p1,p1t,p2,p2t,p3,p3t]=PIO2;
+ if(ix<0x4002d97c){
+  if(hx<0x80000000){let z=x-p1;if(ix!==0x3ff921fb){const y0=z-p1t;return[1,y0,(z-y0)-p1t]}z-=p2;const y0=z-p2t;return[1,y0,(z-y0)-p2t]}
+  let z=x+p1;if(ix!==0x3ff921fb){const y0=z+p1t;return[-1,y0,(z-y0)+p1t]}z+=p2;const y0=z+p2t;return[-1,y0,(z-y0)+p2t]}
+ if(!(Math.abs(x)<=8))fail("角度が大きすぎます");
+ let t=Math.abs(x);const n=Math.trunc(t*inv+0.5),fn=n;let r=t-fn*p1,w=fn*p1t,y0=r-w;
+ if(!(n<32&&ix!==NPIO2_HW[n-1])){
+  const j=ix>>>20;let i=j-((high(y0)>>>20)&0x7ff);
+  if(i>16){t=r;w=fn*p2;r=t-w;w=fn*p2t-((t-r)-w);y0=r-w;i=j-((high(y0)>>>20)&0x7ff);if(i>49){t=r;w=fn*p3;r=t-w;w=fn*p3t-((t-r)-w);y0=r-w}}}
+ const y1=(r-y0)-w;
+ return hx>=0x80000000?[-n,-y0,-y1]:[n,y0,y1]}
+export function sin(x){
+ if((high(x)&0x7fffffff)<=0x3fe921fb)return ksin(x,0,0);
+ const[n,y0,y1]=reduce(x),k=n&3;return k===0?ksin(y0,y1,1):k===1?kcos(y0,y1):k===2?-ksin(y0,y1,1):-kcos(y0,y1)}
+export function cos(x){
+ if((high(x)&0x7fffffff)<=0x3fe921fb)return kcos(x,0);
+ const[n,y0,y1]=reduce(x),k=n&3;return k===0?kcos(y0,y1):k===1?-ksin(y0,y1,1):k===2?-kcos(y0,y1):ksin(y0,y1,1)}
+const hexId=id=>Array.from(id).map(c=>c.codePointAt(0).toString(16)).join("-");
+export function layerSVG(l,imageSource=x=>x.src){
+ let body="";
+ if(["rect","ellipse","triangle"].includes(l.kind)){
+  const attrs=`fill="${l.fill}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"`;
+  if(l.kind==="rect")body=`<rect width="${l.w}" height="${l.h}" ${attrs}/>`;
+  if(l.kind==="ellipse")body=`<ellipse cx="${l.w/2}" cy="${l.h/2}" rx="${l.w/2}" ry="${l.h/2}" ${attrs}/>`;
+  if(l.kind==="triangle")body=`<polygon points="${l.w/2},0 ${l.w},${l.h} 0,${l.h}" ${attrs}/>`}
+ else if(l.kind==="text"){
+  body=`<text xml:space="preserve" fill="${l.fill}" font-family="${textFont(l)}" font-size="${l.fontSize}" font-weight="${l.bold?"700":"400"}" dominant-baseline="text-before-edge">`+textLayout(l).flat().map((line,i)=>`<tspan x="0" y="${i*l.fontSize*1.3}">${escape(line)}</tspan>`).join("")+"</text>"}
+ else if(l.kind==="image")body=`<image href="${escape(imageSource(l))}" width="${l.w}" height="${l.h}" preserveAspectRatio="none" image-rendering="${l.sampling==="smooth"?"auto":"pixelated"}"/>`;
+ else if(l.kind==="arrow"){
+  const g=arrowGeometry(l.w,l.h,l.headSize,l.headPlacement);
+  body=`<line x1="${g.line[0]}" y1="${g.line[1]}" x2="${g.line[2]}" y2="${g.line[3]}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"/>`;
+  if(l.headStyle==="beginner"){
+   const size=Math.min(l.headSize??28,l.w,l.h),x=g.points[0][0]-size,y=l.h/2-size/2,id="head-"+hexId(l.id);
+   body+=`<svg x="${x}" y="${y}" width="${size}" height="${size}" viewBox="0 0 100 100"><defs><mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><text x="50" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif" font-size="90" transform="rotate(-90 50 50)">🔰</text></mask></defs><rect width="100" height="100" fill="#000000" mask="url(#${id})"/></svg>`}
+  else body+=`<polygon points="${g.points.map(p=>p.join(",")).join(" ")}" fill="${l.stroke}"/>`}
+ else if(l.kind==="clock"){
+  const cx=l.w/2,cy=l.h/2,r=Math.max(0.1,Math.min(l.w,l.h)/2-l.strokeWidth),ink=l.stroke;
+  const point=(a,k)=>[cx+sin(a)*r*k,cy-cos(a)*r*k];
+  const line=(p,q,width)=>`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${ink}" stroke-width="${width}"/>`;
+  body=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${l.fill}" stroke="${ink}" stroke-width="${l.strokeWidth}"/>`;
+  for(let i=0;i<12;i++)body+=line(point(i*Math.PI/6,0.85),point(i*Math.PI/6,0.96),l.strokeWidth);
+  body+=line([cx,cy],point(((l.hour%12)+l.minute/60)*Math.PI/6,0.52),l.strokeWidth*1.5)+line([cx,cy],point(l.minute*Math.PI/30,0.76),l.strokeWidth)}
+ else if(l.kind==="heatmap"){
+  const left=90,top=28,right=24,bottom=56,cw=Math.max(1,l.w-left-right)/l.z[0].length,ch=Math.max(1,l.h-top-bottom)/l.z.length;
+  for(let y=0;y<l.z.length;y++){
+   for(let x=0;x<l.z[y].length;x++){
+    const v=l.z[y][x],title=`${l.ylabels[y]} / ${l.xlabels[x]}: ${v===null?"欠測":v}`;
+    body+=`<rect x="${left+x*cw}" y="${top+y*ch}" width="${cw}" height="${ch}" fill="${heatColor(v,l.low,l.high,l.levels)}"><title>${escape(title)}</title></rect>`;
+    if(l.labels&&cw>=35&&ch>=24&&v!==null)body+=`<text x="${left+(x+0.5)*cw}" y="${top+(y+0.5)*ch}" text-anchor="middle" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12" fill="#111827" stroke="#FFFFFF" stroke-width="2" paint-order="stroke">${escape(v)}</text>`}
+   body+=`<text x="${left-10}" y="${top+(y+0.5)*ch}" text-anchor="end" dominant-baseline="central" font-family="Meiryo,sans-serif" font-size="12">${escape(l.ylabels[y])}</text>`}
+  for(let x=0;x<l.z[0].length;x++)body+=`<text x="${left+(x+0.5)*cw}" y="${l.h-bottom+20}" text-anchor="middle" font-family="Meiryo,sans-serif" font-size="12">${escape(l.xlabels[x])}</text>`;
+  body+=`<text x="${left}" y="${l.h-5}" font-family="Meiryo,sans-serif" font-size="12">${escape(l.low)} → ${escape(l.high)} ・ ${l.levels?l.levels+"段階":"連続色"} ・ 欠測は透明</text>`}
+ if(l.mono&&["text","image"].includes(l.kind)){
+  const id="ink-"+hexId(l.id);
+  body=`<defs><mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" x="0" y="0" width="${l.w}" height="${l.h}">${body}</mask></defs><rect width="${l.w}" height="${l.h}" fill="${l.fill}" mask="url(#${id})"/>`}
+ return`<g data-layer="${escape(l.id)}" transform="translate(${l.x} ${l.y}) rotate(${l.rotation} ${l.w/2} ${l.h/2})" opacity="${l.opacity}">${body}</g>`}
+export function svg(scene,imageSource,scale=1){
+ validate(scene);const size=outputSize(scene,scale);
+ return`<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}" viewBox="0 0 ${scene.width} ${scene.height}"><rect width="${scene.width}" height="${scene.height}" fill="${scene.background}"/>${scene.layers.map(l=>layerSVG(l,imageSource)).join("")}</svg>`}
+export class History{
+ constructor(scene){this.items=[validate(scene)];this.index=0}
+ get current(){return clone(this.items[this.index])}
+ commit(scene){const next=validate(scene);if(JSON.stringify(next)===JSON.stringify(this.items[this.index]))return;this.items=this.items.slice(0,this.index+1);this.items.push(next);if(this.items.length>40)this.items.shift();this.index=this.items.length-1}
+ undo(){this.index=Math.max(0,this.index-1);return this.current}
+ redo(){this.index=Math.min(this.items.length-1,this.index+1);return this.current}}
+function workspaceShape(record){
+ if(record?.schema!==WORKSPACE_SCHEMA||!Array.isArray(record.items)||record.items.length<1||record.items.length>40||!Number.isInteger(record.index)||record.index<0||record.index>=record.items.length)fail("作業履歴の形式が不正です")}
+function workspaceSize(text){const bytes=new TextEncoder().encode(text).length;if(bytes>WORKSPACE_MAX_BYTES)fail("作業履歴は32MiB以下にしてください。履歴を整理して再保存できます");return bytes}
+export function workspaceText(history){
+ const record={schema:WORKSPACE_SCHEMA,items:history.items,index:history.index};workspaceShape(record);
+ const parts=['{"schema":'+JSON.stringify(WORKSPACE_SCHEMA)+',"items":['],tail='],"index":'+record.index+'}';
+ let bytes=workspaceSize(parts[0])+workspaceSize(tail);
+ for(let i=0;i<record.items.length;i++){const part=(i?",":"")+JSON.stringify(validate(record.items[i]));bytes+=workspaceSize(part);if(bytes>WORKSPACE_MAX_BYTES)fail("作業履歴は32MiB以下にしてください。履歴を整理して再保存できます");parts.push(part)}
+ parts.push(tail);return parts.join("")}
+export function workspaceHistory(text){
+ if(typeof text!=="string")fail("作業履歴の形式が不正です");
+ workspaceSize(text);const record=JSON.parse(text);workspaceShape(record);
+ const states=record.items.map(validate),next=new History(states[0]);next.items=states;next.index=record.index;return next}
+// What the page puts on the canvas (Python: studio_blank, studio_place, ...).
+export const blank=()=>({schema:SCHEMA,width:1280,height:720,background:BACKGROUND,layers:[]});
+export const baseLayer=(kind,id,x=80,y=80,w=180,h=120)=>({id,kind,name:kind,x,y,w,h,rotation:0,opacity:1});
+export function textLayer(text,id,x,y,fill=FILL,font="sans",mono=true,wrap=false){
+ const size=48,lines=text.split("\n");
+ return{...baseLayer("text",id,x,y,Math.min(700,Math.max(120,Math.max(...lines.map(s=>Array.from(s).length))*size)),Math.max(70,lines.length*size*1.3)),name:"文字 / "+Array.from(text).slice(0,12).join(""),text,fill,fontSize:size,font,mono,wrap}}
+export function place(tool,id,x,y,{fill=FILL,stroke=STROKE,outline=false,text="",font="sans",arrowStyle="beginner",arrowPlacement="tip",clockTime="10:10",mono=true,wrap=false}={}){
+ if(tool==="text"||tool==="stamp")return textLayer(text,id,x,y,fill,font,mono,wrap);
+ if(tool==="arrow")return{...baseLayer("arrow",id,x,y,200,80),name:"直線＋矢羽根",fill,stroke,strokeWidth:4,headSize:28,headPlacement:arrowPlacement,headStyle:arrowStyle};
+ if(tool==="clock"){const[hour,minute]=clockTime.split(":").map(Number);return{...baseLayer("clock",id,x,y,160,160),name:"時計 "+clockTime,hour,minute,fill,stroke,strokeWidth:3}}
+ if(!["rect","ellipse","triangle"].includes(tool))fail("道具が不正です");
+ return{...baseLayer(tool,id,x,y),name:{rect:"四角",ellipse:"丸",triangle:"三角"}[tool],fill:outline?"none":fill,stroke,strokeWidth:3}}
+export const matrixLayer=(source,id,sceneWidth=1280,sceneHeight=720)=>({...baseLayer("heatmap",id,80,100,Math.min(1050,sceneWidth-100),Math.min(480,sceneHeight-120)),name:"ヒートマップ",...matrix(source),source:clone(source)});
+export function imageLayer(src,pixelWidth,pixelHeight,id,sceneWidth=1280,name="取り込み画像"){
+ const w=Math.min(700,sceneWidth*0.65);
+ return{...baseLayer("image",id,80,90,w,w*pixelHeight/pixelWidth),name,src,cell:1,levels:256,sampling:"pixelated",mono:false}}
+export function demoScene(){
+ const scene=blank(),text=(id,name,value,x,y,w,h,size,fill)=>({...baseLayer("text",id,x,y,w,h),name,text:value,fill,fontSize:size});
+ scene.layers=[text("title","タイトル","小さな部品から、大きな表現へ。",64,40,900,60,38,"#163B3B"),text("subtitle","サブタイトル","STAMP / COLOR / MATRIX     —     Ironmate Image Studio",68,105,900,40,17,"#56766D"),
+  {...baseLayer("rect","card",68,178,1144,430),name:"白いカード",fill:"#FFFFFF",stroke:"#D6DFD2",strokeWidth:1},
+  {...baseLayer("heatmap","matrix",90,220,680,350),name:"色の行列",...matrix({z:[[2,3,4,6,8,9,10],[1,3,5,7,9,null,12],[2,4,6,8,10,12,14],[0,2,5,8,11,14,16]],x:["MON","TUE","WED","THU","FRI","SAT","SUN"],y:["A","B","C","D"]})},
+  {...baseLayer("triangle","triangle",890,264,170,150),name:"三角のスタンプ",fill:"none",stroke:"#EFBE4C",strokeWidth:7},
+  text("emoji","絵文字スタンプ","🌱",910,294,140,90,70,"#163B3B"),text("custom","カスタム文字","色を置く。\nかたちが生まれる。",840,445,320,100,25,"#163B3B"),
+  text("footer","フッター","01  COMPOSE                         02  EXPLORE COLOR                         03  EXPORT",70,646,1100,35,14,"#71887C")];
+ return scene}
+export function stampDemoScene(){
+ const scene=blank(),mono=(id,value,x,y,w,h,size,fill)=>({...baseLayer("text",id,x,y,w,h),id,name:value,text:value,fontSize:size,fill,mono:true});
+ scene.layers=[mono("title","STAMP LAB / 色を変えて、重ねる。",60,45,1160,70,38,"#163B3B"),{...baseLayer("rect","card",60,150,1160,420),name:"カード",fill:"#FFFFFF",stroke:"#D6DFD2",strokeWidth:1},
+  {...baseLayer("clock","clock",100,210,230,230),name:"10:10の時計",hour:10,minute:10,fill:"#F8F7F2",stroke:"#087D79",strokeWidth:4},
+  {...baseLayer("arrow","arrow",390,260,230,80),name:"直線＋中央の矢羽根",headSize:40,headPlacement:"middle",headStyle:"beginner",fill:"#EFBE4C",stroke:"#D59C22",strokeWidth:6},
+  mono("face","(・∀・)",710,225,450,105,68,"#D05B78"),mono("emoji","🌱",750,365,160,130,100,"#087D79"),mono("emoji2","❤️",990,365,180,130,100,"#D05B78"),
+  mono("footer","CLOCK     →     LINE + TRIANGLE     →     TEXT / EMOJI / KAOMOJI",65,635,1150,50,18,"#56766D")];
+ return scene}
+export const heatmapScene=source=>({schema:SCHEMA,width:1280,height:720,background:"#FFFFFF",layers:[{id:"heatmap",kind:"heatmap",name:"Heatmap",x:80,y:90,w:1120,h:520,rotation:0,opacity:1,...matrix(source)}],source});
+const download=(name,data,type)=>{const url=URL.createObjectURL(data instanceof Blob?data:new Blob([data],{type})),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)};
+const bytesOf=b64=>Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+function mount(root){
+ const el={};for(const n of root.querySelectorAll("[data-is]"))el[n.dataset.is]=n;
+ const radios=[...root.querySelectorAll('input[name="is-tool"]')];
+ let scene=demoScene(),history=new History(scene),tool="select",selected=null,template=null,serial=0,drag=null,paint=0,paints=0,dirty=false;
+ const images=new Map(),processed=new Map();
+ const uid=()=>`layer-${Date.now()}-${++serial}`,copy=x=>clone(x),current=()=>scene.layers.find(l=>l.id===selected);
+ const say=(text,bad=false)=>{el.status.textContent=text;root.dataset.error=bad?"1":""};
+ const guarded=fn=>async(...a)=>{try{await fn(...a)}catch(e){say(e.message||String(e),true)}};
+ const decoded=src=>{if(!images.has(src))images.set(src,new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>img.naturalWidth*img.naturalHeight>4194304?reject(new Error("画像は4MP以下にしてください")):resolve(img);img.onerror=()=>reject(new Error("画像を読み込めません"));img.src=src}));return images.get(src)};
+ async function prepare(doc){
+  const sources=new Map();
+  for(const l of doc.layers.filter(l=>l.kind==="image")){
+   const key=l.src+":"+l.cell+":"+l.levels;
+   if(processed.has(key)){sources.set(key,processed.get(key));continue}
+   if(l.cell===1&&l.levels===256){processed.set(key,l.src);sources.set(key,l.src);continue}
+   const img=await decoded(l.src),canvas=document.createElement("canvas");canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+   const ctx=canvas.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
+   const data=ctx.getImageData(0,0,canvas.width,canvas.height);data.data.set(mosaicRGBA(data.data,canvas.width,canvas.height,l.cell,l.levels));ctx.putImageData(data,0,0);
+   processed.set(key,canvas.toDataURL("image/png"));sources.set(key,processed.get(key));
+   if(processed.size>16)processed.delete(processed.keys().next().value)}
+  return l=>sources.get(l.src+":"+l.cell+":"+l.levels)||l.src}
+ const selectionSVG=l=>`<g class="selection" transform="translate(${l.x} ${l.y}) rotate(${l.rotation} ${l.w/2} ${l.h/2})"><rect width="${l.w}" height="${l.h}" fill="none" stroke="#126fef" stroke-width="2" stroke-dasharray="8 5"/><rect class="handle" data-handle="resize" x="${l.w-9}" y="${l.h-9}" width="18" height="18" rx="3" fill="#126fef" stroke="white" stroke-width="2"/></g>`;
+ const field=(node,value)=>{node.value=value??""};
+ function inspect(){
+  const l=current(),kind=l?.kind;
+  el.selection.textContent=l?(l.name||l.kind):"Select a layer";
+  for(const f of["x","y","w","h","rotation","opacity"]){el[f].disabled=!l;field(el[f],l?.[f])}
+  el.mono.disabled=!["text","image"].includes(kind);el.mono.checked=l?.mono??false;
+  el.sampling.disabled=kind!=="image";el.sampling.value=l?.sampling??"pixelated";
+  el.arrowplacement.disabled=kind!=="arrow";el.arrowplacement.value=l?.headPlacement??"tip";
+  el.arrowstyle.disabled=kind!=="arrow";el.arrowstyle.value=kind==="arrow"?(l.headStyle??"triangle"):"beginner";
+  if(kind==="clock")el.clock.value=String(l.hour).padStart(2,"0")+":"+String(l.minute).padStart(2,"0");
+  el.fontfamily.disabled=kind!=="text";el.fontfamily.value=l?.font??"sans";el.fontsize.disabled=kind!=="text";el.fontsize.value=l?.fontSize??48;
+  el.cell.disabled=kind!=="image";el.cell.value=l?.cell??1;el.cellout.textContent=`${l?.cell??1} px`;
+  el.levels.disabled=!["image","heatmap"].includes(kind);el.levels.value=l?.levels||256;el.levelsout.textContent=kind==="heatmap"&&!l.levels?"continuous":(l?.levels??256);
+  el.labels.disabled=kind!=="heatmap";el.labels.checked=l?.labels??true;el.continuous.disabled=kind!=="heatmap";
+  for(const n of["delete","duplicate","front","back","custom","apply"])el[n].disabled=!l;
+  el.undo.disabled=history.index===0;el.redo.disabled=history.index===history.items.length-1;
+  el.size.textContent=`${scene.width} × ${scene.height}`;el.width.value=scene.width;el.height.value=scene.height;el.transparent.checked=scene.background==="none";
+  if(scene.background!=="none")el.background.value=scene.background;
+  el.history.replaceChildren(...history.items.map((state,index)=>{const li=document.createElement("li"),b=document.createElement("button");b.type="button";b.className="ui-button";
+   b.textContent=(index===history.index?"● ":"○ ")+"State "+(index+1)+" · "+state.layers.length+" layers";b.setAttribute("aria-current",index===history.index?"step":"false");
+   b.onclick=()=>{history.index=index;scene=history.current;selected=null;dirty=true;render().catch(report)};li.append(b);return li}));
+  el.layers.replaceChildren(...[...scene.layers].reverse().map(layer=>{const b=document.createElement("button");b.type="button";b.className="ui-button";b.textContent=layer.name||layer.kind;b.dataset.layerId=layer.id;
+   b.setAttribute("aria-pressed",String(layer.id===selected));b.onclick=()=>{selected=layer.id;if(layer.kind==="text")el.text.value=layer.text;render().catch(report)};return b}));
+  root.dataset.layers=String(scene.layers.length);root.dataset.selected=selected??"";root.dataset.tool=tool;
+  el.board.toggleAttribute("data-capture",tool!=="select"||selected!==null)}
+ async function render(){
+  const n=++paint,doc=copy(scene),imageSource=await prepare(doc);
+  if(n!==paint)return;
+  let out=svg(doc,imageSource);const l=doc.layers.find(l=>l.id===selected);
+  if(l)out=out.replace(/<\/svg>$/,selectionSVG(l)+"</svg>");
+  el.board.innerHTML=out;el.board.style.aspectRatio=`${doc.width} / ${doc.height}`;inspect();root.dataset.painted=String(++paints)}
+ const report=e=>say(e.message||String(e),true);
+ function change(fn){const next=copy(scene);fn(next);validate(next);history.commit(next);scene=next;dirty=true;if(!current())selected=null;render().catch(report)}
+ function add(layer){if(scene.layers.length>=100)throw new StudioError("レイヤーは100件までです");selected=layer.id;change(doc=>doc.layers.push(layer));say(`Added ${layer.name||layer.kind}`)}
+ function setTool(value){tool=value;for(const r of radios)r.checked=r.value===value;root.dataset.tool=value}
+ const options=()=>({fill:el.fill.value,stroke:el.stroke.value,outline:el.outline.checked,text:el.text.value,font:el.fontfamily.value,arrowStyle:el.arrowstyle.value,arrowPlacement:el.arrowplacement.value,clockTime:el.clock.value||"10:10"});
+ function put(x,y){
+  if(tool==="stamp"&&template){const l=copy(template);l.id=uid();l.x=x-l.w/2;l.y=y-l.h/2;add(l)}
+  else add(place(tool,uid(),x,y,options()))}
+ const point=e=>new DOMPoint(e.clientX,e.clientY).matrixTransform(el.board.querySelector("svg").getScreenCTM().inverse());
+ el.board.addEventListener("pointerdown",guarded(async e=>{
+  if(e.button!==0)return;
+  const p=point(e),handle=e.target.closest("[data-handle]"),node=e.target.closest("[data-layer]");
+  if(tool!=="select"){put(p.x,p.y);return}
+  if(!handle)selected=node?.dataset.layer??null;
+  const l=current();
+  if(l){drag={point:p,layer:copy(l),resize:!!handle,changed:false};try{el.board.setPointerCapture(e.pointerId)}catch{}}
+  await render()}));
+ el.board.addEventListener("pointermove",e=>{
+  if(!drag)return;
+  const p=point(e),dx=p.x-drag.point.x,dy=p.y-drag.point.y,l=current();if(!l)return;const old=drag.layer;
+  if(drag.resize){
+   const a=old.rotation*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
+   l.w=Math.max(8,Math.min(8192,old.w+c*dx+s*dy));l.h=Math.max(8,Math.min(8192,old.h-s*dx+c*dy));
+   const dw=l.w-old.w,dh=l.h-old.h;l.x=old.x+(c-1)*dw/2-s*dh/2;l.y=old.y+s*dw/2+(c-1)*dh/2;
+   if(l.kind==="text")l.fontSize=Math.max(4,Math.min(512,old.fontSize*Math.min(l.w/old.w,l.h/old.h)))}
+  else{l.x=Math.max(-8192,Math.min(8192,old.x+dx));l.y=Math.max(-8192,Math.min(8192,old.y+dy))}
+  drag.changed=drag.changed||Math.abs(dx)+Math.abs(dy)>1;render().catch(report)});
+ function finishDrag(){
+  if(drag?.changed){try{history.commit(scene);dirty=true;say("Moved or resized")}catch(e){Object.assign(current(),drag.layer);say(e.message,true)}}
+  drag=null;inspect()}
+ el.board.addEventListener("pointerup",finishDrag);
+ el.board.addEventListener("pointercancel",()=>{if(drag){Object.assign(current(),drag.layer);drag=null;render().catch(report)}});
+ el.board.addEventListener("keydown",guarded(async e=>{
+  const l=current(),step=e.shiftKey?1:8,move={ArrowLeft:["x",-step],ArrowRight:["x",step],ArrowUp:["y",-step],ArrowDown:["y",step]}[e.key];
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();(e.shiftKey?el.redo:el.undo).click();return}
+  if(!l)return;
+  if(move){e.preventDefault();change(doc=>{const d=doc.layers.find(x=>x.id===selected);d[move[0]]=Math.max(-8192,Math.min(8192,d[move[0]]+move[1]))})}
+  else if(e.key==="Delete"||e.key==="Backspace"){e.preventDefault();el.delete.click()}
+  else if(e.key==="Escape"){selected=null;await render()}}));
+ for(const r of radios)r.onchange=()=>{if(r.checked){setTool(r.value);inspect()}};
+ const stamp=text=>{el.text.value=text;if(text==="🔰")el.fill.value="#000000";template=null;setTool("stamp");el.stampnote.textContent=`Press the canvas to place ${text}`;inspect()};
+ for(const b of root.querySelectorAll("[data-stamp]"))b.onclick=()=>stamp(b.dataset.stamp);
+ el.text.oninput=()=>{template=null};
+ el.custom.onclick=()=>{const l=current();if(l){template=copy(l);setTool("stamp");el.stampnote.textContent=`Press the canvas to place “${l.name||l.kind}” again`;inspect()}};
+ const go=(next,msg)=>{scene=next;selected=null;dirty=true;say(msg);return render()},load=(next,msg)=>{history.commit(next);return go(next,msg)};
+ el.undo.onclick=()=>go(history.undo(),"Undone").catch(report);
+ el.redo.onclick=()=>go(history.redo(),"Redone").catch(report);
+ el.duplicate.onclick=guarded(()=>{const l=copy(current());l.id=uid();l.x+=24;l.y+=24;add(l)});
+ el.delete.onclick=()=>{if(selected)change(doc=>{doc.layers=doc.layers.filter(l=>l.id!==selected)})};
+ for(const[name,delta]of[["front",1],["back",-1]])el[name].onclick=()=>change(doc=>{const i=doc.layers.findIndex(l=>l.id===selected),j=Math.max(0,Math.min(doc.layers.length-1,i+delta));if(i>=0)[doc.layers[i],doc.layers[j]]=[doc.layers[j],doc.layers[i]]});
+ const patch=values=>change(doc=>Object.assign(doc.layers.find(l=>l.id===selected),values));
+ for(const f of["x","y","w","h","rotation","opacity"])el[f].onchange=guarded(()=>{if(current())patch({[f]:Number(el[f].value)})});
+ el.fontsize.onchange=guarded(()=>{if(current()?.kind==="text")patch({fontSize:Number(el.fontsize.value)})});
+ el.apply.onclick=guarded(()=>{
+  const l=current();if(!l)return;
+  if(l.kind==="text")patch({text:el.text.value,font:el.fontfamily.value,fill:el.fill.value,mono:el.mono.checked});
+  else if(l.kind==="image")patch({fill:el.fill.value,mono:el.mono.checked});
+  else if(["rect","ellipse","triangle","arrow","clock"].includes(l.kind))patch({fill:el.outline.checked?"none":el.fill.value,stroke:el.stroke.value})});
+ el.fontfamily.onchange=()=>{if(current()?.kind==="text")patch({font:el.fontfamily.value})};
+ el.mono.onchange=()=>{if(["text","image"].includes(current()?.kind))patch({mono:el.mono.checked,fill:el.fill.value})};
+ el.sampling.onchange=()=>{if(current()?.kind==="image")patch({sampling:el.sampling.value})};
+ el.arrowstyle.onchange=()=>{if(current()?.kind==="arrow")patch({headStyle:el.arrowstyle.value})};
+ el.arrowplacement.onchange=()=>{if(current()?.kind==="arrow")patch({headPlacement:el.arrowplacement.value})};
+ el.clock.onchange=guarded(()=>{if(current()?.kind==="clock"){const[hour,minute]=el.clock.value.split(":").map(Number);patch({hour,minute})}});
+ for(const f of["cell","levels"])el[f].onchange=guarded(()=>{if(current())patch({[f]:Number(el[f].value)})});
+ el.labels.onchange=()=>{if(current()?.kind==="heatmap")patch({labels:el.labels.checked})};
+ el.continuous.onclick=()=>{if(current()?.kind==="heatmap")patch({levels:0})};
+ el.background.onchange=()=>change(doc=>{doc.background=el.background.value});
+ el.transparent.onchange=()=>change(doc=>{doc.background=el.transparent.checked?"none":el.background.value});
+ el.resize.onclick=guarded(()=>change(doc=>{doc.width=Number(el.width.value);doc.height=Number(el.height.value)}));
+ el.blank.onclick=()=>{change(doc=>{doc.layers=[]});selected=null;say("New canvas (Undo brings the old one back)")};
+ el.demo.onclick=guarded(()=>load(demoScene(),"Stamps and a heatmap; the numbers are invented for the picture"));
+ el.stampdemo.onclick=guarded(()=>load(stampDemoScene(),"A clock, an arrow, a face and emoji: shapes and text kept as they are"));
+ const pngBlob=async(scale=Number(el.scale.value))=>{
+  const doc=copy(scene),imageSource=await prepare(doc),size=outputSize(doc,scale),url=URL.createObjectURL(new Blob([svg(doc,imageSource,scale)],{type:"image/svg+xml"}));
+  try{const img=new Image();await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new StudioError("SVGの画像化に失敗しました"));img.src=url});
+   const canvas=document.createElement("canvas");canvas.width=size.width;canvas.height=size.height;canvas.getContext("2d").drawImage(img,0,0);
+   return await new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new StudioError("PNG出力に失敗しました")),"image/png"))}
+  finally{URL.revokeObjectURL(url)}};
+ el.svg.onclick=guarded(async()=>{const doc=copy(scene);download("ironmate-image.svg",svg(doc,await prepare(doc),Number(el.scale.value)),"image/svg+xml");say("Saved the SVG")});
+ el.png.onclick=guarded(async()=>{download("ironmate-image.png",await pngBlob(),"image/png");say("Saved the PNG")});
+ let payload=null;const showB64=()=>{if(payload)el.b64text.value=payload[el.b64mode.value]};
+ el.base64.onclick=guarded(async()=>{payload=pngPayload(new Uint8Array(await(await pngBlob()).arrayBuffer()));showB64();el.b64status.textContent=`PNG ${payload.bytes.toLocaleString("en-US")} bytes · 32 MiB or less`;el.b64panel.open=true;say("PNG as Base64 is below")});
+ el.b64mode.onchange=showB64;
+ el.b64copy.onclick=async()=>{try{await navigator.clipboard.writeText(el.b64text.value);el.b64status.textContent="Copied."}catch{el.b64text.focus();el.b64text.select();el.b64status.textContent="Could not copy by itself: the text is selected, copy it by hand."}};
+ el.b64save.onclick=()=>download("ironmate-image.base64.txt",el.b64text.value,"text/plain");
+ el.jsonsave.onclick=guarded(()=>{download("ironmate-scene.json",JSON.stringify(validate(scene),null,2),"application/json");dirty=false;say("Saved the scene as JSON")});
+ el.jsonopen.onchange=guarded(async()=>{
+  const file=el.jsonopen.files[0];if(!file)return;
+  try{if(file.size>20000000)throw new StudioError("JSONは20MB以下にしてください");
+   const next=validate(JSON.parse(await file.text()));await prepare(next);history.commit(next);scene=next;selected=null;dirty=false;await render();say("Opened the JSON (Undo goes back to your last edit)")}
+  finally{el.jsonopen.value=""}});
+ el.wssave.onclick=guarded(()=>{download("ironmate-workspace.json",workspaceText(history),"application/json");say("Saved the history")});
+ el.wsopen.onchange=guarded(async()=>{
+  const file=el.wsopen.files?.[0];if(!file)return;
+  try{if(file.size>WORKSPACE_MAX_BYTES)throw new StudioError("作業履歴は32MiB以下にしてください");
+   const next=workspaceHistory(await file.text());
+   for(const src of new Set(next.items.flatMap(state=>state.layers.filter(l=>l.kind==="image").map(l=>l.src))))await decoded(src);
+   history=next;scene=next.current;selected=null;dirty=true;await render();say("Restored the history")}
+  finally{el.wsopen.value=""}});
+ el.trim.onclick=guarded(async()=>{if(!window.confirm("Keep only the current state and drop the older history?"))return;history=new History(scene);dirty=true;await render();say("Kept the current state only")});
+ async function importBytes(bytes,declared,name="取り込み画像"){
+  if(!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>MAX_IMAGE)throw new StudioError("画像は32MiB以下にしてください");
+  const mime=sniffImageMime(bytes);
+  if(!mime||(declared&&declared.toLowerCase()!==mime))throw new StudioError("画像形式またはMIME宣言が実データと一致しません");
+  const url=URL.createObjectURL(new Blob([bytes],{type:mime}));
+  try{const img=await decoded(url),cv=document.createElement("canvas");cv.width=img.naturalWidth;cv.height=img.naturalHeight;cv.getContext("2d").drawImage(img,0,0);
+   add(imageLayer(cv.toDataURL("image/png"),img.naturalWidth,img.naturalHeight,uid(),scene.width,name));setTool("select");say(mime+" added")}
+  finally{URL.revokeObjectURL(url);images.delete(url)}}
+ el.file.onchange=guarded(async()=>{const file=el.file.files?.[0];if(!file)return;try{if(file.size>MAX_IMAGE)throw new StudioError("画像は32MiB以下にしてください");await importBytes(new Uint8Array(await file.arrayBuffer()),file.type||null,file.name)}finally{el.file.value=""}});
+ el.b64import.onclick=guarded(async()=>{const r=decodeImageText(el.b64in.value);if(!r.ok)throw new StudioError("Not a PNG, JPEG or WebP image in Base64 ("+r.category+")");await importBytes(bytesOf(r.data),r.mime,"Base64画像")});
+ el.paste.onclick=guarded(async()=>{
+  const r=await clipboardPick(navigator.clipboard,(data,mime)=>importBytes(data,mime,"クリップボード画像"));
+  if(!r.ok)throw new StudioError(CLIPBOARD_MESSAGES[r.code]||r.code)});
+ const addMatrix=source=>{add(matrixLayer(source,uid(),scene.width,scene.height));setTool("select")};
+ el.heatmap.onclick=guarded(()=>addMatrix(JSON.parse(el.matrix.value)));
+ el.matrixfile.onchange=guarded(async()=>{const file=el.matrixfile.files[0];if(!file)return;try{if(file.size>2000000)throw new StudioError("行列JSONは2MB以下にしてください");addMatrix(JSON.parse(await file.text()))}finally{el.matrixfile.value=""}});
+ window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue=""}});
+ history=new History(scene);
+ root.dataset.metrics=useCanvasMetrics(true)?"canvas":"estimate";
+ api.app={get scene(){return copy(scene)},get selected(){return selected},get history(){return history},get dirty(){return dirty},pngBlob,
+  async replaceScene(value){const next=validate(value);await prepare(next);scene=next;history=new History(next);selected=null;dirty=true;await render()},
+  patchSelected(values){if(!current())throw new StudioError("先にレイヤーを選択してください");patch(values)},
+  imageSource:async value=>prepare(validate(value)),setTool};
+ render().then(()=>{root.dataset.ready="1";say("Ready.")},report)}
+const rootNode=document.querySelector("[data-ui-imagestudio]");
+const api={SCHEMA,WORKSPACE_SCHEMA,WORKSPACE_MAX_BYTES,PALETTE,FILL,STROKE,BACKGROUND,StudioError,clone,escape,heatColor,matrix,validate,mosaicRGBA,arrowGeometry,outputSize,pngPayload,textFont,useCanvasMetrics,measureText,words,graphemes,sin,cos,textLayout,layerSVG,svg,History,workspaceText,workspaceHistory,blank,baseLayer,textLayer,place,matrixLayer,imageLayer,demoScene,stampDemoScene,heatmapScene};
+globalThis.webUiImageStudio=api;
+if(rootNode)mount(rootNode);
+"""
+
+
 # Successor tools: portable, versioned replay data; no storage or network in the models.
 PLAY_SCHEMA = "web-ui-play/1"
 GARDEN_GLYPHS = ("🌱", "🌷", "🌳", "🍄", "🌻", "🪨")
@@ -8428,7 +12548,9 @@ def _example_cards() -> str:
             '<article class="ui-card"><h2>Photo studio</h2><p><a href="./photo-studio.html">Frames and stamps on a photo, EXIF-safe import, PNG export</a>.</p></article>'
             '<article class="ui-card"><h2>Playground</h2><p><a href="./playground.html">A counter with a history, a hold-to-repeat button, and a draggable irony card</a>.</p></article>'
             '<article class="ui-card"><h2>Test report</h2><p><a href="./test-report.html">Read a JUnit report or Flutter test events; what is new, recurring or resolved</a>.</p></article>'
-            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article></section>')
+            '<article class="ui-card"><h2>MCP lab</h2><p><a href="./mcp-lab.html">An MCP server in the page: both protocol eras, PKCE, header names, Bearer and OAuth metadata</a>.</p></article>'
+            '<article class="ui-card"><h2>792 patterns</h2><p><a href="./patterns.html">The flutter_navigation_basic catalogue and the processing behind it: filter, sort, page, validate, convert, workflow</a>.</p></article>'
+            '<article class="ui-card"><h2>Image studio</h2><p><a href="./image-studio.html">Layer shapes, text, photos and heatmaps; export SVG, PNG or Base64; keep the history</a>.</p></article></section>')
 
 
 def example_pages() -> dict[str, str]:
@@ -8467,6 +12589,8 @@ def example_pages() -> dict[str, str]:
         "examples/playground.html": playground_document(),
         "examples/test-report.html": report_document(),
         "examples/mcp-lab.html": mcp_document(),
+        "examples/patterns.html": patterns_document(),
+        "examples/image-studio.html": imagestudio_document(),
         "contract/v1/example.html": page(contract, "web-ui HTML contract v1 fixture"),
         "index.html": _index_page(),
     }
@@ -8914,6 +13038,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="print a single-file page for a web-ui-world/1 JSON spec and exit")
     parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (flutter-pages, layout-presets, world, showcase, door)")
     parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
+    parser.add_argument("--pattern", metavar="FAMILY", help="run one pattern reference on the JSON request in stdin and print its JSON result (see PATTERN_RUNNERS); `list` names the families, `catalogue` prints the 792 patterns")
     parser.add_argument("--url", metavar="URL", help="with --btk-adapter: the address of the page to check (default: the local example server)")
     parser.add_argument("--site", type=Path, metavar="DIR",
                         help="write the example pages, the front page (index.html), js/ and examples/*.json under DIR and exit")
@@ -8955,8 +13080,19 @@ def main(argv: list[str] | None = None) -> int:
     reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
     reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
     reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
+    studio = parser.add_argument_group("image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
+    studio.add_argument("--studio-render", type=Path, metavar="FILE", help="check an ironmate-image-studio/1 scene and print it as SVG (or --format json); exit 2 on an invalid scene")
+    studio.add_argument("--studio-heatmap", type=Path, metavar="FILE", help="turn a matrix JSON (rows, or a Plotly heatmap) into an editable scene and print it")
+    studio.add_argument("--studio-base64", type=Path, metavar="FILE", help="print a PNG file as Base64 for hand-off (--data-uri for a data URI); a non-PNG is exit 2")
+    studio.add_argument("--format", choices=("svg", "json"), default="svg", help="with --studio-render: SVG (default) or the checked scene as JSON")
+    studio.add_argument("--scale", type=float, default=1, metavar="N", help="with --studio-render: output scale 0.25 to 8 (default 1)")
+    studio.add_argument("--data-uri", action="store_true", help="with --studio-base64: print data:image/png;base64,... instead of the bare Base64")
+    studio.add_argument("-o", "--output", type=Path, metavar="FILE", help="with the --studio-* options: write here instead of stdout (refuses to overwrite)")
+    studio.add_argument("--force", action="store_true", help="with --output: replace an existing file")
     parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.studio_render or args.studio_heatmap or args.studio_base64:
+        return _studio_main(parser, args)
     if args.junit or args.flutter_events or args.run_tests or args.expect_exit:
         return _reports_main(parser, args)
     if args.command:
@@ -8973,6 +13109,23 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(json.dumps(example_data(args.example), ensure_ascii=False, indent=2) + "\n")
         except ValueError as exc:
             parser.error(str(exc))
+        return 0
+    if args.pattern:
+        if args.pattern == "list":
+            sys.stdout.write("\n".join(sorted(PATTERN_RUNNERS)) + "\n")
+            return 0
+        if args.pattern == "catalogue":
+            sys.stdout.write(json.dumps(pattern_catalogue(), ensure_ascii=False, indent=1) + "\n")
+            return 0
+        try:
+            raw = sys.stdin.buffer.read(PATTERN_MAX_INPUT + 1)
+            if len(raw) > PATTERN_MAX_INPUT:
+                raise ValueError(f"request is larger than {PATTERN_MAX_INPUT} bytes")
+            result = pattern_run(args.pattern, pattern_parse(raw.decode("utf-8")))
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+        except (ValueError, UnicodeError, OSError) as exc:
+            print(f"invalid pattern request: {exc}", file=sys.stderr)
+            return 2
         return 0
     if args.btk_adapter:
         try:

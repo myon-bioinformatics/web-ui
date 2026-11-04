@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -3506,6 +3507,1936 @@ class McpBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('[data-mcp-meta-out]').inner_text(), 'missing protected resource')
         page.locator('[data-mcp-meta]').fill('{"resource": "https://r/", "authorization_servers": ["https://a/"]}')
         self.assertIn('"bearer_methods_supported": [\n    "header"\n  ]', page.locator('[data-mcp-meta-out]').inner_text())
+
+
+PATTERN_GOLDEN = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_golden.json').read_text(encoding='utf-8'))
+PATTERN_ASSETS = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'pattern_assets.json').read_text(encoding='utf-8'))
+
+
+def pat_norm(value):
+    """Python's value with integral floats as ints: JSON in a page cannot tell 1.0 from 1."""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and abs(value) < 2 ** 53 else value
+    if isinstance(value, list):
+        return [pat_norm(v) for v in value]
+    if isinstance(value, dict):
+        return {k: pat_norm(v) for k, v in value.items()}
+    return value
+
+
+def pat_integral_float(value):
+    if isinstance(value, float):
+        return value.is_integer()
+    if isinstance(value, list):
+        return any(pat_integral_float(v) for v in value)
+    if isinstance(value, dict):
+        return any(pat_integral_float(v) for v in value.values())
+    return False
+
+
+def pat_canon(value):
+    return json.dumps(pat_norm(value), sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+
+
+PAT_SCALARS = [None, True, False, 0, 1, -1, 2, 7, 0.5, -1.5, 2.5, '', 'a', 'b', 'A', 'é', ' x ', 'abc', 'item', '1', 'true', '0', 'false']
+
+
+def pat_scalar(r):
+    return r.choice(PAT_SCALARS)
+
+
+def pat_value(r, depth=0):
+    k = r.random()
+    if depth < 2 and k < 0.15:
+        return [pat_value(r, depth + 1) for _ in range(r.randint(0, 3))]
+    if depth < 2 and k < 0.3:
+        return {r.choice('abkn'): pat_value(r, depth + 1) for _ in range(r.randint(0, 3))}
+    return pat_scalar(r)
+
+
+def pat_mutate(r, request, p=0.3):
+    if not isinstance(request, dict) or r.random() > p:
+        return request
+    request = dict(request)
+    keys = list(request)
+    c = r.random()
+    if c < 0.3 and keys:
+        del request[r.choice(keys)]
+    elif c < 0.7 and keys:
+        request[r.choice(keys)] = pat_value(r)
+    else:
+        request[r.choice(['x', 'extra', 'mode'])] = pat_value(r)
+    return request
+
+
+def pat_commands(r):
+    kind = r.choice(['append', 'append', 'remove_last', 'replace', 'x'])
+    if kind == 'append':
+        return {'type': kind, 'value': r.choice([1, 'a', None])}
+    if kind == 'replace':
+        return {'type': kind, 'index': r.choice([0, 1, 2, 9, -1, True]), 'value': r.choice([1, 'a'])}
+    return {'type': kind}
+
+
+def pat_schema(r, depth=0):
+    kind = r.choice(['null', 'boolean', 'integer', 'number', 'string', 'array', 'object'] if r.random() < 0.95 else ['x', 5])
+    spec = {'type': kind}
+    if kind == 'object' and depth < 2:
+        if r.random() < 0.7:
+            spec['properties'] = {k: pat_schema(r, depth + 1) for k in r.sample('abc', r.randint(0, 3))}
+        if r.random() < 0.5:
+            spec['required'] = r.sample('abc', r.randint(0, 2)) if r.random() < 0.9 else ['a', 'a']
+        if r.random() < 0.4:
+            spec['additional_properties'] = r.choice([True, False, 1])
+    if kind == 'array' and depth < 2 and r.random() < 0.7:
+        spec['items'] = pat_schema(r, depth + 1)
+    if r.random() < 0.05:
+        spec[r.choice(['items', 'properties', 'required', 'zzz'])] = r.choice([[], {}, 1])
+    return spec
+
+
+def pat_condition(r):
+    op = r.choice(['equals', 'not_equals', 'greater_than', 'less_than', 'type', 'not_null', 'bogus'])
+    condition = {'operator': op}
+    if op in ('equals', 'not_equals', 'greater_than', 'less_than'):
+        condition['value'] = r.choice([1, True, 'a', None, 2.5, [1], {'a': 1}, 0])
+    elif op == 'type':
+        condition['type'] = r.choice(['null', 'boolean', 'integer', 'number', 'string', 'array', 'object', 'x', 5])
+    if r.random() < 0.05:
+        condition['zzz'] = 1
+    return condition
+
+
+PAT_ASYNC = ('future', 'stream', 'concurrency', 'event_loop')
+PAT_JS_VALUES = [None, True, False, 0, 1, -1, 2, 7, 0.5, -1.5, '', 'a', 'b', 'A', 'é', 'x y', '1', [], [1], {'a': 1}, {'a': 1, 'b': 2}, {'b': 2, 'a': 1}]
+
+
+def pat_js_value(r):
+    return r.choice(PAT_JS_VALUES)
+
+
+def pat_js_task(r, top=1000, small=(0, 1, 2, 3, 5, 8, 13, 21)):
+    task = {'value': pat_js_value(r)}
+    if r.random() < 0.7:
+        task['delay_ms'] = r.choice(list(small) * 3 + [None, -1, top + 1, 1.5, '3', True])
+    if r.random() < 0.3:
+        task['reject'] = r.choice(['boom', 'no', 'x y', 'boom', '', 5, None])
+    if r.random() < 0.05:
+        del task['value']
+    if r.random() < 0.05:
+        task['extra'] = 1
+    return task
+
+
+def pat_js_events(r, count=None, ordered=True):
+    count = r.randint(0, 6) if count is None else count
+    at, events = r.choice([0, 0, 5, -1]), []
+    for _ in range(count):
+        at += r.choice([0, 1, 5, 10, 20])
+        events.append({'at_ms': at if ordered or r.random() < 0.9 else at - 30, 'value': r.choice([1, 2, 3, 'a', None, [1, 2], [3], 2.5, {'a': 1}])})
+    if r.random() < 0.05 and events:
+        events[0] = r.choice([{'at_ms': 1}, {'at_ms': 1, 'value': 1, 'x': 2}, 5, None, [], {'at_ms': 1.5, 'value': 1}, {'at_ms': 70000, 'value': 1}])
+    return events
+
+
+def pat_js_request(family, r):
+    if family == 'future':
+        mode = r.choice(['basic', 'chain', 'error', 'wait', 'any', 'timeout', 'bogus'])
+        request = {'mode': mode}
+        if mode in ('wait', 'any'):
+            request['tasks'] = [pat_js_task(r) for _ in range(r.choice([0, 1, 2, 3, 4, 5, 33] if r.random() < 0.05 else [1, 2, 3, 4, 5]))]
+        else:
+            request['task'] = pat_js_task(r)
+            if mode == 'chain':
+                steps = []
+                for _ in range(r.choice([0, 1, 2, 3, 4] if r.random() < 0.9 else [33])):
+                    op = r.choice(['add', 'multiply', 'uppercase', 'add', 'multiply', 'x'])
+                    step = {'op': op}
+                    if op in ('add', 'multiply'):
+                        step['by'] = r.choice([1, 2, -3, 0.5, '1', None, True])
+                    if r.random() < 0.05:
+                        step['extra'] = 1
+                    steps.append(step)
+                request['steps'] = steps
+                if r.random() < 0.6:
+                    request['task']['value'] = r.choice([1, 2, 3, 2.5, 'ab', 'é', None, True])
+            elif mode == 'error' and r.random() < 0.85:
+                request['fallback'] = pat_js_value(r)
+            elif mode == 'timeout':
+                request['timeout_ms'] = r.choice([1, 2, 3, 5, 8, 13, 21, 34, 0, 1001, 2.5, '5', None])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'stream':
+        mode = r.choice(['basic', 'controller', 'broadcast', 'transform', 'merge', 'debounce', 'throttle', 'buffer', 'window', 'bogus'])
+        request = {'mode': mode}
+        if mode == 'controller':
+            commands = [r.choice([{'op': 'add', 'value': 1}, {'op': 'add', 'value': 'a'}, {'op': 'add'}, {'op': 'close'}, {'op': 'x'}, [1], 5, None, {'op': 'add', 'value': None}]) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.8:
+                commands.append({'op': 'close'})
+            request['commands'] = commands
+        elif mode == 'merge':
+            request['streams'] = [pat_js_events(r) for _ in range(r.choice([0, 1, 2, 3, 3] if r.random() < 0.9 else [17]))]
+        else:
+            request['events'] = pat_js_events(r, ordered=r.random() < 0.95)
+        if mode == 'broadcast':
+            request['subscribers'] = r.choice([1, 2, 3, 16, 17, 0, True, None])
+        elif mode == 'transform':
+            steps = []
+            for _ in range(r.choice([0, 1, 2, 3] if r.random() < 0.9 else [17])):
+                op = r.choice(['where_equals', 'expand', 'map_add', 'map_add', 'x'])
+                step = {'op': op}
+                if op in ('where_equals', 'map_add') and r.random() < 0.9:
+                    step['value'] = r.choice([1, 2, 'a', None, [1, 2], 0.5, {'a': 1}])
+                steps.append(step)
+            if r.random() < 0.05:
+                steps.append(r.choice([5, None, [1], []]))
+            request['steps'] = steps
+            if r.random() < 0.5:
+                request['events'] = [{'at_ms': i * 3, 'value': r.choice([1, 2, 3, [1, 2], [2], 'a'])} for i in range(r.randint(0, 5))]
+        elif mode in ('debounce', 'throttle'):
+            request['duration_ms'] = r.choice([1, 5, 10, 20, 60000, 0, 60001, 2.5, '5', None])
+        elif mode in ('buffer', 'window'):
+            request['size'] = r.choice([1, 2, 3, 4, 1000, 0, 1001, '2', None])
+            if mode == 'window' and r.random() < 0.7:
+                request['step'] = r.choice([1, 2, 3, None, 0, 1001, 1.5])
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'concurrency':
+        mode = r.choice(['work_queue', 'semaphore', 'mutex', 'cancelable', 'parallel_map', 'progress', 'bogus'])
+        request = {'mode': mode}
+        if mode == 'mutex':
+            request['increments'] = [r.choice([1, 2, -3, 5, 2 ** 53 - 1, 2 ** 53, 1.5, '1']) for _ in range(r.choice([0, 1, 2, 3, 5, 33] if r.random() < 0.05 else [0, 1, 2, 3, 5]))]
+        elif mode == 'cancelable':
+            request['task'] = pat_js_task(r, 50, (0, 1, 5, 10, 50))
+            request['task'].pop('reject', None)
+            if r.random() < 0.9:
+                request['cancel'] = r.choice([True, False, False, 1, None, 'x'])
+        else:
+            request['tasks'] = []
+            for _ in range(r.choice([0, 1, 2, 3, 5, 33] if r.random() < 0.05 else [0, 1, 2, 3, 5])):
+                task = pat_js_task(r, 50, (0, 1, 5, 10, 50))
+                task.pop('reject', None)
+                request['tasks'].append(task)
+            if mode in ('semaphore', 'parallel_map') and r.random() < 0.9:
+                request['concurrency'] = r.choice([1, 2, 3, 32, 33, 0, 1.5, '2', None])
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+    if family == 'event_loop':
+        mode = r.choice(['reactive', 'event_loop', 'microtask', 'suspend_resume', 'async_generator', 'bogus'])
+        values = [r.choice([1, 2, 3, 'a', None, [1], 2.5, {'a': 1}]) for _ in range(r.randint(0, 5))]
+        if mode == 'reactive' and r.random() < 0.7:
+            values = [r.choice([1, 2, 3, 0.5]) for _ in range(r.randint(0, 5))]
+        request = {'mode': mode, 'values': values}
+        if mode == 'reactive':
+            request['steps'] = [r.choice([{'op': 'map_add', 'value': r.choice([1, 2, 0.5, 'x', None])}, {'op': 'where_equals', 'value': r.choice([1, 2, 3, 'a', None, [1], 2.5])}, {'op': 'x', 'value': 1}, {'op': 'map_add'}])
+                                for _ in range(r.choice([0, 1, 2, 3] if r.random() < 0.9 else [17]))]
+        elif mode == 'suspend_resume':
+            request['pause_after'] = r.choice([0, 1, len(values), len(values) + 1, -1, 1.5, '1', None])
+            if r.random() < 0.05:
+                del request['pause_after']
+        if r.random() < 0.05:
+            request['values'] = r.choice([None, 'ab', {}, list(range(1001))])
+        return pat_mutate(r, request, 0.12) if r.random() < 0.95 else pat_js_value(r)
+    if r.random() < 0.4:                                                                                  # interaction: a debounce on a virtual clock
+        at, calls = 0, []
+        for _ in range(r.randint(0, 6)):
+            at += r.choice([0, 1, 5, 19, 20, 21, 40])
+            call = {'at_ms': at}
+            if r.random() < 0.2:
+                call['cancel'] = True
+            else:
+                call['value'] = r.choice([1, 'a', None, [1]])
+            calls.append(call)
+        request = {'operation': 'debounce', 'delay_ms': r.choice([0, 5, 20, 21]), 'calls': calls}
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_js_value(r)
+    request = {'operation': r.choice(['virtual_window'] * 6 + ['bogus']), 'count': r.choice([0, 1, 10, 100, 2.5, -1, '5', None]), 'itemHeight': r.choice([20, 1, 0, 0.5, 16, 33, -2]),
+               'scrollTop': r.choice([0, 200, 55, 1000, 7, -1, 0.5, 9999]), 'viewportHeight': r.choice([0, 100, 640, 33, -5, 7.5])}
+    if r.random() < 0.6:
+        request['overscan'] = r.choice([0, 1, 2, 5, 1.5, -1, None, '2'])
+    if r.random() < 0.05:
+        request['extra'] = 1
+    return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_js_value(r)
+
+
+def pat_request(family, r):
+    """A seeded request for ``family``: mostly well formed, some broken, none that JSON in a page would read differently from Python (no 1.0, no huge ints)."""
+    if family in PAT_ASYNC or family == 'interaction':
+        return pat_js_request(family, r)
+    if family == 'query':
+        op = r.choice(['stable_sort', 'custom_sort', 'group_by', 'facet', 'tag', 'range', 'geo', 'bogus'])
+        n = r.randint(0, 6)
+        request = {'operation': op}
+        if op in ('stable_sort', 'custom_sort'):
+            kind = r.choice(['int', 'str', 'float', 'mix'])
+            value = lambda: {'int': r.randint(-3, 3), 'str': r.choice('abcde'), 'float': r.choice([0.5, 1.5, -2.5, 3.25]), 'mix': r.choice([1, 'a', 1.5])}[kind]
+            request.update(items=[{'k': value(), 'i': i} for i in range(n)], key=r.choice(['k', 'k', 'k', 'z', '']))
+            if op == 'stable_sort':
+                request['descending'] = r.choice([True, False, False, 1])
+            else:
+                request['comparator'] = r.choice(['ascending', 'descending', 'x'])
+                if r.random() < 0.2:
+                    request['descending'] = r.choice([True, False])
+        elif op == 'group_by':
+            request.update(items=[{'g': r.choice(['a', 'b', 1, True, None, 2, [1], 0.5]), 'i': i} for i in range(n)], key='g')
+        elif op in ('facet', 'tag'):
+            rows = [{'c': r.choice(['a', 'b', 'c', 1, True]), 'i': i} for i in range(n)] if op == 'facet' else [{'c': r.sample(['x', 'y', 'z'], r.randint(0, 3)) if r.random() < 0.9 else 'x', 'i': i} for i in range(n)]
+            request.update(items=rows, key='c', selected=[r.choice(['a', 'b', 'x', 'y', 1, True]) for _ in range(r.randint(0, 3))])
+        elif op == 'range':
+            request.update(items=[{'v': r.choice([r.randint(-3, 3), 0.5, 's', None]), 'i': i} for i in range(n)], key='v', minimum=r.choice([-2, 0, 0.5, 3]), maximum=r.choice([1, 2, 5, -1]))
+        elif op == 'geo':
+            request.update(items=[{'latitude': r.choice([35.5, 35.25, 0, 91, 'x', 40.75]), 'longitude': r.choice([139.5, 139.25, 0, 181, -74.5]), 'i': i} for i in range(n)],
+                           latitude=r.choice([35.5, 35.1, 0, 95]), longitude=r.choice([139.5, 139.2, 0, 200]), radius_km=r.choice([0, 10, 100, 5000, -1, 55.5]))
+        return pat_mutate(r, request) if r.random() < 0.9 else pat_value(r)
+    if family == 'page':
+        items = [r.choice([1, 'a', None, {'k': 1}, [1, 2], 0.5]) if r.random() < 0.3 else i for i in range(r.randint(0, 9))]
+        op = r.choice(['offset', 'cursor', 'infinite', 'bogus'])
+        request = {'operation': op, 'items': items, 'limit': r.choice([1, 2, 3, 5, 0, 1000, 1001, True, '2'])}
+        if op == 'offset':
+            if r.random() < 0.7:
+                request['offset'] = r.choice([0, 1, 3, 9, 10, -1, True])
+        elif op in ('cursor', 'infinite'):
+            if r.random() < 0.5:
+                import web_ui
+                try:
+                    cursor = web_ui.pattern_run('page', {'operation': op, 'items': items, 'limit': 2}).get('next_cursor')
+                except ValueError:
+                    cursor = None
+                if cursor is not None:
+                    request['cursor'] = cursor if r.random() < 0.8 else cursor[:-1] + r.choice('AB_-')
+            elif r.random() < 0.2:
+                request['cursor'] = r.choice([None, '', 'x', 5, 'e30'])
+        return pat_mutate(r, request, 0.25) if r.random() < 0.95 else pat_value(r)
+    if family == 'score':
+        values = [r.choice([r.randint(-3, 5), 0.5, -1.5, 2]) for _ in range(r.randint(0, 7))]
+        request = {'operation': 'minheap', 'values': values}
+        if r.random() < 0.8:
+            request['pops'] = r.choice([0, 1, 2, len(values), len(values) + 1, -1, True])
+        return pat_mutate(r, request) if r.random() < 0.9 else pat_value(r)
+    if family == 'reduce':
+        actions = []
+        for _ in range(r.randint(0, 6)):
+            kind = r.choice(['set', 'decrement', 'reset', 'increment'] * 4 + ['x'])
+            action = {'type': kind}
+            if kind != 'reset':
+                action['value'] = r.choice([0, 1, 5, -3, 7, 100, 10 ** 9] * 3 + [1.5, True, '1']) if r.random() < 0.97 else pat_value(r)
+            elif r.random() < 0.1:
+                action['value'] = 1
+            actions.append(action)
+        request = {'mode': r.choice(['event_state', 'redux'] * 6 + ['x']), 'initial': r.choice([0, 3, -2, 5, 10 ** 9] * 3 + [10 ** 9 + 1, 1.5, True]), 'actions': actions}
+        return pat_mutate(r, request, 0.15) if r.random() < 0.97 else pat_value(r)
+    if family == 'workflow':
+        import web_ui
+        op = r.choice(sorted(web_ui._PAT_WORKFLOW_OPS) + ['bogus'])
+        values = [r.choice([1, 2, 3, 5, 8, 'a', 2.5]) for _ in range(r.randint(0, 5))]
+        if op == 'insert_sorted' and r.random() < 0.7:
+            values = sorted(r.randint(0, 9) for _ in range(r.randint(0, 5)))
+        request = {'operation': op, 'values': values}
+        if op in ('swap', 'position_swap'):
+            request.update(a=r.choice([0, 1, 2, 9, -1, True]), b=r.choice([0, 1, 2, 9, -1]))
+        elif op in ('move_top', 'move_bottom'):
+            request['index'] = r.choice([0, 1, 2, 9, -1])
+        elif op == 'insert_sorted':
+            request['value'] = r.choice([0, 4, 10, 'a', 2.5])
+        elif op in ('undo_redo', 'command', 'memento'):
+            request['commands'] = [r.choice([{'type': 'undo'}, {'type': 'redo'}, pat_commands(r), pat_commands(r)]) for _ in range(r.randint(0, 6))]
+        elif op in ('batch', 'worker', 'scheduler'):
+            if r.random() < 0.7:
+                request['batch_size'] = r.choice([1, 2, 3, 0, 1001, True])
+            if op == 'scheduler' and r.random() < 0.7:
+                request['schedule'] = [r.choice([0, 10, 60000, 60001, -1, 1.5]) for _ in range(r.randint(0, 3))]
+        elif op in ('transaction', 'saga', 'pipeline'):
+            request['commands'] = [pat_commands(r) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.6:
+                request['fail_at'] = r.choice([None, 0, 1, 2, 5, -1, True])
+        elif op in ('event_driven', 'pubsub', 'queue', 'outbox', 'event_sourcing', 'cqrs'):
+            request['events'] = [r.choice([{'type': 'append', 'value': 1}, {'type': 'append', 'value': 'a'}, {'type': 'x', 'value': 1}, {'type': 'append'}]) for _ in range(r.randint(0, 4))]
+            if op == 'pubsub' and r.random() < 0.7:
+                request['subscribers'] = r.choice([1, 2, 16, 17, 0, True])
+        elif op == 'checkpoint' and r.random() < 0.8:
+            request['checkpoint'] = r.choice([0, 1, 3, 9, -1, True])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'transform':
+        op = r.choice(['schema_validation', 'constraint', 'pipeline', 'map_reduce', 'flatten', 'partition', 'zip', 'bogus'])
+        request = {'operation': op, 'values': [r.choice([1, True, 'a', ' B ', None, 2.5, [1, [2]], {'a': 1}, {'a': 'x', 'b': 2}, {'a': [1]}, 0, -1]) for _ in range(r.randint(0, 5))]}
+        if op == 'schema_validation':
+            request['schema'] = pat_schema(r)
+        elif op in ('constraint', 'partition'):
+            request['condition'] = pat_condition(r)
+        elif op == 'pipeline':
+            steps = []
+            for _ in range(r.randint(0, 3)):
+                kind = r.choice(['strip', 'lower', 'upper', 'add', 'multiply', 'x'])
+                step = {'operation': kind}
+                if kind in ('add', 'multiply'):
+                    step['value'] = r.choice([1, 2, 0.5, True, 'a'])
+                steps.append(step)
+            request['steps'] = steps
+            if r.random() < 0.6:
+                request['values'] = r.choice([[' a ', 'B'], [1, 2, 3.5], ['a', 1], []])
+        elif op == 'map_reduce':
+            request.update(values=[{'k': r.choice(['a', 'b', 1, True, None]), 'value': r.choice([1, 2.5, 'x', True])} if r.random() < 0.9 else r.choice([1, {}]) for _ in range(r.randint(0, 5))],
+                           key=r.choice(['k', 'k', 'z', '']), reducer=r.choice(['count', 'sum', 'x']))
+        elif op == 'flatten':
+            request['values'] = [r.choice([1, [2, [3]], [], [[[4]]], 'a']) for _ in range(r.randint(0, 4))]
+        elif op == 'zip':
+            request['other'] = [r.choice([1, 'a', None]) for _ in range(r.randint(0, 5))]
+            if r.random() < 0.6:
+                request['strict'] = r.choice([True, False, 1])
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'select':
+        values = [r.choice([1, True, 'a', None, [1], {'a': 1, 'b': 2}, {'b': 2, 'a': 1}, {'a': {'b': [1, 2]}}, [[1], [2]], 0.5]) for _ in range(r.randint(0, 6))]
+        op = r.choice(['filter', 'filter', 'distinct', 'deduplicate_report', 'x'])
+        request = {'values': values}
+        if r.random() < 0.9:
+            request['operation'] = op
+        if op == 'filter':
+            if r.random() < 0.4:
+                request['equals'] = r.choice([1, True, 'a', None, [1], {'a': 1}, 0.5])
+            else:
+                request['conditions'] = [{'path': r.choice([[], ['a'], ['a', 'b', 1], [0], ['a', 5], ['a', -1], [True], [1.5]]), 'equals': r.choice([1, 2, 'a', None, [1, 2]])} for _ in range(r.randint(0, 3))]
+                if r.random() < 0.6:
+                    request['match'] = r.choice(['all', 'any', 'x'])
+                if r.random() < 0.05:
+                    request['equals'] = 1
+        return pat_mutate(r, request, 0.15) if r.random() < 0.95 else pat_value(r)
+    if family == 'order':
+        import web_ui
+        mode = r.choice(sorted(web_ui.PATTERN_ORDER_EXAMPLES) + ['bogus'])
+        values = None
+        if r.random() < 0.5:
+            values = [r.choice([3, 1, 2, 2.5, True, 'a', None]) for _ in range(r.randint(0, 5))]
+        if mode == 'multi' and r.random() < 0.7:
+            values = [{'group': r.choice('ab'), 'score': r.choice([1, 2, 3, 2.5])} for _ in range(r.randint(0, 5))]
+        if mode == 'priority' and r.random() < 0.7:
+            values = [{'name': r.choice('xyz'), 'priority': r.choice([1, 2, 3, True])} for _ in range(r.randint(0, 5))]
+        if mode in ('basic', 'reverse', 'sorted-set', 'top-n') and r.random() < 0.5:
+            values = [r.choice([3, 1, 2, 2.5, 7, 0]) for _ in range(r.randint(0, 7))]
+        request = {'mode': mode} if values is None else {'mode': mode, 'values': values}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    if family == 'text':
+        return {'mode': r.choice(['search', 'tokens', 'text-index', 'inverted-index', 'bogus'])} if r.random() < 0.9 else pat_value(r)
+    if family == 'structure':
+        return {'mode': r.choice(['sticky', 'section', 'grouped', 'tree', 'flat', 'bogus'])} if r.random() < 0.9 else pat_value(r)
+    if family == 'window':
+        import web_ui
+        commands = ['next', 'previous', 'load-more', 'prefetch', 'reset', 'page-size-3', 'offset-6', 'refresh', 'x']
+        request = {'mode': r.choice(list(web_ui.PATTERN_WINDOW_MODES) + ['bogus']), 'commands': [r.choice(commands) for _ in range(r.randint(0, 6))]}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    if family == 'collection':
+        import web_ui
+        request = {'mode': r.choice(list(web_ui.PATTERN_COLLECTION_MODES) + ['bogus']),
+                   'commands': [[r.choice(['select', 'toggle', 'delete', 'move-first', 'x']), r.choice(['a', 'b', 'c', 'e'])][:r.choice([1, 2, 2, 2])] for _ in range(r.randint(0, 5))]}
+        return pat_mutate(r, request, 0.1) if r.random() < 0.95 else pat_value(r)
+    raise AssertionError(family)
+
+
+class PatternBrowserTests(unittest.TestCase):
+    """The patterns page in a real browser: its twins give Python's answer to every request (the recorded original outputs, and seeded random requests, including the refusals and their
+    text), the catalogue and its search agree, and the page works."""
+
+    FAMILIES = ('collection', 'interaction', 'order', 'page', 'query', 'reduce', 'score', 'select', 'structure', 'text', 'transform', 'window', 'workflow')
+
+    def setUp(self):
+        from web_ui import patterns_document
+        self.server, self.origin = WorldBrowserTests.serve({'patterns.html': patterns_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/patterns.html')
+        page.wait_for_selector('[data-patterns-ready]')
+        return page
+
+    START = """jobs => { window.__out = jobs.map(() => null); jobs.forEach(([family, request], i) => { try { Promise.resolve(webUiPatterns.patternRun(family, request)).then(ok => { window.__out[i] = {ok} },
+        e => { window.__out[i] = {error: e.message} }) } catch (e) { window.__out[i] = {error: e.message} } }) }"""
+
+    def clock_page(self):
+        """The page with a clock that moves only when the test moves it: the promises and timers of future, stream, concurrency and event_loop run on virtual time."""
+        page = self.context.new_page()
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.clock.install(time=0)
+        page.clock.pause_at(10_000)
+        page.goto(self.origin + '/patterns.html')
+        page.wait_for_selector('[data-patterns-ready]')
+        return page
+
+    def run_virtual(self, page, jobs):
+        page.evaluate(self.START, jobs)
+        for _ in range(80):
+            if page.evaluate('() => window.__out.every(x => x !== null)'):
+                break
+            page.clock.run_for(250)
+        else:
+            self.fail('requests never finished')
+        return page.evaluate('() => window.__out')
+
+    RUN = """jobs => jobs.map(([family, request]) => { try { return {ok: webUiPatterns.patternRun(family, request)} } catch (e) { return {error: e.message, kind: e.constructor.name} } })"""
+
+    @staticmethod
+    def python_outcome(family, request):
+        import web_ui
+        try:
+            return {'ok': web_ui.pattern_run(family, request)}
+        except ValueError as error:
+            return {'error': str(error)}
+
+    def same(self, family, request, python, browser):
+        """The browser must give Python's result or Python's refusal text (a crash Python wraps as `invalid X request:` need only be a refusal here, as the wrapped text is CPython's)."""
+        if 'ok' in python:
+            self.assertEqual(('ok' in browser, pat_canon(browser.get('ok')) if 'ok' in browser else browser), (True, pat_canon(python['ok'])), (family, request))
+        elif python['error'].startswith(f'invalid {family} request: '):
+            self.assertIn('error', browser, (family, request))
+        else:
+            self.assertEqual(browser.get('error'), python['error'], (family, request))
+
+    # --- the recorded outputs of the original oracles
+    def test_the_recorded_original_outputs_are_reproduced_exactly(self):
+        page = self.page()
+        cases = [c for c in PATTERN_GOLDEN['cases'] if c['family'] in self.FAMILIES + PAT_ASYNC and not (c['family'] == 'score' and isinstance(c['request'], dict) and c['request'].get('operation') == 'tfidf')
+                 and not pat_integral_float(c['request'])]
+        assets = PATTERN_ASSETS['assets']
+        self.assertGreaterEqual(len(cases), 550)
+        got = page.evaluate(self.RUN, [[c['family'], c['request']] if c['family'] not in PAT_ASYNC else ['query', {}] for c in cases])
+        timed = [i for i, c in enumerate(cases) if c['family'] in PAT_ASYNC]
+        self.assertGreaterEqual(len(timed), 150)
+        for i, outcome in zip(timed, self.run_virtual(self.clock_page(), [[cases[i]['family'], cases[i]['request']] for i in timed])):
+            got[i] = outcome
+        for case, outcome in zip(cases, got):
+            if 'ok' in case:
+                self.assertEqual(pat_canon(outcome.get('ok', outcome)), pat_canon(case['ok']), case)
+            else:
+                self.assertEqual(outcome.get('error'), case['error'], case)
+        got = page.evaluate(self.RUN, [[a['family'], a['request']] for a in assets])
+        for asset, outcome in zip(assets, got):
+            self.assertEqual(pat_canon(outcome.get('ok', outcome)), pat_canon(asset['expected']), asset['asset'])
+
+    # --- seeded random requests
+    def test_random_requests_get_python_answers_and_refusals(self):
+        page = self.page()
+        for family in self.FAMILIES:
+            rng = random.Random(f'patterns-{family}')
+            jobs = []
+            while len(jobs) < 1200:
+                request = pat_request(family, rng)
+                if not pat_integral_float(request):
+                    jobs.append([family, request])
+            got = page.evaluate(self.RUN, jobs)
+            ok = 0
+            for (name, request), outcome in zip(jobs, got):
+                python = self.python_outcome(name, request)
+                ok += 'ok' in python
+                self.same(name, request, python, outcome)
+            minimum = {'structure': 400, 'text': 400}.get(family, 120)
+            self.assertGreaterEqual(ok, minimum, (family, 'answers'))
+            self.assertGreaterEqual(len(jobs) - ok, 20 if family not in ('structure', 'text') else 40, (family, 'refusals'))
+
+    def test_random_requests_to_the_javascript_references_agree_on_a_virtual_clock(self):
+        page = self.clock_page()
+        for family in PAT_ASYNC:
+            rng = random.Random(f'patterns-js-{family}')
+            jobs = []
+            while len(jobs) < 700:
+                request = pat_request(family, rng)
+                if not pat_integral_float(request):
+                    jobs.append([family, request])
+            ok = 0
+            for (name, request), outcome in zip(jobs, self.run_virtual(page, jobs)):
+                python = self.python_outcome(name, request)
+                ok += 'ok' in python
+                self.same(name, request, python, outcome)
+            self.assertGreaterEqual(ok, 60, (family, 'answers'))
+            self.assertGreaterEqual(len(jobs) - ok, 60, (family, 'refusals'))
+
+    def test_a_task_of_zero_milliseconds_waits_one_and_ties_go_to_the_earlier(self):
+        page = self.clock_page()
+        jobs = [['future', {'mode': 'any', 'tasks': [{'value': 'one', 'delay_ms': 1}, {'value': 'zero'}]}], ['future', {'mode': 'any', 'tasks': [{'value': 'zero'}, {'value': 'one', 'delay_ms': 1}]}],
+                ['future', {'mode': 'timeout', 'task': {'value': 1, 'delay_ms': 5}, 'timeout_ms': 5}], ['future', {'mode': 'timeout', 'task': {'value': 1, 'delay_ms': 6}, 'timeout_ms': 5}],
+                ['future', {'mode': 'wait', 'tasks': [{'value': 1, 'reject': 'b', 'delay_ms': 9}, {'value': 2, 'reject': 'a', 'delay_ms': 3}, {'value': 3}]}]]
+        for (name, request), outcome in zip(jobs, self.run_virtual(page, jobs)):
+            self.same(name, request, self.python_outcome(name, request), outcome)
+        self.assertEqual([o.get('ok', o).get('value', o.get('error')) for o in self.run_virtual(page, jobs)], ['one', 'zero', 1, 'timeout', 'a'])
+
+    def test_every_limit_is_where_python_puts_it(self):
+        """Each cap is tried at the value that is still allowed and the one that is not, in both languages."""
+        ev = lambda n: [{'at_ms': i, 'value': i} for i in range(n)]
+        one = {'type': 'append', 'value': 1}
+        pairs = []
+        for n in (1000, 1001):
+            pairs += [('stream', {'mode': 'basic', 'events': ev(n)}), ('stream', {'mode': 'controller', 'commands': [{'op': 'add', 'value': 1}] * (n - 1) + [{'op': 'close'}]}),
+                      ('event_loop', {'mode': 'async_generator', 'values': list(range(n))}), ('stream', {'mode': 'buffer', 'events': ev(3), 'size': n}),
+                      ('stream', {'mode': 'window', 'events': ev(3), 'size': 2, 'step': n}), ('workflow', {'operation': 'undo_redo', 'values': [], 'commands': [one] * n}),
+                      ('workflow', {'operation': 'swap', 'values': list(range(n)), 'a': 0, 'b': 1}), ('workflow', {'operation': 'batch', 'values': [1], 'batch_size': n}),
+                      ('workflow', {'operation': 'scheduler', 'values': [], 'schedule': [0] * n}), ('workflow', {'operation': 'queue', 'values': [], 'events': [one] * n}),
+                      ('workflow', {'operation': 'queue', 'values': [0], 'events': [one] * (n - 1)}), ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'reset'}] * n}),
+                      ('page', {'operation': 'offset', 'items': [1], 'limit': n}), ('window', {'mode': 'window', 'commands': ['next'] * n}), ('collection', {'mode': 'checklist', 'commands': [['toggle']] * n})]
+        for n in (32, 33):
+            pairs += [('future', {'mode': 'wait', 'tasks': [{'value': 1}] * n}), ('future', {'mode': 'chain', 'task': {'value': 1}, 'steps': [{'op': 'add', 'by': 1}] * n}),
+                      ('concurrency', {'mode': 'work_queue', 'tasks': [{'value': 1}] * n}), ('concurrency', {'mode': 'mutex', 'increments': [1] * n}),
+                      ('concurrency', {'mode': 'semaphore', 'tasks': [{'value': 1}], 'concurrency': n})]
+        for n in (16, 17):
+            pairs += [('stream', {'mode': 'merge', 'streams': [ev(1)] * n}), ('stream', {'mode': 'transform', 'events': ev(1), 'steps': [{'op': 'map_add', 'value': 1}] * n}),
+                      ('stream', {'mode': 'broadcast', 'events': ev(1), 'subscribers': n}), ('event_loop', {'mode': 'reactive', 'values': [1], 'steps': [{'op': 'map_add', 'value': 1}] * n}),
+                      ('workflow', {'operation': 'pubsub', 'values': [], 'events': [one], 'subscribers': n})]
+        for n in (1000, 1001):
+            pairs += [('future', {'mode': 'basic', 'task': {'value': 1, 'delay_ms': n}}), ('future', {'mode': 'timeout', 'task': {'value': 1}, 'timeout_ms': n})]
+        for n in (50, 51):
+            pairs += [('concurrency', {'mode': 'cancelable', 'task': {'value': 1, 'delay_ms': n}, 'cancel': False})]
+        for n in (60000, 60001):
+            pairs += [('stream', {'mode': 'debounce', 'events': ev(2), 'duration_ms': n}), ('interaction', {'operation': 'debounce', 'delay_ms': n, 'calls': [{'at_ms': 0, 'value': 1}]})]
+        for n in (0, -1, 60000, 60001):
+            pairs += [('stream', {'mode': 'basic', 'events': [{'at_ms': n, 'value': 1}]})]
+        sync = [(f, r) for f, r in pairs if f not in PAT_ASYNC]
+        timed = [(f, r) for f, r in pairs if f in PAT_ASYNC]
+        outcomes = self.page().evaluate(self.RUN, [list(x) for x in sync]) + self.run_virtual(self.clock_page(), [list(x) for x in timed])
+        answered = 0
+        for (family, request), outcome in zip(sync + timed, outcomes):
+            python = self.python_outcome(family, request)
+            answered += 'ok' in python
+            self.same(family, request, python, outcome)
+        self.assertGreater(answered, 30)
+        self.assertGreater(len(pairs) - answered, 25)
+
+    def test_odd_shapes_get_python_refusals(self):
+        """Requests that are almost right: a key swapped for another, a float where an int goes, the cursor of a keyset that is back at the start."""
+        pairs = [('reduce', {'mode': 'redux', 'initial': 0, 'action': []}), ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'set', 'values': 1}]}),
+                 ('reduce', {'mode': 'redux', 'initial': 0, 'actions': [{'type': 'reset', 'values': 1}]}), ('reduce', {'mode': 'redux', 'initial': 1.5, 'actions': []}),
+                 ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 1.5}), ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 2}), ('score', {'operation': 'minheap', 'values': [3, 1], 'pops': 3}),
+                 ('page', {'operation': 'cursor', 'items': [1, 2], 'limit': 1, 'cursor': 'eyJ2IjoxLCJ4IjoxLCJoIjoiYSJ9'}), ('page', {'operation': 'cursor', 'items': [1, 2], 'limit': 1, 'cursor': 5}),
+                 ('select', {'values': [[1, 2]], 'conditions': [{'path': [1.5], 'equals': 2}]}), ('select', {'values': [[1, 2]], 'conditions': [{'path': [2], 'equals': 2}]}),
+                 ('select', {'values': [[1, 2]], 'conditions': [{'path': [1], 'equals': 2}]}), ('select', {'values': [{'a': 1}], 'conditions': [{'path': ['a'], 'equals': 1, 'x': 1}]}),
+                 ('transform', {'operation': 'zip', 'values': [1], 'other': [1], 'strict': 'yes'}), ('transform', {'operation': 'flatten', 'values': [1], 'x': 1}),
+                 ('workflow', {'operation': 'swap', 'values': [1, 2], 'a': 0, 'b': 1, 'index': 0}), ('workflow', {'operation': 'swap', 'values': [1, 2], 'a': 0}),
+                 ('order', {'mode': 'basic', 'values': None}), ('order', {'mode': 'multi', 'values': [{'group': 'a', 'score': 1, 'name': 'x'}]}), ('order', {'mode': 'priority', 'values': [{'name': 'a', 'priority': 1.5}]}),
+                 ('text', {'mode': 'inverted-index'}), ('structure', {'mode': 'flat'}), ('query', {'operation': 'range', 'items': [{'v': 1}], 'key': 'v', 'minimum': 1, 'maximum': 1}),
+                 ('query', {'operation': 'range', 'items': [], 'key': 'v', 'minimum': 2, 'maximum': 1}), ('query', {'operation': 'geo', 'items': [{'latitude': 90, 'longitude': 180}], 'latitude': 90, 'longitude': 180, 'radius_km': 0}),
+                 ('query', {'operation': 'geo', 'items': [{'latitude': 90, 'longitude': 180}], 'latitude': 91, 'longitude': 180, 'radius_km': 0}), ('query', {'operation': 'group_by', 'items': [], 'key': ''}),
+                 ('query', {'operation': 'tag', 'items': [{'t': 'x'}], 'key': 't', 'selected': ['x']})]
+        states = [{'mode': 'keyset', 'offset': 0, 'limit': 4, 'total': 0}, {'mode': 'keyset', 'offset': 0, 'limit': 4, 'total': 4}, {'mode': 'keyset', 'offset': 3, 'limit': 4, 'total': 12},
+                  {'mode': 'keyset', 'offset': 0, 'limit': 1, 'total': 1}, {'mode': 'window', 'offset': 0, 'limit': 4, 'total': 0}, {'mode': 'window', 'offset': 5, 'limit': 3, 'total': 2}]
+        import web_ui
+        windows = [[state, command] for state in states for command in ('next', 'previous', 'page-size-3', 'offset-6', 'refresh', 'reset')]
+        page = self.page()
+        got = page.evaluate(self.RUN, [list(x) for x in pairs])
+        for (family, request), outcome in zip(pairs, got):
+            self.same(family, request, self.python_outcome(family, request), outcome)
+        got = page.evaluate("""w => w.map(([s, cmd]) => { try { return {ok: webUiPatterns.patternWindowRender(webUiPatterns.patternWindowStep(s, cmd))} } catch (e) { return {error: e.message} } })""", windows)
+        for (state, command), outcome in zip(windows, got):
+            try:
+                python = {'ok': web_ui.pattern_window_render(web_ui.pattern_window_step(state, command))}
+            except ValueError as error:
+                python = {'error': str(error)}
+            self.same('window-state', [state, command], python, outcome)
+
+    def test_the_event_loop_phases_are_the_real_ones(self):
+        page = self.clock_page()
+        got = self.run_virtual(page, [['event_loop', {'mode': 'microtask', 'values': []}], ['event_loop', {'mode': 'event_loop', 'values': ['x']}]])
+        self.assertEqual(got[0]['ok']['result'], ['sync', 'microtask', 'promise', 'timer'])
+        self.assertEqual([step['phase'] for step in got[1]['ok']['result']], ['sync', 'microtask', 'timer'])
+
+    def test_the_debounce_function_takes_the_timers_it_is_given(self):
+        got = self.page().evaluate("""() => { const calls = new Map(); let id = 0; const seen = [];
+            const trigger = webUiPatterns.debounce(v => seen.push(v), 20, {setTimeoutFn: fn => { calls.set(++id, fn); return id }, clearTimeoutFn: key => calls.delete(key)});
+            trigger('first'); trigger('last'); const size = calls.size; const [key, fn] = [...calls.entries()][0]; calls.delete(key); fn(); const afterFire = [...seen];
+            trigger('cancelled'); trigger.cancel(); const errors = [];
+            for (const args of [[null, 1], [() => {}, -1], [() => {}, NaN]]) { try { webUiPatterns.debounce(...args) } catch (e) { errors.push(e.constructor.name + ': ' + e.message) } }
+            return {size, afterFire, left: calls.size, errors, window: webUiPatterns.virtualWindow({count: 100, itemHeight: 20, scrollTop: 200, viewportHeight: 100, overscan: 1})} }""")
+        self.assertEqual(got, {'size': 1, 'afterFire': ['last'], 'left': 0, 'errors': ['TypeError: invalid debounce arguments'] * 3, 'window': {'start': 9, 'end': 16, 'topPadding': 180, 'bottomPadding': 1680}})
+
+    def test_the_states_of_windows_and_collections_agree_on_every_command(self):
+        import web_ui
+        rng = random.Random('patterns-states')
+        windows, collections = [], []
+        for _ in range(800):
+            state = {'mode': rng.choice(web_ui.PATTERN_WINDOW_MODES), 'offset': rng.choice([0, 3, 4, 20, -1, True, '1']), 'limit': rng.choice([4, 3, 0, True, 0.5]), 'total': rng.choice([12, 0, 5, -1])}
+            if rng.random() < 0.2:
+                state.pop(rng.choice(list(state)))
+            windows.append([state, rng.choice(['next', 'previous', 'load-more', 'prefetch', 'reset', 'page-size-3', 'offset-6', 'refresh', 'x'])])
+            collections.append([{'mode': rng.choice(web_ui.PATTERN_COLLECTION_MODES), 'items': rng.choice([['a', 'b'], ['a', 'a'], [], ['a', 1], ['a', 'b', 'c', 'd']]), 'selected': rng.choice([[], ['a'], ['z'], ['a', 'a']])},
+                                rng.choice(['select', 'toggle', 'delete', 'move-first', 'x']), rng.choice(['a', 'b', 'z'])])
+        page = self.page()
+        got = page.evaluate("""([w, c]) => [w.map(([s, cmd]) => { try { return {ok: webUiPatterns.patternWindowRender(webUiPatterns.patternWindowStep(s, cmd))} } catch (e) { return {error: e.message} } }),
+            c.map(([s, cmd, item]) => { try { return {ok: webUiPatterns.patternCollectionRender(webUiPatterns.patternCollectionStep(s, cmd, item))} } catch (e) { return {error: e.message} } })]""", [windows, collections])
+        okay = 0
+        for (state, command), outcome in zip(windows, got[0]):
+            try:
+                python = {'ok': web_ui.pattern_window_render(web_ui.pattern_window_step(state, command))}
+            except (ValueError, TypeError) as error:
+                python = {'error': str(error)}
+            okay += 'ok' in python
+            self.same('window-state', [state, command], python, outcome)
+        for (state, command, item), outcome in zip(collections, got[1]):
+            try:
+                python = {'ok': web_ui.pattern_collection_render(web_ui.pattern_collection_step(state, command, item))}
+            except (ValueError, TypeError) as error:
+                python = {'error': str(error)}
+            okay += 'ok' in python
+            self.same('collection-state', [state, command, item], python, outcome)
+        self.assertGreater(okay, 150)
+
+    def test_text_search_helpers(self):
+        import web_ui
+        rng = random.Random('patterns-text')
+        words = ['Flutter', 'portable', 'search', 'the', 'And', 'a', 'x_1', 'Ａ', 'cat', 'Dog', '123', 'indexes']
+        queries = [' '.join(rng.choice(words) for _ in range(rng.randint(0, 4))) + rng.choice(['', '!', '  ']) for _ in range(400)]
+        docs = [[{'id': rng.choice(['d1', 'd2', 'd3']), 'text': ' '.join(rng.choice(words) for _ in range(rng.randint(0, 5)))} for _ in range(rng.randint(0, 4))] for _ in range(400)]
+        got = self.page().evaluate("""([queries, docs]) => queries.map((q, i) => [webUiPatterns.patternTokens(q), webUiPatterns.patternWithoutStopWords(webUiPatterns.patternTokens(q)), webUiPatterns.patternTextSearch(docs[i], q),
+            webUiPatterns.patternInvertedIndex(docs[i])])""", [queries, docs])
+        for query, documents, outcome in zip(queries, docs, got):
+            tokens = web_ui.pattern_tokens(query)
+            index = web_ui.pattern_inverted_index(documents)
+            self.assertEqual(outcome, [tokens, web_ui.pattern_without_stop_words(tokens), web_ui.pattern_text_search(documents, query), [[t, ids] for t, ids in index.items()]], (query, documents))
+
+    # --- the helpers the twins stand on
+    def test_pyjson_writes_what_python_writes(self):
+        rng = random.Random('patterns-json')
+        alphabet = ['a', 'é', '日', '😀', chr(0xFFFF), chr(0x10000), chr(0), '\n', '"', '\\', chr(0x7F), chr(0x2028), ' ', chr(0x1F), 'z']
+        def text():
+            return ''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 5)))
+        def number():
+            return rng.choice([0, 1, -1, 12345, 2 ** 52, 0.5, -1.5, 1.5e-7, 1e-5, 0.0001, 0.00012, 123456.789, 1e-300, 5e-324, 4503599627370495.5, 0.1 + 0.2, 1 / 3, 1e15 + 0.5, 2.5e-5])
+        def value(depth=0):
+            kind = rng.random()
+            if depth < 3 and kind < 0.15:
+                return [value(depth + 1) for _ in range(rng.randint(0, 4))]
+            if depth < 3 and kind < 0.3:
+                return {text(): value(depth + 1) for _ in range(rng.randint(0, 4))}
+            return rng.choice([None, True, False, text(), number(), number(), text()])
+        values = [value() for _ in range(1500)]
+        got = self.page().evaluate("values => values.map(v => webUiPatterns.pyJson(v))", values)
+        for item, text_out in zip(values, got):
+            self.assertEqual(text_out, pat_canon(item), item)
+
+    def test_equality_and_ordering_of_strings_follow_python(self):
+        rng = random.Random('patterns-eq')
+        pool = [None, True, False, 0, 1, 2, 0.5, 2.5, '', 'a', '1', 'true', [], [1], [True], [1, 'a'], {}, {'a': 1}, {'a': True}, {'b': 1}, {'a': [1]}, {'a': [True]}, [[0]], [[False]]]
+        pairs = [[rng.choice(pool), rng.choice(pool)] for _ in range(1500)]
+        got = self.page().evaluate("pairs => pairs.map(([a, b]) => webUiPatterns.pyEq(a, b))", pairs)
+        self.assertEqual(got, [a == b for a, b in pairs])
+        alphabet = ['a', 'b', 'é', '日', '😀', chr(0xFFFF), chr(0x10000), chr(0xD7FF), chr(0xE000), 'Z']
+        strings = [[''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 4))), ''.join(rng.choice(alphabet) for _ in range(rng.randint(0, 4)))] for _ in range(1500)]
+        got = self.page().evaluate("pairs => pairs.map(([a, b]) => webUiPatterns.cmpStr(a, b))", strings)
+        self.assertEqual(got, [(a > b) - (a < b) for a, b in strings])
+
+    def test_unknown_families_are_named_as_python_names_them(self):
+        names = ['regex', "O'Reilly", 'say "hi"', 'a\\b', "both ' and \"", '', 'Query']
+        got = self.page().evaluate(self.RUN, [[name, {}] for name in names])
+        for name, outcome in zip(names, got):
+            self.assertEqual(outcome['error'], self.python_outcome(name, {})['error'], name)
+        for name in ('search', 'convert', 'validate'):
+            self.assertEqual(self.page().evaluate(self.RUN, [[name, {}]])[0]['error'], f'{name} runs in Python only: python3 web_ui.py --pattern {name}')
+        self.assertEqual(self.page().evaluate(self.RUN, [['score', {'operation': 'tfidf', 'documents': []}]])[0]['error'], 'tfidf runs in Python only')
+
+    # --- the catalogue
+    def test_the_catalogue_is_python_catalogue(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual(page.evaluate("webUiPatterns.patternCatalogue()"), web_ui.pattern_catalogue())
+        numbers = list(range(-2, 203))
+        got = page.evaluate("""n => n.map(x => { const out = [webUiPatterns.patternFamily(x), webUiPatterns.patternOwner(x)]; for (const c of ['navigation', 'api', 'ui', 'data']) { try { out.push(webUiPatterns.patternTheme(c, x)) } catch (e) { out.push(e.message) } } return out })""", numbers)
+        for number, outcome in zip(numbers, got):
+            themes = []
+            for category in ('navigation', 'api', 'ui', 'data'):
+                try:
+                    themes.append(web_ui.pattern_theme(category, number))
+                except ValueError as error:
+                    themes.append(str(error))
+            self.assertEqual(outcome, [web_ui.pattern_family(number), web_ui.pattern_owner(number), *themes], number)
+
+    def test_searching_the_catalogue_agrees(self):
+        import web_ui
+        rng = random.Random('patterns-find')
+        rows = web_ui.pattern_catalogue()
+        words = ['filter', 'FILTER', 'ＦＩＬＴＥＲ', 'd003', 'push', 'pop', 'ページング', 'Navigation', ' ', 'theme', 'Cupertino', 'ａｐｉ', '001', 'フィルタ', 'Json', 'a', 'の', 'xyzzy', 'Material', 'ダーク']
+        queries = [[' '.join(rng.choice(words) for _ in range(rng.randint(0, 3))), rng.choice(['', '', 'navigation', 'api', 'ui', 'data', 'nope']), rng.choice(['', '', '', 'select', 'workflow', 'query', 'nope'])]
+                   for _ in range(600)]
+        got = self.page().evaluate("""qs => { const rows = webUiPatterns.patternCatalogue(); return qs.map(([q, c, f]) => webUiPatterns.patternFind(rows, q, c, f).map(r => r.id)) }""", queries)
+        counts = set()
+        for (query, category, family), outcome in zip(queries, got):
+            expected = [r['id'] for r in web_ui.pattern_find(rows, query, category, family)]
+            self.assertEqual(outcome, expected, (query, category, family))
+            counts.add(min(len(expected), 3))
+        self.assertEqual(counts, {0, 1, 2, 3})
+
+    # --- the page
+    def test_the_page_lists_and_searches_the_catalogue(self):
+        page = self.page()
+        self.assertEqual(page.text_content('[data-patterns-count]'), '792 patterns')
+        self.assertEqual(page.eval_on_selector_all('[data-patterns-list] li', 'els => els.length'), 48)
+        self.assertEqual(page.get_attribute('[data-patterns-list] li', 'data-id'), 'A001')
+        page.click('[data-patterns-more]')
+        self.assertEqual(page.eval_on_selector_all('[data-patterns-list] li', 'els => els.length'), 96)
+        self.assertEqual(page.get_attribute('#patterns', 'data-shown'), '96')
+        page.fill('[data-patterns-query]', 'FilterNested')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '1 of 792 patterns')
+        self.assertIn('D003', page.text_content('[data-patterns-list]'))
+        self.assertIn('select', page.text_content('[data-patterns-list]'))
+        self.assertTrue(page.is_hidden('[data-patterns-more]'))
+        page.fill('[data-patterns-query]', '')
+        page.select_option('[data-patterns-category]', 'data')
+        page.select_option('[data-patterns-family]', 'select')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '6 of 792 patterns')
+        page.select_option('[data-patterns-family]', '')
+        page.fill('[data-patterns-query]', 'nothing matches this')
+        self.assertEqual(page.text_content('[data-patterns-count]'), '0 of 792 patterns')
+
+    def test_the_runner_runs_twins_here_and_shows_python_for_the_rest(self):
+        import web_ui
+        page = self.page()
+        self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run'), page.get_attribute('#patterns', 'data-family')), ('browser', 'ok', 'query'))
+        self.assertEqual(pat_canon(json.loads(page.text_content('[data-patterns-result]'))), pat_canon(web_ui.pattern_run('query', web_ui.PATTERN_EXAMPLES['query'])))
+        for family in sorted(web_ui.PATTERN_RUNNERS):
+            page.select_option('[data-patterns-run-family]', family)
+            engine = 'browser' if family in web_ui.PATTERN_TWINS else 'python'
+            if family in PAT_ASYNC:
+                expect(page.locator('#patterns')).to_have_attribute('data-run', 'ok')
+            self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run')), (engine, 'ok'), family)
+            self.assertEqual(pat_canon(json.loads(page.text_content('[data-patterns-result]'))), pat_canon(web_ui.pattern_run(family, web_ui.PATTERN_EXAMPLES[family])), family)
+        page.select_option('[data-patterns-run-family]', 'search')
+        page.fill('[data-patterns-request]', '{"operation": "stem", "text": "walking it\'s"}')
+        page.click('[data-patterns-run]')
+        self.assertEqual(page.get_attribute('#patterns', 'data-run'), 'python')
+        self.assertIn("python3 web_ui.py --pattern search", page.text_content('[data-patterns-status]'))
+        self.assertIn("'\\''", page.text_content('[data-patterns-status]'), 'a quote in the request is escaped for the shell')
+        page.select_option('[data-patterns-run-family]', 'order')
+        page.fill('[data-patterns-request]', '{"mode": "shuffle"}')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-run'), page.text_content('[data-patterns-status]'), page.text_content('[data-patterns-result]')), ('refused', 'Refused: unsupported ordering mode', ''))
+        page.fill('[data-patterns-request]', '{"mode": ')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-run'), page.text_content('[data-patterns-status]')), ('invalid', 'Not JSON.'))
+        page.click('[data-patterns-example]')
+        self.assertEqual(page.get_attribute('#patterns', 'data-run'), 'ok')
+        page.select_option('[data-patterns-run-family]', 'score')
+        page.fill('[data-patterns-request]', '{"operation": "tfidf", "documents": ["a b"]}')
+        page.click('[data-patterns-run]')
+        self.assertEqual((page.get_attribute('#patterns', 'data-engine'), page.get_attribute('#patterns', 'data-run')), ('python', 'python'))
+
+    def test_the_page_fits_a_phone(self):
+        page = self.page()
+        page.set_viewport_size({'width': 320, 'height': 700})
+        page.select_option('[data-patterns-run-family]', 'workflow')
+        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 320)
+        self.assertLessEqual(page.evaluate('Math.max(...[...document.querySelectorAll("#patterns *")].map(e => e.getBoundingClientRect().right))'), 320)
+
+
+STUDIO_GOLDEN = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'studio_golden.json').read_text(encoding='utf-8'))
+STUDIO_CALL = """jobs => { const S = webUiImageStudio; S.useCanvasMetrics(false); const expand = v => Array.isArray(v) ? v.map(expand) : v && typeof v === 'object' ? ('__repeat' in v ? v.__repeat[0] + v.__repeat[1].repeat(v.__repeat[2]) : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, expand(x)]))) : v;\n  return jobs.map(([fn, arg0]) => { const arg = expand(arg0); try { return {ok: (() => { switch (fn) {
+  case 'jsnum': return String(arg); case 'jsjson': return JSON.stringify(arg); case 'heatColor': return S.heatColor(...arg); case 'matrix': return S.matrix(arg); case 'validate': return S.validate(arg);
+  case 'mosaic': return [...S.mosaicRGBA(arg[0], ...arg.slice(1))]; case 'arrow': return S.arrowGeometry(...arg); case 'outputSize': return S.outputSize(...arg); case 'pngPayload': return S.pngPayload(arg);
+  case 'textLayout': return S.textLayout(arg); case 'layerSVG': return S.layerSVG(arg); case 'svg': return S.svg(arg[0], undefined, arg[1]); case 'words': return S.words(arg); case 'graphemes': return S.graphemes(arg);
+  case 'history': { let h; const states = []; for (const [op, scene] of arg) { if (op === 'new') h = new S.History(scene); else if (op === 'commit') h.commit(scene); else if (op === 'undo') h.undo(); else h.redo();
+    states.push([h.index, h.items.length]) } return {states, items: h.items, workspace: S.workspaceText(h)} }
+  case 'place': return S.place(arg[0], arg[1], arg[2], arg[3], arg[4]); case 'textLayer': return S.textLayer(...arg); case 'matrixLayer': return S.matrixLayer(...arg); case 'imageLayer': return S.imageLayer(...arg);
+  case 'demo': return S.demoScene(); case 'stampDemo': return S.stampDemoScene(); case 'heatmapScene': return S.heatmapScene(arg); case 'blank': return S.blank();
+  case 'sincos': return [S.sin(arg), S.cos(arg)];
+  case 'textLayoutM': return S.textLayout(arg[0], t => Array.from(t).length * arg[1]);
+  case 'historyRun': { const h = new S.History(arg[0]), seen = []; for (const [op, scene] of arg.slice(1)) { if (op === 'commit') h.commit(scene); else if (op === 'undo') h.undo(); else if (op === 'redo') h.redo(); else if (op === 'trim') { h.items = h.items.slice(-1); h.index = 0 } seen.push([h.index, h.items.length, JSON.stringify(h.current)]) } return seen }
+  case 'workspace': { const h = new S.History(arg[0]); for (const s of arg.slice(1)) h.commit(s); return S.workspaceText(h) }
+  default: throw new Error('unknown ' + fn) } })() } } catch (e) { return {error: e.message} } }) }"""
+def studio_norm(value):
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and abs(value) < 2 ** 53 else value
+    if isinstance(value, (list, tuple)):
+        return [studio_norm(v) for v in value]
+    if isinstance(value, dict):
+        return {k: studio_norm(v) for k, v in value.items()}
+    return value
+
+
+def studio_canon(value):
+    return json.dumps(studio_norm(value), sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+STUDIO_TEXTS = ['hello world', "Hello, world! can't stop", 'a very long line of ordinary words that should wrap into several lines', 'supercalifragilisticexpialidocious_is_a_word', 'café naïve résumé',
+                '3.14 e.g. a.b example.com', '<tag> & "quote" \'single\'', '한국어 텍스트 입니다', 'x\ny\n\nz', 'tab\there', '🌱 emoji 👍🏽 flag 🇯🇵', 'line one\r\nline two', '']
+
+
+def studio_random_scene(r, wrap=True):
+    import web_ui as w
+    scene = w.studio_blank()
+    scene.update(width=r.randint(64, 900), height=r.randint(64, 700), background=r.choice(['none', '#FFFFFF', '#18A7A1', '#f8f7f2']))
+    number = lambda low, high: r.choice([r.randint(low, high), round(r.uniform(low, high), r.choice([1, 2, 3]))])
+    for i in range(r.randint(0, 7)):
+        kind = r.choice(['rect', 'ellipse', 'triangle', 'arrow', 'clock', 'text', 'text', 'heatmap', 'image'])
+        lid = f'L{i}' + r.choice(['', 'é', '😀'])
+        if kind == 'heatmap':
+            cols = r.randint(1, 4)
+            layer = w.studio_matrix_layer({'z': [[None if r.random() < 0.15 else r.choice([r.randint(-5, 9), round(r.uniform(-5, 9), 3)]) for _ in range(cols)] for _ in range(r.randint(1, 4))]}, lid)
+            layer['levels'] = r.choice([0, 0, 2, 5, 256])
+            layer['labels'] = r.choice([True, False])
+        elif kind == 'image':
+            layer = w.studio_image_layer('data:image/png;base64,' + base64.b64encode(w.studio_png_encode(2, 2, bytes(r.randrange(256) for _ in range(16)))).decode('ascii'), 2, 2, lid, scene['width'])
+            layer.update(cell=r.choice([1, 2, 8]), levels=r.choice([256, 4]), sampling=r.choice(['pixelated', 'smooth']), mono=r.choice([True, False]), fill=r.choice(['#18a7a1', '#FFFFFF']))
+        elif kind == 'text':
+            layer = w.studio_place('text', lid, 0, 0, fill=r.choice(['#18a7a1', '#FFFFFF', 'none']), text=r.choice(STUDIO_TEXTS), font=r.choice(['sans', 'mono']), mono=r.choice([True, False]), wrap=wrap and r.choice([True, False]))
+            layer.update(fontSize=number(6, 96), w=r.choice([40, 120, 300, 700]))
+            if r.random() < 0.3:
+                layer['bold'] = r.choice([True, False])
+        else:
+            layer = w.studio_place(kind, lid, 0, 0, outline=r.random() < 0.3, arrow_style=r.choice(['beginner', 'triangle']), arrow_placement=r.choice(['tip', 'middle']),
+                                   clock_time=f'{r.randint(0, 23)}:{r.randint(0, 59):02d}', fill=r.choice(['#18a7a1', '#FFFFFF', 'none']))
+            layer.update(strokeWidth=r.choice([0, 1, 3, 6, 64]))
+            if kind == 'arrow':
+                layer['headSize'] = r.choice([1, 28, 40, 512, 7.5])
+        layer.update(x=number(-300, 1400), y=number(-300, 800), rotation=r.choice([0, 0, 15, -90, 33.5, 360, -360]), opacity=r.choice([1, 1, 0.5, 0.25, 0]))
+        if kind != 'heatmap' and kind != 'image' and kind != 'text' or kind == 'text':
+            layer.update(w=layer['w'] if kind == 'text' else number(8, 900), h=number(8, 600))
+        else:
+            layer.update(w=number(8, 900), h=number(8, 600))
+        scene['layers'].append(layer)
+    return scene
+
+
+def studio_damage(r, scene):
+    import web_ui as w
+    scene = w.studio_clone(scene)
+    bad = [None, 0, -1, 9999, 'x', True, [], {}, 1.5, '#12345g', '', 2 ** 40, 0.5, 100000, 'none', '#FFFFFF']
+    layers = scene['layers']
+    if not layers or r.random() < 0.3:
+        scene[r.choice(['width', 'height', 'background', 'schema', 'layers'])] = r.choice(bad)
+    elif r.random() < 0.9:
+        layer = r.choice(layers)
+        key = r.choice(list(layer))
+        layer[key] = r.choice(bad)
+        if r.random() < 0.3:
+            del layer[key]
+    else:
+        layers.append(layers[0])
+    return scene
+
+
+class ImageStudioBrowserTests(unittest.TestCase):
+    """The image studio page in a real browser: its twin gives Python's answer (the recorded core.js outputs, and seeded random scenes, layers, histories and refusals with their text), and the
+    editor places, moves, edits, imports, exports and restores layers."""
+
+    def setUp(self):
+        from web_ui import imagestudio_document
+        self.server, self.origin = WorldBrowserTests.serve({'image-studio.html': imagestudio_document()})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = photo_engine(self.playwright).launch()
+        self.context = self.browser.new_context(viewport={'width': 900, 'height': 1400}, accept_downloads=True)
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def page(self, size=None, accept=True):
+        page = self.context.new_page()
+        if size:
+            page.set_viewport_size(size)
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
+        page.on('dialog', lambda dialog: dialog.accept() if accept else dialog.dismiss())
+        page.goto(self.origin + '/image-studio.html')
+        page.wait_for_selector('[data-ui-imagestudio][data-ready]')
+        return page
+
+    # --- helpers ------------------------------------------------------------------------------------------------------------------------------
+    def scene(self, page):
+        return page.evaluate('() => webUiImageStudio.app.scene')
+
+    def data(self, page, name):
+        return page.get_attribute('#imagestudio', 'data-' + name)
+
+    def status(self, page):
+        return page.inner_text('[data-is="status"]')
+
+    def painted(self, page):
+        return int(self.data(page, 'painted'))
+
+    def paint(self, page, action):
+        """Run an action and wait until the board has been drawn again."""
+        before = self.painted(page)
+        action()
+        page.wait_for_function('b => +document.querySelector("[data-ui-imagestudio]").dataset.painted > b', arg=before)
+
+    def at(self, page, x, y):
+        box = page.evaluate('() => { const r = document.querySelector("[data-is=board] svg").getBoundingClientRect(); return [r.x, r.y, r.width, r.height] }')
+        scene = self.scene(page)
+        return box[0] + x * box[2] / scene['width'], box[1] + y * box[3] / scene['height']
+
+    def press(self, page, x, y):
+        sx, sy = self.at(page, x, y)
+        self.paint(page, lambda: page.mouse.click(sx, sy))
+
+    def tool(self, page, name):
+        page.check(f'input[name="is-tool"][value="{name}"]')
+
+    def drag_handle(self, page, start, end):
+        """Press the resize handle at ``start`` and release at ``end`` (scene coordinates) with events sent to the handle itself, so the engine's hit testing of a rotated corner is not part of the check."""
+        (sx, sy), (ex, ey) = self.at(page, *start), self.at(page, *end)
+        page.evaluate("""([sx, sy, ex, ey]) => { const board = document.querySelector('[data-is=board]'), handle = board.querySelector('[data-handle]');
+            const make = (type, x, y) => new PointerEvent(type, {clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true});
+            handle.dispatchEvent(make('pointerdown', sx, sy)); board.dispatchEvent(make('pointermove', (sx + ex) / 2, (sy + ey) / 2)); board.dispatchEvent(make('pointermove', ex, ey)); board.dispatchEvent(make('pointerup', ex, ey)) }""", [sx, sy, ex, ey])
+
+    def blank(self, page):
+        self.paint(page, lambda: page.click('[data-is="blank"]'))
+        self.assertEqual(self.data(page, 'layers'), '0')
+
+    def call(self, page, jobs):
+        return page.evaluate(STUDIO_CALL, jobs)
+
+    def same(self, got, expect):
+        return got == expect
+
+    def pixels(self, data):
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            return image.convert('RGBA')
+
+    def download(self, page, selector):
+        with page.expect_download() as download:
+            page.click(selector)
+        return download.value, open(download.value.path(), 'rb').read()
+
+    # --- the twin gives Python's answer ----------------------------------------------------------------------------------------------------------
+    def test_every_recorded_core_js_output_is_reproduced_in_the_page(self):
+        page = self.page()
+        cases = STUDIO_GOLDEN['cases']
+        outcomes = self.call(page, [[c['fn'], c['arg']] for c in cases])
+        bad = []
+        for case, got in zip(cases, outcomes):
+            if case['fn'] in ('demo', 'stampDemo') and 'ok' in got:
+                for i, layer in enumerate(got['ok']['layers']):
+                    layer['id'] = f'L{i}'
+            if 'error' in case:
+                ok = got.get('error') == case['error']
+            else:
+                ok = 'ok' in got and (got['ok'] == case['ok'] if isinstance(case['ok'], str) else studio_canon(got['ok']) == studio_canon(case['ok']))
+            if not ok:
+                bad.append((case['fn'], json.dumps(case['arg'], ensure_ascii=False)[:120], str(got)[:120]))
+        self.assertEqual(bad[:5], [])
+        self.assertGreaterEqual(len(cases), 500)
+
+    def test_random_scenes_draw_the_same_svg_in_python_and_the_page(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-svg')
+        jobs, expect = [], []
+        for _ in range(250):
+            scene = studio_random_scene(r)
+            scale = r.choice([1, 1, 2, 0.5, 4, 0.25])
+            jobs.append(['svg', [scene, scale]])
+            try:
+                expect.append({'ok': w.studio_svg(scene, None, scale)})
+            except w.StudioError as error:
+                expect.append({'error': str(error)})
+        for want, got, job in zip(expect, self.call(page, jobs), jobs):
+            if 'error' in want:
+                self.assertEqual(got.get('error'), want['error'])
+            else:
+                self.assertTrue('ok' in got and self.same(got['ok'], want['ok']), (job[1][0], got))
+        self.assertGreater(sum('ok' in e for e in expect), 200, 'most random scenes are valid')
+
+    def test_damaged_scenes_are_refused_with_the_same_text(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-validate')
+        jobs, expect = [], []
+        for _ in range(400):
+            scene = studio_damage(r, studio_random_scene(r))
+            jobs.append(['validate', scene])
+            try:
+                expect.append({'ok': w.studio_validate(scene)})
+            except w.StudioError as error:
+                expect.append({'error': str(error)})
+        for want, got, job in zip(expect, self.call(page, jobs), jobs):
+            if 'error' in want:
+                self.assertEqual(got.get('error'), want['error'], job[1])
+            else:
+                self.assertEqual(studio_canon(got.get('ok')), studio_canon(want['ok']), job[1])
+        refused = sum('error' in e for e in expect)
+        self.assertTrue(100 < refused < 390, refused)
+
+    def test_wrapped_text_breaks_the_same_in_python_and_the_page_for_latin_and_hangul(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-wrap')
+        jobs, expect = [], []
+        for _ in range(300):
+            layer = w.studio_text_layer(r.choice(STUDIO_TEXTS), 't', 0, 0, wrap=True)
+            layer.update(w=r.choice([40, 80, 120, 300, 700]), fontSize=r.choice([8, 16, 24, 48]), font=r.choice(['sans', 'mono']))
+            jobs.append(['textLayout', layer])
+            expect.append(w.studio_text_layout(layer))
+        alphabet = list('abcAB 019.,;:\'_-\t"') + ['é', 'ñ', '́', '한', '국', '어', '😀', '👍', '‍', '️', '🇯', '🇵', '!', '(', '　', 'あ', 'ア', '漢']
+        for _ in range(300):
+            text = ''.join(r.choice(alphabet) for _ in range(r.randint(0, 14)))
+            jobs.append(['words', text])
+            expect.append(w.studio_words(text))
+            jobs.append(['graphemes', text])
+            expect.append(w.studio_graphemes(text))
+        for _ in range(300):
+            layer = w.studio_text_layer(r.choice(STUDIO_TEXTS + ['abcd efgh ij', 'abcdefghij', 'ab cd ef gh']), 't', 0, 0, wrap=True)
+            per = r.choice([1, 5, 10])
+            layer.update(w=per * r.choice([1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 20, 40]) + r.choice([0, 0, -1, 1]))
+            jobs.append(['textLayoutM', [layer, per]])
+            expect.append(w.studio_text_layout(layer, lambda text, per=per: len(text) * per))
+        got = self.call(page, jobs)
+        for job, want, out in zip(jobs, expect, got):
+            self.assertEqual(out.get('ok'), want, job)
+
+    def test_layers_demos_history_and_workspace_text_are_the_same(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-factories')
+        jobs, expect = [], []
+        for _ in range(120):
+            opts = dict(fill=r.choice(['#18a7a1', '#FFFFFF', 'none']), stroke=r.choice(['#183c42', '#000000']), outline=r.random() < 0.4, text=r.choice(STUDIO_TEXTS[:7] + ['🌱🌱🌱🌱🌱🌱🌱🌱', '']), font=r.choice(['sans', 'mono']),
+                        arrow_style=r.choice(['beginner', 'triangle']), arrow_placement=r.choice(['tip', 'middle']), clock_time=f'{r.randint(0, 23)}:{r.randint(0, 59):02d}', mono=r.random() < 0.5, wrap=r.random() < 0.5)
+            tool = r.choice(['rect', 'ellipse', 'triangle', 'text', 'stamp', 'arrow', 'clock'])
+            x, y = r.choice([r.randint(-50, 900), round(r.uniform(-50, 900), 3)]), r.randint(0, 600)
+            camel = {'arrowStyle': opts['arrow_style'], 'arrowPlacement': opts['arrow_placement'], 'clockTime': opts['clock_time'], **{k: v for k, v in opts.items() if k not in ('arrow_style', 'arrow_placement', 'clock_time')}}
+            jobs.append(['place', [tool, f'id{_}', x, y, camel]])
+            expect.append(w.studio_place(tool, f'id{_}', x, y, **opts))
+        for tool in ('rect', 'ellipse', 'triangle', 'text', 'stamp', 'arrow', 'clock'):
+            jobs.append(['place', [tool, 'd', 3, 4, {}]])
+            expect.append(w.studio_place(tool, 'd', 3, 4))
+            jobs.append(['place', [tool, 'p', 3, 4, {'fill': '#112233', 'text': 'x', 'outline': True}]])
+            expect.append(w.studio_place(tool, 'p', 3, 4, fill='#112233', text='x', outline=True))
+        jobs.append(['place', ['star', 'x', 0, 0, {}]])
+        jobs += [['demo', None], ['stampDemo', None], ['blank', None], ['heatmapScene', [[1, None, 3]]], ['matrixLayer', [[[1, 2], [3, 4]], 'm', 640, 480]], ['matrixLayer', [{'data': [{'type': 'heatmap', 'z': [[0, 1]]}]}, 'm']],
+                 ['imageLayer', ['data:image/png;base64,AAAA', 40, 30, 'i', 640]], ['imageLayer', ['data:image/png;base64,AAAA', 1, 3, 'i']], ['textLayer', ['hi\nthere', 't', 5, 6]]]
+        expect += [None, w.studio_demo_scene(), w.studio_stamp_demo_scene(), w.studio_blank(), w.studio_heatmap_scene([[1, None, 3]]), w.studio_matrix_layer([[1, 2], [3, 4]], 'm', 640, 480),
+                   w.studio_matrix_layer({'data': [{'type': 'heatmap', 'z': [[0, 1]]}]}, 'm'), w.studio_image_layer('data:image/png;base64,AAAA', 40, 30, 'i', 640), w.studio_image_layer('data:image/png;base64,AAAA', 1, 3, 'i'),
+                   w.studio_text_layer('hi\nthere', 't', 5, 6)]
+        for job, want, out in zip(jobs, expect, self.call(page, jobs)):
+            if want is None:
+                self.assertEqual(out, {'error': '道具が不正です'})
+            else:
+                self.assertEqual(out['ok'] if 'ok' in out else out, json.loads(w.js_json(want)), job[0])
+                self.assertEqual(json.dumps(out['ok'], separators=(',', ':'), ensure_ascii=False), w.js_json(want), 'the key order is the same too')
+        # histories and workspace files: the same text from the same edits
+        h_jobs, h_expect = [], []
+        for _ in range(40):
+            base = studio_random_scene(r, wrap=False)
+            steps = [studio_random_scene(r, wrap=False) for _ in range(r.randint(0, 4))]
+            h_jobs.append(['workspace', [base, *steps]])
+            history = w.StudioHistory(base)
+            for step in steps:
+                history.commit(step)
+            h_expect.append(w.studio_workspace_text(history))
+        for job, want, out in zip(h_jobs, h_expect, self.call(page, h_jobs)):
+            self.assertTrue('ok' in out and self.same(out['ok'], want), out)
+
+    def test_sin_and_cos_are_the_same_ports_in_python_and_the_page(self):
+        import math
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-sincos')
+        xs = [r.uniform(-8, 8) for _ in range(4000)] + [r.uniform(0, 0.8) for _ in range(300)] + [i * math.pi / 6 for i in range(-12, 13)] + [0, 1e-9, math.pi / 2, -math.pi / 2, math.pi, 2 * math.pi, 8, -8, 2.5, -2.5]
+        got = page.evaluate('xs => xs.map(x => [webUiImageStudio.sin(x), webUiImageStudio.cos(x)])', xs)
+        self.assertEqual([[w.studio_sin(x), w.studio_cos(x)] for x in xs], got)
+        for x in (8.5, -9, 100, 1e6):
+            self.assertEqual(page.evaluate('x => { try { webUiImageStudio.sin(x) } catch (e) { return e.message } }', x), '角度が大きすぎます')
+            self.assertEqual(page.evaluate('x => { try { webUiImageStudio.cos(x) } catch (e) { return e.message } }', x), '角度が大きすぎます')
+            with self.assertRaises(w.StudioError):
+                w.studio_sin(x)
+
+    def test_every_limit_is_exact_and_the_same_in_the_page(self):
+        import web_ui as w
+        page = self.page()
+        blank = lambda **patch: {'schema': w.STUDIO_SCHEMA, 'width': 64, 'height': 64, 'background': 'none', 'layers': [], **patch}
+        layer = lambda i=0, **patch: {**w.studio_base_layer('rect', f'r{i}'), 'fill': 'none', 'stroke': 'none', 'strokeWidth': 0, **patch}
+        text = w.studio_text_layer('a', 't', 0, 0)
+        image = lambda n, i=0, **patch: {**w.studio_image_layer('data:image/png;base64,' + 'A' * (n - 22), 1, 1, f'i{i}'), 'w': 1, 'h': 1, **patch}
+        jobs = []
+        for width, height in ((64, 64), (63, 64), (64, 63), (4096, 1024), (4096, 1025), (4097, 64), (2048, 2048), (2049, 2048), (64.5, 64), (64, '64')):
+            jobs.append(['validate', blank(width=width, height=height)])
+        for count in (0, 1, 99, 100, 101):
+            jobs.append(['validate', blank(layers=[layer(i) for i in range(count)])])
+        for size in (99, 100, 101):
+            jobs.append(['validate', blank(layers=[layer(0, id='x' * size)])])
+        for size in (49, 50, 51):
+            jobs.append(['validate', blank(layers=[layer(0, id='😀' * size)])])
+        for field, low, high in (('x', -8192, 8192), ('y', -8192, 8192), ('w', 1, 8192), ('h', 1, 8192), ('rotation', -360, 360), ('opacity', 0, 1), ('strokeWidth', 0, 64)):
+            for value in (low, high, low - 1, high + 1, low - 0.001, high + 0.001):
+                jobs.append(['validate', blank(layers=[layer(0, **{field: value})])])
+        for size in (1999, 2000, 2001):
+            jobs.append(['validate', blank(layers=[{**text, 'text': 'a' * size}])])
+        for size in (999, 1000, 1001):
+            jobs.append(['validate', blank(layers=[{**text, 'text': '😀' * size}])])
+        for size in (4, 512, 3.9, 512.1, 3, 513):
+            jobs.append(['validate', blank(layers=[{**text, 'fontSize': size}])])
+        for patch in ({'mono': 1}, {'mono': 'x'}, {'wrap': 1}, {'bold': None}, {'font': 'serif'}, {'font': 'mono'}, {'mono': True, 'fill': 'red'}):
+            jobs.append(['validate', blank(layers=[{**text, **patch}])])
+        for n in (12000000, 12000001):
+            jobs.append(['validate', blank(layers=[image(n)])])
+        for a, b in ((10000000, 10000000), (10000000, 10000001), (100, 100), (12000000, 8000000), (12000000, 8000001)):
+            jobs.append(['validate', blank(layers=[image(a, 0), image(b, 1)])])
+        for field, low, high in (('cell', 1, 512), ('levels', 2, 256)):
+            for value in (low, high, low - 1, high + 1, low + 0.5, '3', None):
+                jobs.append(['validate', blank(layers=[image(100, 0, **{field: value})])])
+        for sampling in ('pixelated', 'smooth', 'none', 5):
+            jobs.append(['validate', blank(layers=[image(100, 0, sampling=sampling)])])
+        for value in (2 ** 53 - 1, -(2 ** 53 - 1), 2 ** 53, 2.0 ** 60, 2 ** 54, 1e300):
+            jobs.append(['matrix', [[value]]])
+        jobs += [['matrix', {'z': [[1]], 'zmin': 2 ** 53}], ['matrix', {'z': [[1]], 'zmax': 2 ** 53 - 1}], ['matrix', [[None, None]]], ['matrix', [[1, 2], [3]]], ['matrix', {'z': [[1, 2]], 'x': ['a']}], ['matrix', {'z': [[1, 2]], 'y': ['a', 'b']}]]
+        for args in (([0] * 4, 1, 1, 0), ([0] * 4, 1, 1, 513), ([0] * 4, 1, 1, 1, 1), ([0] * 4, 1, 1, 1, 257), ([0] * 4, 0, 1, 1), ([0] * 4, 1, 0, 1), ([0] * 3, 1, 1, 1), ([0] * 4, 1.5, 1, 1), ([0] * 4, 1, 1, 512, 2), ([0] * 4, 1, 1, 1, 256)):
+            jobs.append(['mosaic', list(args)])
+        for a in ((1, 1, 28, 'tip'), (0, 1, 28, 'tip'), (8192, 1, 28, 'middle'), (8193, 1, 28, 'tip'), (10, 10, 0, 'tip'), (10, 10, 512, 'tip'), (10, 10, 513, 'tip'), (10, 10, 28, 'end'), (3, 4, 28, 'middle')):
+            jobs.append(['arrow', list(a)])
+        for scale in (0.25, 8, 0.24, 8.1, 1, 0, -1):
+            jobs.append(['outputSize', [blank(width=640, height=480), scale]])
+        for width, height, scale in ((1000, 1000, 8), (1024, 1024, 8), (1025, 1025, 8), (4096, 4096, 2), (4096, 2048, 2), (2048, 2048, 4), (2049, 2048, 4)):
+            jobs.append(['outputSize', [{'width': width, 'height': height}, scale]])
+        expect = []
+        for kind, arg in jobs:
+            try:
+                expect.append({'ok': {'validate': w.studio_validate, 'matrix': w.studio_matrix, 'mosaic': lambda a: list(w.studio_mosaic_rgba(bytes(a[0]), *a[1:])), 'arrow': lambda a: w.studio_arrow_geometry(*a),
+                                      'outputSize': lambda a: w.studio_output_size(*a)}[kind](arg)})
+            except w.StudioError as error:
+                expect.append({'error': str(error)})
+        def wire(value):
+            if isinstance(value, str) and value.startswith('data:image/png;base64,A') and len(value) > 10000:
+                return {'__repeat': ['data:image/png;base64,', 'A', len(value) - 22]}
+            if isinstance(value, list):
+                return [wire(v) for v in value]
+            if isinstance(value, dict):
+                return {k: wire(v) for k, v in value.items()}
+            return value
+        got = self.call(page, [wire(job) for job in jobs])
+        for job, want, out in zip(jobs, expect, got):
+            self.assertEqual('error' in want, 'error' in out, (job[0], str(job[1])[:200], want if 'error' in want else '', out))
+            if 'error' in want:
+                self.assertEqual(out['error'], want['error'], (job[0], str(job[1])[:200]))
+            else:
+                self.assertEqual(studio_canon(out['ok']), studio_canon(want['ok']), (job[0], str(job[1])[:200]))
+        self.assertGreater(sum('error' in e for e in expect), 40)
+        self.assertGreater(sum('ok' in e for e in expect), 40)
+        # the sizes of the hand-off, the history and the workspace file, built in the page
+        heavy = page.evaluate("""() => { const S = webUiImageStudio, limit = 32 * 1024 * 1024, out = {}, sig = [137, 80, 78, 71, 13, 10, 26, 10], tried = f => { try { return {ok: f()} } catch (e) { return {error: e.message} } };
+            const png = n => { const a = new Uint8Array(n); a.set(sig); return a };
+            out.payload = [limit, limit + 1, 8, 7].map(n => { const r = tried(() => S.pngPayload(n === 7 ? png(8).subarray(0, 7) : png(n))); return r.ok ? r.ok.bytes : r.error });
+            const blank = {schema: S.SCHEMA, width: 64, height: 64, background: 'none', layers: []};
+            const history = n => { const h = new S.History(blank); h.items = Array(n).fill(blank); return h };
+            out.states = [1, 40, 41].map(n => { const r = tried(() => S.workspaceText(history(n))); return r.ok ? JSON.parse(r.ok).items.length : r.error });
+            const record = n => JSON.stringify({schema: S.WORKSPACE_SCHEMA, items: Array(n).fill(blank), index: 0});
+            out.read = [0, 1, 40, 41].map(n => { const r = tried(() => S.workspaceHistory(record(n))); return r.ok ? r.ok.items.length : r.error });
+            const base = S.workspaceText(history(1)), pad = n => base + ' '.repeat(n - new TextEncoder().encode(base).length);
+            out.bytes = [limit, limit + 1].map(n => { const r = tried(() => S.workspaceHistory(pad(n))); return r.ok ? 'ok' : r.error });
+            const big = JSON.parse(base); big.items[0].source = '🌱'.repeat(8388608); const multibyte = JSON.stringify(big);
+            out.utf8 = [multibyte.length < limit, new TextEncoder().encode(multibyte).length > limit, tried(() => S.workspaceHistory(multibyte)).error];
+            const scene = {...blank, layers: [S.imageLayer('data:image/png;base64,' + 'A'.repeat(8000000 - 22), 1, 1, 'img', 64)]}; scene.layers[0].w = 1; scene.layers[0].h = 1;
+            const h5 = new S.History(scene); h5.items = Array(5).fill(scene); h5.index = 2;
+            out.repeated = [tried(() => S.workspaceText(h5)).error, h5.items.length, tried(() => S.workspaceText(new S.History(h5.current))).ok !== undefined];
+            out.metrics = [S.useCanvasMetrics(true), S.useCanvasMetrics(false)];
+            const emptyLength = new TextEncoder().encode(S.workspaceText(new S.History({...blank, source: ''}))).length;
+            out.writer = [limit - emptyLength, limit - emptyLength + 1].map(n => { const r = tried(() => S.workspaceText(new S.History({...blank, source: 'x'.repeat(n)}))); return r.ok ? new TextEncoder().encode(r.ok).length : r.error });
+            return out }""")
+        self.assertEqual(heavy['states'], [1, 40, '作業履歴の形式が不正です'])
+        self.assertEqual(heavy['read'], ['作業履歴の形式が不正です', 1, 40, '作業履歴の形式が不正です'])
+        self.assertEqual(heavy['bytes'], ['ok', '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
+        self.assertEqual(heavy['utf8'], [True, True, '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
+        self.assertEqual(heavy['repeated'], ['作業履歴は32MiB以下にしてください。履歴を整理して再保存できます', 5, True])
+        self.assertEqual(heavy['metrics'], [True, False])
+        self.assertEqual(heavy['writer'], [32 * 1024 * 1024, '作業履歴は32MiB以下にしてください。履歴を整理して再保存できます'])
+        self.assertEqual(heavy['payload'], [32 * 1024 * 1024, '32MiB以下のPNGが必要です', 8, '32MiB以下のPNGが必要です'])
+
+    def test_random_histories_step_the_same_in_python_and_the_page(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-history')
+        jobs, expect = [], []
+        for _ in range(120):
+            scenes = [studio_random_scene(r, wrap=False) for _ in range(4)]
+            ops = [['commit', r.choice(scenes)] if r.random() < 0.45 else [r.choice(['undo', 'redo', 'undo', 'redo', 'commit']), None] for _ in range(r.randint(1, 60))]
+            ops = [[op, scene if op == 'commit' and scene is not None else r.choice(scenes)] if op == 'commit' else [op, None] for op, scene in ops]
+            jobs.append(['historyRun', [scenes[0], *ops]])
+            history, seen = w.StudioHistory(scenes[0]), []
+            for op, scene in ops:
+                if op == 'commit':
+                    history.commit(scene)
+                elif op == 'undo':
+                    history.undo()
+                else:
+                    history.redo()
+                seen.append([history.index, len(history.items), w.js_json(history.current)])
+            expect.append(seen)
+        # past the forty-state limit
+        scenes = [dict(w.studio_blank(), width=64 + i) for i in range(70)]
+        jobs.append(['historyRun', [scenes[0], *[['commit', s] for s in scenes[1:]], ['undo', None], ['commit', scenes[5]], ['redo', None]]])
+        history, seen = w.StudioHistory(scenes[0]), []
+        for op, scene in [*[('commit', s) for s in scenes[1:]], ('undo', None), ('commit', scenes[5]), ('redo', None)]:
+            history.commit(scene) if op == 'commit' else history.undo() if op == 'undo' else history.redo()
+            seen.append([history.index, len(history.items), w.js_json(history.current)])
+        expect.append(seen)
+        for job, want, out in zip(jobs, expect, self.call(page, jobs)):
+            self.assertEqual(out.get('ok'), want)
+        self.assertEqual([entry[:2] for entry in expect[-1][-4:]], [[39, 40], [38, 40], [39, 40], [39, 40]])
+
+    def test_mosaic_and_png_payload_agree_on_random_input(self):
+        import web_ui as w
+        page = self.page()
+        r = random.Random('studio-mosaic')
+        jobs, expect = [], []
+        for _ in range(150):
+            width, height = r.randint(1, 12), r.randint(1, 12)
+            data = [r.randrange(256) if r.random() < 0.7 else r.choice([0, 255]) for _ in range(width * height * 4)]
+            for k in range(3, len(data), 4):
+                if r.random() < 0.4:
+                    data[k] = r.choice([0, 255, 128])
+            cell, levels = r.choice([1, 2, 3, 4, 7, 512]), r.choice([256, 2, 3, 16, 255])
+            jobs.append(['mosaic', [data, width, height, cell, levels]])
+            expect.append(list(w.studio_mosaic_rgba(bytes(data), width, height, cell, levels)))
+        for _ in range(20):
+            payload = bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes(r.randrange(256) for _ in range(r.choice([0, 1, 50, 20000])))
+            jobs.append(['pngPayload', list(payload)])
+            expect.append(w.studio_png_payload(payload))
+        for job, want, out in zip(jobs, expect, self.call(page, jobs)):
+            self.assertEqual(out.get('ok'), want, job[0])
+        self.assertEqual(self.call(page, [['pngPayload', [1, 2, 3]]])[0], {'error': '32MiB以下のPNGが必要です'})
+
+    # --- the editor ----------------------------------------------------------------------------------------------------------------------------
+    def test_the_page_starts_with_the_example_and_exports_the_python_svg(self):
+        import web_ui as w
+        page = self.page()
+        self.assertEqual((self.data(page, 'layers'), self.data(page, 'tool'), self.data(page, 'metrics'), self.status(page)), ('8', 'select', 'canvas', 'Ready.'))
+        self.assertEqual((page.input_value('[data-is="cell"]'), page.inner_text('[data-is="cellout"]'), page.input_value('[data-is="levels"]'), page.inner_text('[data-is="levelsout"]')), ('1', '1 px', '256', '256'), 'with nothing selected the sliders rest at their defaults')
+        self.assertEqual(self.scene(page), json.loads(w.js_json(w.studio_demo_scene())))
+        self.assertEqual(page.inner_text('[data-is="size"]'), '1280 × 720')
+        for scale in (1, 2, 4):
+            page.select_option('[data-is="scale"]', str(scale))
+            download, data = self.download(page, '[data-is="svg"]')
+            self.assertEqual(download.suggested_filename, 'ironmate-image.svg')
+            self.assertEqual(data.decode('utf-8'), w.studio_svg(w.studio_demo_scene(), None, scale))
+        self.assertEqual(self.status(page), 'Saved the SVG')
+        page.select_option('[data-is="scale"]', '8')
+        page.click('[data-is="svg"]')
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "出力は各辺8192px・合計16MP以下にしてください"')
+        self.assertEqual(self.data(page, 'error'), '1', '1280 x 8 is wider than 8192 pixels')
+
+    def test_each_tool_places_its_layer_where_the_canvas_was_pressed(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        page.fill('[data-is="fill"]', '#112233')
+        page.fill('[data-is="stroke"]', '#445566')
+        page.fill('[data-is="text"]', 'Hi there')
+        page.fill('[data-is="clock"]', '03:45')
+        cases = [('rect', 100, 80), ('ellipse', 300, 80), ('triangle', 500, 80), ('text', 100, 300), ('arrow', 400, 300), ('clock', 800, 300)]
+        for tool, x, y in cases:
+            self.tool(page, tool)
+            self.press(page, x, y)
+        scene = self.scene(page)
+        self.assertEqual([l['kind'] for l in scene['layers']], ['rect', 'ellipse', 'triangle', 'text', 'arrow', 'clock'])
+        for layer, (tool, x, y) in zip(scene['layers'], cases):
+            self.assertAlmostEqual(layer['x'], x, delta=1.5)
+            self.assertAlmostEqual(layer['y'], y, delta=1.5)
+            expect = w.studio_place(tool, layer['id'], layer['x'], layer['y'], fill='#112233', stroke='#445566', text='Hi there', clock_time='03:45')
+            self.assertEqual(layer, json.loads(w.js_json(expect)), tool)
+        self.assertEqual(self.data(page, 'layers'), '6')
+        self.assertEqual(self.data(page, 'selected'), scene['layers'][-1]['id'])
+        self.assertEqual((scene['layers'][-1]['hour'], scene['layers'][-1]['minute']), (3, 45))
+        self.tool(page, 'rect')
+        page.check('[data-is="outline"]')
+        self.press(page, 600, 500)
+        self.assertEqual(self.scene(page)['layers'][-1]['fill'], 'none')
+
+    def test_a_stamp_is_pressed_again_and_again_and_a_layer_can_become_the_stamp(self):
+        page = self.page()
+        self.blank(page)
+        page.click('[data-stamp="🌱"]')
+        self.assertEqual(self.data(page, 'tool'), 'stamp')
+        self.assertIn('🌱', page.inner_text('[data-is="stampnote"]'))
+        self.press(page, 200, 200)
+        self.press(page, 400, 200)
+        scene = self.scene(page)
+        self.assertEqual([l['text'] for l in scene['layers']], ['🌱', '🌱'])
+        self.assertTrue(all(l['mono'] for l in scene['layers']))
+        page.click('[data-stamp="🔰"]')
+        self.assertEqual(page.input_value('[data-is="fill"]'), '#000000', 'the learner mark is black')
+        self.tool(page, 'rect')
+        self.press(page, 600, 400)
+        rect = self.scene(page)['layers'][-1]
+        page.click('[data-is="custom"]')
+        self.assertEqual(self.data(page, 'tool'), 'stamp')
+        self.press(page, 900, 500)
+        copy = self.scene(page)['layers'][-1]
+        self.assertEqual((copy['kind'], copy['w'], copy['h'], copy['name']), ('rect', rect['w'], rect['h'], rect['name']))
+        self.assertNotEqual(copy['id'], rect['id'])
+        self.assertAlmostEqual(copy['x'] + copy['w'] / 2, 900, delta=1.5)
+
+    def test_select_move_resize_and_undo(self):
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        rect = self.scene(page)['layers'][0]
+        self.tool(page, 'select')
+        self.paint(page, lambda: page.mouse.click(*self.at(page, 300, 260)))
+        self.assertEqual(self.data(page, 'selected'), rect['id'])
+        sx, sy = self.at(page, 300, 260)
+        ex, ey = self.at(page, 420, 340)
+        page.mouse.move(sx, sy)
+        page.mouse.down()
+        page.mouse.move((sx + ex) / 2, (sy + ey) / 2)
+        page.mouse.move(ex, ey)
+        page.mouse.up()
+        page.wait_for_function('() => webUiImageStudio.app.history.index === 3')
+        moved = self.scene(page)['layers'][0]
+        self.assertAlmostEqual(moved['x'] - rect['x'], 120, delta=2)
+        self.assertAlmostEqual(moved['y'] - rect['y'], 80, delta=2)
+        self.assertEqual((moved['w'], moved['h']), (rect['w'], rect['h']))
+        # the blue corner at the bottom right resizes
+        hx, hy = self.at(page, moved['x'] + moved['w'], moved['y'] + moved['h'])
+        page.mouse.move(hx, hy)
+        page.mouse.down()
+        page.mouse.move(hx + 40, hy + 24)
+        page.mouse.move(hx + 80, hy + 48)
+        page.mouse.up()
+        page.wait_for_function('() => webUiImageStudio.app.history.index === 4')
+        bigger = self.scene(page)['layers'][0]
+        scale = self.at(page, 1, 0)[0] - self.at(page, 0, 0)[0]
+        self.assertAlmostEqual(bigger['w'] - moved['w'], 80 / scale, delta=2)
+        self.assertAlmostEqual(bigger['h'] - moved['h'], 48 / scale, delta=2)
+        self.assertEqual((bigger['x'], bigger['y']), (moved['x'], moved['y']), 'an unrotated layer grows from its top left corner')
+        self.paint(page, lambda: page.click('[data-is="undo"]'))
+        self.assertEqual(self.scene(page)['layers'][0]['w'], moved['w'])
+        self.paint(page, lambda: page.click('[data-is="redo"]'))
+        self.assertEqual(self.scene(page)['layers'][0]['w'], bigger['w'])
+        # pressing empty canvas deselects
+        self.paint(page, lambda: page.mouse.click(*self.at(page, 1200, 40)))
+        self.assertEqual(self.data(page, 'selected'), '')
+
+    def test_resizing_a_rotated_layer_keeps_its_top_left_corner_and_a_text_layer_scales_its_font(self):
+        import math
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 300, 200)
+        self.tool(page, 'select')
+        for angle in (45, 90, -30):
+            self.paint(page, lambda: page.fill('[data-is="rotation"]', str(angle)) or page.dispatch_event('[data-is="rotation"]', 'change'))
+            layer = self.scene(page)['layers'][0]
+            corner = lambda l: (l['x'] + l['w'] / 2 + math.cos(math.radians(l['rotation'])) * (-l['w'] / 2) - math.sin(math.radians(l['rotation'])) * (-l['h'] / 2),
+                                l['y'] + l['h'] / 2 + math.sin(math.radians(l['rotation'])) * (-l['w'] / 2) + math.cos(math.radians(l['rotation'])) * (-l['h'] / 2))
+            handle = (layer['w'], layer['h'])
+            hx = layer['x'] + layer['w'] / 2 + math.cos(math.radians(angle)) * (handle[0] / 2) - math.sin(math.radians(angle)) * (handle[1] / 2)
+            hy = layer['y'] + layer['h'] / 2 + math.sin(math.radians(angle)) * (handle[0] / 2) + math.cos(math.radians(angle)) * (handle[1] / 2)
+            self.drag_handle(page, (hx, hy), (hx + 60, hy + 36))
+            page.wait_for_function('l => webUiImageStudio.app.scene.layers[0].w !== l', arg=layer['w'])
+            after = self.scene(page)['layers'][0]
+            self.assertNotEqual((after['w'], after['h']), (layer['w'], layer['h']), angle)
+            before_corner, after_corner = corner(layer), corner(after)
+            self.assertAlmostEqual(before_corner[0], after_corner[0], delta=0.5, msg=angle)
+            self.assertAlmostEqual(before_corner[1], after_corner[1], delta=0.5, msg=angle)
+        self.blank(page)
+        self.tool(page, 'text')
+        page.fill('[data-is="text"]', 'Resize me')
+        self.press(page, 200, 200)
+        self.tool(page, 'select')
+        text = self.scene(page)['layers'][0]
+        self.drag_handle(page, (text['x'] + text['w'], text['y'] + text['h']), (text['x'] + text['w'] - 120, text['y'] + text['h'] - 60))
+        page.wait_for_function('s => webUiImageStudio.app.scene.layers[0].fontSize !== s', arg=text['fontSize'])
+        grown = self.scene(page)['layers'][0]
+        ratio = min(grown['w'] / text['w'], grown['h'] / text['h'])
+        self.assertAlmostEqual(grown['fontSize'], max(4, min(512, text['fontSize'] * ratio)), places=6)
+        self.assertLess(grown['fontSize'], text['fontSize'])
+        self.assertGreaterEqual(grown['fontSize'], 4)
+
+    def test_a_cancelled_drag_puts_the_layer_back_and_the_list_shows_a_text_layer_in_the_box(self):
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.tool(page, 'select')
+        start = self.scene(page)['layers'][0]
+        before = page.evaluate('() => webUiImageStudio.app.history.items.length')
+        sx, sy = self.at(page, 260, 250)
+        page.mouse.move(sx, sy)
+        page.mouse.down()
+        page.mouse.move(sx + 40, sy + 30)
+        page.mouse.move(sx + 80, sy + 60)
+        page.wait_for_function('x => webUiImageStudio.app.scene.layers[0].x !== x', arg=start['x'])
+        page.evaluate('() => document.querySelector("[data-is=board]").dispatchEvent(new PointerEvent("pointercancel", {bubbles: true}))')
+        page.wait_for_function('x => webUiImageStudio.app.scene.layers[0].x === x', arg=start['x'])
+        page.mouse.up()
+        self.assertEqual((self.scene(page)['layers'][0]['x'], self.scene(page)['layers'][0]['y']), (start['x'], start['y']))
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), before, 'nothing was recorded')
+        self.tool(page, 'text')
+        page.fill('[data-is="text"]', 'First words')
+        self.press(page, 500, 400)
+        page.fill('[data-is="text"]', 'something else')
+        ids = [l['id'] for l in self.scene(page)['layers']]
+        self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[0]}"]'))
+        self.assertEqual(page.input_value('[data-is="text"]'), 'something else', 'a layer without text leaves the box alone')
+        self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[1]}"]'))
+        self.assertEqual(page.input_value('[data-is="text"]'), 'First words', 'a text layer puts its text in the box')
+
+    def test_keyboard_nudges_deletes_and_undoes(self):
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'ellipse')
+        self.press(page, 300, 300)
+        start = self.scene(page)['layers'][0]
+        page.focus('[data-is="board"]')
+        self.tool(page, 'select')
+        page.focus('[data-is="board"]')
+        self.paint(page, lambda: page.keyboard.press('ArrowRight'))
+        self.paint(page, lambda: page.keyboard.press('Shift+ArrowDown'))
+        moved = self.scene(page)['layers'][0]
+        self.assertEqual((moved['x'] - start['x'], moved['y'] - start['y']), (8, 1))
+        self.paint(page, lambda: page.keyboard.press('Control+z'))
+        self.assertEqual(self.scene(page)['layers'][0]['y'], start['y'])
+        self.paint(page, lambda: page.keyboard.press('Control+Shift+z'))
+        self.assertEqual(self.scene(page)['layers'][0]['y'], start['y'] + 1)
+        self.assertEqual(self.data(page, 'selected'), '', 'undo and redo leave nothing selected')
+        self.paint(page, lambda: page.click('[data-is="layers"] button'))
+        page.focus('[data-is="board"]')
+        self.paint(page, lambda: page.keyboard.press('Delete'))
+        self.assertEqual(self.data(page, 'layers'), '0')
+        self.paint(page, lambda: page.click('[data-is="undo"]'))
+        self.assertEqual(self.data(page, 'layers'), '1')
+
+    def test_layer_list_order_duplicate_delete_and_the_hundred_layer_limit(self):
+        page = self.page()
+        self.blank(page)
+        for i, tool in enumerate(['rect', 'ellipse', 'triangle']):
+            self.tool(page, tool)
+            self.press(page, 100 + 100 * i, 100)
+        names = lambda: [b.get_attribute('data-layer-id') for b in page.query_selector_all('[data-is="layers"] button')]
+        ids = [l['id'] for l in self.scene(page)['layers']]
+        self.assertEqual(names(), ids[::-1], 'the top layer is listed first')
+        self.paint(page, lambda: page.click(f'[data-is="layers"] button[data-layer-id="{ids[0]}"]'))
+        self.assertEqual(self.data(page, 'selected'), ids[0])
+        self.assertEqual([b.get_attribute('aria-pressed') for b in page.query_selector_all('[data-is="layers"] button')], ['false', 'false', 'true'], 'the selected layer is the pressed button')
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.assertEqual([l['id'] for l in self.scene(page)['layers']], [ids[1], ids[0], ids[2]])
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual([l['id'] for l in self.scene(page)['layers']], [ids[0], ids[1], ids[2]])
+        self.paint(page, lambda: page.click('[data-is="duplicate"]'))
+        scene = self.scene(page)
+        copy, original = scene['layers'][-1], scene['layers'][0]
+        self.assertEqual((copy['x'] - original['x'], copy['y'] - original['y'], copy['kind']), (24, 24, original['kind']))
+        self.assertEqual(len({l['id'] for l in scene['layers']}), 4)
+        self.paint(page, lambda: page.click('[data-is="delete"]'))
+        self.assertEqual(self.data(page, 'layers'), '3')
+        page.evaluate('''async () => { const s = webUiImageStudio.blank(); for (let i = 0; i < 100; i++) s.layers.push(webUiImageStudio.place('rect', 'r' + i, i, i)); await webUiImageStudio.app.replaceScene(s) }''')
+        self.assertEqual(self.data(page, 'layers'), '100')
+        self.tool(page, 'rect')
+        sx, sy = self.at(page, 10, 10)
+        page.mouse.click(sx, sy)
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "レイヤーは100件までです"')
+        self.assertEqual((self.data(page, 'layers'), self.data(page, 'error')), ('100', '1'))
+
+    def test_the_inspector_edits_the_selected_layer_and_refuses_what_the_scene_refuses(self):
+        page = self.page()
+        self.blank(page)
+        self.assertTrue(page.is_disabled('[data-is="x"]'))
+        self.tool(page, 'text')
+        page.fill('[data-is="text"]', 'Edit me')
+        self.press(page, 100, 100)
+        self.assertFalse(page.is_disabled('[data-is="x"]'))
+        self.assertFalse(page.is_disabled('[data-is="fontsize"]'))
+        for field, value in (('x', '120'), ('y', '-30'), ('rotation', '45'), ('opacity', '0.5'), ('fontsize', '24')):
+            self.paint(page, lambda: page.fill(f'[data-is="{field}"]', value) or page.dispatch_event(f'[data-is="{field}"]', 'change'))
+        layer = self.scene(page)['layers'][0]
+        self.assertEqual((layer['x'], layer['y'], layer['rotation'], layer['opacity'], layer['fontSize']), (120, -30, 45, 0.5, 24))
+        self.paint(page, lambda: page.select_option('[data-is="fontfamily"]', 'mono'))
+        self.paint(page, lambda: page.uncheck('[data-is="mono"]'))
+        self.assertEqual((self.scene(page)['layers'][0]['font'], self.scene(page)['layers'][0]['mono']), ('mono', False))
+        page.fill('[data-is="text"]', 'Changed')
+        page.fill('[data-is="fill"]', '#ff0000')
+        self.paint(page, lambda: page.click('[data-is="apply"]'))
+        self.assertEqual((self.scene(page)['layers'][0]['text'], self.scene(page)['layers'][0]['fill']), ('Changed', '#ff0000'))
+        before = self.scene(page)
+        page.fill('[data-is="w"]', '0')
+        page.dispatch_event('[data-is="w"]', 'change')
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "サイズが不正です"')
+        self.assertEqual((self.scene(page), self.data(page, 'error')), (before, '1'))
+        page.fill('[data-is="rotation"]', '999')
+        page.dispatch_event('[data-is="rotation"]', 'change')
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "角度または不透明度が不正です"')
+        self.assertEqual(self.scene(page), before)
+
+    def test_arrow_clock_and_heatmap_settings(self):
+        page = self.page()
+        self.blank(page)
+        self.tool(page, 'arrow')
+        self.press(page, 100, 100)
+        self.assertEqual(page.input_value('[data-is="arrowstyle"]'), 'beginner')
+        self.paint(page, lambda: page.select_option('[data-is="arrowstyle"]', 'triangle'))
+        self.paint(page, lambda: page.select_option('[data-is="arrowplacement"]', 'middle'))
+        arrow = self.scene(page)['layers'][0]
+        self.assertEqual((arrow['headStyle'], arrow['headPlacement']), ('triangle', 'middle'))
+        self.tool(page, 'clock')
+        self.press(page, 500, 100)
+        self.paint(page, lambda: page.fill('[data-is="clock"]', '07:20') or page.dispatch_event('[data-is="clock"]', 'change'))
+        clock = self.scene(page)['layers'][-1]
+        self.assertEqual((clock['hour'], clock['minute'], clock['kind']), (7, 20, 'clock'))
+        self.paint(page, lambda: page.click('[data-is="heatmap"]'))
+        heat = self.scene(page)['layers'][-1]
+        self.assertEqual((heat['kind'], heat['z'], heat['levels'], heat['labels']), ('heatmap', [[0, 1, 2, 3], [3, 2, 1, 0], [1, None, 2, 3]], 0, True))
+        self.assertEqual(page.inner_text('[data-is="levelsout"]'), 'continuous')
+        self.assertEqual(page.input_value('[data-is="levels"]'), '256', 'a continuous heatmap shows the slider at its far end')
+        page.evaluate('() => { const l = document.querySelector("[data-is=levels]"); l.value = 4; l.dispatchEvent(new Event("change")) }')
+        page.wait_for_function('() => webUiImageStudio.app.scene.layers.at(-1).levels === 4')
+        self.paint(page, lambda: page.uncheck('[data-is="labels"]'))
+        self.assertFalse(self.scene(page)['layers'][-1]['labels'])
+        self.paint(page, lambda: page.click('[data-is="continuous"]'))
+        self.assertEqual(self.scene(page)['layers'][-1]['levels'], 0)
+        for text, message in (('[[1,2],[3]]', '1〜4096セルの長方形の数値行列が必要です'), ('{"data": []}', 'heatmapトレースは1つにしてください')):
+            page.fill('[data-is="matrix"]', text)
+            page.click('[data-is="heatmap"]')
+            page.wait_for_function('m => document.querySelector("[data-is=status]").textContent === m', arg=message)
+        page.fill('[data-is="matrix"]', '{nope')
+        page.click('[data-is="heatmap"]')
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1" && document.querySelector("[data-is=status]").textContent.includes("JSON")')
+
+    def test_canvas_size_background_and_the_undo_history(self):
+        page = self.page()
+        self.paint(page, lambda: (page.fill('[data-is="width"]', '640'), page.fill('[data-is="height"]', '480'), page.click('[data-is="resize"]')))
+        scene = self.scene(page)
+        self.assertEqual((scene['width'], scene['height']), (640, 480))
+        self.assertEqual(page.inner_text('[data-is="size"]'), '640 × 480')
+        self.paint(page, lambda: page.check('[data-is="transparent"]'))
+        self.assertEqual(self.scene(page)['background'], 'none')
+        self.paint(page, lambda: page.uncheck('[data-is="transparent"]'))
+        self.assertEqual(self.scene(page)['background'], '#f8f7f2')
+        page.fill('[data-is="width"]', '10')
+        page.click('[data-is="resize"]')
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.scene(page)['width'], 640)
+        page.click('details:has([data-is="history"]) > summary')
+        items = page.query_selector_all('[data-is="history"] li button')
+        self.assertEqual(len(items), 4)
+        self.assertTrue(items[-1].inner_text().startswith('● State 4'))
+        self.paint(page, lambda: items[0].click())
+        self.assertEqual(self.scene(page)['width'], 1280)
+        self.assertEqual(page.get_attribute('[data-is="history"] li button', 'aria-current'), 'step')
+        self.assertTrue(page.is_disabled('[data-is="undo"]'))
+        self.assertFalse(page.is_disabled('[data-is="redo"]'))
+
+    def test_a_photo_is_added_kept_exactly_and_mosaicked_from_the_original(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        rng = random.Random(5)
+        rgba = bytes(v for _ in range(16 * 12) for v in (rng.randrange(256), rng.randrange(256), rng.randrange(256), 255))
+        png = w.studio_png_encode(16, 12, rgba)
+        self.paint(page, lambda: page.set_input_files('[data-is="file"]', files=[{'name': 'photo.png', 'mimeType': 'image/png', 'buffer': png}]))
+        layer = self.scene(page)['layers'][0]
+        self.assertEqual((layer['kind'], layer['cell'], layer['levels'], layer['sampling'], layer['mono'], layer['name']), ('image', 1, 256, 'pixelated', False, 'photo.png'))
+        self.assertAlmostEqual(layer['w'] / layer['h'], 16 / 12, places=5)
+        self.assertEqual(layer['w'], 1280 * 0.65 if 1280 * 0.65 < 700 else 700)
+        decoded = self.pixels(base64.b64decode(layer['src'].split(',', 1)[1]))
+        self.assertEqual(decoded.tobytes(), rgba, 'the page keeps every pixel')
+        for cell, levels in ((4, 256), (3, 4), (128, 2)):
+            page.evaluate('([cell, levels]) => { for (const [name, v] of [["cell", cell], ["levels", levels]]) { const e = document.querySelector(`[data-is=${name}]`); e.value = v; e.dispatchEvent(new Event("change")) } }', [cell, levels])
+            page.wait_for_function('([cell, levels]) => { const l = webUiImageStudio.app.scene.layers[0]; return l.cell === cell && l.levels === levels }', arg=[cell, levels])
+            source = page.evaluate('async () => { const s = webUiImageStudio.app.scene; return (await webUiImageStudio.app.imageSource(s))(s.layers[0]) }')
+            got = self.pixels(base64.b64decode(source.split(',', 1)[1])).tobytes()
+            self.assertEqual(got, bytes(w.studio_mosaic_rgba(rgba, 16, 12, cell, levels)), (cell, levels))
+            self.assertEqual(w.studio_png_decode(base64.b64decode(source.split(',', 1)[1]))[2], got, 'the Python decoder reads what the browser wrote')
+        self.assertEqual(self.scene(page)['layers'][0]['src'], layer['src'], 'the original is never rewritten')
+        plain = page.evaluate('async src => { const s = webUiImageStudio.app.scene; s.layers[0].cell = 1; s.layers[0].levels = 256; return (await webUiImageStudio.app.imageSource(s))(s.layers[0]) }', layer['src'])
+        self.assertEqual(plain, layer['src'], 'a layer that keeps every pixel passes its own image through')
+        self.paint(page, lambda: page.select_option('[data-is="sampling"]', 'smooth'))
+        self.assertEqual(self.scene(page)['layers'][0]['sampling'], 'smooth')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'x.png', 'mimeType': 'image/png', 'buffer': b'not an image at all'}])
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像形式またはMIME宣言が実データと一致しません')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'y.png', 'mimeType': 'image/jpeg', 'buffer': png}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "画像形式またはMIME宣言が実データと一致しません"')
+        self.assertEqual(self.data(page, 'layers'), '1')
+
+    def test_base64_text_is_added_as_an_image_and_a_bad_one_is_refused(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        png = w.studio_png_encode(4, 4, bytes([200, 30, 60, 255]) * 16)
+        text = base64.b64encode(png).decode('ascii')
+        for value in ('data:image/png;base64,' + text, text, ' \n'.join([text[:20], text[20:]])):
+            self.paint(page, lambda: (page.fill('[data-is="b64in"]', value), page.click('[data-is="b64import"]')))
+        layers = self.scene(page)['layers']
+        self.assertEqual([l['name'] for l in layers], ['Base64画像'] * 3)
+        for bad in ('', 'hello', 'data:image/gif;base64,' + text, 'data:image/png;base64,' + base64.b64encode(b'GIF89a....').decode(), text[:-2]):
+            page.fill('[data-is="b64in"]', bad)
+            page.click('[data-is="b64import"]')
+            page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+            self.assertTrue(self.status(page).startswith('Not a PNG, JPEG or WebP image in Base64 ('), bad[:20])
+            page.fill('[data-is="b64in"]', text)
+            self.paint(page, lambda: page.click('[data-is="b64import"]'))
+            self.assertEqual(self.data(page, 'error'), '')
+            self.paint(page, lambda: page.click('[data-is="undo"]'))
+        self.assertEqual(self.data(page, 'layers'), '3')
+
+    def test_pasting_an_image_from_the_clipboard(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        png = w.studio_png_encode(2, 2, bytes([1, 2, 3, 255]) * 4)
+        page.evaluate('''text => { Object.defineProperty(navigator, "clipboard", {configurable: true, value: {readText: async () => text}}) }''', 'data:image/png;base64,' + base64.b64encode(png).decode())
+        self.paint(page, lambda: page.click('[data-is="paste"]'))
+        self.assertEqual(self.scene(page)['layers'][0]['name'], 'クリップボード画像')
+        page.evaluate('''() => { Object.defineProperty(navigator, "clipboard", {configurable: true, value: {readText: async () => "just words"}}) }''')
+        page.click('[data-is="paste"]')
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), 'The clipboard has no PNG, JPEG or WebP image, or image text.')
+        self.assertEqual(self.data(page, 'layers'), '1')
+
+    def test_png_and_base64_exports_hold_what_the_board_shows(self):
+        import web_ui as w
+        page = self.page()
+        scene = w.studio_blank()
+        scene.update(width=128, height=96, background='#FFFFFF')
+        scene['layers'] = [{**w.studio_base_layer('rect', 'red', 0, 0, 64, 48), 'fill': '#FF0000', 'stroke': 'none', 'strokeWidth': 0}, {**w.studio_base_layer('rect', 'blue', 64, 48, 64, 48), 'fill': '#0000FF', 'stroke': 'none', 'strokeWidth': 0}]
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        near = lambda a, b: all(abs(x - y) <= 2 for x, y in zip(a, b))
+        for scale in (1, 2, 4):
+            page.select_option('[data-is="scale"]', str(scale))
+            download, data = self.download(page, '[data-is="png"]')
+            self.assertEqual(download.suggested_filename, 'ironmate-image.png')
+            image = self.pixels(data)
+            self.assertEqual(image.size, (128 * scale, 96 * scale))
+            self.assertTrue(near(image.getpixel((16 * scale, 12 * scale)), (255, 0, 0, 255)))
+            self.assertTrue(near(image.getpixel((100 * scale, 80 * scale)), (0, 0, 255, 255)))
+            self.assertTrue(near(image.getpixel((100 * scale, 10 * scale)), (255, 255, 255, 255)))
+        page.select_option('[data-is="scale"]', '2')
+        scene['background'] = 'none'
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        scene['background'] = '#FFFFFF'
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        edge = self.pixels(self.download(page, '[data-is="png"]')[1])
+        for point, colour in (((0, 0), (255, 0, 0, 255)), ((127, 95), (255, 0, 0, 255)), ((128, 95), (255, 255, 255, 255)), ((127, 96), (255, 255, 255, 255)), ((128, 96), (0, 0, 255, 255)),
+                              ((255, 191), (0, 0, 255, 255)), ((254, 190), (0, 0, 255, 255)), ((255, 0), (255, 255, 255, 255)), ((0, 191), (255, 255, 255, 255))):
+            self.assertTrue(near(edge.getpixel(point), colour), (point, edge.getpixel(point), colour))
+        scene['background'] = 'none'
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+        self.assertEqual(self.pixels(self.download(page, '[data-is="png"]')[1]).getpixel((200, 20)), (0, 0, 0, 0), 'a transparent background stays transparent')
+        page.click('[data-is="base64"]')
+        page.wait_for_function('() => document.querySelector("[data-is=b64panel]").open')
+        text = page.input_value('[data-is="b64text"]')
+        self.assertTrue(text.startswith('data:image/png;base64,'))
+        png = base64.b64decode(text.split(',', 1)[1])
+        self.assertEqual(self.pixels(png).size, (256, 192))
+        self.assertEqual(w.studio_png_payload(png)['dataUri'], text)
+        self.assertIn(f'{len(png):,}', page.inner_text('[data-is="b64status"]'))
+        page.select_option('[data-is="b64mode"]', 'base64')
+        self.assertEqual(page.input_value('[data-is="b64text"]'), text.split(',', 1)[1])
+        _, saved = self.download(page, '[data-is="b64save"]')
+        self.assertEqual(saved.decode(), text.split(',', 1)[1])
+
+    def test_json_and_workspace_files_round_trip_and_bad_files_change_nothing(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        for tool, x in (('rect', 100), ('ellipse', 300), ('text', 500)):
+            self.tool(page, tool)
+            self.press(page, x, 100)
+        scene = self.scene(page)
+        download, data = self.download(page, '[data-is="jsonsave"]')
+        self.assertEqual(download.suggested_filename, 'ironmate-scene.json')
+        self.assertEqual(data.decode('utf-8'), w.js_json(w.studio_validate(scene), 2), 'the same text as the command line')
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.dirty'), False)
+        _, workspace = self.download(page, '[data-is="wssave"]')
+        restored = w.studio_workspace_history(workspace.decode('utf-8'))
+        self.assertEqual((restored.index, len(restored.items), restored.current), (4, 5, scene))
+        self.assertEqual(workspace.decode('utf-8'), w.studio_workspace_text(restored))
+        # open a different scene, then bring the saved history back
+        other = w.studio_demo_scene()
+        self.paint(page, lambda: page.set_input_files('[data-is="jsonopen"]', files=[{'name': 's.json', 'mimeType': 'application/json', 'buffer': w.js_json(other).encode()}]))
+        self.assertEqual(self.data(page, 'layers'), '8')
+        self.paint(page, lambda: page.click('[data-is="undo"]'))
+        self.assertEqual(self.scene(page), scene, 'opening a file is an edit that can be undone')
+        self.paint(page, lambda: page.click('[data-is="redo"]'))
+        history = w.StudioHistory(other)
+        history.commit(scene)
+        self.paint(page, lambda: page.set_input_files('[data-is="wsopen"]', files=[{'name': 'w.json', 'mimeType': 'application/json', 'buffer': w.studio_workspace_text(history).encode()}]))
+        self.assertEqual((self.scene(page), page.evaluate('() => [webUiImageStudio.app.history.index, webUiImageStudio.app.history.items.length]')), (scene, [1, 2]))
+        before = self.scene(page)
+        for field, content, message in (('jsonopen', b'{"schema": "x"}', 'シーンの形式・サイズが不正です（最大100レイヤー、4MP）'), ('jsonopen', b'{nope', None), ('wsopen', b'{"schema": "ironmate-studio-workspace/1", "items": [], "index": 0}', '作業履歴の形式が不正です'),
+                                        ('wsopen', b'not json', None)):
+            page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+            page.set_input_files(f'[data-is="{field}"]', files=[{'name': 'bad.json', 'mimeType': 'application/json', 'buffer': content}])
+            page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+            if message:
+                self.assertEqual(self.status(page), message)
+            self.assertEqual(self.scene(page), before)
+        page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+        page.click('details:has([data-is="history"]) > summary')
+        self.paint(page, lambda: page.click('[data-is="trim"]'))
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), 1)
+        self.assertTrue(page.evaluate('() => webUiImageStudio.app.dirty'), 'trimming is an edit of the history')
+        self.assertEqual(self.scene(page), before)
+
+    def test_unsaved_work_is_flagged_for_leaving_the_page(self):
+        page = self.page()
+        self.assertFalse(page.evaluate('() => webUiImageStudio.app.dirty'))
+        flagged = page.evaluate('() => { const e = new Event("beforeunload", {cancelable: true}); window.dispatchEvent(e); return e.defaultPrevented }')
+        self.assertFalse(flagged)
+        self.paint(page, lambda: page.click('[data-is="blank"]'))
+        self.assertTrue(page.evaluate('() => webUiImageStudio.app.dirty'))
+        flagged = page.evaluate('() => { const e = new Event("beforeunload", {cancelable: true}); window.dispatchEvent(e); return e.defaultPrevented }')
+        self.assertTrue(flagged)
+
+    def test_every_edit_marks_the_work_unsaved_and_saving_clears_it(self):
+        page = self.page()
+        dirty = lambda: page.evaluate('() => webUiImageStudio.app.dirty')
+        self.assertFalse(dirty())
+        self.blank(page)
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.assertTrue(dirty())
+        for action in ('undo', 'redo'):
+            page.click('[data-is="jsonsave"]')
+            self.assertFalse(dirty())
+            self.paint(page, lambda: page.click(f'[data-is="{action}"]'))
+            self.assertTrue(dirty(), action)
+        page.click('[data-is="jsonsave"]')
+        self.tool(page, 'select')
+        self.paint(page, lambda: page.mouse.click(*self.at(page, 300, 260)))
+        sx, sy = self.at(page, 300, 260)
+        page.mouse.move(sx, sy)
+        page.mouse.down()
+        page.mouse.move(sx + 30, sy + 20)
+        page.mouse.up()
+        page.wait_for_function('() => webUiImageStudio.app.dirty')
+        page.click('[data-is="jsonsave"]')
+        self.assertFalse(dirty())
+        page.click('details:has([data-is="history"]) > summary')
+        self.paint(page, lambda: page.click('[data-is="history"] li button'))
+        self.assertTrue(dirty(), 'going to an older state is an edit too')
+        page.click('[data-is="jsonsave"]')
+        page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', self.scene(page))
+        self.assertTrue(dirty())
+
+    def test_a_layer_moves_one_place_backward_and_forward(self):
+        page = self.page()
+        self.blank(page)
+        for i, tool in enumerate(['rect', 'ellipse', 'triangle']):
+            self.tool(page, tool)
+            self.press(page, 100 + 100 * i, 100)
+        ids = [l['id'] for l in self.scene(page)['layers']]
+        order = lambda: [l['id'] for l in self.scene(page)['layers']]
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[0], ids[2], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[2], ids[0], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="back"]'))
+        self.assertEqual(order(), [ids[2], ids[0], ids[1]], 'the bottom layer stays at the bottom')
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.assertEqual(order(), [ids[0], ids[2], ids[1]])
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.paint(page, lambda: page.click('[data-is="front"]'))
+        self.assertEqual(order(), [ids[0], ids[1], ids[2]], 'the top layer stays at the top')
+
+    def test_an_image_that_is_too_large_to_draw_is_reported_in_the_status_line(self):
+        import web_ui as w
+        page = self.page()
+        self.blank(page)
+        def attempt(png, cell):
+            src = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+            scene = w.studio_blank()
+            scene['layers'] = [w.studio_image_layer(src, 1, 1, 'img', 1280)]
+            page.evaluate('async s => { await webUiImageStudio.app.replaceScene(s) }', scene)
+            self.paint(page, lambda: page.mouse.click(*self.at(page, 100, 100)))
+            page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+            page.evaluate('c => { const e = document.querySelector("[data-is=cell]"); e.value = c; e.dispatchEvent(new Event("change")) }', cell)
+        big = w.studio_png_encode(2049, 2048, bytes(2049 * 2048 * 4))
+        attempt(big, 2)
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像は4MP以下にしてください')
+        fits = w.studio_png_encode(2048, 2048, bytes(2048 * 2048 * 4))
+        attempt(fits, 2)
+        page.wait_for_function('() => webUiImageStudio.app.scene.layers[0].cell === 2')
+        page.wait_for_timeout(300)
+        self.assertEqual(self.data(page, 'error'), '', '4 MP exactly is drawn')
+
+    def test_files_of_exactly_32_mib_are_read_and_one_byte_more_is_refused(self):
+        import web_ui as w
+        limit = 32 * 1024 * 1024
+        page = self.page()
+        self.blank(page)
+        png = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+        page.set_input_files('[data-is="file"]', files=[{'name': 'big.png', 'mimeType': 'image/png', 'buffer': png + bytes(limit - 8)}])
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像を読み込めません', 'exactly 32 MiB is read, and then cannot be decoded')
+        page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'big.png', 'mimeType': 'image/png', 'buffer': png + bytes(limit - 7)}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "画像は32MiB以下にしてください"')
+        page.evaluate('() => { document.querySelector("#imagestudio").dataset.error = "" }')
+        page.evaluate('() => { document.querySelector("[data-is=status]").textContent = "" }')
+        page.set_input_files('[data-is="file"]', files=[{'name': 'empty.png', 'mimeType': 'image/png', 'buffer': b''}])
+        page.wait_for_function('() => document.querySelector("#imagestudio").dataset.error === "1"')
+        self.assertEqual(self.status(page), '画像は32MiB以下にしてください', 'an empty file is refused with the same words')
+        scene_text = w.js_json(w.studio_demo_scene())
+        padded = scene_text + ' ' * (20000000 - len(scene_text.encode('utf-8')))
+        self.paint(page, lambda: page.set_input_files('[data-is="jsonopen"]', files=[{'name': 's.json', 'mimeType': 'application/json', 'buffer': padded.encode('utf-8')}]))
+        self.assertEqual(self.data(page, 'layers'), '8', 'a scene file of exactly 20,000,000 bytes is read')
+        page.set_input_files('[data-is="jsonopen"]', files=[{'name': 's.json', 'mimeType': 'application/json', 'buffer': (padded + ' ').encode('utf-8')}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "JSONは20MB以下にしてください"')
+        history = w.StudioHistory(w.studio_blank())
+        text = w.studio_workspace_text(history)
+        fits = text + ' ' * (limit - len(text.encode('utf-8')))
+        self.paint(page, lambda: page.set_input_files('[data-is="wsopen"]', files=[{'name': 'w.json', 'mimeType': 'application/json', 'buffer': fits.encode('utf-8')}]))
+        self.assertEqual(self.status(page), 'Restored the history')
+        page.set_input_files('[data-is="wsopen"]', files=[{'name': 'w.json', 'mimeType': 'application/json', 'buffer': (fits + ' ').encode('utf-8')}])
+        page.wait_for_function('() => document.querySelector("[data-is=status]").textContent === "作業履歴は32MiB以下にしてください"')
+
+    def test_trimming_the_history_asks_first_and_the_heading_names_the_layer(self):
+        page = self.page(accept=False)
+        self.blank(page)
+        self.assertEqual(page.inner_text('[data-is="selection"]'), 'Select a layer')
+        self.assertTrue(page.is_checked('[data-is="labels"]') and page.is_disabled('[data-is="labels"]'))
+        self.tool(page, 'rect')
+        self.press(page, 200, 200)
+        self.assertEqual(page.inner_text('[data-is="selection"]'), '四角')
+        self.assertTrue(page.is_checked('[data-is="labels"]'), 'the number labels box stays ticked for a layer without labels')
+        before = page.evaluate('() => webUiImageStudio.app.history.items.length')
+        page.click('details:has([data-is="history"]) > summary')
+        page.click('[data-is="trim"]')
+        page.wait_for_timeout(200)
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), before, 'a dismissed question keeps the history')
+        accepting = self.page()
+        self.blank(accepting)
+        accepting.click('details:has([data-is="history"]) > summary')
+        self.paint(accepting, lambda: accepting.click('[data-is="trim"]'))
+        self.assertEqual(accepting.evaluate('() => webUiImageStudio.app.history.items.length'), 1)
+
+    def test_the_examples_and_text_measuring(self):
+        import web_ui as w
+        page = self.page()
+        self.paint(page, lambda: page.click('[data-is="stampdemo"]'))
+        scene = self.scene(page)
+        self.assertEqual(scene, json.loads(w.js_json(w.studio_stamp_demo_scene())))
+        self.assertEqual(page.evaluate('() => webUiImageStudio.app.history.items.length'), 2)
+        download, data = self.download(page, '[data-is="svg"]')
+        self.assertTrue(self.same(data.decode('utf-8'), w.studio_svg(w.studio_stamp_demo_scene())))
+        # wrapped text is measured with the installed fonts in the page and with an estimate in Python: both fit the box
+        layer = {**w.studio_text_layer('a very long line of ordinary words that should wrap', 't', 0, 0, wrap=True), 'w': 200, 'fontSize': 24}
+        page.evaluate('() => webUiImageStudio.useCanvasMetrics(true)')
+        lines = page.evaluate('l => webUiImageStudio.textLayout(l)[0]', layer)
+        self.assertGreater(len(lines), 1)
+        self.assertEqual(''.join(lines).replace(' ', ''), layer['text'].replace(' ', ''))
+        self.assertTrue(all(page.evaluate('([t, l]) => webUiImageStudio.measureText(t, l)', [line, layer]) <= 200 for line in lines))
+
+    def test_the_page_fits_a_phone(self):
+        page = self.page({'width': 320, 'height': 700})
+        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 320)
+        self.assertLessEqual(page.evaluate('Math.max(...[...document.querySelectorAll("#imagestudio *:not(svg):not(svg *)")].map(e => e.getBoundingClientRect().right))'), 320.5)
+        self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("[data-is=board]")).touchAction'), 'pan-y')
+        self.tool(page, 'rect')
+        self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("[data-is=board]")).touchAction'), 'none', 'placing needs the touch for itself')
 
 
 if __name__ == '__main__':

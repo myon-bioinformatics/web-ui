@@ -1,0 +1,1132 @@
+{
+ "source": "flutter_navigation_basic@39d659ebffa5 assets/data_processing/*.json (the files the Dart app shows) and python/fixtures/*_input.json (their inputs)",
+ "assets": [
+  {
+   "asset": "command_051.json",
+   "family": "collection",
+   "request": {
+    "mode": "selectable",
+    "commands": [
+     [
+      "select"
+     ]
+    ]
+   },
+   "expected": {
+    "mode": "selectable",
+    "schema": "collection-command/1",
+    "state": {
+     "items": [
+      "a",
+      "b",
+      "c",
+      "d"
+     ],
+     "mode": "selectable",
+     "selected": [
+      "b"
+     ]
+    },
+    "values": [
+     {
+      "id": "a",
+      "selected": false
+     },
+     {
+      "id": "b",
+      "selected": true
+     },
+     {
+      "id": "c",
+      "selected": false
+     },
+     {
+      "id": "d",
+      "selected": false
+     }
+    ]
+   }
+  },
+  {
+   "asset": "command_052.json",
+   "family": "collection",
+   "request": {
+    "mode": "swipe-delete",
+    "commands": [
+     [
+      "delete"
+     ]
+    ]
+   },
+   "expected": {
+    "mode": "swipe-delete",
+    "schema": "collection-command/1",
+    "state": {
+     "items": [
+      "a",
+      "c",
+      "d"
+     ],
+     "mode": "swipe-delete",
+     "selected": []
+    },
+    "values": [
+     {
+      "id": "a",
+      "selected": false
+     },
+     {
+      "id": "c",
+      "selected": false
+     },
+     {
+      "id": "d",
+      "selected": false
+     }
+    ]
+   }
+  },
+  {
+   "asset": "command_053.json",
+   "family": "collection",
+   "request": {
+    "mode": "reorderable",
+    "commands": [
+     [
+      "move-first"
+     ]
+    ]
+   },
+   "expected": {
+    "mode": "reorderable",
+    "schema": "collection-command/1",
+    "state": {
+     "items": [
+      "b",
+      "a",
+      "c",
+      "d"
+     ],
+     "mode": "reorderable",
+     "selected": []
+    },
+    "values": [
+     {
+      "id": "b",
+      "selected": false
+     },
+     {
+      "id": "a",
+      "selected": false
+     },
+     {
+      "id": "c",
+      "selected": false
+     },
+     {
+      "id": "d",
+      "selected": false
+     }
+    ]
+   }
+  },
+  {
+   "asset": "command_054.json",
+   "family": "collection",
+   "request": {
+    "mode": "checklist",
+    "commands": [
+     [
+      "toggle"
+     ]
+    ]
+   },
+   "expected": {
+    "mode": "checklist",
+    "schema": "collection-command/1",
+    "state": {
+     "items": [
+      "a",
+      "b",
+      "c",
+      "d"
+     ],
+     "mode": "checklist",
+     "selected": [
+      "b"
+     ]
+    },
+    "values": [
+     {
+      "id": "a",
+      "selected": false
+     },
+     {
+      "id": "b",
+      "selected": true
+     },
+     {
+      "id": "c",
+      "selected": false
+     },
+     {
+      "id": "d",
+      "selected": false
+     }
+    ]
+   }
+  },
+  {
+   "asset": "deduplicate_report.json",
+   "family": "select",
+   "request": {
+    "operation": "deduplicate_report",
+    "values": [
+     "猫",
+     "犬",
+     "猫",
+     null,
+     "犬",
+     null
+    ]
+   },
+   "expected": {
+    "values": [
+     {
+      "input_count": 6,
+      "unique_count": 3,
+      "duplicate_count": 3,
+      "has_duplicates": true
+     }
+    ]
+   }
+  },
+  {
+   "asset": "distinct_filter.json",
+   "family": "select",
+   "request": {
+    "operation": "distinct",
+    "values": [
+     "猫",
+     "犬",
+     "猫",
+     null,
+     "犬",
+     null
+    ]
+   },
+   "expected": {
+    "values": [
+     "猫",
+     "犬",
+     null
+    ]
+   }
+  },
+  {
+   "asset": "filter_basic.json",
+   "family": "select",
+   "request": {
+    "values": [
+     1,
+     2,
+     1,
+     3
+    ],
+    "equals": 1
+   },
+   "expected": {
+    "values": [
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "asset": "filter_multiple.json",
+   "family": "select",
+   "request": {
+    "values": [
+     {
+      "name": "猫",
+      "kind": "pet",
+      "active": true
+     },
+     {
+      "name": "犬",
+      "kind": "pet",
+      "active": false
+     },
+     {
+      "name": "猫",
+      "kind": "pet",
+      "active": true
+     },
+     {
+      "name": "狐",
+      "kind": "wild",
+      "active": true
+     }
+    ],
+    "conditions": [
+     {
+      "path": [
+       "kind"
+      ],
+      "equals": "pet"
+     },
+     {
+      "path": [
+       "active"
+      ],
+      "equals": true
+     }
+    ]
+   },
+   "expected": {
+    "values": [
+     {
+      "name": "猫",
+      "kind": "pet",
+      "active": true
+     },
+     {
+      "name": "猫",
+      "kind": "pet",
+      "active": true
+     }
+    ]
+   }
+  },
+  {
+   "asset": "filter_nested.json",
+   "family": "select",
+   "request": {
+    "values": [
+     {
+      "name": "A",
+      "profile": {
+       "tags": [
+        "blue"
+       ]
+      }
+     },
+     {
+      "name": "B",
+      "profile": {
+       "tags": []
+      }
+     },
+     {
+      "name": "C",
+      "profile": {
+       "tags": [
+        "blue",
+        "red"
+       ]
+      }
+     },
+     {
+      "name": "D"
+     }
+    ],
+    "conditions": [
+     {
+      "path": [
+       "profile",
+       "tags",
+       0
+      ],
+      "equals": "blue"
+     }
+    ]
+   },
+   "expected": {
+    "values": [
+     {
+      "name": "A",
+      "profile": {
+       "tags": [
+        "blue"
+       ]
+      }
+     },
+     {
+      "name": "C",
+      "profile": {
+       "tags": [
+        "blue",
+        "red"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "asset": "inverted_index.json",
+   "family": "text",
+   "request": {
+    "mode": "inverted-index"
+   },
+   "expected": {
+    "mode": "inverted-index",
+    "schema": "text-processing/1",
+    "values": [
+     {
+      "documents": [
+       "doc-2"
+      ],
+      "term": "data"
+     },
+     {
+      "documents": [
+       "doc-3"
+      ],
+      "term": "fast"
+     },
+     {
+      "documents": [
+       "doc-1"
+      ],
+      "term": "flutter"
+     },
+     {
+      "documents": [
+       "doc-2",
+       "doc-3"
+      ],
+      "term": "indexes"
+     },
+     {
+      "documents": [
+       "doc-1"
+      ],
+      "term": "interfaces"
+     },
+     {
+      "documents": [
+       "doc-3"
+      ],
+      "term": "make"
+     },
+     {
+      "documents": [
+       "doc-1",
+       "doc-2"
+      ],
+      "term": "portable"
+     },
+     {
+      "documents": [
+       "doc-2"
+      ],
+      "term": "processes"
+     },
+     {
+      "documents": [
+       "doc-2"
+      ],
+      "term": "python"
+     },
+     {
+      "documents": [
+       "doc-1"
+      ],
+      "term": "renders"
+     },
+     {
+      "documents": [
+       "doc-3"
+      ],
+      "term": "repeated"
+     },
+     {
+      "documents": [
+       "doc-2",
+       "doc-3"
+      ],
+      "term": "search"
+     },
+     {
+      "documents": [
+       "doc-1"
+      ],
+      "term": "user"
+     }
+    ]
+   }
+  },
+  {
+   "asset": "priority_queue.json",
+   "family": "order",
+   "request": {
+    "mode": "priority"
+   },
+   "expected": {
+    "mode": "priority",
+    "schema": "list-ordering/1",
+    "values": [
+     {
+      "name": "critical",
+      "priority": 1
+     },
+     {
+      "name": "urgent",
+      "priority": 1
+     },
+     {
+      "name": "normal",
+      "priority": 2
+     },
+     {
+      "name": "later",
+      "priority": 3
+     }
+    ]
+   }
+  },
+  {
+   "asset": "search_basic.json",
+   "family": "text",
+   "request": {
+    "mode": "search"
+   },
+   "expected": {
+    "mode": "search",
+    "schema": "text-processing/1",
+    "values": [
+     "doc-2"
+    ]
+   }
+  },
+  {
+   "asset": "sort_basic.json",
+   "family": "order",
+   "request": {
+    "mode": "basic"
+   },
+   "expected": {
+    "mode": "basic",
+    "schema": "list-ordering/1",
+    "values": [
+     1,
+     2,
+     3,
+     5,
+     9
+    ]
+   }
+  },
+  {
+   "asset": "sort_multi_key.json",
+   "family": "order",
+   "request": {
+    "mode": "multi"
+   },
+   "expected": {
+    "mode": "multi",
+    "schema": "list-ordering/1",
+    "values": [
+     {
+      "group": "a",
+      "name": "A3",
+      "score": 3
+     },
+     {
+      "group": "a",
+      "name": "A1",
+      "score": 1
+     },
+     {
+      "group": "b",
+      "name": "B2",
+      "score": 2
+     },
+     {
+      "group": "b",
+      "name": "B1",
+      "score": 1
+     }
+    ]
+   }
+  },
+  {
+   "asset": "sort_reverse.json",
+   "family": "order",
+   "request": {
+    "mode": "reverse"
+   },
+   "expected": {
+    "mode": "reverse",
+    "schema": "list-ordering/1",
+    "values": [
+     9,
+     5,
+     3,
+     2,
+     1
+    ]
+   }
+  },
+  {
+   "asset": "sorted_set.json",
+   "family": "order",
+   "request": {
+    "mode": "sorted-set"
+   },
+   "expected": {
+    "mode": "sorted-set",
+    "schema": "list-ordering/1",
+    "values": [
+     1,
+     2,
+     3,
+     5
+    ]
+   }
+  },
+  {
+   "asset": "stop_word.json",
+   "family": "text",
+   "request": {
+    "mode": "tokens"
+   },
+   "expected": {
+    "mode": "tokens",
+    "schema": "text-processing/1",
+    "values": [
+     "python",
+     "flutter",
+     "search",
+     "data"
+    ]
+   }
+  },
+  {
+   "asset": "structure_045.json",
+   "family": "structure",
+   "request": {
+    "mode": "sticky"
+   },
+   "expected": {
+    "mode": "sticky",
+    "schema": "collection-structure/1",
+    "values": [
+     {
+      "header": "A",
+      "items": [
+       {
+        "id": "a1",
+        "label": "Alpha"
+       },
+       {
+        "id": "a2",
+        "label": "Amber"
+       }
+      ]
+     },
+     {
+      "header": "B",
+      "items": [
+       {
+        "id": "b1",
+        "label": "Beta"
+       },
+       {
+        "id": "b2",
+        "label": "Blue"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "asset": "structure_046.json",
+   "family": "structure",
+   "request": {
+    "mode": "section"
+   },
+   "expected": {
+    "mode": "section",
+    "schema": "collection-structure/1",
+    "values": [
+     {
+      "header": "A",
+      "items": [
+       {
+        "id": "a1",
+        "label": "Alpha"
+       },
+       {
+        "id": "a2",
+        "label": "Amber"
+       }
+      ]
+     },
+     {
+      "header": "B",
+      "items": [
+       {
+        "id": "b1",
+        "label": "Beta"
+       },
+       {
+        "id": "b2",
+        "label": "Blue"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "asset": "structure_047.json",
+   "family": "structure",
+   "request": {
+    "mode": "tree"
+   },
+   "expected": {
+    "mode": "tree",
+    "schema": "collection-structure/1",
+    "values": [
+     {
+      "depth": 0,
+      "id": "root",
+      "label": "Root"
+     },
+     {
+      "depth": 1,
+      "id": "left",
+      "label": "Left"
+     },
+     {
+      "depth": 1,
+      "id": "right",
+      "label": "Right"
+     },
+     {
+      "depth": 2,
+      "id": "leaf",
+      "label": "Leaf"
+     }
+    ]
+   }
+  },
+  {
+   "asset": "structure_048.json",
+   "family": "structure",
+   "request": {
+    "mode": "flat"
+   },
+   "expected": {
+    "mode": "flat",
+    "schema": "collection-structure/1",
+    "values": [
+     {
+      "depth": 0,
+      "id": "root",
+      "label": "Root"
+     },
+     {
+      "depth": 1,
+      "id": "left",
+      "label": "Left"
+     },
+     {
+      "depth": 1,
+      "id": "right",
+      "label": "Right"
+     },
+     {
+      "depth": 2,
+      "id": "leaf",
+      "label": "Leaf"
+     }
+    ]
+   }
+  },
+  {
+   "asset": "structure_049.json",
+   "family": "structure",
+   "request": {
+    "mode": "grouped"
+   },
+   "expected": {
+    "mode": "grouped",
+    "schema": "collection-structure/1",
+    "values": [
+     {
+      "header": "A",
+      "items": [
+       {
+        "id": "a1",
+        "label": "Alpha"
+       },
+       {
+        "id": "a2",
+        "label": "Amber"
+       }
+      ]
+     },
+     {
+      "header": "B",
+      "items": [
+       {
+        "id": "b1",
+        "label": "Beta"
+       },
+       {
+        "id": "b2",
+        "label": "Blue"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "asset": "text_index.json",
+   "family": "text",
+   "request": {
+    "mode": "text-index"
+   },
+   "expected": {
+    "mode": "text-index",
+    "schema": "text-processing/1",
+    "values": [
+     {
+      "id": "doc-1",
+      "tokens": [
+       "flutter",
+       "renders",
+       "portable",
+       "user",
+       "interfaces"
+      ]
+     },
+     {
+      "id": "doc-2",
+      "tokens": [
+       "python",
+       "processes",
+       "portable",
+       "data",
+       "search",
+       "indexes"
+      ]
+     },
+     {
+      "id": "doc-3",
+      "tokens": [
+       "search",
+       "indexes",
+       "make",
+       "repeated",
+       "search",
+       "fast"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "asset": "top_n.json",
+   "family": "order",
+   "request": {
+    "mode": "top-n"
+   },
+   "expected": {
+    "mode": "top-n",
+    "schema": "list-ordering/1",
+    "values": [
+     9,
+     8,
+     7
+    ]
+   }
+  },
+  {
+   "asset": "window_034.json",
+   "family": "window",
+   "request": {
+    "mode": "load-more",
+    "commands": [
+     "load-more"
+    ]
+   },
+   "expected": {
+    "mode": "load-more",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "load-more",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_036.json",
+   "family": "window",
+   "request": {
+    "mode": "lazy-list",
+    "commands": [
+     "next"
+    ]
+   },
+   "expected": {
+    "mode": "lazy-list",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "lazy-list",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_037.json",
+   "family": "window",
+   "request": {
+    "mode": "load-more",
+    "commands": [
+     "refresh"
+    ]
+   },
+   "expected": {
+    "mode": "load-more",
+    "page": 1,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "load-more",
+     "offset": 0,
+     "revision": 1,
+     "total": 12
+    },
+    "values": [
+     "item-01",
+     "item-02",
+     "item-03",
+     "item-04"
+    ]
+   }
+  },
+  {
+   "asset": "window_038.json",
+   "family": "window",
+   "request": {
+    "mode": "prefetch",
+    "commands": [
+     "prefetch"
+    ]
+   },
+   "expected": {
+    "mode": "prefetch",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "prefetch",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_039.json",
+   "family": "window",
+   "request": {
+    "mode": "page-indicator",
+    "commands": [
+     "next"
+    ]
+   },
+   "expected": {
+    "mode": "page-indicator",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "page-indicator",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_040.json",
+   "family": "window",
+   "request": {
+    "mode": "page-size",
+    "commands": [
+     "page-size-3"
+    ]
+   },
+   "expected": {
+    "mode": "page-size",
+    "page": 1,
+    "pages": 4,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 3,
+     "mode": "page-size",
+     "offset": 0,
+     "total": 12
+    },
+    "values": [
+     "item-01",
+     "item-02",
+     "item-03"
+    ]
+   }
+  },
+  {
+   "asset": "window_041.json",
+   "family": "window",
+   "request": {
+    "mode": "offset-limit",
+    "commands": [
+     "offset-6"
+    ]
+   },
+   "expected": {
+    "mode": "offset-limit",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "offset-limit",
+     "offset": 6,
+     "total": 12
+    },
+    "values": [
+     "item-07",
+     "item-08",
+     "item-09",
+     "item-10"
+    ]
+   }
+  },
+  {
+   "asset": "window_042.json",
+   "family": "window",
+   "request": {
+    "mode": "keyset",
+    "commands": [
+     "next"
+    ]
+   },
+   "expected": {
+    "mode": "keyset",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "cursor": "item-04",
+     "limit": 4,
+     "mode": "keyset",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_043.json",
+   "family": "window",
+   "request": {
+    "mode": "window",
+    "commands": [
+     "next"
+    ]
+   },
+   "expected": {
+    "mode": "window",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "window",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  },
+  {
+   "asset": "window_044.json",
+   "family": "window",
+   "request": {
+    "mode": "bidirectional",
+    "commands": [
+     "next"
+    ]
+   },
+   "expected": {
+    "mode": "bidirectional",
+    "page": 2,
+    "pages": 3,
+    "schema": "collection-window/1",
+    "state": {
+     "limit": 4,
+     "mode": "bidirectional",
+     "offset": 4,
+     "total": 12
+    },
+    "values": [
+     "item-05",
+     "item-06",
+     "item-07",
+     "item-08"
+    ]
+   }
+  }
+ ]
+}

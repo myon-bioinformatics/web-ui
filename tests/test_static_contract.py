@@ -129,7 +129,7 @@ class StaticContractTest(unittest.TestCase):
 
     def test_example_pages_are_single_files_carrying_the_whole_bundle(self):
         self.assertEqual(sorted(PAGES), ["contract/v1/example.html", "examples/api-stub.html", "examples/clipboard-shelf.html", "examples/composition-studio.html", "examples/coordinates.html", "examples/door.html", "examples/github-like.html",
-                                         "examples/index.html", "examples/mcp-lab.html", "examples/mcp-stub.html", "examples/photo-studio.html", "examples/play-studio.html", "examples/playground.html", "examples/showcase.html", "examples/test-report.html", "examples/timeline.html", "index.html"])
+                                         "examples/image-studio.html", "examples/index.html", "examples/mcp-lab.html", "examples/mcp-stub.html", "examples/patterns.html", "examples/photo-studio.html", "examples/play-studio.html", "examples/playground.html", "examples/showcase.html", "examples/test-report.html", "examples/timeline.html", "index.html"])
         self.assertEqual((ROOT / "index.html").read_text(encoding="utf-8"), PAGES["index.html"], "run: python -S web_ui.py --site DIR; copy DIR/index.html")
         for name, text in PAGES.items():
             self.assertNotIn('rel="stylesheet"', text, name)
