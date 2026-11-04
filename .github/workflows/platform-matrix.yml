@@ -13,6 +13,9 @@ on:
       - 'web_ui.py'
       - 'tests/integration/controls_browser.py'
       - 'tests/fixtures/photo_import_cases.json'
+      - 'tests/fixtures/pattern_assets.json'
+      - 'tests/fixtures/pattern_golden.json'
+      - 'tests/fixtures/studio_golden.json'
       - '.github/workflows/platform-matrix.yml'
   workflow_dispatch:
   schedule:
