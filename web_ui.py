@@ -4188,7 +4188,8 @@ BTK_ADAPTERS: dict[str, dict[str, Any]] = {
     "web-ui-pattern-run": {"page": "patterns.html", "fragment": "patterns-run-title",
                            "elements": ["#patterns-run-title", "#patterns [data-patterns-request]", "#patterns [data-patterns-run]", "#patterns [data-patterns-example]"],
                            "click": {"target": "#patterns [data-patterns-run]", "observe": "#patterns", "attribute": "data-runs", "before": "1", "after": "2"}},
-    "web-ui-screens": {"page": "screens.html", "elements": ["#screens h2", "#screens [data-screens-locale]", "#screens [data-screens-query]", "#screens [data-screens-count]", "#screens [data-screens-mode=\"list\"]"],
+    # The Hub opens at its own heading (#screens-hub-title): above it are the page title, a paragraph and the language box, which at 320 px push the search count below the first screen.
+    "web-ui-screens": {"page": "screens.html", "fragment": "screens-hub-title", "elements": ["#screens-hub-title", "#screens [data-screens-mode=\"list\"]", "#screens [data-screens-query]", "#screens [data-screens-count]"],
                        "click": {"target": "#screens [data-screens-mode=\"list\"]", "observe": "#screens", "attribute": "data-mode", "before": "grid", "after": "list"}},
     # The native examples are below the hub, so this one opens at pattern 151's card (#native-151, a card id the browser scrolls to) to keep everything on the first screen.
     "web-ui-native-patterns": {"page": "screens.html", "fragment": "native-151", "elements": ["#screens [data-native=\"151\"] h4", "#screens [data-native=\"151\"] [data-native-action=\"increment\"]"],
@@ -10137,7 +10138,7 @@ _CSS["screens.css"] = (
     ".ui-screens-list li{display:flex;gap:16px;align-items:center;margin:8px 0}.ui-screens-avatar{display:inline-flex;align-items:center;justify-content:center;flex:none;width:40px;height:40px;"
     "border-radius:50%;background:var(--ui-accent,currentColor);color:var(--ui-bg,Canvas)}.ui-screens-tabs,.ui-screens-bottom{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}"
     ".ui-screens-tabs [aria-selected=true],.ui-screens-bottom [aria-current=page]{font-weight:700;text-decoration:underline}.ui-screens-dialog{margin:16px 0}"
-    ".ui-screens code,.ui-screens-links li{overflow-wrap:anywhere}.ui-screens pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-family:var(--ui-font-mono,monospace)}"
+    ".ui-screens code,.ui-screens-links li{overflow-wrap:anywhere}.ui-screens [data-screens-count]{display:block}.ui-screens pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-family:var(--ui-font-mono,monospace)}"
     ".ui-screens-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}.ui-screens-native{min-width:0}.ui-screens-native h4{margin:0 0 8px}"
     ".ui-screens-swap{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ui-screens-entry{display:flex;align-items:center;gap:8px;margin:8px 0}"
     ".ui-screens-grip{flex:none;min-width:24px;text-align:center;cursor:grab;touch-action:none;user-select:none}.ui-screens-name{flex:1;min-width:0;overflow-wrap:anywhere}"
@@ -10389,7 +10390,7 @@ export function bindScreens(root=document){
    const modes=el("div",{class:"ui-screens-bar",role:"group","aria-label":hub.title});
    for(const m of["list","grid"]){const b=el("button",{class:"ui-button",type:"button","data-screens-mode":m,"aria-pressed":String(m===mode),text:hub.tooltips[m]});b.addEventListener("click",()=>{mode=m;renderHub();stage.querySelector('[data-screens-mode="'+m+'"]').focus()});modes.append(b)}
    modes.append(el("a",{class:"ui-button",href:"./mcp-lab.html",text:hub.tooltips.mcp}),el("a",{class:"ui-button",href:"./api-stub.html",text:hub.tooltips.api}),el("a",{class:"ui-button",href:"./index.html",text:hub.home}));
-   stage.append(el("h3",{"data-screens-title":"",text:hub.title}),modes,input,clearBtn,count,empty,list);
+   stage.append(el("h3",{"data-screens-title":"",id:"screens-hub-title",text:hub.title}),modes,input,clearBtn,count,empty,list);
    stage.dataset.kind="hub";fill();done()};
   const renderLinks=()=>{
    const v=screenLinksView(id,locale);frame({locale:v.locale,lang:"ja",dir:"ltr"});
@@ -10492,11 +10493,11 @@ def patterns_html(bridge: str | None = None) -> str:
             f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
             '<ol class="ui-patterns-list" data-patterns-list></ol>'
             '<h3 id="patterns-run-title">Run a reference</h3>'
-            + note +
             f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
             '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
             '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
-            '<p class="ui-patterns-status" role="status" aria-live="polite" data-patterns-status></p><pre data-patterns-result></pre></section>')
+            '<p class="ui-patterns-status" role="status" aria-live="polite" data-patterns-status></p><pre data-patterns-result></pre>'
+            + note + '</section>')
 
 
 def patterns_document(*, theme: str = "modern", bridge: str | None = None) -> str:
