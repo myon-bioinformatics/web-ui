@@ -4410,6 +4410,34 @@ class ImageStudioTests(unittest.TestCase):
         done = subprocess.run([sys.executable, "-S", str(Path(web_ui.__file__)), *map(str, argv)], input=stdin, capture_output=True, timeout=60, cwd=ROOT)
         return done.returncode, done.stdout, done.stderr.decode("utf-8")
 
+    def test_cli_ignores_site_customization_and_parent_working_directory(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            tmp = Path(tmp)
+            marker = tmp / "site-loaded"
+            (tmp / "sitecustomize.py").write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('loaded')\n",
+                encoding="utf-8",
+            )
+            scene = tmp / "scene.json"
+            scene.write_text(web_ui.js_json(self.blank()), encoding="utf-8")
+            relative_scene = os.path.relpath(scene, ROOT)
+            with mock.patch.dict(os.environ, {"PYTHONPATH": str(tmp)}):
+                # Prove this interpreter would load the hook without -S.
+                control = subprocess.run([sys.executable, "-c", "pass"], cwd=ROOT,
+                                         capture_output=True, timeout=60)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(marker.exists())
+                marker.unlink()
+                previous = Path.cwd()
+                try:
+                    os.chdir(tmp)
+                    code, out, err = self.run_cli("--studio-render", relative_scene)
+                finally:
+                    os.chdir(previous)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(out.decode("utf-8"), web_ui.studio_render(self.blank()) + "\n")
+                self.assertFalse(marker.exists(), "CLI must skip site customization")
+
     # --- the originals' own outputs -------------------------------------------------------------------------------------------------------------
     def test_every_recorded_core_js_output_is_reproduced_exactly(self):
         counts = {}
