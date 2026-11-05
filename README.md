@@ -199,7 +199,7 @@ answer 700 seeded requests each; every cap is tried at its edge in both language
 and `urlsplit`, and so does TF-IDF (the min-heap runs in the page), and so does `contract` (below); the static page shows what Python answers to their examples, and the page that
 `python3 web_ui.py --pattern-serve` serves runs them in Python (see the bridge below). Limits of a page: JSON cannot tell `1` from `1.0` (an integral number
 is an int), integers beyond 2^53 are not exact, and the catalogue search lower-cases where Python case-folds. The Flutter-native patterns (136-137, 151-175, 183-184) and the screens of every pattern are the next section. Not absorbed: the 594
-`view.dart` files of the navigation, API and UI patterns (one template, identical in all three categories apart from the pattern's title and description, which the pattern's catalogue row already holds) and the Digest/HMAC auth matrix mock (not yet).
+`view.dart` files of the navigation, API and UI patterns (the inventory detects one shared heuristic shape across all three categories; this does not prove behavioral equivalence or completed migration) and the Digest/HMAC auth matrix mock (not yet).
 BTK adapters: `web-ui-patterns`, `web-ui-pattern-run`.
 
 Screens (`examples/screens.html`): the 198 numbered screens of flutter_navigation_basic, its Hub and the native examples. A screen is data (`screen_row(n)`; `tests/fixtures/screens_asset.json` is
