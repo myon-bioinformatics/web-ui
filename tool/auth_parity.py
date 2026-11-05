@@ -92,7 +92,13 @@ def main():
         # Print only public fixture output; never credentials from a live service.
         for key in expected:
             if actual[key] != expected[key]:
-                print(json.dumps({'section': key, 'dart': expected[key], 'python': actual[key]}, ensure_ascii=False, indent=2))
+                if key == 'sessions':
+                    for dart_session, python_session in zip(expected[key], actual[key]):
+                        for index, (dart_answer, python_answer) in enumerate(zip(dart_session['answers'], python_session['answers'])):
+                            if dart_answer != python_answer:
+                                print(json.dumps({'session': dart_session['name'], 'index': index, 'dart': dart_answer, 'python': python_answer}, ensure_ascii=False))
+                else:
+                    print(json.dumps({'section': key, 'dart': expected[key], 'python': actual[key]}, ensure_ascii=False))
         raise SystemExit('Dart/Python auth contract mismatch')
     print(f"Dart/Python auth parity: {sum(len(s['requests']) for s in corpus['sessions'])} requests, "
           f"{sum(len(corpus[k]) for k in ('nc','format','hmac','digest','query'))} helper vectors; source {corpus['source_commit']}")

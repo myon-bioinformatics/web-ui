@@ -67,13 +67,13 @@ class AuthContractTests(unittest.TestCase):
     def test_basic_challenge_credentials_utf8_and_base64(self):
         r=self.ask('basic');self.expect(r,401,'missing_authorization')
         self.assertEqual(r['headers'], {'www-authenticate':'Basic realm="mock", charset="UTF-8"'})
-        for raw in ('ZGVtbzpzM2NyZXQ=', 'ZGVtbzpzM2NyZXQ', 'ZGVtbzpzM2NyZXQ%3D'):
+        for raw in ('ZGVtbzpzM2NyZXQ=', 'ZGVtbzpzM2NyZXQ%3D'):
             self.expect(self.ask('basic', {'authorization':'Basic '+raw}),200,scheme='basic',user='demo')
         for value, reason in [('demo:wrong','invalid_credentials'), ('demo:s3cret:extra','invalid_credentials'),
                               (':password','malformed_authorization'),('demo','malformed_authorization')]:
             raw=base64.b64encode(value.encode()).decode()
             self.expect(self.ask('basic',{'authorization':'Basic '+raw}),401,reason)
-        for raw in ('%%%','a','!!!!','/w==','ZGVtbzpzM2NyZXQ==='):
+        for raw in ('%%%','a','!!!!','/w==','ZGVtbzpzM2NyZXQ===','ZGVtbzpzM2NyZXQ'):
             self.expect(self.ask('basic',{'authorization':'Basic '+raw}),401,'malformed_authorization')
 
     def test_fixed_signature_vectors(self):

@@ -10740,12 +10740,12 @@ class MockAuthHandler:
             if len(parts) != 2 or parts[0].lower() != "basic":
                 return fail("malformed_authorization", challenge)
             try:
-                # Dart base64.normalize accepts URL-safe alphabet and omitted padding.
+                # Dart base64Decode accepts URL-safe/percent escapes, but requires padding.
                 from urllib.parse import unquote
                 encoded = unquote(parts[1]).replace("-", "+").replace("_", "/")
-                if "=" in encoded and not re.fullmatch(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?", encoded):
+                if not re.fullmatch(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?", encoded):
                     raise ValueError("invalid base64 padding")
-                decoded = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True).decode("utf-8")
+                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
             except (ValueError, UnicodeError):
                 return fail("malformed_authorization", challenge)
             if ":" not in decoded or decoded.startswith(":"):
