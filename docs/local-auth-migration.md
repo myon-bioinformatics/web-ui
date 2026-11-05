@@ -62,9 +62,12 @@ JWT verifier, or production Digest implementation. No external service is used.
 Authoring environment: 16 new stdlib tests pass normally and with `-O`.
 74 selected existing bridge/contract/native/screen tests pass (one optional
 Flutter-checkout check skips). OpenSSL also agrees with the fixed HMAC vector.
-Dart is unavailable locally; browser download returned a truncated archive.
-Dart runtime comparison and browser execution are deferred to automatic PR CI,
-and are not claimed as local successes. An attempted wider wrapper suite was
+Dart is unavailable locally, but automatic PR CI passed the complete Dart/Python
+comparison: 84 requests and 20 helper vectors, Dart 3.13.7 / crypto 3.0.7,
+[run 41977145216](https://github.com/myon-bioinformatics/web-ui/actions/runs/41977145216).
+This caught and corrected Basic authentication padding rejection: Dart rejects
+unpadded Base64. Browser download returned a truncated archive locally; browser
+execution remains pending the existing Platform matrix CI. An attempted wider wrapper suite was
 blocked by missing Pillow, binary image fixtures, index.html and brand assets in
 the connector-only source snapshot; it was not a full-suite pass.
 
