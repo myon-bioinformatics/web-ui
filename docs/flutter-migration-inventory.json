@@ -1,210 +1,220 @@
 {
-  "schema": "web-ui-flutter-migration/1",
+  "schema": "web-ui-flutter-migration/2",
   "repository": "myon-bioinformatics/flutter_navigation_basic",
-  "source_commit": "39d659ebffa527e850a1b3f2c45080ececb2eda1",
+  "source_commit": "ae3c4cb78cfc9aed15871dfce750d8320a19d1e6",
   "archive_ready": false,
-  "scope": "File inventory and feature-level mapping; not a claim every Dart implementation was reviewed",
+  "scope": "File inventory and what web-ui did about each file; a status is not a claim that every Dart implementation was reviewed line by line",
   "dart_files": 2756,
+  "navigation_api_ui_view_files": 594,
+  "navigation_api_ui_view_shapes": 1,
+  "status_counts_outside_catalogues": {
+    "not_absorbed": 9,
+    "partial": 96,
+    "pending": 3,
+    "proposed_retirement": 64,
+    "successor": 74,
+    "unreviewed": 14
+  },
   "non_catalogue_files": [
     {
       "path": "lib/config.dart",
       "sha256": "2d04cd618cc8139f2cd72ad80fc3aea02660c155221617d9b1d547ab8f3170d5",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/config/app_config.dart",
       "sha256": "a502f242325510a15a942d0a036acfaf1043ebd040c6fef91cfce4397517c2f0",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/config/routes.dart",
       "sha256": "907a58216a5888ba84070902ed45bccd0407b3bdbe35e016b92b1ce4fdd2b34d",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/config/app_config.dart",
       "sha256": "f8ecae222abc1d26970b0759948f0045aaec6a5c4732be6b0dcfa4efb61ceb4b",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/data_processing/conversion_pattern_links.dart",
       "sha256": "f6bcc6d7b0692f4b6aceb1ad6e2640ca795a044881d2d2c93ed3fa83a1c041af",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_links_view, pattern_run (the display boundary of lists processed in Python)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/counter_architecture_example.dart",
       "sha256": "6666b2d52deee2444ab21cdbb8fcb53e92aff5b8f6822fee843fb3471dfe86bb",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_* (patterns 166-170)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/inherited_catalogue_example.dart",
       "sha256": "562610e39a9e1971ae24a2006a1dc29822d42cbe4f6fa2d2ccb5e41ced1a62d7",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_* (patterns 151-165)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/interactive_pattern_example.dart",
       "sha256": "78829dfe67586ab91188e0545eec4f0acd30d80b959fc2dbc2e28af2dd38fbe6",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_* gestures (patterns 171-175, 183-184)",
+      "remaining": "The original exposes it in E2E builds only"
     },
     {
       "path": "lib/core/data_processing/json_list_asset.dart",
       "sha256": "251afc2321b41f1af6c4eaf925a9122b09e72e78b8ec27723fd8b68dd8419780",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_links_view, pattern_run (the display boundary of lists processed in Python)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/native_notifier_example.dart",
       "sha256": "b0dbb6125c763821590ed3ddb124e89a073c0c03f62a2114ca6d6d31a68bd5a6",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_initial, native_step, native_view, native_parallel (patterns 136-137, 151-170)",
+      "remaining": "Counts notifications and rebuilds; pattern 136-137 uses a Web Worker where Dart uses an Isolate"
     },
     {
       "path": "lib/core/data_processing/native_parallel_pattern_example.dart",
       "sha256": "d52eab407016513092a8c9229b9f5fb8ea385f858dc7475154fae0eefa3629dc",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_initial, native_step, native_view, native_parallel (patterns 136-137, 151-170)",
+      "remaining": "Counts notifications and rebuilds; pattern 136-137 uses a Web Worker where Dart uses an Isolate"
     },
     {
       "path": "lib/core/data_processing/native_state_catalogue_example.dart",
       "sha256": "ec59c75b25a5e9c5fb82cf7c16f096e8f2c816a764a5c4ce40d2d91a6ddd9734",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_initial, native_step, native_view, native_parallel (patterns 136-137, 151-170)",
+      "remaining": "Counts notifications and rebuilds; pattern 136-137 uses a Web Worker where Dart uses an Isolate"
     },
     {
       "path": "lib/core/data_processing/pattern_source_links.dart",
       "sha256": "cba472b352e63e42a2d958ea9c97962aa516eb6788bd84cdf8f6bf0cfde5b2fc",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_links_view, pattern_run (the display boundary of lists processed in Python)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/processed_list_example.dart",
       "sha256": "46eee9b3f6333d2884e4d96f4ef2bc2eeb55a6d355a783d2a1af5dee2c7b8286",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_links_view, pattern_run (the display boundary of lists processed in Python)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/state_architecture_example.dart",
       "sha256": "50a66f73e4d1aee9b6521f5458b865fd3b4e4fabedec4d14c8e8e3e09e4e8f4a",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "native_* (patterns 166-170)",
+      "remaining": ""
     },
     {
       "path": "lib/core/data_processing/validation_pattern_links.dart",
       "sha256": "4a0f0edb8cf6c7cb49e3bba8a36510f39e97082a4514e24db3ef17a2dffc8474",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_links_view, pattern_run (the display boundary of lists processed in Python)",
+      "remaining": ""
     },
     {
       "path": "lib/core/exceptions/app_exception.dart",
       "sha256": "a3075ec6ca78fd65634753fa7cd5f0393fa1376e5dc39ba033df66f14187c339",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/exceptions/error_handler.dart",
       "sha256": "e452df0cd9626f6311c55ec5e4691aa8acc29643d2b43022370916690cd2dcba",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/logging/logger_service.dart",
       "sha256": "7b63836abbc351c501bb69f6595ca65fe5e8368fba7c3a7f2e99cc6b6d97366d",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/navigation/app_navigation.dart",
       "sha256": "c0e6a14f97270a6ba49e6353630201123e5f45693c8e220755f565e6e4f286ea",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "GetX route table and registry"
     },
     {
       "path": "lib/core/navigation/app_route_registry.dart",
       "sha256": "4198b602f22c54b6f3d773de321a0247b185fb31709ebed10f388bc7e23ceebd",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "GetX route table and registry"
     },
     {
       "path": "lib/core/navigation/app_tools.dart",
       "sha256": "b8c5ff2f29fbd72ffbff994a3f446e5e3a1f847a9707763699ddc67083c17722",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "door_document",
+      "remaining": "One route/label identity for Home and the Door footer"
     },
     {
       "path": "lib/core/navigation/route_names.dart",
       "sha256": "86f5fdc9df533e7d62553299c1cebe06b51dcb5d21d5d2d94559c7794344ed47",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "GetX route table and registry"
     },
     {
       "path": "lib/core/services/base_controller.dart",
       "sha256": "352bdfff8439732e9efa4e2be1eed90bd2f51a2328c40656475c38c700bfd3f3",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/services/storage_service.dart",
       "sha256": "c724376b2a0419cb7626e5e54e7fe17efb05bb12176c3bfe17afe11dae975751",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/core/utils/ascii_fullwidth.dart",
@@ -226,25 +236,25 @@
       "path": "lib/data/composer.dart",
       "sha256": "7f2a07abf5412b783ab274657aa411ce65df1211b183103753becbeece2b00cc",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "progression_notes, studio_document, song_seed",
+      "remaining": "The seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/data/ironies.dart",
       "sha256": "0f35c73ff083a1f488903a9ef39b5ded229ad64905ad988ae2cb5b65fe4bc914",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "irony_round, play_document",
+      "remaining": "New authored quiz deck; the original text corpus stays at the source"
     },
     {
       "path": "lib/data/mock_api_client.dart",
       "sha256": "7d5c8cc9ec768cdb7959088b72893ae1efeebd2dbce7f7eebaf6ba6c3ef261ef",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "GetConnect client of the Flutter app"
     },
     {
       "path": "lib/features/clipboard_shelf/presentation/clipboard_shelf_page.dart",
@@ -252,7 +262,7 @@
       "feature": "clipboard_shelf",
       "status": "partial",
       "target": "shelf_document",
-      "remaining": "Native clipboard platform behavior is not equivalent"
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/features/composition_generator/domain/chord_theory.dart",
@@ -260,7 +270,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/domain/composition_generator_controller.dart",
@@ -268,7 +278,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/domain/metronome_timing.dart",
@@ -276,7 +286,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/domain/note_sequence.dart",
@@ -284,7 +294,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/domain/song_seed.dart",
@@ -292,7 +302,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/domain/song_seed_generator.dart",
@@ -300,7 +310,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/composition_generator/presentation/composition_generator_page.dart",
@@ -308,7 +318,7 @@
       "feature": "composition_generator",
       "status": "partial",
       "target": "studio_document, progression_notes, studio_audio_plan",
-      "remaining": "Audio now opt-in; native random sequence differs intentionally"
+      "remaining": "Audio is opt-in; the seeded generator differs from Dart Random on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/bounding_box.dart",
@@ -316,7 +326,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/coordinate_formatter.dart",
@@ -324,7 +334,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_expander.dart",
@@ -332,7 +342,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_expander_io.dart",
@@ -340,7 +350,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_expander_stub.dart",
@@ -348,7 +358,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_expander_web.dart",
@@ -356,7 +366,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_policy.dart",
@@ -364,7 +374,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/domain/maps_url_web_expansion.dart",
@@ -372,7 +382,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/coordinate_tool/presentation/coordinate_tool_page.dart",
@@ -380,7 +390,7 @@
       "feature": "coordinate_tool",
       "status": "partial",
       "target": "coordinates_document",
-      "remaining": "Network short-link expansion intentionally excluded"
+      "remaining": "Network short-link expansion is excluded on purpose"
     },
     {
       "path": "lib/features/counter_playground/domain/counter_battle_effect.dart",
@@ -388,7 +398,7 @@
       "feature": "counter_playground",
       "status": "successor",
       "target": "counter_garden, play_document",
-      "remaining": "New reward model; native long-press timing is not copied"
+      "remaining": "New reward model; native hold-repeat timing is not copied"
     },
     {
       "path": "lib/features/counter_playground/domain/counter_playground_controller.dart",
@@ -396,7 +406,7 @@
       "feature": "counter_playground",
       "status": "successor",
       "target": "counter_garden, play_document",
-      "remaining": "New reward model; native long-press timing is not copied"
+      "remaining": "New reward model; native hold-repeat timing is not copied"
     },
     {
       "path": "lib/features/counter_playground/presentation/counter_orb_burst.dart",
@@ -404,7 +414,7 @@
       "feature": "counter_playground",
       "status": "successor",
       "target": "counter_garden, play_document",
-      "remaining": "New reward model; native long-press timing is not copied"
+      "remaining": "New reward model; native hold-repeat timing is not copied"
     },
     {
       "path": "lib/features/counter_playground/presentation/counter_playground_page.dart",
@@ -412,23 +422,23 @@
       "feature": "counter_playground",
       "status": "successor",
       "target": "counter_garden, play_document",
-      "remaining": "New reward model; native long-press timing is not copied"
+      "remaining": "New reward model; native hold-repeat timing is not copied"
     },
     {
       "path": "lib/features/home/domain/home_controller.dart",
       "sha256": "68c7b25f061f16f1e03fa3ac0ef61cf727a0a032fd0aa758c6eb72410aba9925",
       "feature": "home",
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "door_document, page identities",
+      "remaining": "Home cards are Flutter widgets; the Door selector and page identities are the web-ui pages"
     },
     {
       "path": "lib/features/home/presentation/home_screen.dart",
       "sha256": "d5ada89fc733959b04cbe467b681dbd67b763805f7792a588d08b725c84715e3",
       "feature": "home",
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "door_document, page identities",
+      "remaining": "Home cards are Flutter widgets; the Door selector and page identities are the web-ui pages"
     },
     {
       "path": "lib/features/http_request_draft/presentation/http_request_draft_page.dart",
@@ -436,7 +446,7 @@
       "feature": "http_request_draft",
       "status": "partial",
       "target": "parse_curl, stub_document",
-      "remaining": "Real HTTP execution/authentication needs separate disposition"
+      "remaining": "Real HTTP execution and authentication are not absorbed (web-ui sends nothing)"
     },
     {
       "path": "lib/features/irony_generator/domain/irony_generator_controller.dart",
@@ -444,7 +454,7 @@
       "feature": "irony_generator",
       "status": "successor",
       "target": "irony_round, play_document",
-      "remaining": "New authored quiz deck; original text corpus remains at source"
+      "remaining": "New authored quiz deck; the original text corpus stays at the source"
     },
     {
       "path": "lib/features/irony_generator/presentation/irony_generator_page.dart",
@@ -452,7 +462,7 @@
       "feature": "irony_generator",
       "status": "successor",
       "target": "irony_round, play_document",
-      "remaining": "New authored quiz deck; original text corpus remains at source"
+      "remaining": "New authored quiz deck; the original text corpus stays at the source"
     },
     {
       "path": "lib/features/now_timeline/domain/now_timeline_models.dart",
@@ -460,7 +470,7 @@
       "feature": "now_timeline",
       "status": "partial",
       "target": "timeline_events, timeline_wall_to_utc, world_document",
-      "remaining": "Recurrence and persisted entries are not migrated"
+      "remaining": "Recurrence, stored entries, notifications and booking are not migrated"
     },
     {
       "path": "lib/features/now_timeline/domain/zone_table.dart",
@@ -468,7 +478,7 @@
       "feature": "now_timeline",
       "status": "partial",
       "target": "timeline_events, timeline_wall_to_utc, world_document",
-      "remaining": "Recurrence and persisted entries are not migrated"
+      "remaining": "Recurrence, stored entries, notifications and booking are not migrated"
     },
     {
       "path": "lib/features/now_timeline/presentation/now_timeline_page.dart",
@@ -476,7 +486,7 @@
       "feature": "now_timeline",
       "status": "partial",
       "target": "timeline_events, timeline_wall_to_utc, world_document",
-      "remaining": "Recurrence and persisted entries are not migrated"
+      "remaining": "Recurrence, stored entries, notifications and booking are not migrated"
     },
     {
       "path": "lib/features/now_timeline/presentation/time_rules_bootstrap.dart",
@@ -484,7 +494,7 @@
       "feature": "now_timeline",
       "status": "partial",
       "target": "timeline_events, timeline_wall_to_utc, world_document",
-      "remaining": "Recurrence and persisted entries are not migrated"
+      "remaining": "Recurrence, stored entries, notifications and booking are not migrated"
     },
     {
       "path": "lib/features/photo_studio/data/clipboard_image_read.dart",
@@ -492,7 +502,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/gal_photo_sink.dart",
@@ -500,7 +510,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/image_format_sniff.dart",
@@ -508,7 +518,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/image_picker_photo_source.dart",
@@ -516,7 +526,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/native_image_normalize_adapter.dart",
@@ -524,7 +534,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/native_image_normalize_adapter_io.dart",
@@ -532,7 +542,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/native_image_normalize_adapter_stub.dart",
@@ -540,7 +550,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/photo_import_limits.dart",
@@ -548,7 +558,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/data/photo_media_ports.dart",
@@ -556,7 +566,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/emoji_stamp.dart",
@@ -564,7 +574,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/normalized_rect.dart",
@@ -572,7 +582,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/photo_import_status.dart",
@@ -580,7 +590,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/photo_studio_history.dart",
@@ -588,7 +598,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/photo_studio_state.dart",
@@ -596,7 +606,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/studio_document.dart",
@@ -604,7 +614,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/studio_export_result.dart",
@@ -612,7 +622,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/studio_frame.dart",
@@ -620,7 +630,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/studio_frame_style.dart",
@@ -628,7 +638,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/domain/studio_geometry.dart",
@@ -636,7 +646,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter.dart",
@@ -644,7 +654,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter_stub.dart",
@@ -652,7 +662,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/browser_image_decode_adapter_web.dart",
@@ -660,7 +670,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/compose_studio_image.dart",
@@ -668,7 +678,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/export_studio_png.dart",
@@ -676,7 +686,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/photo_rect_canvas.dart",
@@ -684,7 +694,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/photo_studio_page.dart",
@@ -692,7 +702,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/pick_local_image_bytes.dart",
@@ -700,7 +710,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_io.dart",
@@ -708,7 +718,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_stub.dart",
@@ -716,7 +726,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/pick_local_image_bytes_web.dart",
@@ -724,7 +734,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes.dart",
@@ -732,7 +742,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes_stub.dart",
@@ -740,7 +750,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/read_web_clipboard_image_bytes_web.dart",
@@ -748,7 +758,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/save_image_bytes.dart",
@@ -756,7 +766,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/save_image_bytes_io.dart",
@@ -764,7 +774,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/save_image_bytes_stub.dart",
@@ -772,7 +782,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/save_image_bytes_web.dart",
@@ -780,7 +790,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/studio_canvas_capture.dart",
@@ -788,7 +798,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/studio_image_loader.dart",
@@ -796,7 +806,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/studio_image_preview.dart",
@@ -804,7 +814,7 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/photo_studio/presentation/studio_png_encode.dart",
@@ -812,367 +822,367 @@
       "feature": "photo_studio",
       "status": "partial",
       "target": "PhotoStudio, photo_document",
-      "remaining": "Native clipboard/share/HEIC and all 41 files need disposition"
+      "remaining": "Native camera, clipboard, share and HEIC stay platform-specific"
     },
     {
       "path": "lib/features/screen5/domain/screen5_controller.dart",
       "sha256": "d6e6f57df1c48e7cd9cdfadc0d0fcefc0addbe0c84201d30a9382039e8363f99",
       "feature": "screen5",
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "screen_view (screen 5 as its generic screen, with a note)",
+      "remaining": "The URL-parameter tool's dedicated GetX controller is not absorbed"
     },
     {
       "path": "lib/features/screen5/presentation/screen5_page.dart",
       "sha256": "228c41e058aa7d20069b4ba91bd1afdc0abc216a8da50f827b305be426b0cd5d",
       "feature": "screen5",
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "screen_view (screen 5 as its generic screen, with a note)",
+      "remaining": "The URL-parameter tool's dedicated GetX controller is not absorbed"
     },
     {
       "path": "lib/main.dart",
       "sha256": "61bebb63b27423cb0b3db0580ee4f07f9c14c8364d12db7043594860310c5cb3",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/screens/clipboard_shelf_screen.dart",
       "sha256": "397efc6b9c32e26c1535ac4294de5a7a4f2ede61bcb7e7b6d807163691ec4f3d",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "shelf_document",
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/screens/composition_generator_screen.dart",
       "sha256": "7d546d67d58bccb682a93ead3dad6ac70b54e5333999718c2a10259e1a1a4320",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/composition_studio_screen.dart",
       "sha256": "77beadb832bc74a2055a9e5c5892978c97c205b9fbb86d80613f47ac126d0213",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/coordinate_tool_screen.dart",
       "sha256": "c4952518d5fb2af538a7f3e4e14ede93e722a3f5fd9c8cc9ed1a5b944cb6e233",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/counter_playground_screen.dart",
       "sha256": "37d21b215bff0a9d69919d92edab8f368c187ba98ebb7e3a66c13788f4b79236",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/generic_screen.dart",
       "sha256": "d488ff5a76862f43a5dadbc016202c1dc0768de30970a8a6b62908926a36b808",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_view, screen_step",
+      "remaining": "Widgets are semantic HTML; data and texts are embedded in the page"
     },
     {
       "path": "lib/screens/home_screen.dart",
       "sha256": "7eb7aa1382c9a2d850dd3ebf5df03db0098d2ea0ecf302dc4eec0b6344bc92b0",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/hub_screen.dart",
       "sha256": "94aca8b48b701ff07063c21d588ff38bdcaf0637107adb79b8e3ea0630efe540",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_hub",
+      "remaining": ""
     },
     {
       "path": "lib/screens/irony_generator_screen.dart",
       "sha256": "fc5b3f789663a085cb7f78b61b1118589dd7300092cc8b82d79398250873e742",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/mcp_integration_screen.dart",
       "sha256": "1893305b960ca343d4072593052236b3a491e2558a9952d0d4166f01867968e4",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_document",
+      "remaining": "PR #109"
     },
     {
       "path": "lib/screens/now_timeline_screen.dart",
       "sha256": "4fc3b4d15d26c769be535f431666b6a3adc8ae02a7bedc2e05bfd92f4de0dda5",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/pattern_template_screen.dart",
       "sha256": "f47e4b4b7de717bdfe6d23d5d5806093c9dc238e0664d9dcf5cb8277cfb9c4ee",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_template, screen_template_view (eleven templates)",
+      "remaining": ""
     },
     {
       "path": "lib/screens/photo_studio_screen.dart",
       "sha256": "8808d3402511d2c1caa8e123d8ee7c43bc2d3516ad8b7cc4bd45287275c52552",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "the successor page of the same tool (see the feature rows)",
+      "remaining": "Flutter screen widget"
     },
     {
       "path": "lib/screens/ui_showcase_screen.dart",
       "sha256": "31594cd15c8b1fbeaf89e5179e34559adb94319e3f87ad5b713ddc6c4a139b6b",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "showcase_document",
+      "remaining": ""
     },
     {
       "path": "lib/shared/bootstrap/app_bootstrap.dart",
       "sha256": "87a2fdbecd59ca21108ae3596654f7043744ba07c6449ba15f3927072a2c122a",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/catalog/catalog_search.dart",
       "sha256": "39df2f2e2f3c80512480b69a28e2497c058d1302379615bb3fbbaecc9b9b7240",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_search, pattern_find",
+      "remaining": ""
     },
     {
       "path": "lib/shared/clipboard/base64_image_bridge.dart",
       "sha256": "109ac7aae960f3250db2bb83d941bb7f25421aa0e1535f38f5481a828eb5b366",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "photo_document, shelf_document",
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/shared/diagnostics/build_diagnostics_card.dart",
       "sha256": "018d33b382eb5bf11ccca4e503c5cdc5290840161de9294f0968c1b2b63e0bae",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter build diagnostics overlay, route observer and weight badge"
     },
     {
       "path": "lib/shared/diagnostics/build_metadata.dart",
       "sha256": "f5a9122b3f5eae8ebfc7b8f4eeffbf77af8ce7c615c803d28aba0039cdae7bec",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter build diagnostics overlay, route observer and weight badge"
     },
     {
       "path": "lib/shared/diagnostics/route_diagnostics_observer.dart",
       "sha256": "cc3b5a043672b0af01b9148ebf1cdc81a439a37fca159ccbf485cfd852617070",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter build diagnostics overlay, route observer and weight badge"
     },
     {
       "path": "lib/shared/diagnostics/weight_badge_overlay.dart",
       "sha256": "25c33af8afe79c3ca587fa06df21e752396395e0ab2c53a1ce3a7ba965d81d39",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter build diagnostics overlay, route observer and weight badge"
     },
     {
       "path": "lib/shared/display/display_catalog.dart",
       "sha256": "eff7fa7c02004d6b5b0632bc8670bb4b6a31b11e0bd645a668179b1f63fc51fb",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_text (11 locales, 59 keys, golden against assets/display/app_text.json)",
+      "remaining": ""
     },
     {
       "path": "lib/shared/display/display_locale_codes.dart",
       "sha256": "7d127ea30b911dcb241974b8a498a6ddbd333af6c6689ebd6d007c1c1eb3d2d4",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_text (11 locales, 59 keys, golden against assets/display/app_text.json)",
+      "remaining": ""
     },
     {
       "path": "lib/shared/display/display_scope.dart",
       "sha256": "da5e1501350bd2476b7579ce30de4c1623971d9325a9d6050df9368223453f23",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "screen_text (11 locales, 59 keys, golden against assets/display/app_text.json)",
+      "remaining": ""
     },
     {
       "path": "lib/shared/http/auth_matrix.dart",
       "sha256": "d696b6ecf7b17764224a1883c233c3a0a830bfe668acc4cc2029caf585fa006d",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "pending",
+      "target": "Digest/HMAC auth matrix mock",
+      "remaining": "Asked for; done after the screens and contracts"
     },
     {
       "path": "lib/shared/http/curl_import.dart",
       "sha256": "d7e4d45bdf1641ef6e738087dd026449105be54e5de286662d1f977cdb1b6de2",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/curl_import_legacy.dart",
       "sha256": "43161f23af0d3407e66a9b0278b6accd2e9c2dc1dd7c2b577c907d8b184ef5a3",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/curl_import_result.dart",
       "sha256": "50bd5541cafdb838a1a96557092d85119b1447b09caf288387c53f7f06fd4854",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/curl_import_web.dart",
       "sha256": "84e7bfbf4094211a165cc7263da75f7f25ce4c8dd06d8304929a4b8511f31b67",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/curl_runtime_transport_stub.dart",
       "sha256": "d7380434ed15cb80487ba2935e75a5d10ae54a3530188da190580913bee3ed9c",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/curl_runtime_transport_web.dart",
       "sha256": "ac9629755b42199516008c0bd13ba199805bea0ff2ccbe2239795bba8df9626d",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/curl_safe_subset.dart",
       "sha256": "0c030375b1b0a49a44a70df44347078f990a8555edf58d17fd1fe26d53e9da45",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/digest_nc.dart",
       "sha256": "cf1d48ff8201900c606811f1a70375b5e18ae51c62af427badd479c3aabe8825",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "pending",
+      "target": "Digest/HMAC auth matrix mock",
+      "remaining": "Asked for; done after the screens and contracts"
     },
     {
       "path": "lib/shared/http/live_request_executor.dart",
       "sha256": "2a3dee669985b0bbf08e4c852317086f56a80e43e34ed74a598e79d1cbfdf2dc",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/live_request_executor_io.dart",
       "sha256": "919315409cb3224390f9c527ffee61703c9f536e98f5ef3bd051711e4f6bb0ab",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/live_request_executor_stub.dart",
       "sha256": "fbf31e977fd8c05821acc3fcd6bc3583bfe48edb3022bd587da1239072647e97",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/live_request_executor_web.dart",
       "sha256": "73ad5aac3769523dc72166f8fc6d8f142a52a930915bf8af7835ddba459e3cc0",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/mock_auth.dart",
       "sha256": "f54ec9e9b064c3bb5f36d0c6f0efc6e9e47fdcafb02f699ff5e09a0231e47783",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "pending",
+      "target": "Digest/HMAC auth matrix mock",
+      "remaining": "Asked for; done after the screens and contracts"
     },
     {
       "path": "lib/shared/http/request_draft.dart",
       "sha256": "c8d97287cb2dc5ff377be82d142166506dca349f64d313dc75430f8e84729a01",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/request_draft_codec.dart",
       "sha256": "b333290981373adcd34758bd7d77cb9b4d3d7141154893a444d5e828d780c74e",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/http/request_executor.dart",
       "sha256": "04815f660b544402717f988eddfba46988e6b0eba799aeac159782d26e8329fd",
       "feature": null,
-      "status": "unreviewed",
+      "status": "not_absorbed",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Sends real HTTP requests; web-ui tools send nothing"
     },
     {
       "path": "lib/shared/http/request_field.dart",
       "sha256": "40f21a5ae4af83c19ba1909532407f1dd0139867c3831371ea3079b22c8ff24e",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "parse_curl, mask_curl, stub_document",
+      "remaining": "The editor's subset of curl; nothing is executed"
     },
     {
       "path": "lib/shared/input/ascii_fullwidth_text_input_formatter.dart",
@@ -1186,275 +1196,930 @@
       "path": "lib/shared/mcp/json_rpc.dart",
       "sha256": "cfc260ce7ccc73b7b3fb4af283483f8f816660267d977c3d0c50c3318e6d0c30",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/mcp.dart",
       "sha256": "e6ed9562b43342eac82dedbafaa27956be8918f70addd2dcd160410ebef9cfb3",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/mcp_foundation.dart",
       "sha256": "b73c6fcb9634495d5779eedc2878e8987e2cf12c744ec59da9312750b88dfda7",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/mcp_modern_http.dart",
       "sha256": "69be2f0ea06a479582270d3769374e0546b84b5ff43d592af919eddffb0454f2",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/mcp_protocol.dart",
       "sha256": "4e9d7ddf9059e82c25112b782effd1c5b40af2ce6b256a511b10b3b8309f63ae",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/mcp_session_client.dart",
       "sha256": "ae30007bf516bbafffaf190015bafaeee8ec874dc50310a8c3de4d04f37d6d70",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/mcp/oauth_pkce.dart",
       "sha256": "97e9909e5874f87793acf0d40f64ad05cba5107571aa2c255e3f771a12306d1c",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "mcp_* (MCP lab)",
+      "remaining": "PR #109; ids and verifiers come from an injected random source"
     },
     {
       "path": "lib/shared/navigation/page_identities.g.dart",
       "sha256": "f580a22ed6772ae27baef9de9af8fab48b9f0c59f2cac8f77053733e982cb01c",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "page identities (door_document)",
+      "remaining": "Generated by python/generate_page_identities.py, which web-ui absorbed"
     },
     {
       "path": "lib/shared/platform/open_external_url.dart",
       "sha256": "8df284896728b261b1d160c8601f812fea66a902c072ff5590c56278d4a43d5d",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/platform/open_external_url_stub.dart",
       "sha256": "919602a211984a72924982dae743314cccc9a1e9d5fa8b95d2aff77f9aaa86eb",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/platform/open_external_url_web.dart",
       "sha256": "8075613de2468f7090ad5b7e3d85d7b2106f3221f2990c931411c986c29a15e1",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/themes/app_theme.dart",
       "sha256": "50d90fdc6bd3b3e271067f379bbc440beba7cb1154450b5d4bec781882b1cd08",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter theme constants; web-ui themes are token files"
     },
     {
       "path": "lib/shared/themes/color_constants.dart",
       "sha256": "b78965625beed23885e7755ce7865e5c536230c0682649721c126617f679d1c0",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter theme constants; web-ui themes are token files"
     },
     {
       "path": "lib/shared/widgets/chord_theory_card.dart",
       "sha256": "a33e7bd467b75abb57210c375dbe6c0041b64dfc1f80fedae0c83779dbd24bd8",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "progression_notes, studio_document",
+      "remaining": ""
     },
     {
       "path": "lib/shared/widgets/clipboard_prompt_workbench.dart",
       "sha256": "7b24f5d522a7fb8049fbad2dc7c9ff5438a13d279569ec257102ba0fe7376bbe",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "shelf_document",
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/shared/widgets/clipboard_shelf.dart",
       "sha256": "3682f79509444e92a831b8439c76f11783247540a90f7d8721a9bd882ae47ea9",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "shelf_document",
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/shared/widgets/composition_studio.dart",
       "sha256": "ce3ada6b2e1c8ea5780fbef6676673bee33e5df139283f817b6042e60fdd337f",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "studio_document, studio_audio_plan",
+      "remaining": ""
     },
     {
       "path": "lib/shared/widgets/custom_app_bar.dart",
       "sha256": "d75f9c380e321acc8f5a9293265d621602d17c71da9b452ecd88add340fe804b",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/widgets/custom_button.dart",
       "sha256": "c346c8beb76d7b993a3661a2bdb36ec8807b89eb440b6356e49ed6c30e8aa608",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/widgets/error_widget.dart",
       "sha256": "3bf84f6f5fa41585c3d49066a2fdebfbbbb95037ff4dee7036589e5b936093ab",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/widgets/hold_repeating_button.dart",
       "sha256": "9078c8d4af624d3ee7cd5aff5996a0b5d7895c751e54e59b06c5ffb9e31eff70",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "counter_garden, hold_repeat_count, play_document",
+      "remaining": "Native hold-repeat timing is not copied"
     },
     {
       "path": "lib/shared/widgets/home_overview_panel.dart",
       "sha256": "5d66bd15cfc4eba55090a72e6b8270cee7a922f024248610af66c5bacf6efa69",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "door_document",
+      "remaining": "Home cards are Flutter widgets"
     },
     {
       "path": "lib/shared/widgets/loading_widget.dart",
       "sha256": "97ad6bfc0f06566e7c3a3eaf3ecbf0d0098247c45e0962d6134bf9713e0ec9e7",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     },
     {
       "path": "lib/shared/widgets/note_sequence_card.dart",
       "sha256": "68ce71a21a9803a935ee1ae4ef8e0a484b410590667164d9461141abf53023e6",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "progression_notes",
+      "remaining": ""
     },
     {
       "path": "lib/shared/widgets/session_text_clipboard.dart",
       "sha256": "814e0546d7bd95adbee7a9dbdb6ad812f1a57ca80946e306ff2572f54b14399a",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "shelf_document",
+      "remaining": "Native clipboard platform behaviour is not equivalent"
     },
     {
       "path": "lib/shared/widgets/song_seed_panel.dart",
       "sha256": "cfe4bb41be3e5126aab46921c05aae9b5812330db6a87cba3f74b3f746b89d76",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "partial",
+      "target": "song_seed, studio_document",
+      "remaining": ""
     },
     {
       "path": "lib/shared/widgets/standard_page_footer.dart",
       "sha256": "dbdfe982337c9169f3c203f2537d6cd702ee59872f7cca095252059cb33c45f7",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter page chrome; web-ui pages have their own"
     },
     {
       "path": "lib/shared/widgets/standard_page_header.dart",
       "sha256": "7c9d76059850249e037359247ba9e0e769d92d108919f26ed36691daf2f62ac1",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter page chrome; web-ui pages have their own"
     },
     {
       "path": "lib/shared/widgets/standard_page_shell.dart",
       "sha256": "730eb33cd69050bf7267ae4d3cc764a61190b50ecb78557dad1de04d4d7341a3",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter page chrome; web-ui pages have their own"
     },
     {
       "path": "lib/shared/widgets/tool_door_selector.dart",
       "sha256": "cac6d21fe9482e7ac89b76a98ca2fb8d0a0e90116aa5604241efe4a1b692f89b",
       "feature": null,
-      "status": "unreviewed",
-      "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "status": "successor",
+      "target": "door_document",
+      "remaining": ""
     },
     {
       "path": "lib/widgets/nav_button.dart",
       "sha256": "691fbbcfe3d4982d933c56e7ce46e1e718fa0e3ed9a1111c0ac1d895938cba0a",
       "feature": null,
-      "status": "unreviewed",
+      "status": "proposed_retirement",
       "target": null,
-      "remaining": "Explicit disposition and coverage required"
+      "remaining": "Flutter runtime with no counterpart on the web (routes, bootstrap, GetX services, platform shims, theme constants, widgets)"
     }
   ],
   "catalogues": {
     "api_patterns": {
       "files": 792,
-      "status": "unreviewed",
+      "status": "partial",
+      "target": "pattern_catalogue (198 rows), 198 screens",
+      "remaining": "As navigation_patterns; service.dart and model.dart have three shapes",
+      "file_kinds": {
+        "controller.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "model.dart": {
+          "files": 198,
+          "distinct_shapes": 3
+        },
+        "service.dart": {
+          "files": 198,
+          "distinct_shapes": 3
+        },
+        "view.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        }
+      },
       "tree_digest": "64c5b0497298801fabd918cadf3b8e44c5f8ab6f721cf293f7d810ce2b10d372"
     },
     "data_processing_patterns": {
       "files": 202,
-      "status": "unreviewed",
+      "status": "partial",
+      "target": "14 Python and 5 JavaScript references as pattern_run families; native examples; screens",
+      "remaining": "The Flutter views of the data-processing patterns are shown as screens; the view shapes in file_kinds are not reviewed one by one",
+      "file_kinds": {
+        "service.dart": {
+          "files": 26,
+          "distinct_shapes": 1
+        },
+        "view.dart": {
+          "files": 176,
+          "distinct_shapes": 22
+        }
+      },
       "tree_digest": "2763465fcd3df775f1dde111f2688f20c57d73e1a58e971771a6ccc1dfa21a63"
     },
     "navigation_patterns": {
       "files": 792,
-      "status": "unreviewed",
+      "status": "partial",
+      "target": "pattern_catalogue (198 rows), 198 screens",
+      "remaining": "Per-pattern Flutter views and controllers: see file_kinds; shapes are heuristic groups, not proof of equivalent behavior",
+      "file_kinds": {
+        "controller.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "model.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "service.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "view.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        }
+      },
       "tree_digest": "5c77e046cd7ff460c3c96ef6bc420bc5920719e14528e0e0d1b8d78706c99c23"
     },
     "ui_theme_patterns": {
       "files": 792,
-      "status": "unreviewed",
+      "status": "partial",
+      "target": "pattern_catalogue (198 rows), 198 screens (and the web-ui themes)",
+      "remaining": "As navigation_patterns",
+      "file_kinds": {
+        "controller.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "model.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "service.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        },
+        "view.dart": {
+          "files": 198,
+          "distinct_shapes": 1
+        }
+      },
       "tree_digest": "c7118e4c0f105f486beb7fcc362546be2c8c1d8a685d6aeb27bc569bf3899f69"
     }
   },
+  "other_sources": {
+    "python_tools": [
+      {
+        "path": "python/actions_latest.py",
+        "sha256": "2cd692842e65a705301c42d468e15047ce15d4c5af921d11abe273be71b079ed",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/build_artifact_report.py",
+        "sha256": "3d1c8a5ab77993b1982ff217c65db0f7a726da92624330caacb8672c1b4d0f9f",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Report-only size summary of the Flutter web build"
+      },
+      {
+        "path": "python/capture_build_companions.py",
+        "sha256": "dea4e1962b5097a61966447159e350027dd9dd396b8af06ac2d429091a78bbc6",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Runs one real Flutter build and fresh Python and Node controls in the same environment"
+      },
+      {
+        "path": "python/capture_native_errors.py",
+        "sha256": "1c660a35f37884ea6489d877ccb9c1f8671f9c793a112fa4a6efdf8da1186810",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "One-shot Flutter build with native, Python and Node negative controls"
+      },
+      {
+        "path": "python/check_pattern_smoke_mutations.py",
+        "sha256": "bf8109de2c1c08085e6a55efe4721d5388497232914b2a7027a5fd0708b50e9b",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Proves the generated Flutter suite rejects thrown or empty production services"
+      },
+      {
+        "path": "python/check_route_observations.py",
+        "sha256": "92c98dc1371ca41cc8eed0aca91affe6b5cb377ad2792c1d4fd36bbc251d4aea",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/check_web_observations.py",
+        "sha256": "550a2b1e161c053abf37992bc3619cc764a8114ee55b0f5d743575538f861ddb",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/collection_query_patterns.py",
+        "sha256": "853854e8efbb69a5a9cf04b8965cc91529acc1e2bc659e0a7009bc769d60bcac",
+        "status": "successor",
+        "target": "pattern_run(\"query\")",
+        "remaining": "Golden: tests/fixtures/pattern_golden.json"
+      },
+      {
+        "path": "python/collection_structure.py",
+        "sha256": "63e62fa2597497588a01f2981b608dbddabfbdff3d6a869fdd79dc87e97c0f31",
+        "status": "successor",
+        "target": "pattern_run(\"structure\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/collection_transform.py",
+        "sha256": "10fdd17a4fcb1a9570bfc4e470d2b99a5f0caad2ad2845b89591726cec65b8ad",
+        "status": "successor",
+        "target": "pattern_run(\"transform\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/collection_window.py",
+        "sha256": "459d38f710a819cd6f6bf199a5fc120a48f26052d78611a1da4f1364b5da55e7",
+        "status": "successor",
+        "target": "pattern_run(\"window\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/conftest.py",
+        "sha256": "73974857712e64176761a2982df3d471c0b67a7b493f4e8d4d5252c79e4ada4c",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/conversion_patterns.py",
+        "sha256": "280ca7dfa8a563b50147cb3bcc6c0886a5f31dab56f86d293c02905cabf51edc",
+        "status": "successor",
+        "target": "pattern_run(\"convert\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/curl_request.py",
+        "sha256": "b9f0cea70381547ffd5aabcf5620c510430cf658ed4d5b9eebb105c8a61edb3f",
+        "status": "successor",
+        "target": "parse_curl, mask_curl",
+        "remaining": "Golden: tests/fixtures/curl_request_cases.json"
+      },
+      {
+        "path": "python/curl_runtime_server.py",
+        "sha256": "77b8cb97defc18abea8054bdccbeccc4c33c9c95468da17a4af492382d919edc",
+        "status": "not_absorbed",
+        "target": null,
+        "remaining": "Executes real HTTP requests; web-ui tools send nothing"
+      },
+      {
+        "path": "python/dart_contracts.py",
+        "sha256": "ac5c42205c45cc9d6d682403e550e10794caf126775ae50cb5c02cc54b4eb4a0",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Executes production Dart contracts with the Dart SDK and checks the output in Python; the Dart sources are not carried over"
+      },
+      {
+        "path": "python/expected_child_failure.py",
+        "sha256": "86547e33b5b161a3a75ae95a7735436a13df8f1a6e0262d823e6dd06c821a542",
+        "status": "successor",
+        "target": "expected_child_failure",
+        "remaining": ""
+      },
+      {
+        "path": "python/failure_identity.py",
+        "sha256": "f1d2a9ddd042e3eb93f56aa72fb4e6699ee475ddf3bd3d390620597d8e44b398",
+        "status": "successor",
+        "target": "junit_failure_records",
+        "remaining": ""
+      },
+      {
+        "path": "python/flutter_machine_junit.py",
+        "sha256": "ad55ea6d8220f56903c741104f44f7e5ba55f2eb4e68ce68a831044526c944ba",
+        "status": "successor",
+        "target": "flutter_machine_junit",
+        "remaining": ""
+      },
+      {
+        "path": "python/generate_page_identities.py",
+        "sha256": "2748d600987e36689dd9aff015692bea28803d9c0a7a370aa6f5d95ab95616aa",
+        "status": "successor",
+        "target": "page identities (door_document)",
+        "remaining": ""
+      },
+      {
+        "path": "python/generate_pattern_contracts.py",
+        "sha256": "c54500c9f0643334c4fe0fa5a8ad79d97acb15ea189b28ff11480627f48649ce",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Generates the single Dart producer that replaced 594 duplicated Flutter test suites"
+      },
+      {
+        "path": "python/generate_pattern_smoke_test.py",
+        "sha256": "7b846abdf106e5b9944e7532e57ffe131d1eda2eea3354b3351e0f08a3df7b83",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Generates the Flutter catalogue smoke test"
+      },
+      {
+        "path": "python/generate_photo_import_fixtures.py",
+        "sha256": "ea9c75dad53b03dff4f931afa86c73d6ae53d734f1d0785142d89b64ea6c71aa",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/generate_repository_metadata.py",
+        "sha256": "22d6c58db8fe8d43ab94eca213bf1ce9837196ae3f05380bdbae6f4fccfa3e89",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Generates the Flutter app's repository record"
+      },
+      {
+        "path": "python/generate_timezone_cases.py",
+        "sha256": "75fc8dad5b6ac6983cbc6c4ab50b26f1eb702a0d3ecbc2db5b9d0a2ab58e1bd7",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/generate_zone_table.py",
+        "sha256": "fa2041c7dc9aa3ea7f4c6e8d05a00aba648690d7638c974a8df171305bef80a2",
+        "status": "successor",
+        "target": "zone_rows, zone_offset",
+        "remaining": "The scan and bisection are followed"
+      },
+      {
+        "path": "python/gesture_paint.py",
+        "sha256": "cb0489fc75b57f7f374655ccd16dbe4ecff730d473804ce6580184e77aef15f5",
+        "status": "successor",
+        "target": "pattern_run(\"contract\") operation swap",
+        "remaining": "PNGs are decoded by studio_png_decode"
+      },
+      {
+        "path": "python/header_contracts.py",
+        "sha256": "a86a6a605d0bd1d4f2720c08c7847ad5bc6a3adeac3a1655fa56a95859c4c2ba",
+        "status": "successor",
+        "target": "pattern_run(\"contract\") operation layout",
+        "remaining": "The header title-emoji identity belongs to Flutter and is left out"
+      },
+      {
+        "path": "python/home_discovery.py",
+        "sha256": "9872287a7c61c6523c2b97beba07ab0366e03337ca739c9b88bddef09ec5cc71",
+        "status": "successor",
+        "target": "door_document",
+        "remaining": ""
+      },
+      {
+        "path": "python/image_diff.py",
+        "sha256": "cb819e6f6a99fe14864d6dd590b4a801c93a9468ef418bdbc14500902db814cd",
+        "status": "successor",
+        "target": "pattern_run(\"contract\") operation swap",
+        "remaining": "Exact RGBA comparison"
+      },
+      {
+        "path": "python/junit_history.py",
+        "sha256": "f3649ffe29278fd5e0ea9cd3cc3a9130c95561b64e1774475021c06dd902753d",
+        "status": "successor",
+        "target": "junit_history, junit_diff",
+        "remaining": ""
+      },
+      {
+        "path": "python/list_ordering.py",
+        "sha256": "92a34ba04136598dca6e1f1fc2e4c19ca23b2da3055798d052bc8a0ab532af3a",
+        "status": "successor",
+        "target": "pattern_run(\"order\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/list_selection.py",
+        "sha256": "d41bcdf7b2322561d18c9176eb3a2cf11c454a56eae531af74c976bcfa6a76b4",
+        "status": "successor",
+        "target": "pattern_run(\"select\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/metadata_contracts.py",
+        "sha256": "80ff6a7ea9e407cffc44a9f7b55d80e8e016b30b143df52c12355dda8eee745a",
+        "status": "successor",
+        "target": "pattern_run(\"contract\") (operations screens and locales)",
+        "remaining": "Golden: tests/fixtures/contract_golden.json (the original run on seeded mutations)"
+      },
+      {
+        "path": "python/multi_test_runner.py",
+        "sha256": "54f487d659f0fffd4a9a1d4a338cc2094fc3040306b3530d8277be51b0e7faa7",
+        "status": "successor",
+        "target": "run_test_suite, runner_command",
+        "remaining": ""
+      },
+      {
+        "path": "python/net_probe.py",
+        "sha256": "dd13d547777de9bc9e23cb7a6b69ee3e114835618d10c53903a6bafb8ef50ef5",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/node_test_runner.py",
+        "sha256": "580cb321a3e2ae416b7f2c0472e00b65e53b9ff50700a3f739fe050fd7d8a4f4",
+        "status": "successor",
+        "target": "run_test_suite (runner playwright-node, deno)",
+        "remaining": ""
+      },
+      {
+        "path": "python/oracle_selection.py",
+        "sha256": "e59e5bf79c7343802cee89d30b10812b4c3be77e485a8454123323ed931f9725",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "A CI job-ownership rule: selects the Python fallback only when the Non-Dart job does not own the full pytest run; web-ui runs its suites whole"
+      },
+      {
+        "path": "python/outcomes.py",
+        "sha256": "b3f70aa2083bd9b0425bbcb7f6d069de84068220d2b29519c513f912719c240b",
+        "status": "successor",
+        "target": "junit_report, flutter_outcomes",
+        "remaining": ""
+      },
+      {
+        "path": "python/pagination_patterns.py",
+        "sha256": "9aa2118885011a6947101ac15b9628f7ac0ef152b9e277b5c6f792e50e3b2187",
+        "status": "successor",
+        "target": "pattern_run(\"page\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/pattern_contracts.py",
+        "sha256": "bee3f208895e96e0dd8dccdb6a46e7b6408b2240c67b3b6de859ddf7e28bd70a",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Validates real Dart output (per-case JUnit failures)"
+      },
+      {
+        "path": "python/pattern_responsibility_audit.py",
+        "sha256": "2c48b35b3bc137d3c3ad3ff896ce6a6567a885ca3897be6c807073b6834bd71d",
+        "status": "successor",
+        "target": "pattern_owner",
+        "remaining": "The audit's rules, copied"
+      },
+      {
+        "path": "python/pattern_stub_audit.py",
+        "sha256": "fdad0c6075ae3a146e759e57e19ed1a9937481bc45d8a000b1148d4212a49ae9",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Audits generated Dart pattern services for placeholder implementations"
+      },
+      {
+        "path": "python/playwright.py",
+        "sha256": "e2ab16fe844b08f6f9c4dbb21865a1e162c59873d0777df7787313fadba446dd",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/render_pattern_status.py",
+        "sha256": "c5ead2e7aa8cd240f2c26725ed46922bb2704594e39f612a6823b61859126760",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Renders the 198 evidence-based catalogue statuses of the Dart app as Markdown"
+      },
+      {
+        "path": "python/scoring_heap_patterns.py",
+        "sha256": "823c20a90249c6a3f519ee0a8e6ad1b1e9d395a7c35d2fa5778192d0cfda4ca5",
+        "status": "successor",
+        "target": "pattern_run(\"score\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/search_patterns.py",
+        "sha256": "2595381af42e2c0c035ff9ebf2c03d68207c191aa3963a64b142d1019c755ed0",
+        "status": "successor",
+        "target": "pattern_run(\"search\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/state_reducer.py",
+        "sha256": "1a10f1f9eb0ed16f0cc3fd50d9b67c40e9cb92e51d16cbaa2ba9e8c7d28f70be",
+        "status": "successor",
+        "target": "pattern_run(\"reduce\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/test.py",
+        "sha256": "e4366ef2c7ec42b198b4d0bbe2eeb6416e35491ba7903694315ed626f980448c",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/text_processing.py",
+        "sha256": "f003f9c12d838aa8cddcb409678b9a717781e3d3a66ba85938097f899f1e2318",
+        "status": "successor",
+        "target": "pattern_run(\"text\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/validate_runner_junit.py",
+        "sha256": "e72c59662d396f97bedc1cb52514458ce30b05386b143e4585428d210aa8bf82",
+        "status": "successor",
+        "target": "junit_inspect",
+        "remaining": ""
+      },
+      {
+        "path": "python/validation_http.py",
+        "sha256": "c74bccedfc1208b6a29decb27d39927a22c612a9fe5dea4122bfed3816afab4f",
+        "status": "successor",
+        "target": "python3 web_ui.py --pattern-serve",
+        "remaining": "A loopback bridge for every family, with the same Host/Origin/size/media-type rules"
+      },
+      {
+        "path": "python/validation_patterns.py",
+        "sha256": "74387f03a7c51ff9b0a0b8ac3c8dac4410ffb15509c7c132c4c7cf4f7732d1ab",
+        "status": "successor",
+        "target": "pattern_run(\"validate\")",
+        "remaining": ""
+      },
+      {
+        "path": "python/verify_timezone.py",
+        "sha256": "150663935110315609c44198dc0faa5bb39eda1063c8cf674f4b4db27b8b1067",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/web_page_catalogue.py",
+        "sha256": "e9a1770030d1a905c823d7ba16e8bb1cb0e2f270f298c126bbc1eb61392eafd8",
+        "status": "unreviewed",
+        "target": null,
+        "remaining": "Explicit disposition and coverage required"
+      },
+      {
+        "path": "python/workflow_patterns.py",
+        "sha256": "2b875b170dcdc8cf4e541db2ca6f732fac1cd4fb7e6e3bfdc26d18dfb445b6e1",
+        "status": "successor",
+        "target": "pattern_run(\"workflow\")",
+        "remaining": ""
+      }
+    ],
+    "build_tools": [
+      {
+        "path": "build_tools/android_size.dart",
+        "sha256": "b61d1b761a3d73fba53ef224b5cd85bac28925c6ab7d528b7c99f29ac88bbeff",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Measures the Android arm64 build of the Flutter app"
+      },
+      {
+        "path": "build_tools/build_metadata.dart",
+        "sha256": "25206349b20151e4b95438c8b2def98d889f9c9959df893d782c78604c40f9f3",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Writes the Flutter build's diagnostics metadata"
+      },
+      {
+        "path": "build_tools/check.dart",
+        "sha256": "1a75cb5df690a0782c031ed165ddc3301e409c3ab6a281c03e61a3ccc1fe0c67",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Runs the Flutter repository checks (pub get, analyze, test)"
+      },
+      {
+        "path": "build_tools/check_versions.dart",
+        "sha256": "d9f38554ef1e21f9467b5fef8a7c08cf8283eb1c2dc8d3d1a9c466fbf2d3e0a3",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Reports outdated pub packages (get, shared_preferences, flutter_lints)"
+      },
+      {
+        "path": "build_tools/dev.dart",
+        "sha256": "56c562fc0ad5c276365f6228372985584d1e84ee959343e56ca4ddf2091afeb3",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Launcher that forwards to the other Dart build tools"
+      },
+      {
+        "path": "build_tools/export_pattern_contracts.dart",
+        "sha256": "4c662bb56a7debb57e2a54887e58d058d667be033715cab68c47041813227c92",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Exports the Dart pattern registry"
+      },
+      {
+        "path": "build_tools/inspect.dart",
+        "sha256": "095eea7d212c9271001c7538d8551affe6a0969e1162564bfb9d077369d3a923",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Counts and inspects the Dart files of the Flutter repository"
+      },
+      {
+        "path": "build_tools/mock_http_server.dart",
+        "sha256": "5d7700e4d4ca80de5407fa321a1171c8b0db616b01fd198b7fe6d8f8ef350224",
+        "status": "partial",
+        "target": "MCP lab (MockMcpRoutes, PR #109)",
+        "remaining": "It also mounts MockAuthHandler, the Digest/HMAC auth matrix, which is pending"
+      }
+    ],
+    "workflows": [
+      {
+        "path": ".github/workflows/actionlint.yml",
+        "sha256": "52efffe8a925d537f0b261de585f9f9d05488128e93db64380bcac48699e0923",
+        "status": "successor",
+        "target": ".github/workflows/actionlint.yml",
+        "remaining": ""
+      },
+      {
+        "path": ".github/workflows/ci-status-label.yml",
+        "sha256": "ce0d1594efc8c754f9ff3038120978319f145df69244ef0964f57c18c18eaa91",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Inactive labelling job of that repository"
+      },
+      {
+        "path": ".github/workflows/claude.yml",
+        "sha256": "0fbe458c0a74d35f00c6106143d284966f9a6dfdd559153d7532031960a56f8c",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Assistant workflow of that repository"
+      },
+      {
+        "path": ".github/workflows/curl-runtime.yml",
+        "sha256": "d995a8d2a331b1bbd47c59946c266ab1850b8c4a4cea4310e554c8c7e72a015c",
+        "status": "not_absorbed",
+        "target": null,
+        "remaining": "Tests real HTTP execution, which web-ui does not do"
+      },
+      {
+        "path": ".github/workflows/dart.yml",
+        "sha256": "87aced6d6ecd45a13c202be622aa9d94d8314928429b70147b3d45ef3031207c",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Flutter analyze and test"
+      },
+      {
+        "path": ".github/workflows/diagnostics-evidence.yml",
+        "sha256": "cb056c70dfdfe344edb45a34ef66d86d94f9d629d45b12836dd6d3c5fb6b513a",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Screenshots of the Flutter diagnostics overlay"
+      },
+      {
+        "path": ".github/workflows/docker-e2e-verify.yml",
+        "sha256": "e142ccccd57b482b28b57455a622b2287037d52ef386a8cca1c23783fb581646",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Snapshots of the Flutter build in Docker"
+      },
+      {
+        "path": ".github/workflows/flutter-audit-contracts.yml",
+        "sha256": "52540803ababfb0ca2b6ac8ead697c588263a3a5edf2dc06210501c8cd18f478",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Offline contracts of that audit"
+      },
+      {
+        "path": ".github/workflows/flutter-audit-focused-diagnostic.yml",
+        "sha256": "abb845940c91e023812a3319e661352663a78c6bf661d089b72c910696408b1c",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Diagnostic of that audit"
+      },
+      {
+        "path": ".github/workflows/flutter-pages-audit.yml",
+        "sha256": "24b803def9f2842342c9a239ae492e509827746e37b972bac1c09bcfdc68aa7d",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Audits the published Flutter build"
+      },
+      {
+        "path": ".github/workflows/flutter-pages.yml",
+        "sha256": "d35d1792ba65cb57796a6a0416955ddacf01d267349e4818521e79b059c635ad",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Publishes the Flutter web build"
+      },
+      {
+        "path": ".github/workflows/ios-native.yml",
+        "sha256": "a6a8c38ddcfe12cce87edac53b218d824087daa01f885c2e9c9620b7098a2506",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "iOS build of the Flutter app"
+      },
+      {
+        "path": ".github/workflows/native-error-corpus.yml",
+        "sha256": "1ff86d0d1232a503f3cfd3c8851222aea1a780eac8e5c75828ae2b54ef554de8",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Native Flutter error corpus"
+      },
+      {
+        "path": ".github/workflows/non-dart.yml",
+        "sha256": "c57e651123c245b2295adfb900613c324324135557aa609e7f2adf600c5393bc",
+        "status": "successor",
+        "target": "the Python and Node test jobs of web-ui (tests/, platform-matrix.yml)",
+        "remaining": "The oracles now run as golden fixtures plus web-ui tests"
+      },
+      {
+        "path": ".github/workflows/screen6-responsive.yml",
+        "sha256": "4c22bec5176c13549cab7abc7686dd1baac9e68b472ac76dce9673bd3669e97a",
+        "status": "successor",
+        "target": "ScreensBrowserTests (the Hub search stays inside the stage and keeps its text and count across resizes)",
+        "remaining": "Chromium; the platform matrix adds Firefox and WebKit"
+      },
+      {
+        "path": ".github/workflows/structure-refactor-validation.yml",
+        "sha256": "1b3775f7f9bf8550c94c23fcb320065cddeb9a12bddfde308fdce45bb1753f15",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Smoke of a Dart refactor"
+      },
+      {
+        "path": ".github/workflows/ui-showcase-comparison.yml",
+        "sha256": "9d987a549ac4a4792a704981168ff9c495b7bbdbf0971d641aa2ed1225f1c777",
+        "status": "successor",
+        "target": "showcase page and its visual baseline tests",
+        "remaining": ""
+      },
+      {
+        "path": ".github/workflows/web-observations.yml",
+        "sha256": "59fba35e523a26a8a51c180c5905536bfe24afcebd2f021641574049449cddc2",
+        "status": "proposed_retirement",
+        "target": null,
+        "remaining": "Observes the published Flutter pages"
+      }
+    ]
+  },
   "archive_blockers": [
-    "Resolve every unreviewed file and catalogue",
+    "Approve the retirement of every proposed_retirement file, or absorb it",
+    "Resolve every pending and unreviewed file, group and tool",
     "Record retained/replaced/dropped behavior with tests",
     "Validate real-device media/clipboard behavior",
     "Export or deliberately retire stored entries",

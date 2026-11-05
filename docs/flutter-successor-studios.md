@@ -9,17 +9,22 @@ explicitly export/import replay JSON as text.
 ## Source inventory and archive gate
 
 `flutter-migration-inventory.json` pins flutter_navigation_basic at
-`39d659ebffa527e850a1b3f2c45080ececb2eda1`. Reproduce it against a clean checkout:
+`ae3c4cb78cfc9aed15871dfce750d8320a19d1e6`. Reproduce it against a clean checkout, or check that the file on disk is what the tool writes:
 
 ```sh
 python -S tool/flutter_migration_inventory.py /path/to/flutter_navigation_basic --output docs/flutter-migration-inventory.json
+python -S tool/flutter_migration_inventory.py /path/to/flutter_navigation_basic --output docs/flutter-migration-inventory.json --check
 ```
 
-The inventory lists SHA-256 and feature-level disposition for 178 non-catalogue
-Dart files. Four catalogue groups contain 2,578 further Dart files and have group
-fingerprints; those groups are explicitly **unreviewed**. The count of files is
-not a count of independent features. The generator rejects modified tracked
-`lib/` files, and performs no download or repository mutation.
+The inventory lists SHA-256 and a disposition for 178 non-catalogue Dart files, for the 56 Python tools, 8 Dart build tools and
+18 workflows, and per group for the four catalogues (2,578 further Dart files; for each kind of file, how many distinct shapes it has once comments,
+plain string values, numeric literals and whitespace are ignored, and Pattern-number identifiers are normalized.
+Single/double/triple and raw strings are recognized; interpolation expressions are retained as nested shapes.
+These are heuristic groups, not proof of equivalent behavior or completed migration. All 594 navigation, API and UI `view.dart` files share one shape). A status says what web-ui did, not that the original was
+reviewed line by line: `successor`, `partial`, `not_absorbed` (with the reason), `pending` (asked for, not done), `proposed_retirement` (Flutter runtime with no counterpart on the web; needs the
+owner's approval) and `unreviewed`. Outside the catalogues: 9 not_absorbed, 96 partial, 3 pending, 64 proposed_retirement, 74 successor, 14 unreviewed. `archive_ready` stays false while anything is pending, unreviewed or an unapproved retirement.
+`tests/test_successor_tools.py` checks the file's invariants, that every function it names exists, and (with `FLUTTER_NAVIGATION_BASIC_CHECKOUT` set) that the tool writes exactly this file.
+The generator rejects modified tracked files of the directories it reads and performs no download or repository mutation.
 
 | Source | Successor | Remaining / deliberate difference |
 |---|---|---|
@@ -30,7 +35,11 @@ not a count of independent features. The generator rejects modified tracked
 | `features/irony_generator`, `data/ironies.dart` | `irony_round`, Play studio | New six-card authored quiz, without copying the old text corpus |
 | `features/coordinate_tool` | Coordinates page | Network short-link expansion intentionally excluded |
 | Clipboard / HTTP draft | Existing shelf / curl parser | Real HTTP execution/authentication and native clipboard need explicit disposition |
-| Pattern collections / MCP / other unreviewed files | No claim of equivalence | Review, retain elsewhere, or explicitly retire with approval |
+| MCP (`lib/shared/mcp`, mock routes) | MCP lab | Digest/HMAC auth matrix mock (`mock_auth`, `auth_matrix`, `digest_nc`) is pending |
+| 198 screens, Hub, locales, native patterns 136-137 / 151-175 / 183-184 | `examples/screens.html`: `screen_*`, `native_*` | Widgets are semantic HTML; screen 5's dedicated controller is not absorbed |
+| `metadata_contracts`, `header_contracts`, `gesture_paint`, `validation_http` | `pattern_run("contract")`, `--pattern-serve` | `oracle_selection`, `dart_contracts`, `android_size.dart` and the Flutter-only workflows are proposed for retirement |
+| Slides / PPTX and pixel-art tools | Not yet | Asked for; after the Digest/HMAC mock |
+| Everything else | No claim of equivalence | Review, retain elsewhere, or explicitly retire with approval |
 
 Archiving remains blocked on file/group dispositions, successor merge/publication,
 retention/export decisions for stored data, device checks, and explicit approval.
@@ -144,3 +153,9 @@ A sporadic existing WebKit ResizeObserver loop during EXIF imports was also
 observed. Photo studio now observes a zero-height width probe rather than the
 canvas parent whose height changes during imports; existing orientation/resize
 acceptance tests cover this behavior without filtering browser errors.
+
+The lexical shape repair changes only data-processing group counts at the pinned source:
+`service.dart` 2 → 1 and `view.dart` 23 → 22. Whitespace and comment placement no longer create extra groups.
+Original file/tree hashes, file counts and migration dispositions are unchanged. This scanner is not a Dart parser;
+it rejects unterminated delimiters but does not validate all Dart syntax. Numeric/string values are intentionally ignored,
+so distinct runtime behavior can still share a shape.

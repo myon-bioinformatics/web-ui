@@ -2057,7 +2057,7 @@ class BtkAdapterTests(unittest.TestCase):
     def test_adapters_meet_the_contract_and_name_real_pages(self):
         w = web_ui
         pages = w.example_pages()
-        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-image-stamp", "web-ui-image-studio", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-showcase", "web-ui-test-report"])
+        self.assertEqual(sorted(w.BTK_ADAPTERS), ["web-ui-clipboard-shelf", "web-ui-composition-studio", "web-ui-coordinates", "web-ui-door", "web-ui-image-stamp", "web-ui-image-studio", "web-ui-irony", "web-ui-mcp-lab", "web-ui-mcp-send", "web-ui-native-patterns", "web-ui-pattern-run", "web-ui-patterns", "web-ui-photo-studio", "web-ui-playground", "web-ui-screens", "web-ui-showcase", "web-ui-test-report"])
         for adapter_id in w.BTK_ADAPTERS:
             config = w.btk_adapter(adapter_id)
             with self.subTest(adapter_id):
@@ -3614,8 +3614,8 @@ class PatternTests(unittest.TestCase):
                     self.assertEqual(typed(self.go(case["family"], case["request"])), typed(case["ok"]))
                 else:
                     self.refused(case["family"], case["request"], case["error"])
-        self.assertEqual(set(seen), set(web_ui.PATTERN_RUNNERS))
-        for family in set(web_ui.PATTERN_RUNNERS) - {"text", "structure"}:      # the two example-only families have nothing to refuse except an unknown mode
+        self.assertEqual(set(seen), set(web_ui.PATTERN_RUNNERS) - {"native", "screen", "contract"}, "those three have their own golden files: assets/screens.json, app_text.json, numbered_routes.toml and contract_golden.json")
+        for family in set(seen) - {"text", "structure"}:      # the two example-only families have nothing to refuse except an unknown mode
             self.assertEqual(seen[family], {"ok", "error"}, family)
 
     # --- query -----------------------------------------------------------------------------------------------------------------------------------
@@ -3885,7 +3885,7 @@ class PatternTests(unittest.TestCase):
     def test_the_runner_names_unknown_families_and_wraps_crashes(self):
         with self.assertRaises(ValueError) as unknown:
             self.go("regex", {})
-        self.assertIn("one of collection, concurrency, convert, event_loop, future, interaction, order", str(unknown.exception))
+        self.assertIn("one of collection, concurrency, contract, convert, event_loop, future, interaction, native, order", str(unknown.exception))
         with self.assertRaises(ValueError) as caught:
             self.go("transform", {"operation": ["unhashable"], "values": []})
         self.assertTrue(str(caught.exception).startswith("invalid transform request:"))
@@ -4214,7 +4214,8 @@ class PatternTests(unittest.TestCase):
             family = web_ui.pattern_family(number)
             if family:
                 families.setdefault(family, []).append(number)
-        self.assertEqual(set(families), set(web_ui.PATTERN_RUNNERS))
+        self.assertEqual(set(families) | {"screen", "contract"}, set(web_ui.PATTERN_RUNNERS), "the screen family implements screens and the contract family checks them, not data-processing patterns")
+        self.assertEqual(families["native"], sorted(web_ui.PATTERN_NATIVE | web_ui.PATTERN_GESTURES))
         self.assertEqual(families["select"], [1, 2, 3, 30, 86, 113])
         self.assertEqual(families["query"], [11, 12, 14, 15, 16, 17, 18])
         self.assertEqual(families["window"], [34, 36, 37, 38, 39, 40, 41, 42, 43, 44])
@@ -4244,10 +4245,11 @@ class PatternTests(unittest.TestCase):
         self.assertEqual(len(ids(query="フィルタリング")), 30)
 
     # --- the patterns page -----------------------------------------------------------------------------------------------------------------------
-    def test_every_family_has_an_example_and_the_page_runs_seventeen_of_them(self):
+    def test_every_family_has_an_example_and_the_page_runs_nineteen_of_them(self):
         examples = web_ui.pattern_examples()
         self.assertEqual(sorted(examples), sorted(web_ui.PATTERN_RUNNERS))
-        self.assertEqual(set(web_ui.PATTERN_RUNNERS) - set(web_ui.PATTERN_TWINS), {"search", "convert", "validate"})
+        self.assertEqual(set(web_ui.PATTERN_RUNNERS) - set(web_ui.PATTERN_TWINS), {"search", "convert", "validate", "contract"})
+        self.assertEqual(len(web_ui.PATTERN_TWINS), 19)
         for family, example in examples.items():
             with self.subTest(family):
                 self.assertEqual(typed(example["result"]), typed(self.go(family, web_ui.PATTERN_EXAMPLES[family])))
@@ -4259,7 +4261,7 @@ class PatternTests(unittest.TestCase):
         page = web_ui.patterns_document()
         self.assertEqual(page.count('<script type="module">'), 1)
         self.assertEqual(page.count('id="patterns"'), 1)
-        self.assertNotRegex(page, r"https?://")
+        self.assertNotRegex(page, r"https?://(?!github\.com/myon-bioinformatics/flutter_navigation_basic/blob/[0-9a-f]{40}/\")", "the only address in the page is the pinned source of the screen family's links answer, as data")
         for hook in ("data-patterns-query", "data-patterns-category", "data-patterns-family", "data-patterns-count", "data-patterns-more", "data-patterns-list", "data-patterns-run-family",
                      "data-patterns-request", "data-patterns-run", "data-patterns-example", "data-patterns-status", "data-patterns-result", 'id="patterns-run-title"'):
             self.assertEqual(page.count(hook) if hook.startswith("id=") else len(re.findall(r"(?<= )%s(?=[ >])" % re.escape(hook), page)), 1, hook)
@@ -5044,6 +5046,1017 @@ class ImageStudioTests(unittest.TestCase):
             restored = web_ui.studio_workspace_history(web_ui.studio_workspace_text(history))
             self.assertEqual((restored.index, restored.items), (history.index, history.items))
             ET.fromstring(web_ui.studio_svg(restored.current))
+
+
+SCREENS_ASSET = json.loads((Path(__file__).resolve().parent / "fixtures" / "screens_asset.json").read_text(encoding="utf-8"))["screens"]
+SCREEN_TEXT_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "screen_text_golden.json").read_text(encoding="utf-8"))
+NUMBERED_ROUTES = __import__("tomllib").loads((Path(__file__).resolve().parent / "fixtures" / "numbered_routes.toml").read_text(encoding="utf-8"))
+CONTRACT_GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "contract_golden.json").read_text(encoding="utf-8"))
+
+
+class ScreensTests(unittest.TestCase):
+    """The 198 numbered screens, the Hub and the display catalogue. The golden values are the original's own files (assets/screens.json, assets/display/app_text.json and
+    ci/numbered_routes.toml, copied byte for byte); the expected texts of the cases below are the ones its Dart tests assert."""
+
+    go = staticmethod(web_ui.pattern_run)
+
+    def refused(self, request, message=None):
+        with self.assertRaises(ValueError) as caught:
+            self.go("screen", request)
+        if message is not None:
+            self.assertEqual(str(caught.exception), message)
+
+    def test_the_catalogue_is_the_original_asset(self):
+        rows = web_ui.screens_catalogue()
+        self.assertEqual((len(rows), len(SCREENS_ASSET)), (198, 198))
+        self.assertEqual(sum(1 for row in rows if "detail" in row), 22)
+        for number, (got, want) in enumerate(zip(rows, SCREENS_ASSET), 1):
+            self.assertEqual(got, want, number)
+            if number not in (19, 20, 91):      # these three were edited by hand in the original: their keys are in another order there
+                self.assertEqual(list(got), list(want), f"key order of screen {number}")
+            self.assertEqual(got["screenDataId"], number)
+            if "detail" in want:
+                self.assertEqual(sorted(got["detail"]), sorted(want["detail"]))
+
+    def test_the_display_catalogue_is_the_original_text(self):
+        self.assertEqual(list(web_ui.SCREEN_TEXT), list(SCREEN_TEXT_GOLDEN["locales"]))
+        self.assertEqual(len(web_ui.SCREEN_TEXT), 11)
+        for locale, texts in SCREEN_TEXT_GOLDEN["locales"].items():
+            self.assertEqual(list(texts), list(web_ui.SCREEN_TEXT_KEYS), locale)
+            for key, want in texts.items():
+                self.assertEqual(web_ui.screen_text(locale, key), want, (locale, key))
+
+    def test_locales_fall_back_the_way_the_display_catalogue_does(self):
+        text = web_ui.screen_text
+        self.assertEqual(text("jpn", "generic.backToHub"), "ハブに戻る")
+        for raw, want in (("ja", "jpn"), ("JA", "jpn"), (" jpn ", "jpn"), ("\u3000ara\u3000", "ara"), ("in", "ind"), ("id", "ind"), ("zh", "zho"), ("zz", "eng"), ("", "eng"), (None, "eng"), (5, "eng"),
+                          ("ja-JP", "eng"), ("ＪＰＮ", "eng"), ("\u200bjpn", "eng"), ("\ufeffjpn", "jpn"), ("\u0085eng\u0085", "eng")):
+            self.assertEqual(web_ui.screen_locale(raw), want, raw)
+        self.assertEqual(text("jpn", "no.such.key"), "no.such.key", "a key that is not in the catalogue is its own text")
+        self.assertEqual(text("jpn", "no.such.key", (("x", 1),)), "no.such.key")
+        template = text("eng", "patternTemplate.listItem")
+        self.assertIn("{title}", template)
+        self.assertIn("{n}", template)
+        self.assertEqual(text("eng", "patternTemplate.listItem", (("title", "T"), ("n", 3))), template.replace("{title}", "T").replace("{n}", "3"))
+        self.assertEqual(text("eng", "patternTemplate.listItem", (("title", "{n}"), ("n", 3))), template.replace("{title}", "{n}").replace("{n}", "3"), "the arguments are replaced one after the other")
+        self.assertEqual(text("eng", "patternTemplate.listItem", (("title", None), ("n", 3))), template.replace("{title}", "").replace("{n}", "3"), "null reads as nothing")
+
+    def test_the_route_table_is_the_originals(self):
+        routes = NUMBERED_ROUTES["routes"]
+        self.assertEqual(len(routes), 198)
+        for number in range(1, 199):
+            route = web_ui.screen_route(number)
+            self.assertEqual(route["widget"], routes[f"{number:03d}"], number)
+            self.assertEqual(route["kind"] == "generic", route["widget"] == NUMBERED_ROUTES["generic_widget"])
+        self.assertEqual(sorted({r["kind"] for r in map(web_ui.screen_route, range(1, 199))}), ["conversion", "dedicated", "generic", "interactive", "parallel", "validation"])
+        for number in (0, 199, -1, True, 1.5, "1", None):
+            with self.assertRaises(ValueError, msg=repr(number)):
+                web_ui.screen_route(number)
+
+    def test_198_screens_are_distributed_across_11_templates_in_blocks_of_18(self):
+        counts: dict[str, int] = {}
+        for number in range(1, 199):
+            counts[web_ui.screen_template(number)] = counts.get(web_ui.screen_template(number), 0) + 1
+            self.assertEqual(web_ui.screen_template(number), web_ui.SCREEN_TEMPLATES[(number - 1) // 18])
+        self.assertEqual(counts, {name: 18 for name in web_ui.SCREEN_TEMPLATES})
+        self.assertEqual(len(counts), 11)
+        for name in web_ui.SCREEN_TEMPLATES:
+            self.assertEqual(web_ui.screen_template(1, name), name)
+        for bad in ("nope", "LIST", "Grid"):
+            self.assertEqual(web_ui.screen_template(100, bad), "list", "an unknown template name falls back to a list")
+        self.assertEqual({web_ui.screen_template(100, None), web_ui.screen_template(100, ""), web_ui.screen_template(100)}, {"bottomNavigation"}, "no override means the block")
+
+    def test_a_screen_without_a_detail_shows_translated_back_text_and_the_four_pattern_chips(self):
+        view = web_ui.screen_view(3, "jpn")
+        self.assertEqual(view["back"], "ハブに戻る")
+        self.assertEqual([chip["text"] for chip in view["chips"]], ["ナビゲーション: BasicReplace", "API: HttpPut", "テーマ: " + view["chips"][2]["text"].split(": ", 1)[1], "データ: " + view["chips"][3]["text"].split(": ", 1)[1]])
+        self.assertEqual(view["chips"][0]["avatar"], "ナ")
+        eng = web_ui.screen_view(3, "eng")
+        self.assertEqual(eng["chips"][0]["text"], "Navigation: BasicReplace")
+        self.assertEqual((eng["lang"], eng["dir"], view["lang"]), ("en", "ltr", "ja"))
+        self.assertEqual(web_ui.screen_view(3, "ara")["dir"], "rtl")
+        self.assertEqual([web_ui.screen_view(3, code)["dir"] for code in web_ui.SCREEN_LOCALES].count("rtl"), 1)
+        self.assertIsNone(view["tabs"])
+
+    def test_a_screen_with_a_detail_has_translated_tabs_and_use_case_headers(self):
+        view = web_ui.screen_view(37, "jpn")
+        self.assertEqual([tab["label"] for tab in view["tabs"]], [web_ui.screen_text("jpn", "generic.tabUseCase"), web_ui.screen_text("jpn", "generic.tabUiSample")])
+        self.assertEqual([section["heading"] for section in view["useCase"]["sections"]], [web_ui.screen_text("jpn", f"generic.section{name}") for name in ("Purpose", "When", "Points", "Pitfall", "Snippet")])
+        self.assertEqual(view["chips"], [])
+        self.assertEqual(len(view["useCase"]["chips"]), 4)
+        detail = SCREENS_ASSET[36]["detail"]
+        self.assertEqual([s.get("text") or s.get("points") or s.get("code") for s in view["useCase"]["sections"]], [detail["purpose"], detail["when"], detail["points"], detail["pitfall"], detail["snippet"]])
+        self.assertEqual(view["tab"], "usecase")
+        shown = web_ui.screen_view(37, "eng", web_ui.screen_step(37, None, {"type": "tab", "tab": "ui"}))
+        self.assertEqual((shown["tab"], shown["body"]["template"]), ("ui", "form"))
+
+    def test_the_hub_lists_198_and_searches_like_the_catalogue_search(self):
+        hub = web_ui.screen_hub("eng")
+        self.assertEqual((hub["count"], len(hub["items"]), hub["mode"], hub["empty"]), ("198 / 198", 198, "grid", None))
+        self.assertEqual(hub["title"], web_ui.screen_text("eng", "hub.title"))
+        self.assertEqual(hub["tooltips"], {"api": web_ui.screen_text("eng", "mockApi.title"), "mcp": web_ui.screen_text("eng", "mcp.title"), "list": web_ui.screen_text("eng", "hub.listViewTooltip"),
+                                           "grid": web_ui.screen_text("eng", "hub.gridViewTooltip")})
+        self.assertEqual(web_ui.screen_hub("jpn", "", "list")["tooltips"]["list"], "リスト表示")
+        found = web_ui.screen_hub("eng", "Transformed Result List")
+        self.assertEqual(([item["id"] for item in found["items"]], found["count"]), ([5], "1 / 198"))
+        nothing = web_ui.screen_hub("jpn", "このような画面はありません")
+        self.assertEqual((nothing["items"], nothing["count"], nothing["empty"]), ([], "0 / 198", web_ui.screen_text("jpn", "hub.empty")))
+        self.assertEqual([item["id"] for item in web_ui.screen_hub("eng", "  SCREEN7  ")["items"]], [7, *range(70, 80)], "trimmed, case-insensitive, and the order of the source")
+        self.assertEqual([item["id"] for item in web_ui.screen_hub("eng", "\u3000screen198\u3000")["items"]], [198])
+        self.assertEqual(len(web_ui.screen_hub("eng", "navigation")["items"]), len(web_ui.screen_search(web_ui.screens_catalogue(), "NAVIGATION")))
+        for bad in ("flat", "", None):
+            with self.assertRaises(ValueError):
+                web_ui.screen_hub("eng", "", bad)
+        with self.assertRaises(ValueError):
+            web_ui.screen_hub("eng", "x" * 10001)
+        self.assertEqual(web_ui.screen_hub("eng", "x" * 10000)["count"], "0 / 198")
+
+    def test_screen_6_is_the_catalogue_search_and_keeps_its_state(self):
+        view = web_ui.screen_view(6, "eng")
+        self.assertEqual((view["body"]["template"], view["body"]["count"], view["body"]["clear"]), ("catalog", "198 / 198", None))
+        state = web_ui.screen_step(6, None, {"type": "input", "value": "Transformed Result List"})
+        searched = web_ui.screen_view(6, "eng", state)["body"]
+        self.assertEqual(([item["id"] for item in searched["items"]], searched["count"], searched["clear"]), ([5], "1 / 198", web_ui.screen_text("eng", "clipboardWorkbench.clear")))
+        self.assertEqual(searched["items"][0]["heading"], "Screen 5 · " + SCREENS_ASSET[4]["useCaseJa"])
+        japanese = web_ui.screen_step(6, state, {"type": "input", "value": "存在しない検索語"})
+        empty = web_ui.screen_view(6, "jpn", japanese)["body"]
+        self.assertEqual((empty["items"], empty["count"], empty["empty"]), ([], "0 / 198", web_ui.screen_text("jpn", "hub.empty")))
+        cleared = web_ui.screen_step(6, japanese, {"type": "clear"})
+        self.assertEqual((cleared["query"], web_ui.screen_view(6, "jpn", cleared)["body"]["count"]), ("", "198 / 198"))
+        self.assertEqual(web_ui.screen_view(6, "eng")["tabs"], None, "screen 6 never shows the detail tabs")
+
+    def test_each_template_shows_what_the_original_template_shows(self):
+        pick = {name: 1 + 18 * i for i, name in enumerate(web_ui.SCREEN_TEMPLATES)}
+        pick["list"] = 2
+        bodies = {name: web_ui.screen_view(number, "eng")["body"] for name, number in pick.items()}
+        self.assertEqual(len(bodies["list"]["items"]), 6)
+        self.assertEqual(bodies["list"]["items"][2], {"avatar": "3", "title": web_ui.screen_text("eng", "patternTemplate.listItem", (("title", SCREENS_ASSET[1]["title"]), ("n", 3))), "subtitle": SCREENS_ASSET[1]["description"]})
+        self.assertEqual((bodies["detail"]["heading"], bodies["detail"]["description"]), (SCREENS_ASSET[18]["title"], SCREENS_ASSET[18]["description"]))
+        self.assertEqual(bodies["detail"]["screenId"], web_ui.screen_text("eng", "patternTemplate.screenIdLabel", (("screenDataId", 19),)))
+        self.assertEqual((bodies["form"]["value"], bodies["form"]["snackbar"]), ("", None))
+        self.assertEqual(bodies["search"]["result"]["title"], web_ui.screen_text("eng", "patternTemplate.typeToFilter"))
+        self.assertEqual((len(bodies["tabs"]["tabs"]), bodies["tabs"]["selected"], bodies["tabs"]["panels"][1]), (3, 0, {"icon": "code"}))
+        self.assertEqual(bodies["bottomNavigation"]["destination"], web_ui.screen_text("eng", "patternTemplate.destination", (("n", 1), ("title", SCREENS_ASSET[90]["title"]))))
+        self.assertEqual(len(bodies["drawer"]["items"]), 3)
+        self.assertEqual((bodies["dialog"]["dialog"], len(bodies["grid"]["cards"]), bodies["grid"]["cards"][7]), (None, 8, SCREENS_ASSET[144]["title"] + "\n#8"))
+        self.assertEqual((bodies["asyncState"]["loading"], bodies["settings"]["enabled"]), (False, True))
+
+    def test_the_templates_react_to_their_own_events(self):
+        step, view = web_ui.screen_step, web_ui.screen_view
+        state = step(38, None, {"type": "input", "value": "hello"})
+        state = step(38, state, {"type": "submit"})
+        self.assertEqual(view(38, "eng", state)["body"]["snackbar"], web_ui.screen_text("eng", "patternTemplate.submitted", (("value", "hello"),)))
+        state = step(38, state, {"type": "input", "value": "edited"})
+        self.assertEqual(view(38, "eng", state)["body"]["snackbar"], web_ui.screen_text("eng", "patternTemplate.submitted", (("value", "hello"),)), "a submitted value stays until the next submit")
+        state = step(56, None, {"type": "input", "value": "abc"})
+        self.assertEqual(view(56, "eng", state)["body"]["result"]["title"], web_ui.screen_text("eng", "patternTemplate.resultFor", (("query", "abc"),)))
+        state = step(74, None, {"type": "select", "index": 2})
+        self.assertEqual((view(74, "eng", state)["body"]["selected"], view(74, "eng", state)["body"]["panels"][2]), (2, {"text": SCREENS_ASSET[73]["description"]}))
+        state = step(92, None, {"type": "select", "index": 1})
+        self.assertIn("2", view(92, "eng", state)["body"]["destination"])
+        state = step(130, None, {"type": "open"})
+        self.assertEqual(view(130, "eng", state)["body"]["dialog"]["content"], SCREENS_ASSET[129]["description"])
+        self.assertIsNone(view(130, "eng", step(130, state, {"type": "close"}))["body"]["dialog"])
+        state = step(184, None, {"type": "toggle", "value": False})
+        self.assertFalse(view(184, "eng", state)["body"]["enabled"])
+
+    def test_the_async_template_ends_500_milliseconds_after_it_starts(self):
+        step = web_ui.screen_step
+        state = step(164, None, {"type": "start"})
+        self.assertEqual((state["loading"], state["elapsed"]), (True, 0))
+        state = step(164, state, {"type": "tick", "ms": 499})
+        self.assertEqual((state["loading"], state["elapsed"]), (True, 499))
+        again = step(164, state, {"type": "start"})
+        self.assertEqual((again["loading"], again["elapsed"]), (True, 499), "starting while loading changes nothing")
+        state = step(164, state, {"type": "tick", "ms": 1})
+        self.assertEqual((state["loading"], state["elapsed"]), (False, 0))
+        self.assertEqual(step(164, state, {"type": "tick", "ms": 60000}), state, "a tick with nothing loading changes nothing")
+
+    def test_events_a_template_does_not_have_are_refused(self):
+        for number, event, message in ((1, {"type": "submit"}, "submit is not available on screen 1"), (38, {"type": "select", "index": 0}, "select is not available on screen 38"),
+                                       (3, {"type": "tab", "tab": "ui"}, "tab is not available on screen 3"), (1, {"type": "clear"}, "clear is not available on screen 1"),
+                                       (6, {"type": "submit"}, "submit is not available on screen 6"), (6, {"type": "select", "index": 0}, "select is not available on screen 6"),
+                                       (38, {"type": "zoom"}, "unknown event: 'zoom'"), (38, {"type": "input", "value": 5}, "value must be text of at most 10000 characters"),
+                                       (38, {"type": "input", "value": "x" * 10001}, "value must be text of at most 10000 characters"), (74, {"type": "select", "index": 3}, "index must be 0..2"),
+                                       (74, {"type": "select", "index": True}, "index must be 0..2"), (164, {"type": "tick", "ms": 60001}, "ms must be 0..60000"), (184, {"type": "toggle", "value": 1}, "value must be true or false"),
+                                       (37, {"type": "tab", "tab": "x"}, "tab must be usecase or ui"), (38, {"type": "submit", "extra": 1}, "unknown event keys"), (38, "submit", "event must be an object with a type"),
+                                       (38, {"type": 5}, "event must be an object with a type")):
+            with self.subTest(number=number, event=event):
+                with self.assertRaises(ValueError) as caught:
+                    web_ui.screen_step(number, None, event)
+                self.assertEqual(str(caught.exception), message)
+        self.assertEqual(web_ui.screen_step(38, None, {"type": "input", "value": "x" * 10000})["value"], "x" * 10000)
+        for state in ({"tab": "x"}, {"unknown": 1}, {"index": 3}, {"elapsed": 501}, {"loading": 1}, {"submitted": 5}, "state", []):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                web_ui.screen_view(38, "eng", state)
+
+    def test_every_screen_opens_in_every_language(self):
+        for number in range(1, 199):
+            route = web_ui.screen_route(number)
+            for locale in web_ui.SCREEN_LOCALES:
+                if route["kind"] == "generic":
+                    view = web_ui.screen_view(number, locale)
+                    self.assertEqual((view["screen"], view["locale"], view["dir"]), (number, locale, "rtl" if locale == "ara" else "ltr"))
+                    self.assertTrue(view["title"] and view["headline"] and view["subline"])
+                elif route["kind"] in ("validation", "conversion"):
+                    self.assertEqual(web_ui.screen_links_view(number, locale)["screen"], number)
+
+    def test_the_source_link_screens_name_their_pattern_and_pin_the_audited_commit(self):
+        view = web_ui.screen_links_view(91)
+        self.assertEqual((view["title"], view["family"], view["page"], view["widget"]), ("Pattern 091: ValidationBasic", "validate", "patterns.html", "ValidationPatternLinks"))
+        self.assertEqual([link["label"] for link in view["links"]], ["Python実装", "Pythonテスト", "ローカル入力画面", "利用方法・制約"])
+        self.assertTrue(all(link["url"] == web_ui.SCREEN_SOURCE_BASE + link["path"] for link in view["links"]))
+        self.assertRegex(web_ui.SCREEN_SOURCE_BASE, r"^https://github\.com/myon-bioinformatics/flutter_navigation_basic/blob/[0-9a-f]{40}/$")
+        self.assertEqual(web_ui.screen_links_view(110)["title"], "Pattern 110: DataMasking")
+        self.assertEqual(web_ui.screen_links_view(103)["family"], "convert")
+        self.assertEqual([web_ui.screen_links_view(n)["title"].split(": ")[1] for n in range(91, 100)], list(web_ui.SCREEN_VALIDATION_NAMES))
+        for number in (1, 5, 106, 136, 171):
+            with self.assertRaises(ValueError):
+                web_ui.screen_links_view(number)
+
+    def test_the_family_takes_requests_the_way_the_other_families_do(self):
+        result = self.go("screen", {"operation": "view", "screen": 38, "locale": "jpn", "events": [{"type": "input", "value": "x"}, {"type": "submit"}]})
+        self.assertEqual((result["schema"], result["operation"], result["state"]["submitted"], result["result"]["locale"]), ("screens/1", "view", "x", "jpn"))
+        self.assertEqual(self.go("screen", {"operation": "search", "query": "Transformed Result List"})["result"], [5])
+        self.assertEqual(self.go("screen", {"operation": "route", "screen": 171.0})["result"]["widget"], "InteractivePatternExample")
+        self.assertEqual(self.go("screen", {"operation": "text", "key": "hub.empty", "locale": "ja"})["result"], web_ui.screen_text("jpn", "hub.empty"))
+        self.assertEqual(self.go("screen", {"operation": "text", "key": "patternTemplate.listItem", "arguments": [["title", "T"], ["n", 2.0]]})["result"],
+                         web_ui.screen_text("eng", "patternTemplate.listItem", (("title", "T"), ("n", 2))))
+        self.assertEqual(self.go("screen", {"operation": "text", "key": "x", "arguments": [["a", 2 ** 53]]})["result"], "x")
+        for request, message in (([], "request object"), ({}, "operation must be view, hub, search, text, route or links"), ({"operation": []}, "operation must be view, hub, search, text, route or links"),
+                                 ({"operation": "view"}, "screen must be an integer 1..198"), ({"operation": "view", "screen": 0}, "screen must be an integer 1..198"),
+                                 ({"operation": "view", "screen": True}, "screen must be an integer 1..198"), ({"operation": "hub", "screen": 1}, "unknown request keys"),
+                                 ({"operation": "view", "screen": 1, "events": "x"}, "events must be an array of at most 1000"), ({"operation": "view", "screen": 1, "events": [{}] * 1001}, "events must be an array of at most 1000"),
+                                 ({"operation": "search", "query": 5}, "query must be text of at most 10000 characters"), ({"operation": "text", "key": 5}, "key must be text"),
+                                 ({"operation": "text", "key": "x", "arguments": [["a", 2 ** 53 + 2]]}, "arguments must be [name, value] pairs"),
+                                 ({"operation": "text", "key": "x", "arguments": [["a", True]]}, "arguments must be [name, value] pairs"), ({"operation": "text", "key": "x", "arguments": [["a", 0.5]]}, "arguments must be [name, value] pairs"),
+                                 ({"operation": "links", "screen": 1}, "screen 1 is not a source-links screen")):
+            with self.subTest(request=request):
+                self.refused(request, message)
+        self.assertEqual(self.go("screen", web_ui.pattern_parse('{"operation": "route", "screen": 5.0}'))["result"]["widget"], "Screen5Page")
+
+
+class NativeTests(unittest.TestCase):
+    """The native examples (patterns 136-137, 151-175, 183-184). The expected texts and transitions are the ones the original's widget tests assert."""
+
+    go = staticmethod(web_ui.pattern_run)
+
+    def run_actions(self, number, actions):
+        return self.go("native", {"pattern": number, "actions": actions})
+
+    def refused(self, request, message):
+        with self.assertRaises(ValueError) as caught:
+            self.go("native", request)
+        self.assertEqual(str(caught.exception), message)
+
+    def test_the_catalogue_names_the_27_native_patterns(self):
+        self.assertEqual(len(web_ui.NATIVE_NUMBERS), 27)
+        self.assertEqual(set(web_ui.NATIVE_NUMBERS), set(web_ui.PATTERN_NATIVE) | set(web_ui.PATTERN_GESTURES))
+        self.assertEqual({web_ui.pattern_family(n) for n in web_ui.NATIVE_NUMBERS}, {"native"})
+        self.assertEqual({web_ui.pattern_owner(n) for n in web_ui.NATIVE_NUMBERS}, {"flutter_native"})
+        self.assertEqual([n for n in range(1, 199) if web_ui.pattern_family(n) == "native"], list(web_ui.NATIVE_NUMBERS))
+
+    def test_the_six_getx_patterns_run_without_a_fake_getx_and_count_up_and_reset(self):
+        titles = {151: "GetxState", 152: "GetxObservable", 153: "GetxController", 154: "GetxBinding", 155: "GetxWorker", 156: "GetxService"}
+        for number, name in titles.items():
+            with self.subTest(number):
+                first = self.run_actions(number, [])
+                self.assertEqual(first["view"]["title"], f"Pattern {number}: {name}")
+                self.assertIn("カウント: 0", first["view"]["lines"])
+                self.assertTrue(any("GetXを使用しないFlutter標準" in line for line in first["view"]["lines"]))
+                self.assertEqual([button["label"] for button in first["view"]["buttons"]], ["加算", "リセット"], "no 実行 button")
+                self.assertIn("カウント: 1", self.run_actions(number, ["increment"])["view"]["lines"])
+                self.assertIn("カウント: 0", self.run_actions(number, ["increment", "reset"])["view"]["lines"])
+
+    def test_notifiers_count_up_and_reset(self):
+        for number, name in ((158, "ChangeNotifier"), (159, "ValueNotifier"), (162, "StateNotifier"), (163, "Bloc"), (166, "MVC"), (167, "MVVM"), (168, "MVP"), (169, "CleanArch")):
+            with self.subTest(number):
+                view = self.run_actions(number, [])["view"]
+                self.assertTrue(any(name in line for line in [view["title"], *view["lines"]]), name)
+                self.assertIn("カウント: 0", view["lines"])
+                self.assertIn("カウント: 1", self.run_actions(number, ["increment"])["view"]["lines"])
+                self.assertIn("カウント: 0", self.run_actions(number, ["increment", "reset"])["view"]["lines"])
+
+    def test_a_value_notifier_does_not_notify_for_a_value_it_already_has_and_the_others_do(self):
+        notified = lambda number, actions: self.run_actions(number, actions)["state"]["notifications"]
+        for number in (159, 162, 167):
+            self.assertEqual(notified(number, ["reset"]), 0, number)
+            self.assertEqual(notified(number, ["increment", "reset", "reset"]), 2, number)
+        for number in (158, 163, 166, 168, 169):
+            self.assertEqual(notified(number, ["reset"]), 1, number)
+            self.assertEqual(notified(number, ["increment", "reset", "reset"]), 3, number)
+
+    def test_two_values_stay_independent_and_a_model_rebuilds_only_the_changed_side(self):
+        for number in (157, 160, 161, 170):
+            with self.subTest(number):
+                view = self.run_actions(number, [])["view"]
+                self.assertIn("left: 0", view["lines"])
+                self.assertIn("right: 0", view["lines"])
+                self.assertEqual([button["label"] for button in view["buttons"]], ["左を加算", "右を加算"])
+                one = self.run_actions(number, ["left"])
+                self.assertEqual((one["state"]["left"], one["state"]["right"]), (1, 0))
+                both = self.run_actions(number, ["left", "right"])
+                self.assertEqual((both["state"]["left"], both["state"]["right"]), (1, 1))
+        for number in (157, 160):
+            self.assertEqual(self.run_actions(number, ["left"])["state"]["rebuilds"], {"left": 1, "right": 1}, "a scope rebuilds every dependent")
+        for number in (161, 170):
+            self.assertEqual(self.run_actions(number, ["left", "left", "right"])["state"]["rebuilds"], {"left": 2, "right": 1}, "a model rebuilds only the aspect that changed")
+
+    def test_the_sum_of_squares_of_pattern_136_and_137(self):
+        for number, worker, fallback in ((136, "Web Worker（別スレッドで実行）", "同期フォールバック（Worker並列実行なし）"), (137, "compute（Web Worker）", "compute（同期フォールバック・別スレッド保証なし）")):
+            answer = self.go("native", {"pattern": number})
+            self.assertEqual((answer["state"]["result"], answer["state"]["status"], answer["view"]["title"]), (55, f"{worker}: 55", f"Pattern {number}"))
+            self.assertEqual(self.go("native", {"pattern": number, "engine": "fallback"})["state"]["status"], f"{fallback}: 55")
+        self.assertEqual(self.go("native", {"pattern": 136, "values": []})["state"]["result"], 0)
+        self.assertEqual(self.go("native", {"pattern": 136, "values": [-3, 4]})["state"]["result"], 25)
+        self.assertEqual(self.go("native", {"pattern": 136, "values": [94906265]})["state"]["result"], 94906265 ** 2)
+        self.assertEqual(self.go("native", {"pattern": 136, "values": [2.0, 3]})["state"]["result"], 13, "an integral number written 2.0 reads as 2")
+        self.refused({"pattern": 136, "values": [94906266]}, "the sum of squares must not exceed 2**53")
+        self.refused({"pattern": 136, "values": [0.5]}, "values must be an array of at most 4096 integers")
+        self.refused({"pattern": 136, "values": [1] * 4097}, "values must be an array of at most 4096 integers")
+        self.refused({"pattern": 136, "engine": "gpu"}, "engine must be worker or fallback")
+        self.refused({"pattern": 136, "actions": []}, "unknown request keys")
+
+    def test_a_list_reorders_the_way_flutter_reports_the_new_index(self):
+        reorder = lambda old, new: self.run_actions(171, [{"type": "reorder", "old": old, "new": new}])["state"]["items"]
+        self.assertEqual(reorder(0, 3), ["B", "C", "A"], "dragged past the end")
+        self.assertEqual(reorder(0, 1), ["A", "B", "C"], "dropped on its own place")
+        self.assertEqual(reorder(0, 0), ["A", "B", "C"])
+        self.assertEqual(reorder(0, 2), ["B", "A", "C"])
+        self.assertEqual(reorder(2, 0), ["C", "A", "B"])
+        self.assertEqual(reorder(1, 3), ["A", "C", "B"])
+        self.assertEqual(reorder(2, 3), ["A", "B", "C"])
+        for number in (172, 184):
+            self.assertEqual(self.run_actions(number, [{"type": "reorder", "old": 0, "new": 3}])["view"]["lines"][-1], "順序: B, C, A")
+        self.refused({"pattern": 171, "actions": [{"type": "reorder", "old": 3, "new": 0}]}, "old must be 0..n-1 and new 0..n")
+        self.refused({"pattern": 171, "actions": [{"type": "reorder", "old": 0, "new": 4}]}, "old must be 0..n-1 and new 0..n")
+        self.refused({"pattern": 171, "actions": [{"type": "swap", "a": "A", "b": "B"}]}, "swap is not available in pattern 171")
+
+    def test_pattern_173_keeps_each_item_through_consecutive_swaps(self):
+        swap = lambda a, b: {"type": "swap", "a": a, "b": b}
+        self.assertEqual(self.run_actions(173, [swap("A", "B")])["state"]["items"], ["B", "A", "C"])
+        self.assertEqual(self.run_actions(173, [swap("A", "B"), swap("A", "C")])["state"]["items"], ["B", "C", "A"], "the second swap follows the item, not the old slot")
+        self.assertEqual(self.run_actions(173, [swap("A", "A")])["state"]["items"], ["A", "B", "C"])
+        self.assertEqual(self.run_actions(173, [swap("A", "Z")])["state"]["items"], ["A", "B", "C"])
+        self.assertEqual(self.run_actions(173, [swap("A", "B"), swap("B", "A")])["state"]["items"], ["A", "B", "C"])
+        self.assertIn("順序: B, A, C", self.run_actions(173, [swap("A", "B")])["view"]["lines"])
+
+    def test_pattern_174_inserts_new_items_at_the_top_and_175_removes_the_first(self):
+        self.assertEqual(self.run_actions(174, [{"type": "insert"}])["view"]["lines"][-1], "順序: N1, A, B, C")
+        self.assertEqual(self.run_actions(174, [{"type": "insert"}, {"type": "insert"}])["state"]["items"], ["N2", "N1", "A", "B", "C"])
+        self.assertEqual(self.run_actions(175, [{"type": "remove"}])["view"]["lines"][-1], "順序: B, C")
+        gone = self.run_actions(175, [{"type": "remove"}] * 4)
+        self.assertEqual((gone["state"]["items"], gone["view"]["buttons"][0]["enabled"]), ([], False), "removing from an empty list does nothing")
+        self.assertEqual(self.run_actions(174, [])["view"]["buttons"], [{"label": "挿入", "action": "insert", "enabled": True}])
+
+    def test_pattern_183_selects_and_deletes_the_selection(self):
+        select = lambda item, value=True: {"type": "select", "item": item, "value": value}
+        state = self.run_actions(183, [select("A")])
+        self.assertIn("選択数: 1", state["view"]["lines"])
+        self.assertEqual(state["view"]["buttons"], [{"label": "選択項目を削除", "action": "delete_selected", "enabled": True}])
+        self.assertEqual(self.run_actions(183, [select("A"), {"type": "delete_selected"}])["view"]["lines"][1], "順序: B, C")
+        self.assertEqual(self.run_actions(183, [select("A"), select("A")])["state"]["selected"], ["A"], "selecting twice selects once")
+        self.assertEqual(self.run_actions(183, [select("A"), select("A", False)])["state"]["selected"], [])
+        self.assertEqual(self.run_actions(183, [select("A", False)])["view"]["buttons"][0]["enabled"], False)
+        self.assertEqual(self.run_actions(183, [select("C"), select("A"), {"type": "delete_selected"}, {"type": "delete_selected"}])["state"], {"items": ["B"], "selected": [], "inserted": 0})
+        self.refused({"pattern": 183, "actions": [select("Z")]}, "item must be in the list and value true or false")
+        self.refused({"pattern": 183, "actions": [{"type": "select", "item": "A", "value": 1}]}, "item must be in the list and value true or false")
+
+    def test_refusals_name_what_is_wrong(self):
+        self.refused([], "request object")
+        self.refused({}, "pattern must be one of " + ", ".join(map(str, web_ui.NATIVE_NUMBERS)))
+        self.refused({"pattern": 164}, "pattern must be one of " + ", ".join(map(str, web_ui.NATIVE_NUMBERS)))
+        self.refused({"pattern": 171, "x": 1}, "unknown request keys")
+        self.refused({"pattern": 171, "actions": "x"}, "actions must be an array of at most 1000")
+        self.refused({"pattern": 171, "actions": [{"type": "insert"}] * 1001}, "actions must be an array of at most 1000")
+        self.refused({"pattern": 159, "actions": ["left"]}, "action must be increment or reset")
+        self.refused({"pattern": 170, "actions": ["increment"]}, "action must be left or right")
+        self.refused({"pattern": 174, "actions": ["insert"]}, "action must be an object with a type")
+        self.refused({"pattern": 174, "actions": [{"type": "insert", "x": 1}]}, "unknown action keys")
+        self.assertEqual(len(self.run_actions(174, [{"type": "insert"}] * 1000)["state"]["items"]), 1003)
+        self.assertEqual(self.run_actions(159, ["increment"] * 1000)["state"]["count"], 1000)
+
+
+
+class ContractTests(unittest.TestCase):
+    """``--pattern contract``: the verdicts of flutter_navigation_basic's own checks (metadata_contracts, header_contracts, gesture_paint), recorded by tool/contract_golden.py on seeded
+    mutations of the screens asset, the screen texts, a header snapshot and synthetic screenshots, and the rules this port adds."""
+
+    go = staticmethod(web_ui.pattern_run)
+
+    @staticmethod
+    def apply(document, operations):
+        document = json.loads(json.dumps(document))
+        for operation in operations:
+            if "drop" in operation:
+                del document[operation["drop"]]
+            elif "append_copy" in operation:
+                document.append(json.loads(json.dumps(document[operation["append_copy"]])))
+            elif "swap" in operation:
+                i, j = operation["swap"]
+                document[i], document[j] = document[j], document[i]
+            else:
+                target = document
+                for step in operation["path"][:-1]:
+                    target = target[step]
+                if operation.get("delete"):
+                    del target[operation["path"][-1]]
+                else:
+                    target[operation["path"][-1]] = json.loads(json.dumps(operation["set"]))
+        return document
+
+    @staticmethod
+    def digest(document):
+        return hashlib.sha256(json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def accepted(self, request):
+        """What the original calls "valid": the family answers ok. A request it refuses (ValueError) is not valid either."""
+        try:
+            return self.go("contract", request)["ok"]
+        except ValueError:
+            return False
+
+    def test_the_golden_names_its_source_and_has_every_kind_of_verdict(self):
+        self.assertEqual(CONTRACT_GOLDEN["schema"], "web-ui-contract-golden/1")
+        self.assertRegex(CONTRACT_GOLDEN["source"]["commit"], r"^[0-9a-f]{40}$")
+        for name in ("screens", "locales"):
+            self.assertEqual({case["valid"] for case in CONTRACT_GOLDEN[name]}, {True, False}, name)
+            self.assertGreaterEqual(len(CONTRACT_GOLDEN[name]), 250, name)
+        self.assertEqual({case["valid"] for case in CONTRACT_GOLDEN["layout"]["cases"]}, {True, False})
+        outcomes = {("error" if "error" in case["expected"] else "match" if case["expected"]["ok"] else "mismatch") for case in CONTRACT_GOLDEN["swap"]}
+        self.assertEqual(outcomes, {"error", "match", "mismatch"})
+
+    def test_the_screens_asset_is_the_catalogue_the_original_accepts(self):
+        result = self.go("contract", {"operation": "screens", "screens": SCREENS_ASSET})
+        self.assertEqual(result, {"operation": "screens", "ok": True, "failures": [], "truncated": 0, "count": 198})
+
+    def test_screens_say_what_the_original_says_on_mutated_assets(self):
+        for number, case in enumerate(CONTRACT_GOLDEN["screens"]):
+            rows = self.apply(SCREENS_ASSET, case["mutation"])
+            self.assertEqual(self.digest(rows), case["sha256"], number)
+            with self.subTest(number=number, mutation=case["mutation"]):
+                self.assertEqual(self.accepted({"operation": "screens", "screens": rows}), case["valid"])
+        for case in CONTRACT_GOLDEN["screens"][::9]:
+            text = json.dumps({"operation": "screens", "screens": self.apply(SCREENS_ASSET, case["mutation"])})
+            try:
+                answer = web_ui.pattern_run("contract", web_ui.pattern_parse(text))["ok"]
+            except ValueError:
+                answer = False
+            self.assertEqual(answer, case["valid"], "the same through JSON text, as --pattern reads it")
+
+    def test_locales_say_what_the_original_says_on_mutated_tables(self):
+        base = {code: {**table, **{"common.x": "x", "home.x": "x", "coordinate.x": "x", "photoStudio.x": "x", "nowTimeline.x": "x", "urlParameters.case": "x {urlParamCaseId}"}}
+                for code, table in SCREEN_TEXT_GOLDEN["locales"].items()}
+        for number, case in enumerate(CONTRACT_GOLDEN["locales"]):
+            table = self.apply(base, case["mutation"])
+            self.assertEqual(self.digest(table), case["sha256"], number)
+            with self.subTest(number=number, mutation=case["mutation"]):
+                self.assertEqual(self.accepted({"operation": "locales", "locales": table}), case["valid"])
+
+    @staticmethod
+    def layout_request(snapshot):
+        """The header snapshot of header_contracts as a generic layout request: the four header boxes sit inside the width and on one row, the secondary row below them."""
+        header = ["shared-header-title", "shared-header-home", "shared-header-favorite", "shared-header-menu"]
+        request = {"operation": "layout", "viewport": {"width": snapshot["viewport"]["width"], "height": 844}, "boxes": snapshot["boxes"], "within": header, "aligned": header}
+        if snapshot["requiresSecondary"]:
+            request["stacked"] = [{"name": "shared-header-secondary", "below": header, "min_height": 40}]
+        return request
+
+    def test_layout_says_what_the_original_says_on_mutated_snapshots(self):
+        base = CONTRACT_GOLDEN["layout"]["snapshot"]
+        for number, case in enumerate(CONTRACT_GOLDEN["layout"]["cases"]):
+            snapshot = self.apply(base, case["mutation"])
+            self.assertEqual(self.digest(snapshot), case["sha256"], number)
+            try:
+                request = self.layout_request(snapshot)
+            except (KeyError, TypeError):
+                self.assertFalse(case["valid"], (number, "a snapshot without its boxes or viewport is refused by the original too"))
+                continue
+            with self.subTest(number=number, mutation=case["mutation"]):
+                self.assertEqual(self.accepted(request), case["valid"])
+
+    def test_swap_says_what_the_original_says_on_synthetic_screenshots(self):
+        modes = set()
+        for number, case in enumerate(CONTRACT_GOLDEN["swap"]):
+            request = {"operation": "swap", "before": case["before"], "after": case["after"], "geometry": case["geometry"]}
+            expected = case["expected"]
+            with self.subTest(number=number, mode=case["mode"]):
+                if "error" in expected:
+                    with self.assertRaises(ValueError) as caught:
+                        self.go("contract", request)
+                    if expected["error"]:
+                        self.assertEqual(str(caught.exception), expected["error"])
+                    continue
+                result = self.go("contract", request)
+                self.assertEqual((result["ok"], result["pixel_crops"], result["comparisons"]), (expected["ok"], expected["pixel_crops"], expected["comparisons"]))
+                self.assertEqual(result["failures"], [] if expected["ok"] else [f"slot {i} does not show the other card" for i, c in enumerate(expected["comparisons"]) if c["differs"]])
+                modes.add(case["mode"])
+        self.assertTrue({"swap", "pixel", "alpha", "stale", "other"} <= modes)
+
+    def test_rounding_of_card_edges_is_pythons_banker_rounding_as_in_the_original(self):
+        # 2.5 + 8 = 10.5 rounds to 10 and 3.5 + 8 = 11.5 to 12: golden cases with half-pixel slots exist and pass above; here the crops themselves
+        halves = [case for case in CONTRACT_GOLDEN["swap"] if "error" not in case["expected"] and any(slot["x"] % 1 == 0.5 for slot in case["geometry"]["slots"])]
+        self.assertGreaterEqual(len(halves), 3)
+        for case in halves:
+            for slot, crop in zip(case["geometry"]["slots"], case["expected"]["pixel_crops"]):
+                scale = case["geometry"]["device_scale_factor"]
+                self.assertEqual(crop[0], round((slot["x"] + 8) * scale))
+
+    # --- the rules this port adds or states plainly
+    def test_failures_are_all_listed_and_capped_with_a_count_of_the_rest(self):
+        rows = json.loads(json.dumps(SCREENS_ASSET))
+        for row in rows[:60]:
+            row["name"] = ""
+        result = self.go("contract", {"operation": "screens", "screens": rows})
+        self.assertEqual((result["ok"], len(result["failures"]), result["truncated"]), (False, 50, 10))
+        self.assertEqual(result["failures"][0], "screen 1: name must be a non-empty string")
+        self.assertEqual(self.go("contract", {"operation": "screens", "screens": rows[:2], "count": 2})["failures"], ["screen 1: name must be a non-empty string", "screen 2: name must be a non-empty string"])
+
+    def test_a_smaller_catalogue_can_be_checked_with_count(self):
+        good = self.go("contract", {"operation": "screens", "screens": SCREENS_ASSET[:20], "count": 20})
+        self.assertEqual((good["ok"], good["count"]), (True, 20))
+        wrong = self.go("contract", {"operation": "screens", "screens": SCREENS_ASSET[:20]})
+        self.assertEqual(wrong["failures"][0], "expected 198 screens, found 20")
+        for count in (0, 199, -1, 1.5, "2", True, None):
+            with self.assertRaises(ValueError, msg=repr(count)):
+                self.go("contract", {"operation": "screens", "screens": [], "count": count})
+
+    def test_the_domain_name_and_emoji_are_checked_as_well(self):
+        rows = json.loads(json.dumps(SCREENS_ASSET))
+        rows[0]["domainJa"], rows[1]["domainEmoji"], rows[2]["emoji"] = "違う", "🙂", ""
+        failures = self.go("contract", {"operation": "screens", "screens": rows})["failures"]
+        self.assertIn("screen 1: domainJa is not 外部連携", failures)
+        self.assertIn("screen 2: domainEmoji is not 🔐", failures)
+        self.assertIn("screen 3: emoji must be a non-empty string", failures)
+
+    def test_a_variation_selector_does_not_make_an_emoji_new(self):
+        rows = json.loads(json.dumps(SCREENS_ASSET))
+        rows[1]["emoji"] = rows[0]["emoji"].replace("️", "") + "️"
+        self.assertIn("screen 2: duplicate emoji", self.go("contract", {"operation": "screens", "screens": rows})["failures"])
+        rows[1]["emoji"] = rows[0]["emoji"].replace("️", "")
+        self.assertIn("screen 2: duplicate emoji", self.go("contract", {"operation": "screens", "screens": rows})["failures"])
+
+    def test_locale_placeholders_must_equal_englishs_for_every_key(self):
+        locales = json.loads(json.dumps(SCREEN_TEXT_GOLDEN["locales"]))
+        self.assertTrue(self.go("contract", {"operation": "locales", "locales": locales})["ok"])
+        self.assertIn("{query}", locales["eng"]["patternTemplate.resultFor"])
+        locales["fra"]["patternTemplate.resultFor"] = "Résultat"
+        locales["deu"]["patternTemplate.submitted"] = locales["deu"]["patternTemplate.submitted"] + " {extra}"
+        failures = self.go("contract", {"operation": "locales", "locales": locales})["failures"]
+        self.assertEqual(failures, ["deu: patternTemplate.submitted has other placeholders than eng", "fra: patternTemplate.resultFor has other placeholders than eng"])
+
+    def test_locale_failures_name_the_language_and_the_key(self):
+        locales = json.loads(json.dumps(SCREEN_TEXT_GOLDEN["locales"]))
+        del locales["swa"]
+        locales["xx"] = {}
+        locales["jpn"]["hub.title"] = "  "
+        del locales["rus"]["hub.empty"]
+        failures = self.go("contract", {"operation": "locales", "locales": locales})["failures"]
+        self.assertEqual(failures[0], "locales: missing swa; unexpected 'xx'")
+        self.assertIn("jpn: blank value for hub.title", failures)
+        self.assertIn("rus: different keys; missing hub.empty", failures)
+        self.assertTrue(any(line.startswith("xx: different keys; missing " + sorted(locales["eng"])[0]) for line in failures), failures)
+
+    def test_layout_names_the_box_and_the_rule_and_keeps_the_originals_tolerances(self):
+        header = ["title", "home", "menu"]
+        base = {"operation": "layout", "viewport": {"width": 100, "height": 200}, "within": header, "aligned": header,
+                "boxes": {"title": {"x": 0, "y": 0, "width": 40, "height": 40}, "home": {"x": 40, "y": 0, "width": 30, "height": 40}, "menu": {"x": 70, "y": 0, "width": 30, "height": 40},
+                          "row": {"x": 0, "y": 40, "width": 100, "height": 40}},
+                "stacked": [{"name": "row", "below": header}]}
+        self.assertTrue(self.go("contract", base)["ok"])
+
+        def with_box(name, **change):
+            request = json.loads(json.dumps(base))
+            request["boxes"][name].update(change)
+            if name != "row":
+                request["stacked"] = []                                    # the row below is judged on its own below
+            return self.go("contract", request)["failures"]
+        self.assertEqual(with_box("menu", x=71), [])                       # one pixel of slack at the right edge
+        self.assertEqual(with_box("menu", x=72), ["menu: horizontal overflow"])
+        self.assertEqual(with_box("title", x=-1), [])
+        self.assertEqual(with_box("title", x=-1.5), ["title: horizontal overflow"])
+        self.assertEqual(with_box("home", y=2), [])                        # centres two pixels apart
+        self.assertEqual(with_box("home", y=2.5), ["home: outside common row"])
+        self.assertEqual(with_box("home", width=0), ["home: empty bounds"])
+        self.assertEqual(with_box("row", y=39), [])                        # one pixel into the row above
+        self.assertEqual(with_box("row", y=38.5), ["row: overlaps the row above"])
+        self.assertEqual(with_box("row", height=39), ["row: row too small"])
+        self.assertEqual(with_box("row", y=0, height=10), ["row: overlaps the row above", "row: row too small"])
+
+    def test_requests_that_are_not_measurements_are_refused_not_failed(self):
+        bad = [None, [], "layout", {"operation": "nothing"}, {"operation": ["layout"]}, {"operation": "layout"}, {"operation": "layout", "viewport": {"width": 0, "height": 1}, "boxes": {}},
+               {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {"a": {"x": 0, "y": 0, "width": float("nan"), "height": 1}}, "within": ["a"]},
+               {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {"a": {"x": 0, "y": 0, "width": True, "height": 1}}, "within": ["a"]},
+               {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {}, "within": ["missing"]},
+               {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {}, "extra": 1},
+               {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {}, "stacked": [{"name": "missing"}]},
+               {"operation": "locales"}, {"operation": "locales", "locales": []}, {"operation": "screens"}, {"operation": "screens", "screens": {}}, {"operation": "screens", "screens": [], "extra": 1},
+               {"operation": "swap"}, {"operation": "swap", "before": 1, "after": "", "geometry": {}}, {"operation": "swap", "before": "AAAA", "after": "AAAA", "geometry": {}}]
+        for request in bad:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                self.go("contract", request)
+        with self.assertRaises(ValueError):
+            self.go("contract", {"operation": "screens", "screens": [{}] * (web_ui.CONTRACT_MAX_ROWS + 1)})
+        with self.assertRaises(ValueError):
+            self.go("contract", {"operation": "layout", "viewport": {"width": 1, "height": 1}, "boxes": {str(i): {"x": 0, "y": 0, "width": 1, "height": 1} for i in range(web_ui.CONTRACT_MAX_BOXES + 1)}})
+
+    def test_the_row_and_box_caps_are_exactly_400_and_200(self):
+        row = {}
+        self.assertEqual(self.go("contract", {"operation": "screens", "screens": [row] * 400, "count": 198})["count"], 400)
+        with self.assertRaises(ValueError):
+            self.go("contract", {"operation": "screens", "screens": [row] * 401})
+        box = {"x": 0, "y": 0, "width": 1, "height": 1}
+        ok = {"operation": "layout", "viewport": {"width": 10, "height": 10}, "boxes": {str(i): box for i in range(200)}}
+        self.assertTrue(self.go("contract", ok)["ok"])
+        with self.assertRaises(ValueError):
+            self.go("contract", {**ok, "boxes": {str(i): box for i in range(201)}})
+        with self.assertRaises(ValueError):
+            self.go("contract", {**ok, "within": [str(i % 200) for i in range(201)]})
+
+    def test_a_small_bad_catalogue_gets_exactly_the_failures_it_deserves(self):
+        rows = json.loads(json.dumps(SCREENS_ASSET[:3]))
+        rows[1]["screenDataId"] = 1                      # a second screen 1
+        rows[2]["screenDataId"] = 4                      # and a screen 4 in a catalogue of three
+        failures = self.go("contract", {"operation": "screens", "screens": rows, "count": 3})["failures"]
+        self.assertEqual(failures[0], "screen 1: duplicate id")
+        self.assertIn("screen 4: id is outside 1..3", failures)
+        self.assertEqual(failures[-1], "ids are not 1..3: missing [2, 3]")
+        rows = json.loads(json.dumps(SCREENS_ASSET[:2]))
+        rows[0]["screenDataId"] = 1.0
+        rows[1]["screenDataId"] = "2"
+        self.assertEqual(self.go("contract", {"operation": "screens", "screens": rows, "count": 2})["failures"][:2], ["row 0: screenDataId must be an integer", "row 1: screenDataId must be an integer"])
+        rows = json.loads(json.dumps(SCREENS_ASSET[:2]))
+        rows[0]["useCaseKey"] = "integrationx"           # starts with the domain, but not with "integration."
+        rows[1]["useCaseKey"] = "auth"
+        self.assertEqual(self.go("contract", {"operation": "screens", "screens": rows, "count": 2})["failures"],
+                         ["screen 1: useCaseKey does not start with integration.", "screen 2: useCaseKey does not start with auth."])
+
+    def test_an_empty_english_table_has_its_own_message(self):
+        locales = {code: {} for code in web_ui.SCREEN_BCP47}
+        self.assertEqual(self.go("contract", {"operation": "locales", "locales": locales})["failures"], ["eng must be an object with at least one key"])
+
+    def test_a_row_starts_below_the_lowest_edge_of_the_rows_above_and_min_height_is_not_negative(self):
+        request = {"operation": "layout", "viewport": {"width": 100, "height": 100}, "boxes": {"a": {"x": 0, "y": 0, "width": 10, "height": 20}, "b": {"x": 10, "y": 0, "width": 10, "height": 40},
+                                                                                       "c": {"x": 0, "y": 30, "width": 100, "height": 40}}, "stacked": [{"name": "c", "below": ["a", "b"]}]}
+        self.assertEqual(self.go("contract", request)["failures"], ["c: overlaps the row above"])      # b reaches 40, not a's 20
+        request["boxes"]["c"]["y"] = 39
+        self.assertTrue(self.go("contract", request)["ok"])
+        for minimum in (-1, -0.5, float("nan"), "40", True):
+            with self.assertRaises(ValueError, msg=repr(minimum)):
+                self.go("contract", {**request, "stacked": [{"name": "c", "below": ["a"], "min_height": minimum}]})
+        self.assertTrue(self.go("contract", {**request, "stacked": [{"name": "c", "below": ["a"], "min_height": 0}]})["ok"])
+
+    def test_the_edges_of_the_card_crops_and_the_card_size_are_exact(self):
+        width, height = 60, 40
+        gray = bytes((250, 250, 250, 255)) * (width * height)
+
+        def card(raster, left, color):
+            for y in range(8, 32):
+                raster[(y * width + left) * 4:(y * width + left + 12) * 4] = bytes(color) * 12
+        before, after = bytearray(gray), bytearray(gray)
+        card(before, 8, (10, 20, 30, 255)); card(before, 40, (200, 100, 50, 255)); card(after, 8, (200, 100, 50, 255)); card(after, 40, (10, 20, 30, 255))
+        png = lambda raster: base64.b64encode(web_ui.photo_png(width, height, bytes(raster))).decode()
+
+        def swap(first, second):
+            return {"operation": "swap", "before": png(before), "after": png(after), "geometry": {"device_scale_factor": 1, "viewport": {"width": width, "height": height}, "slots": [first, second]}}
+        first = {"x": 0, "y": 0, "width": 28, "height": 40}                    # interior (8, 8)-(20, 32)
+        second = {"x": 32, "y": 0, "width": 28, "height": 40}                  # interior (40, 8)-(52, 32): its right edge is 8 short of the PNG's
+        self.assertTrue(self.go("contract", swap(first, second))["ok"])
+        right = {"x": 32, "y": 0, "width": 36, "height": 40}                   # interior to x = 60, the PNG's last column: allowed
+        self.assertEqual(self.go("contract", swap({**first, "width": 36}, right))["pixel_crops"][1], [40, 8, 60, 32])
+        with self.assertRaisesRegex(ValueError, "card crop is outside the PNG"):
+            self.go("contract", swap({**first, "width": 37}, {**right, "width": 37}))   # one column past
+        with self.assertRaisesRegex(ValueError, "card crop is outside the PNG"):
+            self.go("contract", swap({**first, "height": 49}, {**second, "height": 49}))  # one row past the bottom
+        with self.assertRaisesRegex(ValueError, "card crop is outside the PNG"):
+            self.go("contract", swap({**first, "x": -8.6}, second))                       # the crop would start at x = 0 - 1 (rounds to -1)
+        with self.assertRaisesRegex(ValueError, "card interior is too small"):
+            self.go("contract", swap({**first, "width": 16}, second))
+        with self.assertRaisesRegex(ValueError, "card interior is too small"):
+            self.go("contract", swap({**first, "height": 16}, second))
+        with self.assertRaisesRegex(ValueError, "card crop is empty"):
+            self.go("contract", swap({**first, "width": 16.4}, {**second, "width": 16.4}))   # wider than 16, yet both edges round to the same pixel
+
+    def test_swap_accepts_a_data_uri_and_refuses_what_is_not_a_png(self):
+        case = next(case for case in CONTRACT_GOLDEN["swap"] if case["expected"].get("ok"))
+        uri = lambda data: "data:image/png;base64," + data
+        request = {"operation": "swap", "before": uri(case["before"]), "after": uri(case["after"]), "geometry": case["geometry"]}
+        self.assertTrue(self.go("contract", request)["ok"])
+        with self.assertRaisesRegex(ValueError, "before must be a PNG"):
+            self.go("contract", {**request, "before": base64.b64encode(b"\xff\xd8\xff" + b"0" * 20).decode()})
+        interlaced = bytearray(base64.b64decode(case["before"]))
+        interlaced[28] = 1
+        with self.assertRaises(ValueError):
+            self.go("contract", {**request, "before": base64.b64encode(bytes(interlaced)).decode()})
+        for scale in (0, True, -1, None, "1"):
+            with self.assertRaisesRegex(ValueError, "device scale", msg=repr(scale)):
+                self.go("contract", {**request, "geometry": {**case["geometry"], "device_scale_factor": scale}})
+
+    def test_the_family_is_python_only_and_its_example_passes(self):
+        self.assertNotIn("contract", web_ui.PATTERN_TWINS)
+        self.assertIn("contract", web_ui.PATTERN_RUNNERS)
+        self.assertEqual(web_ui.pattern_examples()["contract"]["result"], {"operation": "layout", "ok": True, "failures": [], "truncated": 0})
+
+    def test_requests_are_not_changed_and_answers_are_plain_json(self):
+        request = {"operation": "screens", "screens": json.loads(json.dumps(SCREENS_ASSET[:3])), "count": 3}
+        before = json.dumps(request, sort_keys=True)
+        answer = self.go("contract", request)
+        self.assertEqual(json.dumps(request, sort_keys=True), before)
+        self.assertEqual(json.loads(json.dumps(answer, allow_nan=False)), answer)
+
+    def test_the_command_line_runs_it_on_stdin(self):
+        request = json.dumps(web_ui.PATTERN_EXAMPLES["contract"])
+        done = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--pattern", "contract"], input=request, capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {"failures": [], "ok": True, "operation": "layout", "truncated": 0}))
+        done = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--pattern", "contract"], input='{"operation":"layout"}', capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("invalid pattern request: viewport needs a positive width and height", done.stderr)
+
+    @unittest.skipUnless(os.environ.get("FLUTTER_NAVIGATION_BASIC_CHECKOUT"), "set FLUTTER_NAVIGATION_BASIC_CHECKOUT to a checkout of the original to rebuild the golden")
+    def test_the_golden_is_what_the_tool_builds_from_the_original(self):
+        done = subprocess.run([sys.executable, str(ROOT / "tool" / "contract_golden.py"), os.environ["FLUTTER_NAVIGATION_BASIC_CHECKOUT"], "--check"], capture_output=True, text=True, timeout=600)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "contract golden: unchanged"), done.stderr)
+
+
+class PatternBridgeTests(unittest.TestCase):
+    """``--pattern-serve``: the references over loopback HTTP. The checks of python/test_validation_http.py (Host, Origin, no wildcard CORS, media type, size, timeout) hold for every family."""
+
+    def setUp(self):
+        import http.client
+        import threading
+        self.http = http.client
+        self.started = []
+
+        def start(allow=()):
+            server = web_ui.pattern_bridge(0, allow)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.started.append((server, thread))
+            return server
+        self.start = start
+        self.server = start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self):
+        for server, thread in self.started:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+
+    def ask(self, method, path, body=None, headers=None, port=None, host=True):
+        connection = self.http.HTTPConnection("127.0.0.1", port or self.port, timeout=15)
+        merged = {"Host": f"127.0.0.1:{port or self.port}", **(headers or {})} if host else dict(headers or {})
+        connection.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+        for name, value in merged.items():
+            connection.putheader(name, value)
+        if body is not None and "Content-Length" not in merged:
+            connection.putheader("Content-Length", str(len(body)))
+        connection.endheaders(body)
+        response = connection.getresponse()
+        data = response.read()
+        connection.close()
+        return response.status, {name.lower(): value for name, value in response.getheaders()}, data
+
+    def post(self, family, body, **headers):
+        payload = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+        return self.ask("POST", web_ui.PATTERN_BRIDGE_PREFIX + family, payload, {"Content-Type": "application/json", **headers})
+
+    def test_it_binds_loopback_only_and_serves_the_patterns_page_with_its_marker(self):
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+        for path in ("/", "/patterns.html", "/?x=1"):
+            status, headers, body = self.ask("GET", path)
+            self.assertEqual((status, headers["content-type"]), (200, "text/html; charset=utf-8"), path)
+            self.assertEqual(body.decode("utf-8"), web_ui.patterns_document(bridge="/pattern/"))
+        self.assertIn('data-patterns-bridge="/pattern/"', body.decode("utf-8"))
+        self.assertNotIn("data-patterns-bridge", web_ui.patterns_document(), "a page that is not served by the bridge has no way to reach it")
+        self.assertEqual((headers["cache-control"], headers["x-content-type-options"], headers["referrer-policy"], headers["x-frame-options"]), ("no-store", "nosniff", "no-referrer", "DENY"))
+
+    def test_the_marker_is_only_the_bridges_own_prefix(self):
+        for bad in ("/pattern", "//evil.example/", "http://evil.example/pattern/", "", " "):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                web_ui.patterns_html(bad)
+
+    def test_every_family_answers_what_the_command_line_prints(self):
+        for family in sorted(web_ui.PATTERN_RUNNERS):
+            request = web_ui.PATTERN_EXAMPLES[family]
+            status, headers, body = self.post(family, request)
+            expected = json.dumps(web_ui.pattern_run(family, request), ensure_ascii=False, sort_keys=True, allow_nan=False)
+            self.assertEqual((status, body.decode("utf-8"), headers["content-type"], headers["cache-control"]), (200, expected, "application/json; charset=utf-8", "no-store"), family)
+
+    def test_the_text_of_a_refusal_is_the_command_lines(self):
+        cases = [("contract", {"operation": "layout"}), ("validate", {"operation": "nope"}), ("search", []), ("score", {"operation": "tfidf"}), ("query", None)]
+        for family, request in cases:
+            with self.assertRaises(ValueError) as caught:
+                web_ui.pattern_run(family, request)
+            status, headers, body = self.post(family, request)
+            self.assertEqual((status, json.loads(body)), (400, {"error": str(caught.exception)}), family)
+
+    def test_not_json_is_400_and_nan_is_refused_as_on_the_command_line(self):
+        for body in (b"", b"{", b"\xff\xfe", b"NaN", b'{"a": Infinity}', b"1e999", b"[" * 60000):
+            status, _, data = self.post("search", body)
+            self.assertEqual(status, 400, body[:20])
+            self.assertIn("error", json.loads(data))
+
+    def test_what_is_not_found_and_what_is_not_allowed(self):
+        self.assertEqual(self.post("nothing", {})[0:1], (404,))
+        self.assertEqual(json.loads(self.post("nothing", {})[2]), {"error": "unknown pattern family"})
+        self.assertEqual(self.ask("POST", "/elsewhere", b"{}", {"Content-Type": "application/json"})[0], 404)
+        self.assertEqual(self.ask("POST", "/pattern", b"{}", {"Content-Type": "application/json"})[0], 404)
+        self.assertEqual(self.ask("GET", "/nothing")[0], 404)
+        status, headers, data = self.ask("GET", "/pattern/")
+        self.assertEqual((status, json.loads(data)), (200, {"families": sorted(web_ui.PATTERN_RUNNERS), "browser": sorted(web_ui.PATTERN_TWINS), "max_body": 65536}))
+        for method in ("PUT", "PATCH", "DELETE", "HEAD"):
+            status, headers, data = self.ask(method, "/pattern/search", b"{}" if method != "HEAD" else None)
+            self.assertEqual((status, headers["allow"]), (405, "GET, POST, OPTIONS"), method)
+            self.assertEqual(data, b"" if method == "HEAD" else json.dumps({"error": "method not allowed"}).encode(), method)
+
+    def test_a_path_is_exact_apart_from_its_query(self):
+        body = json.dumps(web_ui.PATTERN_EXAMPLES["search"]).encode()
+        headers = {"Content-Type": "application/json"}
+        self.assertEqual(self.ask("POST", "/pattern/search?x=1", body, headers)[0], 200, "a query string is not part of the family")
+        for path in ("/pattern/search/", "/pattern/Search", "/pattern/search%20", "/pattern//search", "/pattern/search/x", "/pattern/"):
+            status, _, data = self.ask("POST", path, body, headers)
+            self.assertEqual((status, json.loads(data)["error"] in ("not found", "unknown pattern family")), (404, True), path)
+        for path, status in (("/pattern", 404), ("/pattern?x=1", 404), ("/patterns", 404), ("/patterns.html", 200), ("/patterns.html?x=1", 200), ("/pattern/", 200), ("/pattern/?x=1", 200), ("/pattern/search", 404)):
+            self.assertEqual(self.ask("GET", path)[0], status, path)
+
+    def test_the_family_list_answers_an_allowed_origin_and_only_it(self):
+        server = self.start(["https://pages.example"])
+        port = server.server_address[1]
+        status, headers, data = self.ask("GET", "/pattern/", headers={"Origin": "https://pages.example"}, port=port)
+        self.assertEqual((status, headers["access-control-allow-origin"], headers["vary"], json.loads(data)["families"]), (200, "https://pages.example", "Origin", sorted(web_ui.PATTERN_RUNNERS)))
+        self.assertEqual(self.ask("GET", "/pattern/", headers={"Origin": "https://other.example"}, port=port)[0], 403)
+        status, headers, _ = self.ask("GET", "/pattern/", port=port)
+        self.assertEqual((status, "access-control-allow-origin" in headers), (200, False))
+
+    def test_the_media_type_and_the_length_are_checked_before_the_body_is_read(self):
+        ok = json.dumps(web_ui.PATTERN_EXAMPLES["search"]).encode()
+        for headers in ({}, {"Content-Type": "text/plain"}, {"Content-Type": "application/x-www-form-urlencoded"}, {"Content-Type": "application/jsonp"}, {"Content-Type": "text/json"}):
+            self.assertEqual(self.ask("POST", "/pattern/search", ok, headers)[0], 415, headers)
+        for headers in ({"Content-Type": "application/json"}, {"Content-Type": "application/json; charset=utf-8"}, {"Content-Type": "Application/JSON"}):
+            self.assertEqual(self.ask("POST", "/pattern/search", ok, headers)[0], 200, headers)
+        no_length = self.ask("POST", "/pattern/search", None, {"Content-Type": "application/json"})
+        self.assertEqual((no_length[0], json.loads(no_length[2])), (411, {"error": "a Content-Length is required"}))
+        chunked = self.ask("POST", "/pattern/search", None, {"Content-Type": "application/json", "Transfer-Encoding": "chunked", "Content-Length": "2"})
+        self.assertEqual(chunked[0], 411)
+        for bad in ("abc", "-1", "0", "1e3", "+5", " ", "\xb2", "1\xb2", "9" * 30):
+            self.assertEqual(self.ask("POST", "/pattern/search", b"{}", {"Content-Type": "application/json", "Content-Length": bad})[0], 400, bad)
+        zero = self.ask("POST", "/pattern/search", None, {"Content-Type": "application/json", "Content-Length": "0"})
+        self.assertEqual((zero[0], json.loads(zero[2])), (400, {"error": "invalid Content-Length"}), "an empty body is told apart from a body that is not JSON")
+        over = self.ask("POST", "/pattern/search", None, {"Content-Type": "application/json", "Content-Length": "65537"})
+        self.assertEqual((over[0], json.loads(over[2])), (413, {"error": "request is larger than 65536 bytes"}), "refused before any of the body is read")
+
+    def test_a_body_of_exactly_the_cap_is_run_and_one_more_byte_is_not(self):
+        request = json.dumps(web_ui.PATTERN_EXAMPLES["search"]).encode()
+        padded = request + b" " * (65536 - len(request))
+        self.assertEqual(len(padded), 65536)
+        self.assertEqual(self.post("search", padded)[0], 200)
+        self.assertEqual(self.post("search", padded + b" ")[0], 413)
+
+    def test_a_body_that_never_arrives_is_answered_408_and_one_that_stops_early_400(self):
+        import socket
+        with mock.patch.object(web_ui._PatternBridgeHandler, "timeout", 1):
+            for sent, status in ((b"", 408), (b"{", 408)):
+                with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+                    sock.sendall(f"POST /pattern/search HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n".encode() + sent)
+                    answer = b""
+                    while chunk := sock.recv(4096):
+                        answer += chunk
+                self.assertTrue(answer.startswith(f"HTTP/1.0 {status} ".encode()) or answer.startswith(f"HTTP/1.1 {status} ".encode()), answer[:40])
+            with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+                sock.sendall(f"POST /pattern/search HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{{".encode())
+                sock.shutdown(socket.SHUT_WR)
+                answer = b""
+                while chunk := sock.recv(4096):
+                    answer += chunk
+            self.assertIn(b" 400 ", answer.split(b"\r\n", 1)[0])
+            self.assertEqual(json.loads(answer.split(b"\r\n\r\n", 1)[1]), {"error": "the request body ended early"}, "a body that stops early is not run as the JSON it happens to be")
+        self.assertEqual((web_ui._PatternBridgeHandler.timeout, web_ui.PATTERN_BRIDGE_TIMEOUT), (10, 10), "the real wait for a body is bounded")
+
+    def test_the_host_must_name_the_bound_loopback_address_and_port(self):
+        port = self.port
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self.assertEqual(self.ask("GET", "/pattern/", headers={"Host": host})[0], 200, host)
+        for host in ("evil.example", f"evil.example:{port}", f"127.0.0.1:{port + 1}", "127.0.0.1", "localhost", f"LOCALHOST:{port}", f"[::1]:{port}", f"127.0.0.1:{port}.evil.example", ""):
+            for method, path in (("GET", "/"), ("GET", "/pattern/"), ("OPTIONS", "/pattern/search"), ("PUT", "/pattern/search")):
+                status, _, data = self.ask(method, path, headers={"Host": host})
+                self.assertEqual((status, json.loads(data)), (403, {"error": "origin not allowed"}), (host, method, path))
+            self.assertEqual(self.post("search", web_ui.PATTERN_EXAMPLES["search"], Host=host)[0], 403, host)
+        self.assertEqual(self.ask("GET", "/", host=False)[0], 403, "no Host at all")
+
+    def test_a_foreign_origin_is_refused_everywhere_and_the_own_origin_is_echoed_never_a_wildcard(self):
+        port = self.port
+        request = web_ui.PATTERN_EXAMPLES["search"]
+        for origin in ("http://evil.example", "https://127.0.0.1:" + str(port), f"http://127.0.0.1:{port + 1}", f"http://localhost:{port + 1}", "null", "*", "http://127.0.0.1", ""):
+            self.assertEqual(self.post("search", request, Origin=origin)[0], 403, origin)
+            self.assertEqual(self.ask("OPTIONS", "/pattern/search", headers={"Origin": origin})[0], 403, origin)
+            self.assertEqual(self.ask("GET", "/", headers={"Origin": origin})[0], 403, origin)
+        for origin in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+            status, headers, _ = self.post("search", request, Origin=origin)
+            self.assertEqual((status, headers["access-control-allow-origin"], headers["vary"]), (200, origin, "Origin"))
+        status, headers, _ = self.post("search", request)
+        self.assertNotIn("access-control-allow-origin", headers, "no Origin, no CORS answer")
+        for _method, _path in (("POST", "/pattern/search"), ("OPTIONS", "/pattern/search")):
+            self.assertNotEqual(headers.get("access-control-allow-origin"), "*")
+
+    def test_the_preflight_names_what_is_allowed_for_an_allowed_origin_only(self):
+        origin = f"http://localhost:{self.port}"
+        status, headers, data = self.ask("OPTIONS", "/pattern/search", headers={"Origin": origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
+        self.assertEqual((status, data, headers["access-control-allow-origin"], headers["access-control-allow-methods"], headers["access-control-allow-headers"], headers["cache-control"]),
+                         (204, b"", origin, "GET, POST, OPTIONS", "Content-Type", "no-store"))
+        self.assertNotIn("access-control-allow-private-network", headers)
+        status, headers, _ = self.ask("OPTIONS", "/pattern/search", headers={"Origin": origin, "Access-Control-Request-Private-Network": "true"})
+        self.assertEqual(headers["access-control-allow-private-network"], "true")
+        status, headers, _ = self.ask("OPTIONS", "/pattern/search", headers={"Access-Control-Request-Private-Network": "true"})
+        self.assertEqual((status, "access-control-allow-private-network" in headers, "access-control-allow-origin" in headers), (204, False, False))
+
+    def test_extra_origins_are_exactly_the_ones_asked_for(self):
+        server = self.start(["http://localhost:8080", "https://pages.example", "HTTP://Example.COM:3000"])
+        port = server.server_address[1]
+        for origin in ("http://localhost:8080", "https://pages.example", "http://example.com:3000"):
+            status, headers, _ = self.ask("POST", "/pattern/search", json.dumps(web_ui.PATTERN_EXAMPLES["search"]).encode(), {"Content-Type": "application/json", "Origin": origin}, port=port)
+            self.assertEqual((status, headers["access-control-allow-origin"]), (200, origin))
+            status, headers, _ = self.ask("OPTIONS", "/pattern/search", headers={"Origin": origin, "Access-Control-Request-Private-Network": "true"}, port=port)
+            self.assertEqual((status, headers["access-control-allow-private-network"]), (204, "true"))
+        for origin in ("http://localhost:8081", "http://pages.example", "https://pages.example:443", "https://sub.pages.example", "http://example.com"):
+            self.assertEqual(self.ask("POST", "/pattern/search", b"{}", {"Content-Type": "application/json", "Origin": origin}, port=port)[0], 403, origin)
+        self.assertEqual(self.post("search", web_ui.PATTERN_EXAMPLES["search"], Origin="http://localhost:8080")[0], 403, "the first bridge was not told about it")
+
+    def test_an_origin_for_allow_origin_is_scheme_host_and_port_only(self):
+        self.assertEqual([web_ui.bridge_origin(value) for value in ("http://localhost:8080", "https://a.example", "http://127.0.0.1", "HTTP://A.EXAMPLE:80", "http://[::1]:9")],
+                         ["http://localhost:8080", "https://a.example", "http://127.0.0.1", "http://a.example:80", "http://[::1]:9"])
+        for bad in ("*", "http://*", "*.example", "http://a.*", "http://a/b", "http://a/", "http://a?x=1", "http://a#x", "http://a?", "http://a#", "ftp://a", "file:///x", "http://u@a", "http://u:p@a", "http://a b", " http://a",
+                    "", "localhost:8080", "//a", "http://", "http://a:99999", "http://a:x", None, 5, ["http://a"], b"http://a"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                web_ui.bridge_origin(bad)
+
+    def test_the_port_is_checked_and_a_used_port_is_an_error(self):
+        for bad in (-1, 65536, True, "80", 1.5, None):
+            with self.subTest(port=bad), self.assertRaises(ValueError):
+                web_ui.pattern_bridge(bad)
+        with self.assertRaises(OSError):
+            web_ui.pattern_bridge(self.port)
+        with self.assertRaises(ValueError):
+            web_ui.pattern_bridge(0, ["*"])
+
+    def test_a_failure_inside_a_reference_is_500_without_its_text_and_a_long_refusal_is_cut(self):
+        with mock.patch.object(web_ui, "pattern_run", side_effect=RuntimeError("secret path /etc/passwd")):
+            status, _, data = self.post("search", {})
+        self.assertEqual((status, json.loads(data)), (500, {"error": "internal error"}))
+        with mock.patch.object(web_ui, "pattern_run", side_effect=ValueError("x" * 5000)):
+            status, _, data = self.post("search", {})
+        self.assertEqual((status, len(json.loads(data)["error"])), (400, 1000))
+        with mock.patch.object(web_ui, "pattern_run", return_value={"v": float("nan")}):
+            self.assertEqual(self.post("search", {})[0], 400, "a value JSON cannot hold is refused, not sent as NaN")
+
+    def test_many_requests_at_once_each_get_their_own_answer(self):
+        import concurrent.futures
+        families = sorted(web_ui.PATTERN_RUNNERS)
+
+        def one(index):
+            family = families[index % len(families)]
+            status, _, body = self.post(family, web_ui.PATTERN_EXAMPLES[family])
+            return family, status, json.loads(body)
+        with concurrent.futures.ThreadPoolExecutor(12) as pool:
+            results = list(pool.map(one, range(96)))
+        for family, status, answer in results:
+            self.assertEqual((status, answer), (200, web_ui.pattern_run(family, web_ui.PATTERN_EXAMPLES[family])), family)
+
+    def test_nothing_is_logged(self):
+        import io
+        from contextlib import redirect_stderr
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            self.post("search", web_ui.PATTERN_EXAMPLES["search"])
+            self.ask("GET", "/nothing")
+        self.assertEqual(stream.getvalue(), "")
+
+    def command(self, *arguments):
+        return subprocess.Popen([sys.executable, str(ROOT / "web_ui.py"), *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_the_command_serves_and_stops(self):
+        process = self.command("--pattern-serve", "--port", "0", "--allow-origin", "http://localhost:8080")
+        try:
+            line = process.stdout.readline()
+            match = re.fullmatch(r"listening http://127\.0\.0\.1:(\d+)/\n", line)
+            self.assertIsNotNone(match, line)
+            port = int(match.group(1))
+            status, _, body = self.ask("GET", "/", port=port)
+            self.assertEqual((status, body.decode("utf-8")), (200, web_ui.patterns_document(bridge="/pattern/")))
+            status, headers, _ = self.ask("OPTIONS", "/pattern/search", headers={"Origin": "http://localhost:8080"}, port=port)
+            self.assertEqual((status, headers["access-control-allow-origin"]), (204, "http://localhost:8080"))
+        finally:
+            process.terminate()
+            process.wait(10)
+
+    def test_the_command_refuses_what_it_cannot_serve(self):
+        for arguments, message in ((("--pattern-serve", "--port", "70000"), "port must be an integer from 0 to 65535"), (("--pattern-serve", "--port", "0", "--allow-origin", "*"), "not an origin"),
+                                    (("--pattern-serve", "--port", str(self.port)), "cannot bind 127.0.0.1:"), (("--port", "9"), "--port and --allow-origin go with --pattern-serve"),
+                                    (("--allow-origin", "http://a.example"), "--port and --allow-origin go with --pattern-serve")):
+            process = self.command(*arguments)
+            out, err = process.communicate(timeout=30)
+            self.assertEqual((process.returncode, out), (2, ""), arguments)
+            self.assertIn(message, err, arguments)
 
 
 if __name__ == '__main__':

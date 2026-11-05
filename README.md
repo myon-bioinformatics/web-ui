@@ -200,12 +200,43 @@ NaN, Infinity and numbers beyond the float range are refused). The golden values
 shows are reproduced exactly (`tests/fixtures/pattern_assets.json`), and 1,145 requests recorded from the originals (the Python oracles, and the Node modules for the JavaScript five), answers and
 refusals with their text, are reproduced exactly (`tests/fixtures/pattern_golden.json`, taken at 39d659e); during development every family was also run against the originals themselves on
 seeded requests (3 x 4,000 per Python family, 1,500 + 3,000 per Node family), with no difference once the timers of one request are kept from mixing with another's. Deliberate difference: where an original crashed with a
-`TypeError` (an unhashable `operation`, say) this raises `ValueError`; where it would leave a task promise unhandled, the page's copy handles it. `patterns.js` runs seventeen families in the
-page: the sync ones answer 1,200 seeded requests per family like Python, refusal text included, and the five JavaScript ones run on real promises and timers (a virtual clock in the tests) and
+`TypeError` (an unhashable `operation`, say) this raises `ValueError`; where it would leave a task promise unhandled, the page's copy handles it. `patterns.js` runs nineteen families in the
+page (the seventeen above, and `screen` and `native` below): the sync ones answer 1,200 seeded requests per family like Python, refusal text included, and the five JavaScript ones run on real promises and timers (a virtual clock in the tests) and
 answer 700 seeded requests each; every cap is tried at its edge in both languages. `search`, `convert` and `validate` stay in Python because they rest on CPython's case folding, integer parsing
-and `urlsplit`, and so does TF-IDF (the min-heap runs in the page); the page shows what Python answers to their examples. Limits of a page: JSON cannot tell `1` from `1.0` (an integral number
-is an int), integers beyond 2^53 are not exact, and the catalogue search lower-cases where Python case-folds. Not absorbed: the Flutter-native patterns (136-137, 151-175, 183-184) and the Dart
-UI of every pattern. BTK adapters: `web-ui-patterns`, `web-ui-pattern-run`.
+and `urlsplit`, and so does TF-IDF (the min-heap runs in the page), and so does `contract` (below); the static page shows what Python answers to their examples, and the page that
+`python3 web_ui.py --pattern-serve` serves runs them in Python (see the bridge below). Limits of a page: JSON cannot tell `1` from `1.0` (an integral number
+is an int), integers beyond 2^53 are not exact, and the catalogue search lower-cases where Python case-folds. The Flutter-native patterns (136-137, 151-175, 183-184) and the screens of every pattern are the next section. Not absorbed: the 594
+`view.dart` files of the navigation, API and UI patterns (the inventory detects one shared heuristic shape across all three categories; this does not prove behavioral equivalence or completed migration) and the Digest/HMAC auth matrix mock (not yet).
+BTK adapters: `web-ui-patterns`, `web-ui-pattern-run`.
+
+Screens (`examples/screens.html`): the 198 numbered screens of flutter_navigation_basic, its Hub and the native examples. A screen is data (`screen_row(n)`; `tests/fixtures/screens_asset.json` is
+assets/screens.json byte for byte): one pattern from each of the four categories, a domain (18, in blocks of eighteen), a use case, and for the 22 integration and auth screens a design note (purpose,
+when, three points, a pitfall, a snippet). One of eleven templates draws it (`screen_template`, from the id), the chrome texts come in 11 locales (`screen_text`, 59 keys, golden against
+assets/display/app_text.json), and `screen_view(n, locale, state)` returns the whole screen as data: title, chips, tabs, body, use case, links to the pattern's sources and to the references here
+(`screen_links_view`; screens 91-99 and 103-110 show those as well). The Hub is `screen_hub(locale, query, mode)` (list or grid, a search over the catalogue with the original's rules), and
+`screen_step(n, state, event)` is the state machine of one screen (input, tab, template switch). The native examples of patterns 136-137, 151-175 and 183-184 are `native_initial`, `native_step`,
+`native_view` and `native_parallel`: counters and notifications as the Flutter API counts them, and the parallel pattern 136-137 in a Web Worker where Dart uses an Isolate; each card on the Hub page has the address `#native-N`. `screens.js` gives the same
+answers (`screen` and `native` are families of `pattern_run` and run in the page); Chromium checks the Hub, every template in several locales, the native examples with real mouse drags and a long
+press, the search text and count across resizes from 1180 to 320 px (the original's Screen6 specs), and tap targets of 40 px (24 px for checkboxes). Deliberate differences: Flutter widgets are semantic HTML,
+the screens' data and texts are embedded in the page (no load-error state), screen 5 (the URL-parameter tool) is its generic screen with a note, and the native examples count notifications and rebuilds,
+which the Dart ones do not display. BTK adapters: `web-ui-screens`, `web-ui-native-patterns`.
+
+Contracts (`pattern_run("contract", ...)`, `python3 web_ui.py --pattern contract`): flutter_navigation_basic's `metadata_contracts.py` (the 198 screens and the eleven locale tables),
+`header_contracts.py` (measured box geometry: inside the viewport, aligned on one row, stacked with a minimum height) and `gesture_paint.py` (a swap of two cards judged on saved PNGs: exact RGBA
+comparison with changed pixels, ratio, bounding box and largest difference). `operation` is `screens`, `locales`, `layout` or `swap`; the answer is `{ok, failures, ...}` (at most 50 reasons, `truncated`
+counts the rest), and a request that is not a well-formed measurement is a `ValueError`. Python only: a page cannot decode a screenshot the way a Playwright run saved it, and these are checks that a
+test or CI runs. The oracle is the original itself: `tests/fixtures/contract_golden.json` holds the verdict and the messages of the originals on seeded mutations of the real data (and the hash of each
+mutated document), taken at ae3c4cb; `python3 tool/contract_golden.py CHECKOUT --check` (or `FLUTTER_NAVIGATION_BASIC_CHECKOUT=CHECKOUT` with the test suite) regenerates it from a checkout and compares.
+Deliberate differences: every failure is listed, not the first; `count` allows a smaller catalogue; locale placeholders must equal English's for every key; the header's title-emoji identity belongs to Flutter's
+shared header and is left out; PNGs are decoded by `studio_png_decode` (8 bits, not interlaced, at most 4 MP); a bool where a number is wanted is refused.
+
+Bridge (`python3 web_ui.py --pattern-serve [--port N] [--allow-origin ORIGIN]`): flutter_navigation_basic's `validation_http.py` (a loopback HTTP server that runs a reference), for every family.
+It serves the patterns page at `/` with its Run box wired to `POST /pattern/FAMILY` (a JSON request in, the result out, `{"error": text}` with 400 for what the command line refuses), so `search`,
+`convert`, `validate`, `contract` and TF-IDF run in Python from the page. It binds 127.0.0.1 only; the Host must be `127.0.0.1:PORT` or `localhost:PORT` (a name that resolves to loopback is refused:
+DNS rebinding), a browser's Origin must be the bridge's own or one given with `--allow-origin` (an origin, no wildcard; the answer echoes that one origin with `Vary: Origin`, and the Private Network
+Access header is sent only to it), the body must be `application/json` with a Content-Length of at most 64 KiB (415, 411, 413; 408 when it never arrives), nothing is logged, and a failure inside a reference
+is `500 internal error` without its text. Chromium checks the page against Python on seeded random requests (answers and refusals), that a family the page runs itself is never sent, an unreachable bridge, a
+late answer or failure that must not overwrite a newer one, no cookies or referrer, and that a page of another origin, a form post and a rebinding host get nothing.
 
 Image studio (`examples/image-studio.html`): Ironmate's image studio (`studio/core.js`, `studio.js`, `image_studio.py`, `docs/image-studio.md`) with Python first. A scene (`ironmate-image-studio/1`: rect, ellipse,
 triangle, text, image, heatmap, arrow and clock layers, at most 100 layers and 4 MP, 64 to 4096 px a side) is checked by `studio_validate` (the originals' refusal text, in Japanese, kept word for word), drawn to SVG by
