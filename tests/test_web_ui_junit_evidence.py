@@ -60,7 +60,7 @@ def test_skip():
     xprobe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(xprobe)
     raw = (evidence / "junit.xml").read_text(encoding="utf-8")
-    imported = xprobe.cases_from_junit(raw, repository="myon-bioinformatics/web-ui", report_id="controlled-probe")
+    imported = xprobe.cases_from_junit(raw, repository="myon-bioinformatics/PySaiyanWeBoo", report_id="controlled-probe")
     assert imported["truncated"] is False
     cases = imported["cases"]
     assert {(c["value"]["test"], c["value"]["kind"]) for c in cases} == {

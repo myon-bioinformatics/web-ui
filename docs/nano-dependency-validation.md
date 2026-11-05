@@ -22,11 +22,11 @@ The PR author measured Linux x86_64, Python 3.14, fresh uv caches, one sync per 
 
 ## Final CI inspection
 
-For head `5df20ab8b185860693ea4bf1006bcad17f85bfd8`, Tooling smoke run [41287053731](https://github.com/myon-bioinformatics/web-ui/actions/runs/41287053731) tested the merge with main (`24b771ea619a7c7e4cd94d545a83e65b352f1bde`). Node was **26.13.0**. Both the locked baseline and tooling Node 26 jobs reported **239 passed, 3 skipped, 114 subtests passed**. `test_stagehand_v4_python_surface` explicitly **PASSED**. The Node test command reported **17 passed, 0 failed, 0 skipped**.
+For head `5df20ab8b185860693ea4bf1006bcad17f85bfd8`, Tooling smoke run [41287053731](https://github.com/myon-bioinformatics/PySaiyanWeBoo/actions/runs/41287053731) tested the merge with main (`24b771ea619a7c7e4cd94d545a83e65b352f1bde`). Node was **26.13.0**. Both the locked baseline and tooling Node 26 jobs reported **239 passed, 3 skipped, 114 subtests passed**. `test_stagehand_v4_python_surface` explicitly **PASSED**. The Node test command reported **17 passed, 0 failed, 0 skipped**.
 
-The three skips were the separately enabled Gradio DOM test and optional remote Plotly/PptxGenJS bundle probes; Stagehand was not skipped. The Gradio test ran in its dedicated lane with `WEB_UI_GRADIO_TEST=1` and passed in [Local Gradio DOM run 41287053801](https://github.com/myon-bioinformatics/web-ui/actions/runs/41287053801). That job installed the official Playwright Chromium shell and passed Plotly rendering, controls, offline/HTTP route navigation and live layout preset checks.
+The three skips were the separately enabled Gradio DOM test and optional remote Plotly/PptxGenJS bundle probes; Stagehand was not skipped. The Gradio test ran in its dedicated lane with `WEB_UI_GRADIO_TEST=1` and passed in [Local Gradio DOM run 41287053801](https://github.com/myon-bioinformatics/PySaiyanWeBoo/actions/runs/41287053801). That job installed the official Playwright Chromium shell and passed Plotly rendering, controls, offline/HTTP route navigation and live layout preset checks.
 
-[UI smoke run 41287053839](https://github.com/myon-bioinformatics/web-ui/actions/runs/41287053839) used Node 26, captured six desktop/mobile Chromium screenshots, verified current-run identity and hashes, and passed visual regression checks. Stagehand coverage here is the SDK import/surface contract, not an authenticated external browser-agent service test.
+[UI smoke run 41287053839](https://github.com/myon-bioinformatics/PySaiyanWeBoo/actions/runs/41287053839) used Node 26, captured six desktop/mobile Chromium screenshots, verified current-run identity and hashes, and passed visual regression checks. Stagehand coverage here is the SDK import/surface contract, not an authenticated external browser-agent service test.
 
 ## Accepting future Flutter functionality
 

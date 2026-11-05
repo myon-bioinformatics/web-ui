@@ -770,7 +770,7 @@ def module_csp_hash(source: str) -> str:
 def render_document(
     text: str = "",
     *,
-    title: str = "web-ui",
+    title: str = "PySaiyanWeBoo",
     theme: str = "modern",
     css: str = "",
     stylesheets: tuple[str, ...] = (),
@@ -15311,7 +15311,7 @@ def example_pages() -> dict[str, str]:
         '<section class="ui-grid"><article class="ui-card"><h2>Card</h2><p>Consumer-owned content.</p></article></section>'
         '<pre class="ui-output">text-safe output</pre></main>')
     return {
-        "examples/index.html": page('<main class="ui-page"><h1 class="ui-title">web-ui</h1><p class="ui-muted">Shared static UI contract for '
+        "examples/index.html": page('<main class="ui-page"><h1 class="ui-title">PySaiyanWeBoo</h1><p class="ui-muted">Shared static UI contract for '
                                     'myon-bioinformatics projects.</p>' + _example_cards() + "</main>", "web-ui examples"),
         "examples/mcp-stub.html": stub_document(EXAMPLE_STUBS["mcp"]),
         "examples/api-stub.html": stub_document(EXAMPLE_STUBS["api"]),
@@ -15572,7 +15572,7 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
                                {'text': 'London lunch', 'at': '12:00', 'zone': 'london'},
                                {'text': 'Open hours', 'gauge': {'from': '09:00', 'to': '18:00', 'cells': 10, 'glyphs': 'hourglass'}},
                                {'text': 'Daylight', 'gauge': {'from': '06:00', 'to': '22:00', 'cells': 8, 'glyphs': 'moon'}}],
-                     'shared_issue': 'myon-bioinformatics/web-ui/110',
+                     'shared_issue': 'myon-bioinformatics/PySaiyanWeBoo/110',
                      'post': True,
                      'offset_label': True,
                      'zones': [{'id': 'tokyo', 'label': 'Tokyo', 'tz': 'Asia/Tokyo'},
@@ -15648,7 +15648,7 @@ def _index_page() -> str:
     tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
     body = (
         '<main class="ui-page"><header class="stub-header"><div>'
-        '<img src="./docs/brand/icon.png" width="80" height="80" alt="web-ui icon"><h1 class="ui-title">web-ui</h1>'
+        '<img src="./docs/brand/icon.png" width="80" height="80" alt="PySaiyanWeBoo icon"><h1 class="ui-title">PySaiyanWeBoo</h1>'
         '<p class="ui-muted">Shared static-first UI contract for myon-bioinformatics projects.</p></div>'
         '<div class="stub-meta"><span class="ui-tag">v1</span><span class="ui-tag">build-free</span></div></header>'
         f'<section class="ui-grid">{cards}</section>'
@@ -15672,7 +15672,7 @@ def _index_page() -> str:
         + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
     return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
             '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
-            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>web-ui — static UI contract</title>\n'
+            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>PySaiyanWeBoo — static UI contract</title>\n'
             f'  <style>{css}</style>\n<link rel="apple-touch-icon" href="./docs/brand/icon.png"></head>\n'
             f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
 
@@ -15800,7 +15800,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--title", default="web-ui")
+    parser.add_argument("--title", default="PySaiyanWeBoo")
     parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--catalog", type=Path, metavar="FILE",

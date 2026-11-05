@@ -4,7 +4,7 @@ const {execFileSync}=require('node:child_process');
 const assert=require('node:assert/strict');
 (async()=>{
  const html=execFileSync(process.env.PYTHON || 'python3',['-c',`import web_ui as u
-v=u.example_data('world');v['board']['shared_issue']='myon-bioinformatics/web-ui/123'
+v=u.example_data('world');v['board']['shared_issue']='myon-bioinformatics/PySaiyanWeBoo/123'
 print(u.world_document(v))`],{encoding:'utf8'});
  const browser=await chromium.launch({headless:true});
  try{
