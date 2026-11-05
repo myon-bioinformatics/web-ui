@@ -10570,6 +10570,7 @@ def patterns_html(bridge: str | None = None) -> str:
     categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
     families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
     run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    auth_link = '<p><a href="/auth.html">Local authentication mock (loopback server)</a></p>' if bridge else ''
     return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns' + (f' data-patterns-bridge="{bridge}"' if bridge else "") + '><h2>792 patterns</h2>'
             '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
             '<label for="patterns-query">Search (id, title or theme)</label>'
@@ -10578,7 +10579,7 @@ def patterns_html(bridge: str | None = None) -> str:
             f'<div class="ui-patterns-bar"><label for="patterns-category">Category</label><select class="ui-input" id="patterns-category" data-patterns-category><option value="">All four</option>{categories}</select>'
             f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
             '<ol class="ui-patterns-list" data-patterns-list></ol>'
-            '<p><a href="/auth.html">Local authentication mock (loopback server)</a></p><h3 id="patterns-run-title">Run a reference</h3>'
+            f'{auth_link}<h3 id="patterns-run-title">Run a reference</h3>'
             f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
             '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
             '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'

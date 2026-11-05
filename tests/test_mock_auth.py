@@ -208,6 +208,17 @@ class AuthBridgeTests(unittest.TestCase):
         self.assertIn('id="auth-request"',page)
         self.assertIn('credentials:"omit"',page)
 
+    def test_auth_navigation_is_only_on_the_live_bridge(self):
+        for page in (ui.patterns_html(), ui.patterns_document(),
+                     ui.example_pages()['examples/patterns.html']):
+            self.assertNotIn('href="/auth.html"',page)
+            self.assertIn('python3 web_ui.py --pattern-serve',page)
+        conn=http.client.HTTPConnection('127.0.0.1',self.port,timeout=10)
+        conn.request('GET','/')
+        response=conn.getresponse();page=response.read().decode();conn.close()
+        self.assertEqual(response.status,200)
+        self.assertIn('href="/auth.html"',page)
+
     def test_real_status_challenges_retry_and_replay(self):
         status,headers,body=self.post(ui.auth_matrix('digestChallengeOnly'))
         self.assertEqual(status,401);self.assertEqual(headers['www-authenticate'],ui.AUTH_DIGEST_CHALLENGE)
