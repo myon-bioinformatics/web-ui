@@ -90,8 +90,6 @@ jobs:
           path: .
       - name: Verify resolved vendor snapshot
         run: python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
-      - name: Load verified vendored GHI (stdlib only)
-        run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
@@ -139,7 +137,7 @@ jobs:
       - name: Execute repository diagnostics renderer
         run: node tests/repository_diagnostics.node.js
       - name: Generate canonical repository metadata (stdlib only)
-        run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository ${{ github.repository }} --root . --output-dir .
+        run: python -S tool/repository_metadata.py repo-metadata --format v1 --repository ${{ github.repository }} --root . --output-dir .
       - name: Capture advisory tooling metadata
         run: uv run --locked --group stagehand python tool/web_ui_tooling_meta.py > tooling-meta.json
       - uses: actions/upload-artifact@v7
@@ -200,8 +198,6 @@ jobs:
         PY
         python -S .vendor-sync-tools/vendor_sync.py materialize --manifest vendor.lock.json
         python -S .vendor-sync-tools/vendor_sync.py check --manifest vendor.lock.json
-    - name: Load verified vendored GHI (stdlib only)
-      run: python -S -c "import importlib.util; s=importlib.util.spec_from_file_location('enrolled_ghi','tool/vendor/gh_identity.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert hasattr(m,'capabilities')"
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ matrix.node-version }}
@@ -229,7 +225,7 @@ jobs:
     - name: Execute repository diagnostics renderer
       run: node tests/repository_diagnostics.node.js
     - name: Generate canonical repository metadata (stdlib only)
-      run: python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository ${{ github.repository }} --root . --output-dir .
+      run: python -S tool/repository_metadata.py repo-metadata --format v1 --repository ${{ github.repository }} --root . --output-dir .
     - name: Capture advisory tooling metadata
       run: uv run --locked --group stagehand python tool/web_ui_tooling_meta.py > tooling-meta.json
     - uses: actions/upload-artifact@v7

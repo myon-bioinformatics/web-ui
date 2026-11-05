@@ -41,8 +41,6 @@ def _copy_snapshot(root):
 def test_vendor_lock_lists_expected_sources():
     expected = {
         ("myon-bioinformatics/Ironmate", "LICENSE", "tool/vendor/LICENSE"),
-        ("myon-bioinformatics/gh_identity", "gh_identity.py", "tool/vendor/gh_identity.py"),
-        ("myon-bioinformatics/gh_identity", "LICENSE", "tool/vendor/gh_identity-LICENSE"),
         (
             "myon-bioinformatics/myon-bioinformatics",
             "node_launch.py",

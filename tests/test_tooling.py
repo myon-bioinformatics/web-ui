@@ -39,7 +39,7 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
            "GITHUB_REF_NAME": "123/merge"}
     output = tmp_path / "metadata"
     subprocess.run(
-        [sys.executable, "-S", str(ROOT / "tool/vendor/gh_identity.py"), "repo-metadata",
+        [sys.executable, "-S", str(ROOT / "tool/repository_metadata.py"), "repo-metadata",
          "--format", "v1", "--repository", "myon-bioinformatics/PySaiyanWeBoo", "--root", str(checkout),
          "--output-dir", str(output)],
         check=True, env=env, capture_output=True, text=True,
