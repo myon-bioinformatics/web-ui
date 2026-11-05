@@ -145,11 +145,12 @@ def test_the_migration_inventory_is_pinned_complete_and_honest():
         counts[row['status']] = counts.get(row['status'], 0) + 1
     assert data['status_counts_outside_catalogues'] == dict(sorted(counts.items()))
     assert (data['navigation_api_ui_view_files'], data['navigation_api_ui_view_shapes']) == (594, 1), 'the 594 per-pattern views share one heuristic shape, not an equivalence proof'
-    waiting = [row['path'] for row in rows if row['status'] in ('pending', 'unreviewed', 'proposed_retirement')]
+    dispositions = [(row['path'], row) for row in rows] + list(data['catalogues'].items())
+    waiting = [name for name, row in dispositions if row['status'] in ('pending', 'unreviewed', 'proposed_retirement')]
     assert waiting and data['archive_ready'] is False, 'archiving stays blocked while something is waiting for a decision'
-    for row in rows:
-        assert row['status'] not in ('successor', 'partial') or row['target'], row['path']
-        assert row['status'] not in ('not_absorbed', 'proposed_retirement', 'pending') or row['remaining'], row['path']
+    for name, row in dispositions:
+        assert row['status'] not in ('successor', 'partial') or row['target'], name
+        assert row['status'] not in ('not_absorbed', 'proposed_retirement', 'pending', 'unreviewed') or row['remaining'], name
 
 
 def test_every_function_the_inventory_names_as_a_successor_exists():
@@ -171,3 +172,28 @@ def test_the_migration_inventory_is_what_the_tool_writes_from_the_pinned_checkou
         pytest.skip('set FLUTTER_NAVIGATION_BASIC_CHECKOUT to a clean checkout of the pinned commit')
     done = subprocess.run([sys.executable, '-S', str(INVENTORY.parents[1] / 'tool' / 'flutter_migration_inventory.py'), checkout, '--output', str(INVENTORY), '--check'], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize('status', [None, 'pending', 'unreviewed', 'proposed_retirement', 'successor'])
+def test_catalogue_only_inventory_never_authorizes_archiving(tmp_path, monkeypatch, status):
+    from tool import flutter_migration_inventory as migration
+
+    # No ordinary file or tool blocker can mask an omitted catalogue group.
+    source = tmp_path / 'lib' / 'features' / 'example_patterns' / 'view.dart'
+    source.parent.mkdir(parents=True)
+    source.write_text('class Example {}\n', encoding='utf-8')
+    for args in (['init'], ['add', 'lib'],
+                 ['-c', 'user.name=Inventory test', '-c', 'user.email=inventory@example.invalid',
+                  'commit', '-m', 'Catalogue fixture']):
+        subprocess.run(['git', '-C', str(tmp_path), *args], check=True, capture_output=True)
+    if status is not None:
+        monkeypatch.setitem(migration.CATALOGUE_GROUPS, 'example_patterns',
+                            (status, 'screen_view' if status == 'successor' else None,
+                             'Explicit decision still required'))
+    data = migration.inventory(tmp_path)
+    assert list(inventory_rows(data)) == []
+    assert data['status_counts_outside_catalogues'] == {}
+    assert data['catalogues']['example_patterns']['status'] == (status or 'unreviewed')
+    assert data['dart_files'] == data['catalogues']['example_patterns']['files'] == 1
+    assert data['archive_ready'] is False
+    assert 'Merge and publish successor pages, then obtain archive approval' in data['archive_blockers']
