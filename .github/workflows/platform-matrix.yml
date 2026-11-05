@@ -38,8 +38,8 @@ jobs:
       matrix:
         include:
           - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests MockAuthBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
-          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
-          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
+          - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests MockAuthBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
+          - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests MockAuthBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
           - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
           - {name: webkit / iPhone 13 (emulation), browser: webkit, profile: iphone, device: 'iPhone 13', tests: 'PhotoPageBrowserTests'}
     steps:
