@@ -6424,5 +6424,75 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("[data-is=board]")).touchAction'), 'none', 'placing needs the touch for itself')
 
 
+class MockAuthBrowserTests(unittest.TestCase):
+    """Real same-origin fetches, public fixtures, no external authentication."""
+    setUp = PatternBridgeBrowserTests.setUp
+    start_bridge = PatternBridgeBrowserTests.start_bridge
+    tearDown = PatternBridgeBrowserTests.tearDown
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda e: self.errors.append(str(e)))
+        page.on('request', lambda r: self.external.append(r.url) if r.url.startswith('http') and not r.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/auth.html')
+        page.wait_for_function('document.getElementById("auth-request").value.includes("demo-bearer-token")')
+        return page
+
+    def prepare(self, page, scenario):
+        page.locator('#auth-scenario').select_option(scenario)
+        page.locator('#auth-result').evaluate('(el) => el.textContent = ""')
+        page.locator('#auth-prepare').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent === "Fresh public demo request prepared."')
+        return json.loads(page.locator('#auth-request').input_value())
+
+    def run_mock(self, page):
+        page.locator('#auth-result').evaluate('(el) => el.textContent = ""')
+        page.locator('#auth-run').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent.startsWith("{")')
+        return json.loads(page.locator('#auth-result').inner_text())
+
+    def test_all_demo_presets_and_actual_http_status_headers(self):
+        page = self.page()
+        statuses = dict(zip(self.web_ui.AUTH_SCENARIOS, [404,200,401,403,200,200,200,401,200,200,429]))
+        for scenario, status in statuses.items():
+            with self.subTest(scenario=scenario):
+                self.prepare(page, scenario)
+                result = self.run_mock(page)
+                self.assertEqual(result['status'], status)
+                if scenario == 'digestChallengeOnly':
+                    self.assertEqual(result['headers']['www-authenticate'], self.web_ui.AUTH_DIGEST_CHALLENGE)
+                if scenario == 'rateLimited':
+                    self.assertEqual(result['headers']['retry-after'], '1')
+                if scenario in ('digest', 'hmac'):
+                    replay = self.run_mock(page)
+                    self.assertEqual((replay['status'], replay['body']['reason']), (401, 'digest_replay' if scenario == 'digest' else 'replay'))
+
+    def test_edits_fail_without_consuming_nonce_and_json_is_text(self):
+        page = self.page()
+        original = self.prepare(page, 'hmac')
+        changed = {**original, 'body': '<img src=x onerror=alert(1)>'}
+        page.locator('#auth-request').fill(json.dumps(changed))
+        result = self.run_mock(page)
+        self.assertEqual((result['status'],result['body']['reason']), (401,'invalid_signature'))
+        page.locator('#auth-request').fill(json.dumps(original))
+        self.assertEqual(self.run_mock(page)['status'],200)
+        page.locator('#auth-request').fill('{')
+        page.locator('#auth-run').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent.includes("SyntaxError")')
+        self.assertEqual(page.locator('#auth-result img').count(),0)
+
+    def test_controls_and_output_fit_320_pixels(self):
+        page = self.page()
+        page.set_viewport_size({'width':320,'height':900})
+        self.prepare(page,'digest')
+        self.assertEqual(self.run_mock(page)['status'],200)
+        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),320)
+        for selector in ('#auth-scenario','#auth-prepare','#auth-request','#auth-run','#auth-result'):
+            bounds=page.locator(selector).bounding_box()
+            self.assertGreaterEqual(bounds['x'],-0.5)
+            self.assertLessEqual(bounds['x']+bounds['width'],320.5)
+
+
 if __name__ == '__main__':
     unittest.main()
+

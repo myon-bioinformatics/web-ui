@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
+          - {name: chromium / desktop, browser: chromium, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests MockAuthBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
           - {name: firefox / desktop, browser: firefox, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
           - {name: webkit / desktop, browser: webkit, profile: desktop, device: '', tests: 'PhotoBrowserTests PhotoPageBrowserTests ClipboardBrowserTests PlaygroundBrowserTests ReportBrowserTests McpBrowserTests PatternBrowserTests PatternBridgeBrowserTests ScreensBrowserTests ImageStudioBrowserTests'}
           - {name: chromium / Pixel 7 (emulation), browser: chromium, profile: pixel, device: 'Pixel 7', tests: 'PhotoPageBrowserTests'}
@@ -151,3 +151,4 @@ jobs:
           path: matrix
           if-no-files-found: error
           retention-days: 30
+

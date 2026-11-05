@@ -1,7 +1,7 @@
 {
   "schema": "web-ui-flutter-migration/2",
   "repository": "myon-bioinformatics/flutter_navigation_basic",
-  "source_commit": "ae3c4cb78cfc9aed15871dfce750d8320a19d1e6",
+  "source_commit": "ce66ae7198dbe74ed62f70180fbff260e4acd14d",
   "archive_ready": false,
   "scope": "File inventory and what web-ui did about each file; a status is not a claim that every Dart implementation was reviewed line by line",
   "dart_files": 2756,
@@ -9,10 +9,9 @@
   "navigation_api_ui_view_shapes": 1,
   "status_counts_outside_catalogues": {
     "not_absorbed": 9,
-    "partial": 96,
-    "pending": 3,
+    "partial": 97,
     "proposed_retirement": 64,
-    "successor": 74,
+    "successor": 76,
     "unreviewed": 14
   },
   "non_catalogue_files": [
@@ -446,7 +445,7 @@
       "feature": "http_request_draft",
       "status": "partial",
       "target": "parse_curl, stub_document",
-      "remaining": "Real HTTP execution and authentication are not absorbed (web-ui sends nothing)"
+      "remaining": "External HTTP execution is not absorbed; local fixture authentication is available via MockAuthHandler (web-ui sends nothing)"
     },
     {
       "path": "lib/features/irony_generator/domain/irony_generator_controller.dart",
@@ -1044,9 +1043,9 @@
       "path": "lib/shared/http/auth_matrix.dart",
       "sha256": "d696b6ecf7b17764224a1883c233c3a0a830bfe668acc4cc2029caf585fa006d",
       "feature": null,
-      "status": "pending",
-      "target": "Digest/HMAC auth matrix mock",
-      "remaining": "Asked for; done after the screens and contracts"
+      "status": "partial",
+      "target": "auth_matrix, auth_prepare, auth_document (/auth.html)",
+      "remaining": "All eleven local presets; RequestDraft sensitive-field metadata and Flutter draft UI are not migrated"
     },
     {
       "path": "lib/shared/http/curl_import.dart",
@@ -1108,9 +1107,9 @@
       "path": "lib/shared/http/digest_nc.dart",
       "sha256": "cf1d48ff8201900c606811f1a70375b5e18ae51c62af427badd479c3aabe8825",
       "feature": null,
-      "status": "pending",
-      "target": "Digest/HMAC auth matrix mock",
-      "remaining": "Asked for; done after the screens and contracts"
+      "status": "successor",
+      "target": "digest_nc_parse, digest_nc_format",
+      "remaining": ""
     },
     {
       "path": "lib/shared/http/live_request_executor.dart",
@@ -1148,9 +1147,9 @@
       "path": "lib/shared/http/mock_auth.dart",
       "sha256": "f54ec9e9b064c3bb5f36d0c6f0efc6e9e47fdcafb02f699ff5e09a0231e47783",
       "feature": null,
-      "status": "pending",
-      "target": "Digest/HMAC auth matrix mock",
-      "remaining": "Asked for; done after the screens and contracts"
+      "status": "successor",
+      "target": "MockAuthHandler, auth_digest_response, auth_hmac_signature, auth_query_pairs",
+      "remaining": "Local fixture router only; /mock-auth accepts simulated requests; no external authentication"
     },
     {
       "path": "lib/shared/http/request_draft.dart",
@@ -1728,7 +1727,7 @@
       },
       {
         "path": "python/header_contracts.py",
-        "sha256": "a86a6a605d0bd1d4f2720c08c7847ad5bc6a3adeac3a1655fa56a95859c4c2ba",
+        "sha256": "3b1b93966fda19c32a45ddbff01cc8df1f710cef20cb53ebb00aae2129ce5d7b",
         "status": "successor",
         "target": "pattern_run(\"contract\") operation layout",
         "remaining": "The header title-emoji identity belongs to Flutter and is left out"
@@ -1770,7 +1769,7 @@
       },
       {
         "path": "python/metadata_contracts.py",
-        "sha256": "80ff6a7ea9e407cffc44a9f7b55d80e8e016b30b143df52c12355dda8eee745a",
+        "sha256": "59a8bbc9ff45fea4994a8769ab6d041dd99ca163b2fcd89116ca0b4b15b7d782",
         "status": "successor",
         "target": "pattern_run(\"contract\") (operations screens and locales)",
         "remaining": "Golden: tests/fixtures/contract_golden.json (the original run on seeded mutations)"
@@ -1819,7 +1818,7 @@
       },
       {
         "path": "python/pattern_contracts.py",
-        "sha256": "bee3f208895e96e0dd8dccdb6a46e7b6408b2240c67b3b6de859ddf7e28bd70a",
+        "sha256": "6afd55729114dc7f6b907cefc28b37bc44419fb76ece1adb78069b0990efcc94",
         "status": "proposed_retirement",
         "target": null,
         "remaining": "Validates real Dart output (per-case JUnit failures)"
@@ -1985,7 +1984,7 @@
         "sha256": "5d7700e4d4ca80de5407fa321a1171c8b0db616b01fd198b7fe6d8f8ef350224",
         "status": "partial",
         "target": "MCP lab (MockMcpRoutes, PR #109)",
-        "remaining": "It also mounts MockAuthHandler, the Digest/HMAC auth matrix, which is pending"
+        "remaining": "Local auth now runs through POST /mock-auth on the existing loopback bridge; original standalone /auth/* HTTP server topology is not reproduced"
       }
     ],
     "workflows": [
