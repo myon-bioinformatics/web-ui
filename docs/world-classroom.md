@@ -19,9 +19,27 @@ open("school.html", "w").write(web_ui.world_document(spec))
 | `kind` | prop | `desk`, `board`, `wall`, `shelf` are **solid**; `chair`, `rug` can be walked over (sit on a chair) |
 | `avatars` | world | Up to 24 different emoji offered first; the choice replaces every floor's player emoji |
 
+| `classroom` | floor | `{rows, groups, per_group, tile}` (all optional) in place of `width`/`height`/`tile`/`props`: the floor is `classroom_floor(...)`. `id`, `label` and `spots`/`actors`/`player` may sit beside it and replace the generated ones |
+
 A floor's `player` must start on a free tile. `classroom_floor(rows, groups, per_group=2, tile=32)` writes a whole classroom
 floor (rows of desks, one chair under each, aisles, blackboard, teacher's desk, back shelves with a door gap) with every size a
 multiple of the tile. A floor without `tile` keeps the old free walking.
+
+## From another repository (one line)
+
+A consuming repository keeps only JSON; Python (stdlib) makes the page, and Node reaches the same Python through `vendor/py_launch.cjs`.
+`--world -` reads the spec from stdin (at most 2 MB), so no temporary file is needed:
+
+```
+echo '{"schema":"web-ui-world/1","avatars":["🙂","🐱","🦊"],"floors":[{"id":"room","label":"教室","classroom":{"rows":5,"groups":3}}]}' \
+  | python -S web_ui.py --world - > school.html
+python -S web_ui.py --example school | python -S web_ui.py --world - > school.html          # the bundled example, as is
+node vendor/py_launch.cjs -- web_ui.py --world - < school.json > school.html                # Node: same bytes
+python -S -c "import web_ui as u,sys;sys.stdout.write(u.world_document({'schema':u.WORLD_SCHEMA,'avatars':['🙂'],'floors':[{'classroom':{}}]}))"   # in-process
+```
+
+A bad spec exits with status 2 and one `error:` line on stderr (no traceback, nothing on stdout). Add `--theme NAME` for another theme.
+Python, the CLI and `py_launch.cjs` return identical bytes; `tests/test_world_classroom.py` checks that.
 
 ## Who does what
 

@@ -2389,7 +2389,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                       "title": _world_text(shot.get("title"), "title", 80),
                       "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
     floors, spot_ids = [], set()
-    for floor in floors_in:
+    for floor in map(_expand_classroom, floors_in):
         if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player", "tile", "props"}:
             raise ValueError("a floor has id, label, width, height, spots, actors, player, tile and props")
         width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
@@ -2490,6 +2490,19 @@ def world_validate(spec: Any) -> dict[str, Any]:
                                     if board.get("offset_minutes") is not None else None)}
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
             "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board, **({"avatars": avatars} if avatars else {})}
+
+
+def _expand_classroom(floor: Any) -> Any:
+    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)``, so JSON alone (no Python in
+    the calling repository) can ask for a classroom; ``spots``, ``actors`` and ``player`` given beside it replace the generated ones."""
+    if not isinstance(floor, dict) or "classroom" not in floor:
+        return floor
+    params, own = floor["classroom"], {"id", "label", "classroom", "spots", "actors", "player"}
+    if (not isinstance(params, dict) or set(params) - {"rows", "groups", "per_group", "tile"} or set(floor) - own
+            or not all(isinstance(floor[k], str) for k in ("id", "label") if k in floor)):
+        raise ValueError("a classroom floor has id, label, classroom (rows, groups, per_group, tile) and optionally spots, actors and player")
+    built = classroom_floor(**params, **{k: floor[k] for k in ("id", "label") if k in floor})
+    return {**built, **{k: floor[k] for k in ("spots", "actors", "player") if k in floor}}
 
 
 def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile: int = 32,
@@ -16011,7 +16024,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--catalog", type=Path, metavar="FILE",
                         help="print a script-free page for a web-ui-catalog/1 JSON spec and exit")
     parser.add_argument("--world", type=Path, metavar="FILE",
-                        help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+                        help="print a single-file page for a web-ui-world/1 JSON spec and exit; `-` reads the spec from stdin")
     parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (including catalog-report, catalog-projects)")
     parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
     parser.add_argument("--pattern", metavar="FAMILY", help="run one pattern reference on the JSON request in stdin and print its JSON result (see PATTERN_RUNNERS); `list` names the families, `catalogue` prints the 792 patterns")
@@ -16140,7 +16153,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.world or args.theme_wall is not None:
         try:
-            sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
+            if args.world == Path("-"):
+                raw = sys.stdin.buffer.read(PATTERN_MAX_INPUT + 1)
+                if len(raw) > PATTERN_MAX_INPUT:
+                    raise ValueError(f"spec is larger than {PATTERN_MAX_INPUT} bytes")
+                text = raw.decode("utf-8")
+            else:
+                text = args.world.read_text(encoding="utf-8") if args.world else ""
+            sys.stdout.write(world_document(json.loads(text), theme=args.theme)
                              if args.world else theme_wall_document(args.theme_wall))
         except (OSError, ValueError) as exc:
             parser.error(str(exc))

@@ -208,3 +208,81 @@ def test_node26_grid_route_matches_python_oracle(tmp_path):
         for t, point in zip([0, 0.4, 1, 2.5, 7, 1e6], samples):
             assert point == pytest.approx(ui.world_route_sample(route, 2 + t), abs=1e-9)
     assert result['glyphs'] == ['🐱', '🦖', None, None, None, '👨‍👩‍👧', '🇯🇵', '❤️', None, None]
+
+
+def test_a_floor_can_ask_for_a_classroom_in_plain_json():
+    params = {"rows": 3, "groups": 2, "per_group": 3, "tile": 32}
+    world = {"schema": ui.WORLD_SCHEMA, "avatars": ["🙂"], "floors": [{"id": "room", "label": "教室A", "classroom": params}]}
+    floor = ui.world_validate(world)["floors"][0]
+    built = ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [ui.classroom_floor(**params, id="room", label="教室A")]})["floors"][0]
+    assert floor == built and "classroom" not in floor
+    assert ui.world_validate(ui.world_validate(world)) == ui.world_validate(world)            # the expanded form is ordinary data
+    default = ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [{"classroom": {}}]})["floors"][0]
+    assert default["id"] == "classroom" and default["label"] == "教室" and default["tile"] == 32
+
+
+def test_classroom_floor_keeps_what_is_given_beside_it_and_mixes_with_ordinary_floors():
+    spot = {"id": "clock", "x": 192, "y": 64, "label": "時計", "body": "あと5分"}
+    mixed = {"schema": ui.WORLD_SCHEMA, "floors": [
+        {"id": "room", "label": "教室", "classroom": {}, "spots": [spot], "player": {"emoji": "🐱", "x": 176, "y": 496, "speed": 64}},
+        {"id": "yard", "label": "校庭", "width": 128, "height": 128, "spots": [{"id": "bar", "x": 64, "y": 64, "label": "鉄棒", "body": "-"}]}]}
+    room, yard = ui.world_validate(mixed)["floors"]
+    assert [s["id"] for s in room["spots"]] == ["clock"] and room["player"]["emoji"] == "🐱" and room["player"]["speed"] == 64
+    assert room["props"] and "tile" not in yard and "props" not in yard
+
+
+@pytest.mark.parametrize("floor", [
+    {"id": "r", "label": "x", "classroom": {"rows": 0}},
+    {"id": "r", "label": "x", "classroom": {"tile": 12}},
+    {"id": "r", "label": "x", "classroom": {"depth": 3}},
+    {"id": "r", "label": "x", "classroom": "big"},
+    {"id": "r", "label": "x", "classroom": [4, 3]},
+    {"id": "r", "label": "x", "classroom": {}, "width": 640},                 # sizes come from the generator
+    {"id": "r", "label": "x", "classroom": {}, "props": []},
+    {"id": 7, "label": "x", "classroom": {}},
+    {"id": "R!", "label": "x", "classroom": {}},
+    {"id": "r", "label": ["x"], "classroom": {}},
+    {"id": "r", "label": "x", "classroom": {"rows": True}},
+])
+def test_classroom_directive_refuses_bad_data(floor):
+    with pytest.raises(ValueError):
+        ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [floor]})
+
+
+ONE_LINER = {"schema": ui.WORLD_SCHEMA, "avatars": ["🙂", "🐱"], "floors": [{"id": "room", "label": "教室", "classroom": {"rows": 5, "groups": 3}}]}
+
+
+def _cli(*args, stdin, command=None):
+    import os
+    import sys
+    cmd = command or [sys.executable, "-S", "web_ui.py"]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return subprocess.run([*cmd, *args], input=stdin.encode("utf-8"), capture_output=True, cwd=root, timeout=60)
+
+
+def test_world_page_from_stdin_equals_the_page_from_a_file(tmp_path):
+    expected = ui.world_document(ONE_LINER)
+    result = _cli("--world", "-", stdin=json.dumps(ONE_LINER, ensure_ascii=False))
+    assert result.returncode == 0 and result.stdout.decode("utf-8") == expected
+    (tmp_path / "w.json").write_text(json.dumps(ONE_LINER, ensure_ascii=False), encoding="utf-8")
+    assert _cli("--world", str(tmp_path / "w.json"), stdin="").stdout.decode("utf-8") == expected
+    piped = _cli("--world", "-", stdin=_cli("--example", "school", stdin="").stdout.decode("utf-8"))   # the pipe in one line
+    assert piped.returncode == 0 and piped.stdout.decode("utf-8") == ui.world_document(ui.example_data("school"))
+
+
+@pytest.mark.parametrize("bad", ["not json", "", "[]", json.dumps({**ONE_LINER, "floors": [{"id": "r", "label": "x", "classroom": {"rows": 99}}]})])
+def test_world_from_stdin_reports_bad_specs_without_a_traceback(bad):
+    result = _cli("--world", "-", stdin=bad)
+    assert result.returncode == 2 and result.stdout == b"" and b"Traceback" not in result.stderr and b"error" in result.stderr
+
+
+def test_world_from_stdin_is_bounded():
+    result = _cli("--world", "-", stdin=" " * (ui.PATTERN_MAX_INPUT + 10))
+    assert result.returncode == 2 and b"larger than" in result.stderr
+
+
+def test_node26_reaches_the_same_page_through_py_launch():
+    node = _node26()
+    expected = ui.world_document(ONE_LINER)
+    result = _cli("--", "web_ui.py", "--world", "-", stdin=json.dumps(ONE_LINER, ensure_ascii=False), command=[node, "vendor/py_launch.cjs"])
+    assert result.returncode == 0 and result.stdout.decode("utf-8") == expected

@@ -60,6 +60,7 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 [School world](docs/world-classroom.md) adds a floor `tile` grid with solid `props` (desks, board, shelves; `classroom_floor()` writes a classroom),
 world `avatars` (pick an emoji first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`).
+From another repository: `echo '{"schema":"web-ui-world/1","floors":[{"classroom":{}}]}' | python -S web_ui.py --world - > school.html` (`--world -` reads stdin; Node: `node vendor/py_launch.cjs -- web_ui.py --world -`).
 
 Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a
 `player` that walks to the spot you tap, and an info `board`. The board has a clock (`"offset_label": true` adds the UTC offset such as
