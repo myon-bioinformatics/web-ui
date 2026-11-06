@@ -86,7 +86,11 @@ CI's existing `tooling-meta` artifact contains three separate files:
 `null` unless measured. The `repository-diagnostics.js` module (Python data in `web_ui.py`) only reads/renders the
 canonical record; it never recollects Git identity. This is the first consumer
 slice of Ironmate #49; Flutter and other consumers remain separate follow-ups.
-The repository-metadata v1 schema and JSON/JSONL identity path are unchanged.
+The CLI retains the repository-metadata v1 output fields and JSON/JSONL identity
+path. Its `tooling` field is always `{}`; version observations are emitted only
+in `tooling-meta.json`. The local Python validator accepts a tooling dictionary
+without the former GHI key/value label restrictions. This is a narrower local
+producer, not a promise of full compatibility with GHI's optional Python API.
 
 ### What can fail CI
 

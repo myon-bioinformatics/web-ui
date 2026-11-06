@@ -10,12 +10,6 @@ import pytest
 from tool.web_ui_tooling_meta import collect
 
 
-def _locked(destination):
-    root = Path(__file__).resolve().parents[1]
-    lock = json.loads((root / "vendor.lock.json").read_text(encoding="utf-8"))
-    return next(e for e in lock["files"] if e["destination"] == destination)
-
-
 def test_required_github_tooling_is_visible():
     assert shutil.which("git")
     assert shutil.which("gh")
