@@ -121,3 +121,17 @@ def test_failed_canonical_observations_are_omitted(monkeypatch, failure):
         assert record["commands"] == record["packages"] == {}
         del record["generated_at_utc"]
     assert json.dumps(first) == json.dumps(second)
+
+
+def test_tool_versions_rejects_bad_commands():
+    with pytest.raises(TypeError, match="sequence of command names"):
+        web_ui_tooling_meta.tool_versions("git")
+    with pytest.raises(TypeError, match="sequence of command names"):
+        web_ui_tooling_meta.tool_versions(b"git")
+    with pytest.raises(ValueError, match="unsupported tooling command"):
+        web_ui_tooling_meta.tool_versions(("git", "nope"))
+
+
+def test_tool_versions_without_python_skips_runtime(monkeypatch):
+    monkeypatch.setattr(web_ui_tooling_meta.shutil, "which", lambda _: None)
+    assert web_ui_tooling_meta.tool_versions(("git",), include_python=False) == {}
