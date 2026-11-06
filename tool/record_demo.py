@@ -302,6 +302,8 @@ def _header(page, cam, tmp):
     cam.hold(600)
     page.keyboard.press("Escape")
     page.click(".ui-world-head .ui-world-home")
+    cam.hold(700)
+    page.click('.ui-world-ask button[data-t="home"]')
     cam.hold(1000)
 
 

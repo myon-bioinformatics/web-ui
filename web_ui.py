@@ -3362,7 +3362,9 @@ form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
 const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
-el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();asking?.(null);shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()});
+// 🏠 asks first (the shared dialog: 🏠 goes, ✖️ stays): home resets the floor, the filter and the sheet.
+const goHome=()=>{shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()};
+el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();ask('🏠❓',[{glyph:'🏠',t:'home',value:true}],'home').then(v=>{if(v)goHome()})});
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{allCategories();setFloor(a.closest(".ui-floor").dataset.floor);go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});

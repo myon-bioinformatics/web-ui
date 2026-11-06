@@ -86,7 +86,7 @@ Adding an icon is adding a key: nothing else in the page changes, and the key is
 
 How flutter_navigation_basic's header maps here (so it can be archived): Home → 🏠; Favorite this page / Favorites → ☆ and ⭐ (session only); Menu → ☰ ⚙️;
 Language → 🌐 (labels switch, the content stays yours); Door-to-Door selector → 🚪 in the footer; the page's own action row → the emoji `tools`. Not taken over:
-the "leave this page?" confirmation (a world has no unsaved page to lose) and favouriting a whole floor.
+the "leave this page?" confirmation (a world has no unsaved page to lose; 🏠 has its own small ask() dialog) and favouriting a whole floor.
 
 ### Languages (🌐)
 
@@ -144,8 +144,8 @@ const answer = await world.ask('🖼️📷', [{glyph: '📷', t: 'camera', valu
 ```
 
 A choice is `{glyph, t, value}`; `t` names a catalogue word (so the label is the aria-label and tooltip in the visitor's language) and the optional third
-argument labels the dialog. The look is the emoji picker's (one CSS rule set), keys do not walk the player while it is open, and 🏠 closes it. The 🏠 button keeps
-asking nothing (no confirmation); a confirmation anywhere is one line, e.g. `ask('🏠❓', [{glyph: '✅', t: 'ok', value: true}])`.
+argument labels the dialog. The look is the emoji picker's (one CSS rule set), keys do not walk the player while it is open, and opening another replaces it. 🏠 uses it too: it asks
+first (🏠 goes, ✖️ stays), because home resets the floor, the filter and the sheet: `ask('🏠❓', [{glyph: '🏠', t: 'home', value: true}], 'home')`.
 
 A second direction is not built: depth instead of one flat plane, layers at different depths (parallax) so the space reads as more than two axes. It would be additive on the same props and spots.
 

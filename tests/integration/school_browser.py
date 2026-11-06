@@ -269,7 +269,12 @@ class SchoolTests(unittest.TestCase):
         self.assertEqual(page.eval_on_selector_all(f"{head} .ui-world-favs a", "els => els.length"), 1)
         # 🏠: first floor in view, sheet and menus closed, categories cleared
         page.select_option(".ui-world-goto", "yard")
+        page.click(f"{head} .ui-world-home")                                              # 🏠 asks first: ✖️ stays where it is, 🏠 goes
+        self.assertEqual(page.get_attribute(".ui-world-ask [role=dialog]", "aria-label"), "ホーム")
+        page.click('.ui-world-ask button[data-t="close"]')
+        self.assertEqual(page.input_value(".ui-world-goto"), "yard")
         page.click(f"{head} .ui-world-home")
+        page.click('.ui-world-ask button[data-t="home"]')
         self.assertEqual(page.input_value(".ui-world-goto"), "classroom")
         self.assertFalse(page.is_visible(".ui-sheet-item[data-open]"))
         self.assertEqual(page.evaluate("location.hash"), "")
