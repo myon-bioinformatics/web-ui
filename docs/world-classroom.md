@@ -54,13 +54,13 @@ Python, the CLI and `py_launch.cjs` return identical bytes; `tests/test_world_cl
 ## Where things go (header, side, footer)
 
 A grid world (or any world with `"shell": true`, or with `tools`) keeps the page short: nothing is stacked under the map, so a phone and a PC need no
-vertical scrolling and nothing changes page. The screen is icons; the words are each button's `aria-label` and tooltip, in Japanese and English.
+vertical scrolling and nothing changes page. The screen is icons; the words are each button's `aria-label` and tooltip, in 11 languages (below).
 
 * **Header** (the whole world): the info board, then 🏠 / ⭐ / ⚙️ and the emoji tools you add.
   * **🏠** home: first floor, everything in view, sheet and menus closed.
-  * **⭐** favourites: a ☆ in the ☰ list stars a place; the ⭐ panel lists them (on any floor) and takes you there. They live in the page only (a reload
-    starts empty), like the session-only favourites of flutter_navigation_basic.
-  * **⚙️** settings: ⏸️ pause the motion, 🙂✏️ change the emoji, 🌐 switch the labels between 日本語 and English.
+  * **⭐** favourites: a ☆ in the ☰ list stars a place; the ⭐ panel lists them (on any floor) and takes you there. They are a light cache: kept in this browser
+    (`localStorage` key `ui-world:<id>`, only the starred places and the language) and restored on the next visit. No dialog, no per-floor favourites, no export.
+  * **⚙️** settings: ⏸️ pause the motion, 🙂✏️ change the emoji, 🌐 pick the language (a `<select>` of native names).
 * **Side** (this screen): 48px buttons that open a panel over the map (one menu open at a time; Escape, a tap on the map or choosing an item closes it).
   * **☰**: the places of this floor (and the category chips, if any). Each row has an arrow from you to the place (⬆️ ↗️ ➡️ ↘️ ⬇️ ↙️ ⬅️ ↖️, 📍 within one tile,
     🚪 when it is on another floor) that follows you as you walk; tap a row to go there and read its sheet. Works without JavaScript too (the rows are links).
@@ -81,12 +81,19 @@ A catalogue can too: `catalogue_world(items, shell=True)` turns a long list into
 ```
 
 Each entry adds one icon with exactly one feature: `spots` (a panel listing those places, with arrows), `body` (a panel with a note) or `floor` (a shortcut
-to that floor). `slot` is `head` (default) or `side`; `label` / `label_en` are the tooltip words. Up to 8; the page's own icons (🏠 ⭐ ⚙️ 🌐 ☰ ⋯ 🚪) are taken.
+to that floor). `slot` is `head` (default) or `side`; `label` (ja) / `label_en` (en) / `labels` (`{"fr": "Carte", "de": "Karte"}`, any of the other nine codes) are the tooltip words. Up to 8; the page's own icons (🏠 ⭐ ⚙️ 🌐 ☰ ⋯ 🚪) are taken.
 Adding an icon is adding a key: nothing else in the page changes, and the key is the emoji itself.
 
 How flutter_navigation_basic's header maps here (so it can be archived): Home → 🏠; Favorite this page / Favorites → ☆ and ⭐ (session only); Menu → ☰ ⚙️;
 Language → 🌐 (labels switch, the content stays yours); Door-to-Door selector → 🚪 in the footer; the page's own action row → the emoji `tools`. Not taken over:
 the "leave this page?" confirmation (a world has no unsaved page to lose) and favouriting a whole floor.
+
+### Languages (🌐)
+
+The chrome speaks the 11 languages of flutter_navigation_basic: ja, en, fr, es, pt, ar, zh, ru, id, de, sw (`web_ui.WORLD_LANGS`, words in `WORLD_TEXT`, one tuple
+per word in that order; a test checks every word in every language). Markup carries Japanese plus `data-t="<word>"`; 🌐 swaps `aria-label` and `title`, sets `lang`
+on the world and remembers the choice. A tool of your own names itself with `label`, `label_en` and `labels`; a missing language falls back to English, then Japanese.
+The content (spot labels, bodies, the board) is yours and is not translated. Arabic changes the words only: the map is not mirrored.
 
 ## Direction arrows (two positions, one arrow)
 
@@ -110,7 +117,7 @@ names an anchor (`bottom-right`); `🎯` and `📍` mean the centre. The recorde
 With `avatars`, the world opens with a picker (a plain `div` in the map, shown by the script, not a modal): choose one of the
 listed characters or type your own: an emoji, a short text such as an initial or a name, or both (`🐱たろう`), 1..16 characters.
 In `avatars` and the `player` the same rule holds: control and line-separator characters, bidirectional overrides and spaces at either end are
-refused; the label is set as text, never as markup. (`actors` and catalog pages keep the stricter emoji-only rule.) The player stays hidden until then. **🙂✏️** (⚙️ menu) reopens it. Nothing is stored; a reload
+refused; the label is set as text, never as markup. (`actors` and catalog pages keep the stricter emoji-only rule.) The player stays hidden until then. **🙂✏️** (⚙️ menu) reopens it. The emoji and the board messages are never stored; a reload
 asks again. Without JavaScript the picker, the pad and the player controls stay hidden and the static map and spots still work.
 
 ## Not included

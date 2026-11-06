@@ -44,14 +44,14 @@ class SchoolTests(unittest.TestCase):
         cls.pw.stop()
         cls.tmp.cleanup()
 
-    def open(self, width=1280, height=800, touch=False, js=True):
+    def open(self, width=1280, height=800, touch=False, js=True, path=None):
         context = self.browser.new_context(viewport={"width": width, "height": height}, has_touch=touch, is_mobile=touch,
                                            java_script_enabled=js)
         self.addCleanup(context.close)
         page = context.new_page()
         self.errors = []
         page.on("pageerror", lambda e: self.errors.append(str(e)))
-        page.goto(self.page_path.as_uri())
+        page.goto((path or self.page_path).as_uri())
         return page
 
     def start(self, page, emoji="🐱"):
@@ -279,11 +279,17 @@ class SchoolTests(unittest.TestCase):
         self.assertTrue(page.evaluate("document.querySelector('.ui-world').hasAttribute('data-motion-paused')"))
         page.click(f"{head} .ui-world-pause")
         self.assertEqual(page.text_content(f"{head} .ui-world-pause"), "⏸️")
-        page.click(f"{head} [data-lang]")
+        page.select_option(f"{head} [data-lang]", "fr")
+        self.assertEqual([label(f"{head} .ui-world-home"), label(f'{menu("favorites")} summary'), label('.ui-world-dpad [data-step="0,-1"]'), label(".ui-world-goto")],
+                         ["Accueil", "Favoris", "Haut", "Aller à l'étage"])
+        self.assertEqual(page.get_attribute(f"{head} .ui-world-home", "title"), "Accueil")
+        self.assertEqual(page.evaluate("document.querySelector('.ui-world').lang"), "fr")
+        page.select_option(f"{head} [data-lang]", "ar")
+        self.assertEqual(label(f"{head} .ui-world-home"), "الرئيسية")
+        page.select_option(f"{head} [data-lang]", "en")
         self.assertEqual([label(f"{head} .ui-world-home"), label(f'{menu("favorites")} summary'), label('.ui-world-dpad [data-step="0,-1"]'), label(".ui-world-goto")],
                          ["Home", "Favorites", "Up", "Go to floor"])
-        self.assertEqual(page.get_attribute(f"{head} .ui-world-home", "title"), "Home")
-        page.click(f"{head} [data-lang]")
+        page.select_option(f"{head} [data-lang]", "ja")
         self.assertEqual(label(f"{head} .ui-world-home"), "ホーム")
         # the emoji tools of the school example: 🗺️ lists places with arrows, 🏫 shows a note; one menu at a time
         page.keyboard.press("Escape")
@@ -294,6 +300,39 @@ class SchoolTests(unittest.TestCase):
         page.click(f'{menu("tool")}:has(summary:text("🏫")) summary')
         page.wait_for_function("() => document.querySelectorAll('.ui-world-menu[open]').length === 1")
         self.assertIn("教室と校庭", page.inner_text(f'{menu("tool")}[open]'))
+        self.assertEqual(self.errors, [])
+
+    def test_favorites_and_language_come_back_from_the_cache_and_nothing_else_does(self):
+        posting = Path(self.tmp.name) / "posting.html"                                     # the same school with the board's message box on
+        posting.write_text(web_ui.world_document({**SPEC, "board": {**SPEC["board"], "post": True}}), encoding="utf-8")
+        page = self.open(path=posting)
+        head = ".ui-world-head"
+        self.start(page, "🦊")
+        page.click('.ui-world-menu[data-menu="spots"] summary')
+        page.click('.ui-world-spots[data-floor="classroom"] li:nth-child(1) .ui-world-star')
+        page.keyboard.press("Escape")
+        page.click(f'{head} .ui-world-menu[data-menu="settings"] summary')
+        page.select_option(f"{head} [data-lang]", "de")
+        page.keyboard.press("Escape")
+        page.fill(".ui-board-post input", "hallo")                                          # a board message is only in the page
+        page.press(".ui-board-post input", "Enter")
+        self.assertIn("hallo", page.inner_text(".ui-board-run"))
+        stored = page.evaluate("Object.fromEntries(Object.entries(localStorage))")
+        self.assertEqual(list(stored), ["ui-world:school-map"])
+        self.assertEqual(sorted(__import__("json").loads(stored["ui-world:school-map"])), ["fav", "lang"])
+        self.assertNotIn("🦊", stored["ui-world:school-map"])
+        self.assertNotIn("hallo", stored["ui-world:school-map"])
+        page.reload()                                                                        # a visit later: starred place and language are back, the picker is asked again
+        self.assertEqual(page.get_attribute(f"{head} .ui-world-home", "aria-label"), "Startseite")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-spots .ui-world-star[aria-pressed=true]", "els => els.length"), 1)
+        self.assertEqual(page.input_value(f"{head} [data-lang]"), "de")
+        self.assertTrue(page.is_visible(".ui-world-pick"))
+        page.evaluate("localStorage.setItem('ui-world:school-map', '{\"fav\":[\"#nope\",7],\"lang\":\"xx\"}')")      # damaged or foreign cache is ignored
+        page.reload()
+        self.assertEqual(page.get_attribute(f"{head} .ui-world-home", "aria-label"), "ホーム")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-spots .ui-world-star[aria-pressed=true]", "els => els.length"), 0)
+        page.evaluate("localStorage.setItem('ui-world:school-map', 'not json')")
+        page.reload()
         self.assertEqual(self.errors, [])
 
     def test_without_javascript_the_footer_keeps_plain_floor_labels(self):

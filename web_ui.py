@@ -2557,12 +2557,17 @@ def world_validate(spec: Any) -> dict[str, Any]:
         if _plain_emoji(emoji) in WORLD_BUILTIN_TOOLS or emoji in tools:
             raise ValueError(f"{emoji} is already used by the page itself; tools take other emoji")
         if not isinstance(tool, dict) or set(tool) - _WORLD_TOOL_KEYS or sum(k in tool for k in ("floor", "spots", "body")) != 1:
-            raise ValueError("a tool has label, label_en, slot and exactly one of floor, spots or body")
+            raise ValueError("a tool has label, label_en, labels, slot and exactly one of floor, spots or body")
         slot = tool.get("slot", "head")
         if slot not in ("head", "side"):
             raise ValueError("slot is head or side")
         label = _world_text(tool.get("label", emoji), "label", 24)
         built = {"label": label, "label_en": _world_text(tool.get("label_en", label), "label_en", 24), "slot": slot}
+        more_labels = tool.get("labels", {})                                      # the other languages: {"fr": "Carte", "de": "Karte"}
+        if not isinstance(more_labels, dict) or set(more_labels) - set(_WORLD_LANG_CODES[2:]):
+            raise ValueError(f"labels maps language codes ({', '.join(_WORLD_LANG_CODES[2:])}) to words; ja and en are label and label_en")
+        if more_labels:
+            built["labels"] = {code: _world_text(text, "labels", 24) for code, text in more_labels.items()}
         if "floor" in tool:
             if tool["floor"] not in floor_ids:
                 raise ValueError(f"tool floor must be one of {sorted(floor_ids)}")
@@ -2685,27 +2690,53 @@ def _board_html(board: dict[str, Any] | None) -> str:
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}{shared}</div>')
 
 
-# The words of a shell world's chrome. The page shows icons; these are the aria-label and tooltip, in Japanese and English
-# (🌐 switches between them in the page, like the header language of flutter_navigation_basic).
-WORLD_TEXT = {"home": ("ホーム", "Home"), "favorites": ("お気に入り", "Favorites"), "settings": ("全体設定", "Settings"), "places": ("行き先の一覧", "Places"),
-              "screen": ("この画面の操作", "This screen"), "pause": ("動きを止める", "Pause motion"), "avatar": ("絵文字を変える", "Change emoji"),
-              "language": ("言語（日本語 / English）", "Language (日本語 / English)"), "me": ("自分の場所", "Find me"), "walk": ("ここへ歩く", "Walk here"),
-              "close": ("閉じる", "Close"), "star": ("お気に入り", "Favorite"), "floor": ("フロアを移動", "Go to floor"), "move": ("移動", "Move"),
-              "up": ("上へ", "Up"), "left": ("左へ", "Left"), "right": ("右へ", "Right"), "down": ("下へ", "Down"),
-              "pick": ("あなたの絵文字をえらんでください", "Pick your emoji"), "other": ("ほかの絵文字・文字（16文字まで）", "Another emoji or text (up to 16)"),
-              "ok": ("これにする", "Use this")}
+# The words of a shell world's chrome. The page shows icons; these are the aria-label and tooltip. 🌐 picks the language, the same
+# eleven as flutter_navigation_basic (ja is the page's own, so it is what the markup carries until JS switches it).
+WORLD_LANGS = (("ja", "日本語"), ("en", "English"), ("fr", "Français"), ("es", "Español"), ("pt", "Português"), ("ar", "العربية"),
+               ("zh", "中文"), ("ru", "Русский"), ("id", "Bahasa Indonesia"), ("de", "Deutsch"), ("sw", "Kiswahili"))
+WORLD_TEXT = {
+    #            ja  en  fr  es  pt  ar  zh  ru  id  de  sw
+    "home": ("ホーム", "Home", "Accueil", "Inicio", "Início", "الرئيسية", "首页", "Главная", "Beranda", "Startseite", "Mwanzo"),
+    "favorites": ("お気に入り", "Favorites", "Favoris", "Favoritos", "Favoritos", "المفضلة", "收藏", "Избранное", "Favorit", "Favoriten", "Vipendwa"),
+    "settings": ("全体設定", "Settings", "Réglages", "Ajustes", "Configurações", "الإعدادات", "设置", "Настройки", "Pengaturan", "Einstellungen", "Mipangilio"),
+    "places": ("行き先の一覧", "Places", "Lieux", "Lugares", "Lugares", "الأماكن", "地点", "Места", "Tempat", "Orte", "Maeneo"),
+    "screen": ("この画面の操作", "This screen", "Cet écran", "Esta pantalla", "Esta tela", "هذه الشاشة", "本屏幕", "Этот экран", "Layar ini", "Dieser Bildschirm", "Skrini hii"),
+    "pause": ("動きを止める", "Pause motion", "Arrêter le mouvement", "Pausar el movimiento", "Pausar o movimento", "إيقاف الحركة", "暂停动态", "Остановить движение", "Jeda gerakan", "Bewegung anhalten", "Simamisha mwendo"),
+    "avatar": ("絵文字を変える", "Change emoji", "Changer d'emoji", "Cambiar emoji", "Mudar emoji", "تغيير الرمز التعبيري", "更换表情", "Сменить эмодзи", "Ganti emoji", "Emoji ändern", "Badilisha emoji"),
+    "language": ("言語", "Language", "Langue", "Idioma", "Idioma", "اللغة", "语言", "Язык", "Bahasa", "Sprache", "Lugha"),
+    "me": ("自分の場所", "Find me", "Où suis-je", "Mi ubicación", "Minha posição", "موقعي", "我的位置", "Где я", "Posisi saya", "Mein Standort", "Nilipo"),
+    "walk": ("ここへ歩く", "Walk here", "Aller ici", "Caminar aquí", "Caminhar até aqui", "امشِ إلى هنا", "走到这里", "Идти сюда", "Jalan ke sini", "Hierhin gehen", "Tembea hapa"),
+    "close": ("閉じる", "Close", "Fermer", "Cerrar", "Fechar", "إغلاق", "关闭", "Закрыть", "Tutup", "Schließen", "Funga"),
+    "star": ("お気に入り", "Favorite", "Favori", "Favorito", "Favorito", "مفضلة", "收藏", "В избранное", "Favorit", "Favorit", "Pendwa"),
+    "floor": ("フロアを移動", "Go to floor", "Aller à l'étage", "Ir a la planta", "Ir para o andar", "الانتقال إلى طابق", "前往楼层", "Перейти на этаж", "Pindah lantai", "Zur Etage", "Nenda ghorofa"),
+    "move": ("移動", "Move", "Déplacer", "Mover", "Mover", "تحرك", "移动", "Движение", "Gerak", "Bewegen", "Sogea"),
+    "up": ("上へ", "Up", "Haut", "Arriba", "Cima", "أعلى", "上", "Вверх", "Atas", "Hoch", "Juu"),
+    "left": ("左へ", "Left", "Gauche", "Izquierda", "Esquerda", "يسار", "左", "Влево", "Kiri", "Links", "Kushoto"),
+    "right": ("右へ", "Right", "Droite", "Derecha", "Direita", "يمين", "右", "Вправо", "Kanan", "Rechts", "Kulia"),
+    "down": ("下へ", "Down", "Bas", "Abajo", "Baixo", "أسفل", "下", "Вниз", "Bawah", "Runter", "Chini"),
+    "pick": ("あなたの絵文字をえらんでください", "Pick your emoji", "Choisissez votre emoji", "Elige tu emoji", "Escolha seu emoji", "اختر رمزك التعبيري", "选择你的表情", "Выберите свой эмодзи", "Pilih emojimu", "Wähle dein Emoji", "Chagua emoji yako"),
+    "other": ("ほかの絵文字・文字（16文字まで）", "Another emoji or text (up to 16)", "Autre emoji ou texte (16 max)", "Otro emoji o texto (hasta 16)", "Outro emoji ou texto (até 16)", "رمز أو نص آخر (حتى 16)", "其他表情或文字（最多16个）", "Другой эмодзи или текст (до 16)", "Emoji atau teks lain (maks. 16)", "Anderes Emoji oder Text (bis 16)", "Emoji au maandishi mengine (hadi 16)"),
+    "ok": ("これにする", "Use this", "Choisir", "Usar este", "Usar este", "استخدم هذا", "就用这个", "Выбрать", "Pakai ini", "Nehmen", "Tumia hii"),
+    "invalid": ("1〜16文字の絵文字か文字を入力してください", "Enter 1 to 16 emoji or characters", "Saisissez 1 à 16 emoji ou caractères", "Escribe de 1 a 16 emoji o caracteres", "Digite de 1 a 16 emoji ou caracteres", "أدخل من 1 إلى 16 رمزًا أو حرفًا", "请输入1到16个表情或文字", "Введите от 1 до 16 эмодзи или символов", "Masukkan 1 sampai 16 emoji atau karakter", "Gib 1 bis 16 Emoji oder Zeichen ein", "Weka emoji au herufi 1 hadi 16"),
+}
 WORLD_BUILTIN_TOOLS = ("🏠", "⭐", "⚙", "🌐", "☰", "⋯", "🚪")       # emoji the page itself uses; a tool of your own takes another
-_WORLD_TOOL_KEYS = {"label", "label_en", "slot", "floor", "spots", "body"}
+_WORLD_TOOL_KEYS = {"label", "label_en", "labels", "slot", "floor", "spots", "body"}
+_WORLD_LANG_CODES = tuple(code for code, _ in WORLD_LANGS)
+# What the page's script needs: the language codes and the words by index (one list per key), written once ahead of the script.
+WORLD_TEXT_JS = ("const WORLD_LANGS=" + json.dumps(list(_WORLD_LANG_CODES)) + ",WORLD_TEXT=" +
+                 json.dumps({k: list(v) for k, v in WORLD_TEXT.items()}, ensure_ascii=False, separators=(",", ":")) + ";\n")
 
 
 def _plain_emoji(value: str) -> str:
     return value.replace("\ufe0e", "").replace("\ufe0f", "")
 
 
-def _wt(key: str, ja: str | None = None, en: str | None = None) -> str:
-    """aria-label, title and the two languages of one word of the chrome (``ja``/``en`` override the catalogue, for a tool's own label)."""
-    ja, en = (ja, en or ja) if ja else WORLD_TEXT[key]
-    return f'aria-label="{escape(ja, quote=True)}" title="{escape(ja, quote=True)}" data-ja="{escape(ja, quote=True)}" data-en="{escape(en, quote=True)}"'
+def _wt(key: str, labels: dict[str, str] | None = None) -> str:
+    """aria-label and title of one word of the chrome in the page's own language (ja); ``data-t`` names the catalogue entry that 🌐 swaps in,
+    or ``labels`` (language code → words) carries the words of a tool of your own."""
+    ja = labels["ja"] if labels else WORLD_TEXT[key][0]
+    swap = f'data-labels="{escape(json.dumps(labels, ensure_ascii=False, separators=(",", ":")), quote=True)}"' if labels else f'data-t="{key}"'
+    return f'aria-label="{escape(ja, quote=True)}" title="{escape(ja, quote=True)}" {swap}'
 
 
 def _world_shell(world: dict[str, Any]) -> bool:
@@ -2790,7 +2821,7 @@ def _map_html(world: dict[str, Any]) -> str:
             + (f'<button type="button" class="ui-world-star" aria-pressed="false" {_wt("star")}>☆</button>' if star else "") + '</li>' for sp in spots) + '</ul>'
     by_id = {sp["id"]: sp for f in floors for sp in f["spots"]}
     def custom(emoji: str, tool: dict[str, Any]) -> str:
-        attrs = _wt("", tool["label"], tool["label_en"])
+        attrs = _wt("", {"ja": tool["label"], "en": tool["label_en"], **tool.get("labels", {})})
         if "floor" in tool:                                                       # a floor shortcut: its radio, so it works without JS too
             return f'<label class="ui-world-tool" for="{wid}-floor-{tool["floor"]}" {attrs}>{escape(emoji)}</label>'
         panel = rows("", [by_id[i] for i in tool["spots"]]) if "spots" in tool else f'<p>{escape(tool["body"])}</p>'
@@ -2808,7 +2839,9 @@ def _map_html(world: dict[str, Any]) -> str:
         side += icon("more", "⋯", _wt("screen"), walk, hidden=True)
     settings = ((f'<button type="button" class="ui-world-pause" aria-pressed="false" data-pause="⏸️" data-resume="▶️" {_wt("pause")}>⏸️</button>' if playable else "") +
                 (f'<button type="button" data-pick-open {_wt("avatar")}>🙂✏️</button>' if avatars else "") +
-                f'<button type="button" data-lang aria-pressed="false" {_wt("language")}>🌐</button>')
+                f'<label class="ui-world-lang">🌐 <select data-lang {_wt("language")}>' +
+                "".join(f'<option value="{code}" lang="{code}"{" selected" if i == 0 else ""}>{name}</option>' for i, (code, name) in enumerate(WORLD_LANGS)) +
+                '</select></label>')
     header_tools = (f'<a class="ui-world-home" href="#{wid}-map" data-home {_wt("home")}>🏠</a>' +
                     "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "head") +
                     icon("favorites", "⭐", _wt("favorites"), '<p class="ui-world-empty" aria-hidden="true">☆</p><ul class="ui-world-rows ui-world-favs"></ul>', hidden=True) +
@@ -3067,7 +3100,7 @@ export function bindSharedBoard(board){
 }
 """
 
-WORLD_JS = WORLD_MOTION_JS + WORLD_SHARED_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+WORLD_JS = WORLD_MOTION_JS + WORLD_SHARED_JS + WORLD_TEXT_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
 export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
@@ -3096,17 +3129,27 @@ const aim=p=>{for(const a of el.querySelectorAll(rows)){if(!a.offsetParent)conti
 let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}aim(p)});
 for(const m of menus)m.addEventListener('toggle',()=>{if(m.open)for(const o of menus)if(o!==m)o.open=false});
 view.addEventListener('pointerdown',shut);
-// ⭐ favourites live in the page only (nothing is stored): the ★ of a place lists it in the header's ⭐ panel, on any floor.
+// ⭐ favourites and 🌐 language are all a world keeps, as a small cache in this browser (one key per world, nothing else is written):
+// the emoji you pick and the board messages you post stay in the page.
+const slot='ui-world:'+el.id,load=()=>{try{const v=JSON.parse(localStorage.getItem(slot));return v&&typeof v==='object'?v:{}}catch(e){return{}}},
+ save=part=>{try{localStorage.setItem(slot,JSON.stringify({...load(),...part}))}catch(e){}};
+// 🌐: aria-labels and tooltips in one of eleven languages (data-t names a catalogue word, data-labels carries a tool's own words).
+let lang='ja';const sel=el.querySelector('[data-lang]'),
+ say=root=>{const i=WORLD_LANGS.indexOf(lang);for(const n of root.querySelectorAll('[data-t],[data-labels]')){const m=n.dataset.labels&&JSON.parse(n.dataset.labels),w=m?m[lang]||m.en||m.ja:WORLD_TEXT[n.dataset.t][i];n.setAttribute('aria-label',w);n.setAttribute('title',w)}},
+ setLang=to=>{if(!WORLD_LANGS.includes(to))return;lang=to;el.lang=to;if(sel)sel.value=to;say(el)};
+sel?.addEventListener('change',()=>{setLang(sel.value);save({lang})});
+// ⭐ the ★ of a place lists it in the header's ⭐ panel, on any floor.
 const favs=el.querySelector('.ui-world-favs'),fav=new Set(),spotRows=()=>[...el.querySelectorAll('.ui-world-spots a')],
  showFavs=()=>{for(const a of spotRows()){const on=fav.has(a.getAttribute('href')),b=a.parentElement.querySelector('.ui-world-star');b.setAttribute('aria-pressed',String(on));b.textContent=on?'★':'☆'}
-  favs.replaceChildren(...spotRows().filter(a=>fav.has(a.getAttribute('href'))).map(a=>{const li=document.createElement('li'),b=document.createElement('button');b.type='button';b.className='ui-world-star';b.setAttribute('aria-pressed','true');b.setAttribute('aria-label','お気に入り');b.textContent='★';li.append(a.cloneNode(true),b);return li}))};
-// 🌐: the chrome's aria-labels and tooltips in Japanese or English (every labelled element carries both).
-el.querySelector('[data-lang]')?.addEventListener('click',e=>{const b=e.currentTarget,to=b.getAttribute('aria-pressed')==='true'?'ja':'en';b.setAttribute('aria-pressed',String(to==='en'));el.lang=to;for(const n of el.querySelectorAll('[data-ja]')){n.setAttribute('aria-label',n.dataset[to]);n.setAttribute('title',n.dataset[to])}});
-if(favs)el.addEventListener('click',e=>{const b=e.target.closest('.ui-world-star');if(!b)return;const h=b.parentElement.querySelector('a').getAttribute('href');if(fav.has(h))fav.delete(h);else fav.add(h);showFavs()});
+  favs.replaceChildren(...spotRows().filter(a=>fav.has(a.getAttribute('href'))).map(a=>{const li=document.createElement('li'),b=document.createElement('button');b.type='button';b.className='ui-world-star';b.setAttribute('aria-pressed','true');b.dataset.t='star';b.textContent='★';li.append(a.cloneNode(true),b);return li}));say(favs)};
+if(favs)el.addEventListener('click',e=>{const b=e.target.closest('.ui-world-star');if(!b)return;const h=b.parentElement.querySelector('a').getAttribute('href');if(fav.has(h))fav.delete(h);else fav.add(h);showFavs();save({fav:[...fav]})});
+const kept=load();
+if(favs){for(const a of spotRows())if(Array.isArray(kept.fav)&&kept.fav.includes(a.getAttribute('href')))fav.add(a.getAttribute('href'));if(fav.size)showFavs()}
+if(typeof kept.lang==='string'&&kept.lang!=='ja')setLang(kept.lang);
 goto?.addEventListener('change',()=>{const r=[...el.querySelectorAll('input[name$="-floor"]')].find(i=>i.value===goto.value);if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}});
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
-if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity('1〜16文字の絵文字か文字を入力してください');box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
+if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity(WORLD_TEXT.invalid[WORLD_LANGS.indexOf(lang)]);box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
 el.querySelector('[data-me]')?.addEventListener('click',()=>{const p=walk.where?.();if(p){follow=true;lx=ly=undefined;go(p[0],p[1],Math.max(z,2))}});
 const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},chips=board?[...board.querySelectorAll("[data-zone-id]")].map(z=>({id:z.dataset.zoneId,rows:JSON.parse(z.dataset.rows),out:z.querySelector("[data-zone-clock]")})):[],tick=()=>{const clock=clockNow(),t=new Date().getTime()/1000,zones=new Map(chips.map(z=>{const c=boardClock(t,zoneOffset(z.rows,t));z.out.textContent=c.clock;return[z.id,c]})),at=m=>(m.dataset.zone?zones.get(m.dataset.zone):clock).minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.offsetLabel!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(at(m),hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(at(g)),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){

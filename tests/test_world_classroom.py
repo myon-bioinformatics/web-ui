@@ -312,8 +312,8 @@ def test_a_shell_world_is_icons_in_a_header_a_side_and_a_footer():
     side = html[html.index('<div class="ui-world-side">'):html.index('<footer class="ui-world-foot">')]
     assert [m for m in ("🏠", "🗺️", "🏫", "⭐", "⚙️") if m in head] == ["🏠", "🗺️", "🏫", "⭐", "⚙️"] and head.index("🏠") < head.index("🗺️") < head.index("⭐") < head.index("⚙️")
     assert "☰" in side and "⋯" in side and "🛝" in side and 'for="school-floor-yard"' in side and "🚪" in html[html.index("<footer"):]
-    assert 'data-ja="ホーム" data-en="Home"' in head and 'aria-label="地図" title="地図" data-ja="地図" data-en="Map"' in head
-    assert "data-lang" in head and "data-pick-open" in head and 'class="ui-world-pause"' in head and " data-me " in side         # global in the header, local in the side
+    assert 'aria-label="ホーム" title="ホーム" data-t="home"' in head and 'aria-label="地図" title="地図" data-labels="{&quot;ja&quot;:&quot;地図&quot;,&quot;en&quot;:&quot;Map&quot;}"' in head
+    assert "<select data-lang" in head and head.count("<option ") == 11 and "data-pick-open" in head and "data-pick-open" in head and 'class="ui-world-pause"' in head and " data-me " in side         # global in the header, local in the side
     assert 'class="ui-world-pause"' not in side and "data-pick-open" not in side
     assert '<a href="#school-spot-flowers" data-x="480" data-y="96" data-floor="yard">' in html                                  # a place on another floor shows 🚪, not an arrow
     assert html.count("ui-world-star") >= 5 and 'class="ui-world-rows ui-world-favs"' in head
@@ -487,3 +487,27 @@ def test_demo_zoom_goes_in_toward_the_anchor_and_stays_on_the_real_clock():
         assert Image.open(io.BytesIO(camera.shots[-1][1])).convert("RGB").getpixel((20, 20)) == (255, 0, 0), anchor
     with pytest.raises(ValueError):
         record_demo.Camera(Page()).zoom(anchor="x")
+
+
+def test_the_chrome_speaks_the_eleven_languages_of_flutter_navigation_basic():
+    codes = [code for code, _ in ui.WORLD_LANGS]
+    assert codes == ["ja", "en", "fr", "es", "pt", "ar", "zh", "ru", "id", "de", "sw"]
+    for key, words in ui.WORLD_TEXT.items():                                   # every word in every language, none left as a stand-in
+        assert len(words) == 11 and all(w.strip() for w in words), key
+        assert len(set(words)) >= 6, key                                       # a few are the same word in several languages (Hotel-like), not all
+    assert all(f'data-t="{k}"' in ui.world_html(_world()) or k in ("invalid",) for k in ui.WORLD_TEXT)
+    assert ui.WORLD_JS.startswith(ui.WORLD_MOTION_JS + ui.WORLD_SHARED_JS + ui.WORLD_TEXT_JS)
+    catalogue = json.loads(ui.WORLD_TEXT_JS.split("WORLD_TEXT=")[1].rstrip(";\n"))
+    assert catalogue == {k: list(v) for k, v in ui.WORLD_TEXT.items()}
+    assert 'lang="ar">العربية</option>' in ui.world_html(_world())
+
+
+def test_a_tool_can_name_itself_in_the_other_languages():
+    world = ui.world_validate(_world(tools={"🗺️": {"label": "地図", "label_en": "Map", "labels": {"fr": "Carte", "de": "Karte"}, "spots": ["flowers"]}}))
+    assert world["tools"]["🗺️"]["labels"] == {"fr": "Carte", "de": "Karte"}
+    html = ui.world_html(world)
+    assert "&quot;fr&quot;:&quot;Carte&quot;" in html and "&quot;de&quot;:&quot;Karte&quot;" in html
+    assert "labels" not in ui.world_validate(_world(tools={"🗺️": {"spots": ["flowers"]}}))["tools"]["🗺️"]
+    for bad in ({"ja": "x"}, {"en": "x"}, {"xx": "x"}, {"fr": ""}, {"fr": "x" * 25}, ["fr"], "fr"):
+        with pytest.raises(ValueError):
+            ui.world_validate(_world(tools={"🗺️": {"labels": bad, "spots": ["flowers"]}}))
