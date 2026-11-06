@@ -411,13 +411,11 @@ def test_node26_reaches_the_same_page_through_py_launch():
 
 
 def _png(color, mark=None, size=(64, 48)):
-    from PIL import Image
-    image = Image.new("RGB", size, color)
-    if mark:
-        image.paste(mark, (8, 8, 24, 24))
-    out = io.BytesIO()
-    image.save(out, format="PNG")
-    return out.getvalue()
+    from tool.image_support.png import rgb_png
+    if isinstance(color, str):
+        color = {"black": (0, 0, 0), "white": (255, 255, 255)}[color]
+    rectangles = [((8, 8, 24, 24), mark)] if mark else []
+    return rgb_png(*size, color, rectangles=rectangles)
 
 
 def test_demo_gif_keeps_real_timing_and_decodes_to_the_same_pictures():
@@ -465,11 +463,8 @@ def test_demo_zoom_goes_in_toward_the_anchor_and_stays_on_the_real_clock():
 
     class Page:                                                 # a screenshot of a red corner (bottom left) on blue
         def screenshot(self, type):
-            image = Image.new("RGB", (40, 40), (0, 0, 255))
-            image.paste((255, 0, 0), (0, 20, 20, 40))
-            out = io.BytesIO()
-            image.save(out, format="PNG")
-            return out.getvalue()
+            from tool.image_support.png import rgb_png
+            return rgb_png(40, 40, (0, 0, 255), rectangles=[((0, 20, 20, 40), (255, 0, 0))])
 
     camera = record_demo.Camera(Page())
     camera.zoom(anchor=(0, 1), factor=2, steps=4, hold_ms=300)
@@ -614,3 +609,40 @@ def test_node26_walks_a_land_like_python(tmp_path):
     for (rows, tile, a, b), actual in zip(cases, json.loads(subprocess.check_output([node, str(module)], text=True))):
         want = ui.world_route_points(rows, tile, a, b)
         assert len(actual) == len(want) and all(g == pytest.approx(w, abs=1e-9) for g, w in zip(actual, want))
+
+
+def test_floor_selection_updates_footer_before_animation_or_change_event(tmp_path):
+    """The actual floor setter keeps the footer in sync, including favourite/hash jumps."""
+    node = _node26()
+    setter = ui.WORLD_JS.split('setFloor=', 1)[1].split(';\nconst floor=', 1)[0]
+    script = tmp_path / 'floor-selection.cjs'
+    script.write_text('''const assert = require('node:assert/strict');
+const select = {value: 'yard'};
+const events = [];
+const radios = Object.fromEntries(['classroom', 'yard'].map(value => [value, {
+  value, checked: false,
+  dispatchEvent(event) { events.push([value, select.value, event.type, event.bubbles]); }
+}]));
+const radio = (kind, value) => radios[value];
+let hasFooter = true;
+const el = {querySelector(selector) {
+  assert.equal(selector, '.ui-world-goto');
+  return hasFooter ? select : null;
+}};
+const setFloor = ''' + setter + ''';
+setFloor('classroom');
+assert.equal(radios.classroom.checked, true);
+assert.equal(select.value, 'classroom');
+assert.deepEqual(events, []);
+setFloor('yard', true);
+assert.equal(select.value, 'yard');
+assert.deepEqual(events, [['yard', 'yard', 'change', true]]);
+setFloor('missing', true);
+assert.equal(select.value, 'yard');
+assert.equal(events.length, 1);
+hasFooter = false;
+setFloor('classroom', true);
+assert.equal(radios.classroom.checked, true);
+assert.equal(events.length, 2);
+''')
+    subprocess.run([node, str(script)], check=True, capture_output=True, text=True)
