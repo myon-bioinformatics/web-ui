@@ -2314,6 +2314,15 @@ def _world_emoji(value: Any) -> str:
     return value
 
 
+def _world_avatar(value: Any) -> str:
+    """A visitor's character: an emoji, a short text (an initial, a name), or both, 1..16 characters. One label, never markup (the page sets
+    it as text): control and line-separator characters, bidirectional overrides and spaces at either end are refused."""
+    if (not isinstance(value, str) or not 1 <= len(value) <= 16 or "Zs" in (unicodedata.category(value[0]), unicodedata.category(value[-1]))
+            or any(unicodedata.category(c) in ("Cc", "Cs", "Zl", "Zp") or c in "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069" for c in value)):
+        raise ValueError("an avatar is 1..16 characters of emoji or text, without control characters or edge spaces")
+    return value
+
+
 def _world_hhmm(value: Any, label: str) -> int:
     """Minutes since midnight for an ``HH:MM`` string."""
     if not (isinstance(value, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value)):
@@ -2364,8 +2373,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
         raise ValueError("a world has schema, id, title, shots, floors, zoom_max, board and avatars")
     avatars = spec.get("avatars", [])
     if not isinstance(avatars, list) or len(avatars) > 24 or len(set(map(str, avatars))) != len(avatars):
-        raise ValueError("avatars is a list of up to 24 different emoji")
-    avatars = [_world_emoji(a) for a in avatars]
+        raise ValueError("avatars is a list of up to 24 different emoji or short texts")
+    avatars = [_world_avatar(a) for a in avatars]
     world_id = spec.get("id", "world")
     if not isinstance(world_id, str) or not _WORLD_ID.fullmatch(world_id):
         raise ValueError("id must be a lowercase token")
@@ -2443,7 +2452,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
             speed = player.get("speed", 96)
             if type(speed) not in (int, float) or not 8 <= speed <= 480:
                 raise ValueError("speed must be from 8 to 480 (map units per second)")
-            player = {"emoji": _world_emoji(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
+            player = {"emoji": _world_avatar(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
                       "y": _world_int(player.get("y"), "y", 0, height), "speed": speed}
             if tile and world_blocked(width, height, tile, props)[min(player["y"], height - 1) // tile][min(player["x"], width - 1) // tile] == "1":
                 raise ValueError("the player starts on a free tile")
@@ -2638,7 +2647,7 @@ def _map_html(world: dict[str, Any]) -> str:
              ('<button type="button" data-pick-open>絵文字を変える</button>' if avatars else ""))
     pick = ((f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>'
              '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
-             '</div><form class="ui-world-pick-form"><label>ほかの絵文字 <input name="emoji" maxlength="16" size="4" autocomplete="off"></label>'
+             '</div><form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
              '<button>これにする</button></form></div></div>') if avatars else "")
     return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"{" data-grid" if tiled else ""} '
             f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
@@ -2726,9 +2735,9 @@ _WORLD_CSS = (
     ".ui-world-pick h3{margin:0 0 8px}"
     ".ui-world-pick-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:8px;margin-bottom:8px}"
     ".ui-world-pick-grid button{min-height:48px;font-size:1.5rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);"
-    "border-radius:var(--ui-radius);cursor:pointer}"
+    "border-radius:var(--ui-radius);cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 4px}"
     ".ui-world-pick-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center}"
-    ".ui-world[data-pick] .ui-player{visibility:hidden}"
+    ".ui-world[data-pick] .ui-player{visibility:hidden}.ui-player span{white-space:nowrap}"
     "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
 )
 
@@ -2786,7 +2795,7 @@ export function gridPath(rows,s,g){const W=rows[0].length,H=rows.length,fit=c=>[
  let end=g;if(!parent.has(k(g))){const d=c=>(c[0]-g[0])**2+(c[1]-g[1])**2;end=order.reduce((a,b)=>d(b)<d(a)?b:a)}
  const path=[end];for(let p=parent.get(k(end));p;p=parent.get(k(p)))path.push(p);return path.reverse()}
 export function gridRoute(rows,tile,a,b){const cell=p=>[Math.min(rows[0].length-1,Math.max(0,Math.floor(p[0]/tile))),Math.min(rows.length-1,Math.max(0,Math.floor(p[1]/tile)))],t=cell(b),path=gridPath(rows,cell(a),t),mid=path.slice(1).map(c=>[(c[0]+.5)*tile,(c[1]+.5)*tile]),end=path[path.length-1];return end[0]===t[0]&&end[1]===t[1]?[a,...mid.slice(0,-1),b]:[a,...mid]}
-export function firstGlyph(text){const m=String(text).trim().match(/^(?:\p{Regional_Indicator}{2}|\p{Extended_Pictographic}[️\p{Emoji_Modifier}]*(?:‍\p{Extended_Pictographic}[️\p{Emoji_Modifier}]*)*)/u);return m&&m[0].length<=16?m[0]:null}
+export function cleanAvatar(text){const t=String(text).trim(),n=[...t].length;return n>=1&&n<=16&&!/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}‪-‮⁦-⁩]|^\p{Zs}|\p{Zs}$/u.test(t)?t:null}
 function bindPlayer(el,floor,onMove){
  const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
  const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form'),gridOnly=[...el.querySelectorAll('.ui-world-grid-only')];
@@ -2876,7 +2885,7 @@ const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAtt
 let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}});
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
-if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const g=firstGlyph(e.target.elements.emoji.value);if(g)choose(g)});el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
+if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity('1〜16文字の絵文字か文字を入力してください');box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
 el.querySelector('[data-me]')?.addEventListener('click',()=>{const p=walk.where?.();if(p){follow=true;lx=ly=undefined;go(p[0],p[1],Math.max(z,2))}});
 const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},chips=board?[...board.querySelectorAll("[data-zone-id]")].map(z=>({id:z.dataset.zoneId,rows:JSON.parse(z.dataset.rows),out:z.querySelector("[data-zone-clock]")})):[],tick=()=>{const clock=clockNow(),t=new Date().getTime()/1000,zones=new Map(chips.map(z=>{const c=boardClock(t,zoneOffset(z.rows,t));z.out.textContent=c.clock;return[z.id,c]})),at=m=>(m.dataset.zone?zones.get(m.dataset.zone):clock).minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.offsetLabel!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(at(m),hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(at(g)),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
@@ -2901,7 +2910,7 @@ const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,motionRoute,routeSample,gridPath,gridRoute,firstGlyph,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,motionRoute,routeSample,gridPath,gridRoute,cleanAvatar,bindWorlds};
 bindWorlds();
 """
 
@@ -15783,7 +15792,7 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
 EXAMPLES.update({
     "school": {
         "schema": WORLD_SCHEMA, "id": "school", "title": "School (prototype)", "zoom_max": 4,
-        "avatars": ["🙂", "😎", "🤓", "🐱", "🐶", "🐰", "🦊", "🐼", "🐸", "🦄", "🐙", "🌸", "⭐", "🍎", "⚽", "🚀"],
+        "avatars": ["🙂", "😎", "🤓", "🐱", "🐶", "🐰", "🦊", "🐼", "🐸", "🦄", "🐙", "🌸", "⭐", "🍎", "⚽", "🚀", "先生", "A"],
         "board": {"title": "INFO", "items": [
             {"text": "朝の会", "at": "08:40"}, {"text": "1時間目", "at": "09:00"}, {"text": "給食", "at": "12:20"},
             {"text": "下校", "at": "15:30"}, {"text": "今日の授業", "gauge": {"from": "09:00", "to": "15:30"}}]},

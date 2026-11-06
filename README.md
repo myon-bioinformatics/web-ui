@@ -59,7 +59,7 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 [Motion and clock ownership](docs/world-motion.md) explains Python-generated plans, the browser
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 [School world](docs/world-classroom.md) adds a floor `tile` grid with solid `props` (desks, board, shelves; `classroom_floor()` writes a classroom),
-world `avatars` (pick an emoji first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`).
+world `avatars` (pick an emoji, a short text or both first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`).
 From another repository: `echo '{"schema":"web-ui-world/1","floors":[{"classroom":{}}]}' | python -S web_ui.py --world - > school.html` (`--world -` reads stdin; Node: `node vendor/py_launch.cjs -- web_ui.py --world -`).
 
 Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a

@@ -82,9 +82,17 @@ class SchoolTests(unittest.TestCase):
         page = self.open()
         self.assertTrue(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector(f"{CLASSROOM} .ui-player", "e => getComputedStyle(e).visibility"), "hidden")
-        page.fill('.ui-world-pick-form input', "abc")                       # text is not an emoji
+        page.fill('.ui-world-pick-form input', "x" * 17)                    # too long for one label
         page.press('.ui-world-pick-form input', "Enter")
         self.assertTrue(page.is_visible(".ui-world-pick"))
+        page.fill('.ui-world-pick-form input', "   ")
+        page.press('.ui-world-pick-form input', "Enter")
+        self.assertTrue(page.is_visible(".ui-world-pick"))
+        page.fill('.ui-world-pick-form input', "ねこ🐱")                    # text, or emoji and text, is a character too
+        page.press('.ui-world-pick-form input', "Enter")
+        self.assertFalse(page.is_visible(".ui-world-pick"))
+        self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["ねこ🐱", "ねこ🐱"])
+        page.click("[data-pick-open]")
         page.fill('.ui-world-pick-form input', "🦖")
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))

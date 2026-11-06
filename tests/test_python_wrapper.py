@@ -566,7 +566,7 @@ class WorldTests(unittest.TestCase):
             {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": "gate"}]}]},                     # ids are shared with spots
             {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": f"a{i}"} for i in range(17)]}]},
             {**WORLD, "floors": [{**floor, "player": {"emoji": "🧙", "x": 9999, "y": 0}}]},
-            {**WORLD, "floors": [{**floor, "player": {"emoji": "x", "x": 0, "y": 0}}]},
+            {**WORLD, "floors": [{**floor, "player": {"emoji": "x" * 17, "x": 0, "y": 0}}]},                # a visitor's label is at most 16 characters
             {**WORLD, "board": {"title": "T", "items": []}},
             {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "25:00"}]}},
             {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "9:00"}]}},

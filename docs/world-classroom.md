@@ -17,7 +17,7 @@ open("school.html", "w").write(web_ui.world_document(spec))
 | `tile` | floor | Tile size in map units: 16..128, a multiple of 8, dividing `width` and `height` |
 | `props` | floor | Up to 512 `{kind, x, y, w, h}` rectangles, all on tiles and inside the floor |
 | `kind` | prop | `desk`, `board`, `wall`, `shelf` are **solid**; `chair`, `rug` can be walked over (sit on a chair) |
-| `avatars` | world | Up to 24 different emoji offered first; the choice replaces every floor's player emoji |
+| `avatars` | world | Up to 24 different labels offered first (emoji, short text such as `先生` or `A`, or both; 1..16 characters); the choice replaces every floor's player label |
 
 | `classroom` | floor | `{rows, groups, per_group, tile}` (all optional) in place of `width`/`height`/`tile`/`props`: the floor is `classroom_floor(...)`. `id`, `label` and `spots`/`actors`/`player` may sit beside it and replace the generated ones |
 
@@ -63,7 +63,9 @@ Python, the CLI and `py_launch.cjs` return identical bytes; `tests/test_world_cl
 ## The emoji comes first
 
 With `avatars`, the world opens with a picker (a plain `div` in the map, shown by the script, not a modal): choose one of the
-emoji or type any other single emoji. The player stays hidden until then. **絵文字を変える** reopens it. Nothing is stored; a reload
+listed characters or type your own: an emoji, a short text such as an initial or a name, or both (`🐱たろう`), 1..16 characters.
+In `avatars` and the `player` the same rule holds: control and line-separator characters, bidirectional overrides and spaces at either end are
+refused; the label is set as text, never as markup. (`actors` and catalog pages keep the stricter emoji-only rule.) The player stays hidden until then. **絵文字を変える** reopens it. Nothing is stored; a reload
 asks again. Without JavaScript the picker, the pad and the player controls stay hidden and the static map and spots still work.
 
 ## Not included

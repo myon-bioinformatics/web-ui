@@ -124,7 +124,7 @@ def test_school_html_has_props_grid_pad_and_picker_and_escapes_text():
     html = ui.world_html(school)
     assert html.count('class="ui-prop"') == len(ui.world_validate(school)["floors"][0]["props"])
     assert 'data-grid' in html and html.count('data-step="') == 4 and 'data-me' in html and 'data-pick-open' in html
-    assert html.count('data-emoji="') == len(school["avatars"]) and 'maxlength="16"' in html
+    assert html.count('data-emoji="') == len(school["avatars"]) and 'name="emoji"' in html and 'maxlength="32"' in html
     assert "<b>黒板</b>" not in html and "&lt;b&gt;" in html
     rows = html.split('data-blocked="')[1].split('"')[0].split(",")
     floor = ui.world_validate(school)["floors"][0]
@@ -162,10 +162,17 @@ def test_props_need_a_tile_grid_and_avatars_are_bounded():
     with pytest.raises(ValueError):
         ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [floor]})
     base = {"schema": ui.WORLD_SCHEMA, "floors": [ui.classroom_floor()]}
-    for bad in (["a"], ["🙂", "🙂"], ["🙂"] * 2 + ["x"], [f"{chr(0x1f600 + i)}" for i in range(25)], "🙂", [1], [""]):
+    for bad in (["🙂", "🙂"], ["a", "a"], [f"{chr(0x1f600 + i)}" for i in range(25)], "🙂", [1], [""], ["x" * 17], [" a"], ["a "], ["a\nb"],
+                ["a\u202eb"], ["a\u2028b"], ["\u3000a"]):
         with pytest.raises(ValueError):
             ui.world_validate({**base, "avatars": bad})
-    assert ui.world_validate({**base, "avatars": ["🙂", "🐱"]})["avatars"] == ["🙂", "🐱"]
+    mixed = ["🙂", "A", "先生", "🐱たろう", "a b", "👨‍👩‍👧‍👦", "x" * 16, "<b>"]       # emoji, text or both: any one label
+    assert ui.world_validate({**base, "avatars": mixed})["avatars"] == mixed
+    html = ui.world_html({**base, "avatars": mixed})
+    assert 'data-emoji="先生"' in html and 'data-emoji="&lt;b&gt;"' in html and 'data-emoji="<b>"' not in html
+    floor = ui.classroom_floor()
+    floor["player"] = {**floor["player"], "emoji": "ねこ"}
+    assert ui.world_validate({**base, "floors": [floor]})["floors"][0]["player"]["emoji"] == "ねこ"
     for bad in ({"rows": 0}, {"groups": 7}, {"per_group": 5}, {"tile": 12}, {"tile": 8}):
         with pytest.raises(ValueError):
             ui.classroom_floor(**bad)
@@ -192,12 +199,12 @@ def test_node26_grid_route_matches_python_oracle(tmp_path):
     routes += [[[16, 16], [16, 16]], [[176, 496], [80, 176]], [[176, 496], [80, 272]], [[0, 0], [383.9, 511.9]]]
     cases = [[GRID, 32, [10, 10], [140, 140]], [GRID, 32, [10, 10], [80, 48]], [["1"], 32, [5, 5], [20, 20]]]
     cases += [[blocked, 32, a, b] for a, b in routes]
-    glyphs = ["🐱", " 🦖x", "abc", "", "1", "👨‍👩‍👧", "🇯🇵", "❤️", "①", "a🐱"]
+    glyphs = ["🐱", " 🦖x ", "先生", "A", "", "   ", "x" * 16, "x" * 17, "a\nb", "a\u202eb", "a\u2028b", "🐱たろう", "👨‍👩‍👧‍👦", "a b", "\u3000a\u3000"]
     module = tmp_path / 'grid.mjs'
     module.write_text(ui.WORLD_JS.removesuffix('bindWorlds();\n') + '\nconst cases=' + json.dumps(cases) + ';const times=[0,0.4,1,2.5,7,1e6];'
                       'console.log(JSON.stringify({routes:cases.map(([r,t,a,b])=>gridRoute(r,t,a,b)),'
                       'samples:cases.map(([r,t,a,b])=>{const route=motionRoute(gridRoute(r,t,a,b),2,96,384,512);return times.map(x=>routeSample(route,2+x))}),'
-                      'glyphs:' + json.dumps(glyphs) + '.map(firstGlyph)}))\n')
+                      'glyphs:' + json.dumps(glyphs) + '.map(cleanAvatar)}))\n')
     result = json.loads(subprocess.check_output([node, str(module)], text=True))
     for (rows, tile, a, b), actual, samples in zip(cases, result['routes'], result['samples']):
         expected = ui.world_route_points(rows, tile, a, b)
@@ -207,7 +214,14 @@ def test_node26_grid_route_matches_python_oracle(tmp_path):
         route = ui.world_route(expected, at=2, speed=96, width=384, height=512)
         for t, point in zip([0, 0.4, 1, 2.5, 7, 1e6], samples):
             assert point == pytest.approx(ui.world_route_sample(route, 2 + t), abs=1e-9)
-    assert result['glyphs'] == ['🐱', '🦖', None, None, None, '👨‍👩‍👧', '🇯🇵', '❤️', None, None]
+    assert result['glyphs'] == ['🐱', '🦖x', '先生', 'A', None, None, 'x' * 16, None, None, None, None, '🐱たろう', '👨‍👩‍👧‍👦', 'a b', 'a']
+    for text in glyphs:                                                  # the page and the oracle accept the same labels
+        try:
+            ui._world_avatar(text.strip())
+            ok = True
+        except ValueError:
+            ok = False
+        assert ok == (result['glyphs'][glyphs.index(text)] is not None), text
 
 
 def test_a_floor_can_ask_for_a_classroom_in_plain_json():
