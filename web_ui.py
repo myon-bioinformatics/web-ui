@@ -11283,6 +11283,7 @@ def patterns_html(bridge: str | None = None) -> str:
     categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
     families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
     run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    auth_link = '<p><a href="/auth.html">Local authentication mock (loopback server)</a></p>' if bridge else ''
     return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns' + (f' data-patterns-bridge="{bridge}"' if bridge else "") + '><h2>792 patterns</h2>'
             '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
             '<label for="patterns-query">Search (id, title or theme)</label>'
@@ -11291,7 +11292,7 @@ def patterns_html(bridge: str | None = None) -> str:
             f'<div class="ui-patterns-bar"><label for="patterns-category">Category</label><select class="ui-input" id="patterns-category" data-patterns-category><option value="">All four</option>{categories}</select>'
             f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
             '<ol class="ui-patterns-list" data-patterns-list></ol>'
-            '<h3 id="patterns-run-title">Run a reference</h3>'
+            f'{auth_link}<h3 id="patterns-run-title">Run a reference</h3>'
             f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
             '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
             '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
@@ -11332,6 +11333,275 @@ def bridge_origin(value: Any) -> str:
         raise ValueError(f"not an origin: {value!r}")
     host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
     return f"{parts.scheme}://{host}{f':{port}' if port else ''}"
+
+
+# --- Local fixture authentication (Flutter mock_auth.dart; never sends requests) ---
+# These credentials are public fixtures. Digest MD5 is retained only for parity.
+AUTH_AUDIENCE = "https://api.example.test"
+AUTH_DIGEST_CHALLENGE = ('Digest realm="mock", qop="auth", nonce="demo-digest-nonce", '
+                         'opaque="demo-digest-opaque", algorithm=MD5')
+AUTH_SCENARIOS = ("none", "bearer", "bearerExpired", "bearerWrongAudience", "apiKeyHeader",
+                  "apiKeyQuery", "basic", "digestChallengeOnly", "digest", "hmac", "rateLimited")
+
+
+def digest_nc_parse(nc: str) -> int | None:
+    """Dart DigestNc.tryParse: exactly eight ASCII hex digits (zero parses)."""
+    return int(nc, 16) if isinstance(nc, str) and re.fullmatch(r"[0-9a-fA-F]{8}", nc) else None
+
+
+def digest_nc_format(value: int) -> str:
+    if type(value) is not int or not 1 <= value <= 0xffffffff:
+        raise ValueError("Digest nc out of range")
+    return f"{value:08x}"
+
+
+def auth_query_pairs(pairs: Any) -> str:
+    """Dart Uri.encodeQueryComponent: form encoding, preserving order/duplicates."""
+    from urllib.parse import quote_plus
+    return "&".join(quote_plus(k, safe="-._~") + "=" + quote_plus(v, safe="-._~") for k, v in pairs)
+
+
+def auth_digest_response(*, method: str, uri: str, username: str = "demo", password: str = "s3cret",
+                         realm: str = "mock", nonce: str = "demo-digest-nonce", nc: str, cnonce: str, qop: str = "auth") -> str:
+    def md5(text: str) -> str:
+        return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return md5(f"{md5(f'{username}:{realm}:{password}')}:{nonce}:{nc}:{cnonce}:{qop}:{md5(f'{method}:{uri}')}")
+
+
+def auth_hmac_signature(*, method: str, path: str, timestamp: str, nonce: str,
+                        query_string: str = "", body: str = "", secret: str = "demo-hmac-secret") -> str:
+    payload = f"{method.upper()}\n{path}\n{query_string}\n{body}\n{timestamp}\n{nonce}"
+    return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+class MockAuthHandler:
+    """In-memory local demo router. One instance per bridge, atomic replay checks.
+
+    handle returns {status, headers, body}, or None for paths outside the matrix.
+    The input is a simulated request, never a URL to fetch. clock returns epoch seconds.
+    No persistence, JWT verification, real credentials, or outbound transport.
+    """
+    def __init__(self, *, clock: Any = time.time) -> None:
+        import threading
+        self.clock = clock
+        self.seen_nonces: set[str] = set()
+        self.digest_counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def handle(self, request: Any) -> dict[str, Any] | None:
+        if not isinstance(request, dict) or set(request) - {"method", "path", "headers", "query", "query_pairs", "body", "request_target"}:
+            raise ValueError("expected a mock request object with method, path, headers, query_pairs and body")
+        method, path = request.get("method", "GET"), request.get("path", "")
+        headers, query, pairs = request.get("headers", {}), request.get("query", {}), request.get("query_pairs")
+        body, target = request.get("body", ""), request.get("request_target")
+        if not all(isinstance(v, str) for v in (method, path, body)) or not path.startswith("/") or "?" in path or "#" in path:
+            raise ValueError("mock method, path and body must be strings; path has no query or fragment")
+        for mapping in (headers, query):
+            if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+                raise ValueError("mock headers and query must be string maps")
+        if pairs is None:
+            pairs = list(query.items())
+        elif not isinstance(pairs, list) or not all(isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, str) for v in p) for p in pairs):
+            raise ValueError("query_pairs must be ordered string pairs")
+        if target is not None and not isinstance(target, str):
+            raise ValueError("request_target must be a string")
+        query_string = auth_query_pairs(pairs)
+        target = target if target is not None else path + ("?" + query_string if query_string else "")
+        # Match Dart's first case-insensitive header, rather than overwriting duplicates.
+        lowered: dict[str, str] = {}
+        for k, v in headers.items():
+            lowered.setdefault(k.lower(), v)
+        with self._lock:
+            return self._route(method, path, lowered, query, target, query_string, body)
+
+    @staticmethod
+    def _result(status: int, body: dict, headers: dict | None = None) -> dict:
+        return {"status": status, "headers": headers or {}, "body": body}
+
+    def _route(self, method: str, path: str, headers: dict, query: dict, target: str, query_string: str, body: str) -> dict | None:
+        route = path[:-1] if len(path) > 1 and path.endswith("/") else path
+        def ok(scheme: str, **extra: Any) -> dict:
+            return self._result(200, {"ok": True, "scheme": scheme, **extra})
+        def fail(reason: str, challenge: str | None = None, status: int = 401, **extra: Any) -> dict:
+            return self._result(status, {"ok": False, "error": "forbidden" if status == 403 else "unauthorized", "reason": reason, **extra},
+                                {"www-authenticate": challenge} if challenge else {})
+        raw = headers.get("authorization", "")
+        if route == "/auth/bearer":
+            challenge = 'Bearer realm="mock"'
+            if not raw:
+                return fail("missing_authorization", challenge)
+            parts = re.split(r"\s+", raw)
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return fail("malformed_authorization", challenge)
+            token = parts[1]
+            if token == "demo-wrong-aud-token":
+                return fail("wrong_audience", status=403, expectedAudience=AUTH_AUDIENCE)
+            if token != "demo-bearer-token":
+                return fail("expired" if token == "demo-expired-token" else "invalid_token", challenge + ', error="invalid_token"')
+            return ok("bearer", audience=AUTH_AUDIENCE)
+        if route == "/auth/api-key":
+            key = headers.get("x-api-key") or query.get("api_key")
+            if not key:
+                return fail("missing_api_key")
+            if key != "demo-api-key":
+                return fail("invalid_api_key", status=403)
+            return ok("api_key", via="header" if headers.get("x-api-key") else "query")
+        if route == "/auth/basic":
+            challenge = 'Basic realm="mock", charset="UTF-8"'
+            if not raw:
+                return fail("missing_authorization", challenge)
+            parts = re.split(r"\s+", raw)
+            if len(parts) != 2 or parts[0].lower() != "basic":
+                return fail("malformed_authorization", challenge)
+            try:
+                # Dart base64Decode accepts URL-safe/percent escapes, but requires padding.
+                from urllib.parse import unquote
+                encoded = unquote(parts[1]).replace("-", "+").replace("_", "/")
+                if not re.fullmatch(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?", encoded):
+                    raise ValueError("invalid base64 padding")
+                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeError):
+                return fail("malformed_authorization", challenge)
+            if ":" not in decoded or decoded.startswith(":"):
+                return fail("malformed_authorization", challenge)
+            if decoded.split(":", 1) != ["demo", "s3cret"]:
+                return fail("invalid_credentials", challenge)
+            return ok("basic", user="demo")
+        if route == "/auth/digest":
+            def bad(reason: str) -> dict:
+                return fail(reason, AUTH_DIGEST_CHALLENGE)
+            if not raw:
+                return bad("missing_authorization")
+            if not raw.lower().startswith("digest "):
+                return bad("malformed_authorization")
+            params = {m[0]: m[1] if m[1] is not None else m[2] for m in
+                      (match.groups() for match in re.finditer(r'(\w+)=(?:"([^"]*)"|([^\s,]+))', raw[7:], re.ASCII))}
+            if any(k not in params for k in ("username", "realm", "nonce", "uri", "response")):
+                return bad("malformed_authorization")
+            if params.get("qop") != "auth" or not params.get("nc") or not params.get("cnonce"):
+                return bad("missing_qop_params")
+            if params["uri"] != target:
+                return bad("uri_mismatch")
+            if params.get("algorithm", "MD5").upper() != "MD5":
+                return bad("unsupported_algorithm")
+            if params.get("opaque") != "demo-digest-opaque":
+                return bad("invalid_opaque")
+            if (params["username"], params["realm"], params["nonce"]) != ("demo", "mock", "demo-digest-nonce"):
+                return bad("invalid_credentials")
+            count = digest_nc_parse(params["nc"])
+            if count is None or count < 1:
+                return bad("invalid_nc")
+            expected = auth_digest_response(method=method, uri=target, nc=params["nc"], cnonce=params["cnonce"])
+            if params["response"].lower() != expected:
+                return bad("invalid_credentials")
+            key = params["nonce"] + "|" + params["cnonce"]
+            if count <= self.digest_counts.get(key, 0):
+                return bad("digest_replay")
+            self.digest_counts[key] = count
+            return ok("digest", user="demo")
+        if route == "/auth/hmac":
+            key, timestamp, nonce, signature = (headers.get(k, "") for k in ("x-key-id", "x-timestamp", "x-nonce", "x-signature"))
+            if not all((key, timestamp, nonce, signature)):
+                return fail("missing_hmac_headers", required=["X-Key-Id", "X-Timestamp", "X-Nonce", "X-Signature"])
+            if key != "demo-key":
+                return fail("unknown_key_id", status=403)
+            # Dart int.tryParse permits signed decimal and 0x-prefixed hex.
+            text = timestamp.strip()
+            if not re.fullmatch(r"[+-]?(?:[0-9]+|0[xX][0-9a-fA-F]+)", text):
+                return fail("malformed_timestamp")
+            digits = text.lstrip("+-")
+            is_hex = digits.lower().startswith("0x")
+            digits = digits[2:] if is_hex else digits
+            significant = digits.lstrip("0") or "0"
+            if len(significant) > (16 if is_hex else 19):
+                return fail("malformed_timestamp")
+            value = int(("-" if text.startswith("-") else "") + significant, 16 if is_hex else 10)
+            if is_hex and value > 0x7fffffffffffffff:
+                value -= 0x10000000000000000
+            if not -0x8000000000000000 <= value <= 0x7fffffffffffffff:
+                return fail("malformed_timestamp")
+            if abs(int(self.clock()) - value) > 300:
+                return fail("timestamp_skew")
+            if nonce in self.seen_nonces:
+                return fail("replay")
+            expected = auth_hmac_signature(method=method, path=path, timestamp=timestamp, nonce=nonce, query_string=query_string, body=body)
+            # Compare encoded bytes so malformed non-ASCII signatures fail, never raise.
+            if not hmac.compare_digest(signature.lower().encode("utf-8"), expected.encode("ascii")):
+                return fail("invalid_signature")
+            self.seen_nonces.add(nonce)
+            return ok("hmac", keyId="demo-key")
+        if route == "/auth/rate-limited":
+            return self._result(429, {"ok": False, "error": "rate_limited", "reason": "too_many_requests"}, {"retry-after": "1"})
+        return None
+
+
+def auth_matrix(scenario: str) -> dict[str, Any]:
+    """Dart auth_matrix.applyTo's reset draft, represented as a local request.
+
+    Digest and HMAC intentionally remain unsigned placeholders, as in Dart.
+    Clients complete those steps using the helpers after receiving a challenge.
+    """
+    if not isinstance(scenario, str) or scenario not in AUTH_SCENARIOS:
+        raise ValueError("unknown mock auth scenario")
+    paths = {"none": "/health", "apiKeyHeader": "/auth/api-key", "apiKeyQuery": "/auth/api-key",
+             "digestChallengeOnly": "/auth/digest", "rateLimited": "/auth/rate-limited"}
+    path = paths.get(scenario, "/auth/" + ("bearer" if scenario.startswith("bearer") else scenario))
+    request: dict[str, Any] = {"method": "GET", "path": path, "headers": {}, "query": {}, "body": ""}
+    tokens = {"bearer": "demo-bearer-token", "bearerExpired": "demo-expired-token", "bearerWrongAudience": "demo-wrong-aud-token"}
+    if scenario in tokens:
+        request["headers"] = {"Authorization": "Bearer " + tokens[scenario]}
+    elif scenario == "basic":
+        request["headers"] = {"Authorization": "Basic ZGVtbzpzM2NyZXQ="}
+    elif scenario == "apiKeyHeader":
+        request["headers"] = {"X-Api-Key": "demo-api-key"}
+    elif scenario == "apiKeyQuery":
+        request["query"] = {"api_key": "demo-api-key"}
+    elif scenario == "hmac":
+        request["headers"] = {"X-Key-Id": "demo-key", "X-Timestamp": "0", "X-Nonce": "pending", "X-Signature": "pending"}
+    return request
+
+
+def auth_prepare(scenario: str) -> dict[str, Any]:
+    """Fresh public fixture request for the demo; no outbound authentication."""
+    import secrets
+    request = auth_matrix(scenario)
+    nonce = secrets.token_hex(16)
+    if scenario == "digest":
+        response = auth_digest_response(method="GET", uri=request["path"], nc="00000001", cnonce=nonce)
+        request["headers"] = {"Authorization": 'Digest username="demo", realm="mock", nonce="demo-digest-nonce", '
+                              f'uri="/auth/digest", qop=auth, nc=00000001, cnonce="{nonce}", response="{response}", opaque="demo-digest-opaque"'}
+    elif scenario == "hmac":
+        timestamp = str(int(time.time()))
+        request["headers"] = {"X-Key-Id": "demo-key", "X-Timestamp": timestamp, "X-Nonce": nonce,
+                              "X-Signature": auth_hmac_signature(method="GET", path=request["path"], timestamp=timestamp, nonce=nonce)}
+    return request
+
+
+def auth_document() -> str:
+    """Same-origin local mock editor served by --pattern-serve at /auth.html."""
+    options = "".join(f'<option value="{name}">{name}</option>' for name in AUTH_SCENARIOS)
+    html = ('<main class="ui-page"><section class="ui-panel"><h1>Local auth mock</h1>'
+            '<p>Public demo credentials only. Requests run in memory on this loopback server. '
+            'Digest uses fixture MD5. Replay state lasts until the server restarts.</p>'
+            '<p><a href="/patterns.html">Patterns</a></p>'
+            f'<label for="auth-scenario">Scenario</label><select id="auth-scenario">{options}</select>'
+            '<button class="ui-button" id="auth-prepare" type="button">Prepare fresh demo</button>'
+            '<p>Digest starts with a signed response; digestChallengeOnly requests the challenge. '
+            'HMAC uses the current time. Edit the JSON to try failures. Run twice to check replay. '
+            'The none preset targets /health, which is outside the authentication router and returns 404 here.</p>'
+            '<label for="auth-request">Simulated request (JSON)</label>'
+            '<textarea class="ui-input" id="auth-request" rows="16" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>'
+            '<button class="ui-button" id="auth-run" type="button">Run local mock</button>'
+            '<pre id="auth-result" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></section></main>')
+    script = '''const field=document.getElementById("auth-request"),out=document.getElementById("auth-result"),
+select=document.getElementById("auth-scenario");let ticket=0;
+async function send(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body,
+credentials:"omit",cache:"no-store",referrerPolicy:"no-referrer"});return {status:r.status,headers:{"www-authenticate":r.headers.get("www-authenticate"),"retry-after":r.headers.get("retry-after")},body:await r.json()}}
+document.getElementById("auth-prepare").onclick=async()=>{const n=++ticket;try{const r=await send("/mock-auth/prepare",JSON.stringify({scenario:select.value}));
+if(n!==ticket)return;if(r.status!==200)throw Error(JSON.stringify(r.body));field.value=JSON.stringify(r.body,null,2);out.textContent="Fresh public demo request prepared."}catch(e){if(n===ticket)out.textContent=String(e)}};
+document.getElementById("auth-run").onclick=async()=>{const n=++ticket;try{JSON.parse(field.value);const r=await send("/mock-auth",field.value);if(n===ticket)out.textContent=JSON.stringify(r,null,2)}catch(e){if(n===ticket)out.textContent=String(e)}};
+select.value="bearer";document.getElementById("auth-prepare").click();'''
+    return render_document(trusted_html=html + module_script(script), title="Local authentication mock", css=bundled_css())
 
 
 class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
@@ -11383,6 +11653,8 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         if not self._trusted():
             return self._fail(403, "origin not allowed")
         path = self.path.split("?", 1)[0]
+        if path == "/auth.html":
+            return self._send(200, auth_document().encode("utf-8"), "text/html; charset=utf-8", extra=(("X-Frame-Options", "DENY"),))
         if path in PATTERN_BRIDGE_PAGES:
             return self._send(200, self.server.page, "text/html; charset=utf-8", extra=(("X-Frame-Options", "DENY"),))
         if path == PATTERN_BRIDGE_PREFIX:
@@ -11408,10 +11680,11 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not self._trusted():
             return self._fail(403, "origin not allowed")
-        if not path.startswith(PATTERN_BRIDGE_PREFIX):
+        is_auth = path in ("/mock-auth", "/mock-auth/prepare")
+        if not is_auth and not path.startswith(PATTERN_BRIDGE_PREFIX):
             return self._fail(404, "not found")
         family = path[len(PATTERN_BRIDGE_PREFIX):]
-        if family not in PATTERN_RUNNERS:
+        if not is_auth and family not in PATTERN_RUNNERS:
             return self._fail(404, "unknown pattern family", cors=True)
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
             return self._fail(415, "unsupported media type", cors=True)
@@ -11430,7 +11703,18 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         if len(raw) != length:
             return self._fail(400, "the request body ended early", cors=True)
         try:
-            answer = pattern_run(family, pattern_parse(raw.decode("utf-8")))
+            request = pattern_parse(raw.decode("utf-8"))
+            if is_auth:
+                if path == "/mock-auth/prepare":
+                    if not isinstance(request, dict) or set(request) != {"scenario"}:
+                        raise ValueError("expected a scenario object")
+                    answer = auth_prepare(request["scenario"])
+                    return self._json(200, answer, cors=True)
+                answer = self.server.mock_auth.handle(request)
+                if answer is None:
+                    return self._fail(404, "unknown mock auth path", cors=True)
+                return self._json(answer["status"], answer["body"], cors=True, extra=tuple(answer["headers"].items()))
+            answer = pattern_run(family, request)
             body = json.dumps(answer, ensure_ascii=False, sort_keys=True, allow_nan=False)
         except (ValueError, UnicodeError) as error:
             text = str(error)
@@ -11448,6 +11732,7 @@ def pattern_bridge(port: int = PATTERN_BRIDGE_PORT, allow_origins: Any = ()) -> 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _PatternBridgeHandler)
     server.daemon_threads = True
     server.allowed_origins = origins
+    server.mock_auth = MockAuthHandler()
     server.page = patterns_document(bridge=PATTERN_BRIDGE_PREFIX).encode("utf-8")
     return server
 
@@ -16735,3 +17020,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
