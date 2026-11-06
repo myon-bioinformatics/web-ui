@@ -2103,6 +2103,23 @@ def world_blocked(width: int, height: int, tile: int, props: list[dict[str, Any]
     return ["".join(row) for row in cells]
 
 
+def world_reach(blocked: list[str], start: tuple[int, int]) -> dict[tuple[int, int], tuple[int, int] | None]:
+    """Every cell that can be walked to from ``start`` (always allowed), each with the cell it was reached from (``None`` for ``start``).
+
+    Breadth first in a fixed neighbour order, so the dict's order is the search order and the paths are the same in Python and the browser.
+    """
+    cols, rows = len(blocked[0]), len(blocked)
+    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    order = [start]
+    for cx, cy in order:
+        for dx, dy in _WORLD_STEPS:
+            n = (cx + dx, cy + dy)
+            if 0 <= n[0] < cols and 0 <= n[1] < rows and blocked[n[1]][n[0]] == "0" and n not in parent:
+                parent[n] = (cx, cy)
+                order.append(n)
+    return parent
+
+
 def world_path(blocked: list[str], start: list[int], goal: list[int]) -> list[list[int]]:
     """Shortest 4-neighbour cell path from ``start`` (always allowed) to ``goal``.
 
@@ -2113,15 +2130,8 @@ def world_path(blocked: list[str], start: list[int], goal: list[int]) -> list[li
     def clamp(c: list[int]) -> tuple[int, int]:
         return min(cols - 1, max(0, int(c[0]))), min(rows - 1, max(0, int(c[1])))
     start, goal = clamp(start), clamp(goal)
-    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
-    order = [start]
-    for cx, cy in order:
-        for dx, dy in _WORLD_STEPS:
-            n = (cx + dx, cy + dy)
-            if 0 <= n[0] < cols and 0 <= n[1] < rows and blocked[n[1]][n[0]] == "0" and n not in parent:
-                parent[n] = (cx, cy)
-                order.append(n)
-    end = goal if goal in parent else min(order, key=lambda c: (c[0] - goal[0]) ** 2 + (c[1] - goal[1]) ** 2)
+    parent = world_reach(blocked, start)
+    end = goal if goal in parent else min(parent, key=lambda c: (c[0] - goal[0]) ** 2 + (c[1] - goal[1]) ** 2)
     path = [end]
     while parent[path[-1]] is not None:
         path.append(parent[path[-1]])
@@ -2416,6 +2426,14 @@ def _world_gauge(gauge: Any) -> dict[str, Any]:
             "glyphs": [_gauge_glyph(g) for g in glyphs]}
 
 
+def _world_tile(value: Any) -> int:
+    """A tile size: 16..128 and a multiple of 8."""
+    tile = _world_int(value, "tile", 16, 128)
+    if tile % 8:
+        raise ValueError("tile is a multiple of 8")
+    return tile
+
+
 def _world_int(value: Any, label: str, low: int, high: int) -> int:
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f"{label} must be an integer from {low} to {high}")
@@ -2458,14 +2476,15 @@ def world_validate(spec: Any) -> dict[str, Any]:
                       "title": _world_text(shot.get("title"), "title", 80),
                       "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
     floors, spot_ids = [], set()
-    for floor in map(_expand_classroom, floors_in):
+    for floor in map(_expand_floor, floors_in):
         if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player", "tile", "props"}:
             raise ValueError("a floor has id, label, width, height, spots, actors, player, tile and props")
         width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
         tile, props_in, props = floor.get("tile"), floor.get("props", []), []
         if tile is not None:
-            if _world_int(tile, "tile", 16, 128) % 8 or width % tile or height % tile:
-                raise ValueError("tile is a multiple of 8 and divides the floor width and height")
+            tile = _world_tile(tile)
+            if width % tile or height % tile:
+                raise ValueError("tile divides the floor width and height")
         if not isinstance(props_in, list) or len(props_in) > 512 or (props_in and tile is None):
             raise ValueError("props (at most 512) need a tile grid")
         for prop in props_in:
@@ -2596,7 +2615,14 @@ def world_validate(spec: Any) -> dict[str, Any]:
             **({"shell": True} if shell else {}), **({"tools": tools} if tools else {})}
 
 
-def _expand_classroom(floor: Any) -> Any:
+def _floor_kit(tile: int, id: str) -> tuple[Any, Any]:
+    """Makers a generated floor shares, in tile units: ``prop(kind, x, y, w=1, h=1)`` and ``spot(name, label, x, y, body)`` (a spot may sit between tiles)."""
+    prop = lambda kind, x, y, w=1, h=1: {"kind": kind, "x": x * tile, "y": y * tile, "w": w * tile, "h": h * tile}  # noqa: E731
+    spot = lambda name, text, x, y, body: {"id": f"{id}-{name}", "x": int(x * tile), "y": int(y * tile), "label": text, "body": body}  # noqa: E731
+    return prop, spot
+
+
+def _expand_floor(floor: Any) -> Any:
     """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)`` and ``{"land": {theme, cols, rows, seed,
     tile}}`` for ``land_floor(...)``, so JSON alone (no Python in the calling repository) can ask for a classroom or a land; ``spots``,
     ``actors`` and ``player`` given beside it replace the generated ones."""
@@ -2623,11 +2649,10 @@ def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile:
     """
     rows, groups, per_group = (_world_int(rows, "rows", 1, 8), _world_int(groups, "groups", 1, 6),
                                _world_int(per_group, "per_group", 1, 4))
-    if _world_int(tile, "tile", 16, 128) % 8:
-        raise ValueError("tile is a multiple of 8")
+    tile = _world_tile(tile)
     side, front, back = 2, 5, 3                                           # tiles: side walkway, board area, door area
     cols, depth = 2 * side + groups * per_group + groups - 1, front + 2 * rows + back
-    prop = lambda kind, x, y, w=1, h=1: {"kind": kind, "x": x * tile, "y": y * tile, "w": w * tile, "h": h * tile}  # noqa: E731
+    prop, spot = _floor_kit(tile, id)
     desk_w = min(3, cols - 2 * side)
     props = [prop("board", side, 0, cols - 2 * side), prop("desk", (cols - desk_w) // 2, 2, desk_w)]
     for r in range(rows):
@@ -2637,7 +2662,6 @@ def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile:
                 props += [prop("desk", x, y), prop("chair", x, y + 1)]
     door = cols // 2 - 1                                                  # a two-tile gap in the back shelves
     props += [prop("shelf", 0, depth - 1, door), prop("shelf", door + 2, depth - 1, cols - door - 2)]
-    spot = lambda name, text, x, y, body: {"id": f"{id}-{name}", "x": int(x * tile), "y": int(y * tile), "label": text, "body": body}  # noqa: E731
     return {"id": id, "label": label, "width": cols * tile, "height": depth * tile, "tile": tile, "props": props, "actors": [],
             "spots": [spot("board", "黒板", cols / 2, .5, "今日の連絡や課題を書く場所です。"),
                       spot("teacher", "先生の机", cols / 2, 3.5, "先生の席です。"),
@@ -2675,67 +2699,65 @@ def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: i
     if look is None:
         raise ValueError(f"theme is one of {', '.join(LAND_THEMES)}")
     cols, rows, seed = _world_int(cols, "cols", 12, 48), _world_int(rows, "rows", 12, 32), _world_int(seed, "seed", 0, 2**31 - 1)
-    if _world_int(tile, "tile", 16, 128) % 8 or cols * tile > 4096 or rows * tile > 4096:
-        raise ValueError("tile is a multiple of 8 and the land fits in 4096 units")
+    tile = _world_tile(tile)
+    if cols * tile > 4096 or rows * tile > 4096:
+        raise ValueError("the land fits in 4096 units")
     state = seed % 2147483646 + 1
     def rand() -> float:                                                                   # Park-Miller: the same numbers in every Python
         nonlocal state
         state = state * 48271 % 2147483647
         return state / 2147483647
     cx, cy = cols // 2, rows // 2
+    prop, spot = _floor_kit(tile, id)
     props: list[dict[str, Any]] = []
-    prop = lambda kind, x, y, w=1, h=1: props.append({"kind": kind, "x": x * tile, "y": y * tile, "w": w * tile, "h": h * tile})  # noqa: E731
+    put = lambda *args: props.append(prop(*args))                                            # noqa: E731  (laid in order: later kinds paint over earlier ones)
     taken: set[tuple[int, int]] = set()                                                    # tiles with something solid on them
     reserved: set[tuple[int, int]] = {(cx, y) for y in range(cy - 1 if look["castle"] else cy, rows - 1)}
     reserved |= {(x, cy) for x in range(max(1, cx - 4), min(cols - 1, cx + 5))} | {(x, rows - 2) for x in range(cx - 1, cx + 2)}
-    prop(look["ground"], 0, 0, cols, rows)
+    put(look["ground"], 0, 0, cols, rows)
     for kind_args in ((0, 0, cols, 1), (0, rows - 1, cols, 1), (0, 1, 1, rows - 2), (cols - 1, 1, 1, rows - 2)):
-        prop(look["edge"], *kind_args)
+        put(look["edge"], *kind_args)
     water: set[tuple[int, int]] = set()
     if look["pond"] == "sea":
-        prop("water", 1, 1, cols - 2, 3)
+        put("water", 1, 1, cols - 2, 3)
         water = {(x, y) for x in range(1, cols - 1) for y in range(1, 4)}
     elif look["pond"]:
         pw, ph = look["pond"]
         for _ in range(40):                                                                # away from the crossroads, or no pond at all
             x, y = 2 + int(rand() * (cols - pw - 3)), 2 + int(rand() * (rows - ph - 3))
             if not any(abs(x + i - cx) <= 6 and y + j >= cy - 4 for i in range(pw) for j in range(ph)):
-                prop("water", x, y, pw, ph)
+                put("water", x, y, pw, ph)
                 water = {(x + i, y + j) for i in range(pw) for j in range(ph)}
                 break
     taken |= water
     plots = [(cx + dx, cy + dy) for dx, dy in _LAND_PLOTS[:look["houses"]]]
     for x, y in plots:
-        prop("house", x, y)
+        put("house", x, y)
     if look["castle"]:
-        prop("castle", cx - 1, cy - 3, 3, 2)
+        put("castle", cx - 1, cy - 3, 3, 2)
         taken |= {(cx + i, cy - 3 + j) for i in range(-1, 2) for j in range(2)}
     taken |= set(plots)
     for y in range(1, rows - 1):                                                           # scattered trees or rocks, a row of them in one prop
         run = 0
         for x in range(1, cols):
-            put = x < cols - 1 and (x, y) not in taken and (x, y) not in reserved and rand() < look["density"]
-            if put:
+            here = x < cols - 1 and (x, y) not in taken and (x, y) not in reserved and rand() < look["density"]
+            if here:
                 run += 1
             elif run:
-                prop(look["fill"], x - run, y, run, 1)
+                put(look["fill"], x - run, y, run, 1)
                 run = 0
-    prop("road", cx, cy - (1 if look["castle"] else 0), 1, rows - 1 - cy + (1 if look["castle"] else 0))
-    prop("road", max(1, cx - 4), cy, min(cols - 1, cx + 5) - max(1, cx - 4), 1)
+    put("road", cx, cy - (1 if look["castle"] else 0), 1, rows - 1 - cy + (1 if look["castle"] else 0))
+    put("road", max(1, cx - 4), cy, min(cols - 1, cx + 5) - max(1, cx - 4), 1)
     blocked = world_blocked(cols * tile, rows * tile, tile, props)
-    dist, order = {(cx, rows - 2): 0}, [(cx, rows - 2)]
-    for x, y in order:
-        for dx, dy in _WORLD_STEPS:
-            n = (x + dx, y + dy)
-            if n not in dist and 0 <= n[0] < cols and 0 <= n[1] < rows and blocked[n[1]][n[0]] == "0":
-                dist[n] = dist[(x, y)] + 1
-                order.append(n)
+    dist: dict[tuple[int, int], int] = {}                                                  # steps from the start, in search order
+    for cell, came_from in world_reach(blocked, (cx, rows - 2)).items():
+        dist[cell] = 0 if came_from is None else dist[came_from] + 1
     shore = [c for c in dist if c != (cx, cy) and any((c[0] + dx, c[1] + dy) in water for dx, dy in _WORLD_STEPS)]
     far = (min(shore, key=lambda c: (dist[c], c[1], c[0])) if shore                       # with water: the nearest bank; without: the farthest tile
            else min((c for c in dist if c != (cx, cy)), key=lambda c: (-dist[c], c[1], c[0])))
-    spot = lambda name, text, at: {"id": f"{id}-{name}", "x": int((at[0] + .5) * tile), "y": int((at[1] + .5) * tile), "label": text[0], "body": text[1]}  # noqa: E731
+    place = lambda name, text, at: spot(name, text[0], at[0] + .5, at[1] + .5, text[1])      # noqa: E731  (a spot stands in the middle of its tile)
     return {"id": id, "label": label or look["label"], "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [],
-            "spots": [spot("town", look["town"], (cx, cy)), spot("landmark", look["landmark"], far)],
+            "spots": [place("town", look["town"], (cx, cy)), place("landmark", look["landmark"], far)],
             "player": {"emoji": "🙂", "x": int((cx + .5) * tile), "y": int((rows - 1.5) * tile), "speed": 96}}
 
 
@@ -2855,72 +2877,71 @@ def _world_shell(world: dict[str, Any]) -> bool:
     return bool(world.get("shell") or world.get("tools") or any(f.get("tile") for f in world["floors"]))
 
 
-def _map_html(world: dict[str, Any]) -> str:
-    wid, floors = world["id"], world["floors"]
-    radios = "".join(
-        f'<input class="ui-world-radio" type="radio" name="{wid}-floor" id="{wid}-floor-{f["id"]}" value="{f["id"]}"'
-        f'{" checked" if i == 0 else ""}>' for i, f in enumerate(floors))
-    categories = sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
-    cat_ids = [""] + categories
-    radios += "".join(
-        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
-        f'{" checked" if not c else ""}>' for c in cat_ids)
-    floor_labels = labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
-    if categories:
-        labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
-    stages, sheet = [], []
-    for f in floors:
-        spots = "".join(
-            f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
-            f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
-        actors = "".join(
-            f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
-            f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
-        pl = f["player"]
-        player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
-                  f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
-        tile = f.get("tile")
-        props = "".join(f'<div class="ui-prop" data-kind="{q["kind"]}" aria-hidden="true" '
-                        f'style="left:{q["x"]}px;top:{q["y"]}px;width:{q["w"]}px;height:{q["h"]}px"></div>' for q in f.get("props", []))
-        grid = (f' data-tile="{tile}" data-blocked="{",".join(world_blocked(f["width"], f["height"], tile, f["props"]))}"') if tile else ""
-        stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}"{grid} '
-                      f'style="width:{f["width"]}px;height:{f["height"]}px{f";--tile:{tile}px" if tile else ""}">{props}{spots}{actors}{player}</div>')
-        sheet.extend(
-            f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
-            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
-    avatars, tiled = world.get("avatars", []), any(f.get("tile") for f in floors)
-    shell = _world_shell(world)
-    if shell:                                                                     # the Close link of a shell world is an icon
-        plain = f'<a class="ui-sheet-close" href="#{wid}-map">Close</a>'
-        sheet = [x.replace(plain, f'<a class="ui-sheet-close" href="#{wid}-map" {_wt("close")}>✖️</a>') for x in sheet]
-    steps = "".join(f'<button type="button" data-step="{d}" ' + (_wt(k) if shell else f'aria-label="{a}"') + f'>{g}</button>'
-                    for d, k, a, g in (("0,-1", "up", "上へ", "▲"), ("-1,0", "left", "左へ", "◀"), ("1,0", "right", "右へ", "▶"), ("0,1", "down", "下へ", "▼")))
-    playable = bool(world["board"] or any(f["player"] or f["actors"] for f in floors))
+def _world_categories(floors: list[dict[str, Any]]) -> list[str]:
+    """The category tokens the spots use, sorted (the filter chips and the radios behind them)."""
+    return sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
+
+
+def _world_playable(world: dict[str, Any]) -> bool:
+    """Something moves (a board, a player or an actor), so the page gets its motion controls."""
+    return bool(world["board"] or any(f["player"] or f["actors"] for f in world["floors"]))
+
+
+def _floor_html(wid: str, f: dict[str, Any], close: str) -> tuple[str, list[str]]:
+    """One floor's stage (props, spots, actors, player) and the info sheet articles of its spots and actors (``close`` is their closing link)."""
+    spots = "".join(
+        f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
+        f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
+    actors = "".join(
+        f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
+        f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
+    pl = f["player"]
+    player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
+              f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
+    tile = f.get("tile")
+    props = "".join(f'<div class="ui-prop" data-kind="{q["kind"]}" aria-hidden="true" '
+                    f'style="left:{q["x"]}px;top:{q["y"]}px;width:{q["w"]}px;height:{q["h"]}px"></div>' for q in f.get("props", []))
+    grid = (f' data-tile="{tile}" data-blocked="{",".join(world_blocked(f["width"], f["height"], tile, f["props"]))}"') if tile else ""
+    stage = (f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}"{grid} '
+             f'style="width:{f["width"]}px;height:{f["height"]}px{f";--tile:{tile}px" if tile else ""}">{props}{spots}{actors}{player}</div>')
+    sheet = [f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>{close}</article>'
+             for s in [*f["spots"], *f["actors"]]]
+    return stage, sheet
+
+
+def _pick_html(wid: str, avatars: list[str], shell: bool) -> str:
+    """The emoji picker (a plain ``div`` in the map, shown by the script): words for a classic world, icons and aria-labels for a shell world."""
+    if not avatars:
+        return ""
+    grid = '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) + '</div>'
     if shell:
-        pick = ((f'<div class="ui-world-pick" role="group" {_wt("pick")} hidden><div><h3 aria-hidden="true">🙂👇</h3>'
-                 '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
-                 '</div><form class="ui-world-pick-form"><label><span aria-hidden="true">✏️</span> <input name="emoji" maxlength="32" size="8" autocomplete="off" '
-                 f'placeholder="🙂 A" {_wt("other")}></label><button {_wt("ok")}>✅</button></form></div></div>') if avatars else "")
-    else:
-        pick = ((f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>'
-                 '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
-                 '</div><form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
-                 '<button>これにする</button></form></div></div>') if avatars else "")
-    head = (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"'
-            f'{" data-grid" if tiled else ""}{" data-shell" if shell else ""} aria-label="{escape(world["title"], quote=True)}">')
-    view = f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
-    tail = f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside>{pick}</section>'
-    if not shell:
-        extra = '<button type="button" data-pick-open>絵文字を変える</button>' if avatars else ""
-        controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
-                    '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
-                    f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
-                    if playable else "")
-        return f'{head}{radios}<nav class="ui-world-bar">{labels}</nav>{_board_html(world["board"])}{view}{controls}{tail}'
-    # A shell world keeps the page short and says it with icons (the words are the aria-label and title, in two languages):
-    #   header  the board and the tools of the whole world: 🏠 home, ⭐ favourites, ⚙️ settings, and any emoji of your own (`tools`)
-    #   side    ☰ the places of this floor, ⋯ the controls of this screen; 48px buttons whose panel opens over the map
-    #   footer  🚪 the pulldown that moves between floors (plain floor labels stand in for it until JS runs)
+        return (f'<div class="ui-world-pick" role="group" {_wt("pick")} hidden><div><h3 aria-hidden="true">🙂👇</h3>{grid}'
+                '<form class="ui-world-pick-form"><label><span aria-hidden="true">✏️</span> <input name="emoji" maxlength="32" size="8" autocomplete="off" '
+                f'placeholder="🙂 A" {_wt("other")}></label><button {_wt("ok")}>✅</button></form></div></div>')
+    return (f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>{grid}'
+            '<form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
+            '<button>これにする</button></form></div></div>')
+
+
+def _classic_html(world: dict[str, Any], *, head: str, radios: str, labels: str, view: str, tail: str) -> str:
+    """A world without a grid, tools or ``shell``: chips on top, the map, the controls below (the markup older worlds keep)."""
+    extra = '<button type="button" data-pick-open>絵文字を変える</button>' if world.get("avatars") else ""
+    controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+                '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
+                if _world_playable(world) else "")
+    return f'{head}{radios}<nav class="ui-world-bar">{labels}</nav>{_board_html(world["board"])}{view}{controls}{tail}'
+
+
+def _shell_html(world: dict[str, Any], *, head: str, radios: str, view: str, tail: str, floor_labels: str) -> str:
+    """A shell world keeps the page short and says it with icons (the words are the aria-label and title, in 11 languages):
+
+    header  the board and the tools of the whole world: 🏠 home, ⭐ favourites, ⚙️ settings, and any emoji of your own (``tools``)
+    side    ☰ the places of this floor, ⋯ the controls of this screen; 48px buttons whose panel opens over the map
+    footer  🚪 the pulldown that moves between floors (plain floor labels stand in for it until JS runs)
+    """
+    wid, floors, avatars, tools = world["id"], world["floors"], world.get("avatars", []), world.get("tools", {})
+    categories, playable, tiled = _world_categories(floors), _world_playable(world), any(f.get("tile") for f in floors)
     def icon(kind: str, glyph: str, attrs: str, panel: str, hidden: bool = False) -> str:
         return (f'<details class="ui-world-menu" data-menu="{kind}"{" hidden" if hidden else ""}><summary {attrs}>{glyph}</summary>'
                 f'<div class="ui-world-panel">{panel}</div></details>')
@@ -2937,8 +2958,7 @@ def _map_html(world: dict[str, Any]) -> str:
             return f'<label class="ui-world-tool" for="{wid}-floor-{tool["floor"]}" {attrs}>{escape(emoji)}</label>'
         panel = rows("", [by_id[i] for i in tool["spots"]]) if "spots" in tool else f'<p>{escape(tool["body"])}</p>'
         return icon("tool", escape(emoji), attrs, panel)
-    tools = world.get("tools", {})
-    chips = ("".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+    chips = ("".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in ["", *categories])
              if categories else "")
     side = icon("spots", "☰", _wt("places"), (f'<nav class="ui-world-chips">{chips}</nav>' if chips else "") +
                 "".join(rows("ui-world-spots", f["spots"], star=True, data=f' data-floor="{f["id"]}"') for f in floors))
@@ -2957,6 +2977,8 @@ def _map_html(world: dict[str, Any]) -> str:
                     "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "head") +
                     icon("favorites", "⭐", _wt("favorites"), '<p class="ui-world-empty" aria-hidden="true">☆</p><ul class="ui-world-rows ui-world-favs"></ul>', hidden=True) +
                     icon("settings", "⚙️", _wt("settings"), settings, hidden=True))
+    steps = "".join(f'<button type="button" data-step="{d}" {_wt(k)}>{g}</button>'
+                    for d, k, g in (("0,-1", "up", "▲"), ("-1,0", "left", "◀"), ("1,0", "right", "▶"), ("0,1", "down", "▼")))
     dpad = f'<div class="ui-world-dpad ui-world-grid-only" role="group" {_wt("move")} hidden>{steps}</div>' if tiled and playable else ""
     foot = (f'<footer class="ui-world-foot"><nav class="ui-world-bar">{floor_labels}</nav>'
             f'<label class="ui-world-goto-wrap">🚪 <select class="ui-world-goto" {_wt("floor")}>' +
@@ -2964,6 +2986,30 @@ def _map_html(world: dict[str, Any]) -> str:
             '</select></label></footer>') if len(floors) > 1 else ""
     return (f'{head}{radios}<header class="ui-world-head">{_board_html(world["board"])}<nav class="ui-world-tools">{header_tools}</nav></header>'
             f'<div class="ui-world-body">{view}{dpad}<div class="ui-world-side">{side}</div></div>{foot}{tail}')
+
+
+def _map_html(world: dict[str, Any]) -> str:
+    wid, floors, shell = world["id"], world["floors"], _world_shell(world)
+    categories = _world_categories(floors)
+    cat_ids = [""] + categories
+    radios = "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-floor" id="{wid}-floor-{f["id"]}" value="{f["id"]}"'
+        f'{" checked" if i == 0 else ""}>' for i, f in enumerate(floors))
+    radios += "".join(
+        f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
+        f'{" checked" if not c else ""}>' for c in cat_ids)
+    floor_labels = labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
+    if categories:
+        labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+    close = f'<a class="ui-sheet-close" href="#{wid}-map"' + (f' {_wt("close")}>✖️</a>' if shell else ">Close</a>")          # an icon in a shell world
+    built = [_floor_html(wid, f, close) for f in floors]
+    head = (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"'
+            f'{" data-grid" if any(f.get("tile") for f in floors) else ""}{" data-shell" if shell else ""} aria-label="{escape(world["title"], quote=True)}">')
+    view = f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stage for stage, _ in built)}</div></div>'
+    tail = f'<aside class="ui-sheet" aria-live="polite">{"".join(a for _, articles in built for a in articles)}</aside>{_pick_html(wid, world.get("avatars", []), shell)}</section>'
+    if shell:
+        return _shell_html(world, head=head, radios=radios, view=view, tail=tail, floor_labels=floor_labels)
+    return _classic_html(world, head=head, radios=radios, labels=labels, view=view, tail=tail)
 
 
 def world_html(spec: Any) -> str:
@@ -3111,7 +3157,7 @@ def world_css(spec: Any, *, base: bool = True) -> str:
             svg = f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text x='16' y='25' font-size='26' text-anchor='middle'>{glyph}</text></svg>"
             picture = f'url("data:image/svg+xml,{quote(svg)}") ' + ("center/contain no-repeat," if once else "0 0/var(--tile) var(--tile),")
         rules.append(f".ui-prop[data-kind={kind}]{{border:0;border-radius:0;background:{picture}{colour or 'transparent'}}}")
-    categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    categories = _world_categories(world["floors"])
     if _world_shell(world):
         for f in world["floors"]:
             rules.append(f'.ui-world:has(#{wid}-floor-{f["id"]}:checked) .ui-world-spots[data-floor="{f["id"]}"]{{display:block}}')
@@ -3234,7 +3280,11 @@ export function cleanMessage(text,limit=60){if(typeof text!=="string")return nul
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
 function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
 function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
-const floor=()=>{const r=el.querySelector('input[name$="-floor"]:checked');return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
+// The floor and the category are radios (they work without JS): read the checked floor, tick a floor, or clear the category filter.
+const shown=()=>el.querySelector('input[name$="-floor"]:checked'),radio=(kind,value)=>el.querySelector(`input[name$="-${kind}"][value="${value}"]`),
+ allCategories=()=>{const all=radio('cat','');if(all)all.checked=true},
+ setFloor=(value,notify)=>{const r=radio('floor',value);if(r){r.checked=true;if(notify)r.dispatchEvent(new Event('change',{bubbles:true}))}};
+const floor=()=>{const r=shown();return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
 const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
 const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z)};
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
@@ -3243,7 +3293,7 @@ const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAtt
 // Side menus (☰ ⋯), the footer pulldown (door to door) and the arrows from the player to each listed spot.
 const menus=[...el.querySelectorAll('.ui-world-menu')],shut=()=>{for(const m of menus)m.open=false},goto=el.querySelector('.ui-world-goto'),rows='.ui-world-rows a';
 for(const m of menus)m.hidden=false;
-const aim=p=>{for(const a of el.querySelectorAll(rows)){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),f=floor(),g=a.dataset.floor===f.dataset.floor?direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(f.dataset.tile)||16):'🚪';if(out.textContent!==g)out.textContent=g}if(goto){const r=el.querySelector('input[name$="-floor"]:checked');if(r&&goto.value!==r.value)goto.value=r.value}};
+const aim=p=>{for(const a of el.querySelectorAll(rows)){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),f=floor(),g=a.dataset.floor===f.dataset.floor?direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(f.dataset.tile)||16):'🚪';if(out.textContent!==g)out.textContent=g}if(goto){const r=shown();if(r&&goto.value!==r.value)goto.value=r.value}};
 let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}aim(p)});
 for(const m of menus)m.addEventListener('toggle',()=>{if(m.open)for(const o of menus)if(o!==m)o.open=false});
 view.addEventListener('pointerdown',shut);
@@ -3264,7 +3314,7 @@ if(favs)el.addEventListener('click',e=>{const b=e.target.closest('.ui-world-star
 const kept=load();
 if(favs){for(const a of spotRows())if(Array.isArray(kept.fav)&&kept.fav.includes(a.getAttribute('href')))fav.add(a.getAttribute('href'));if(fav.size)showFavs()}
 if(typeof kept.lang==='string'&&kept.lang!=='ja')setLang(kept.lang);
-goto?.addEventListener('change',()=>{const r=[...el.querySelectorAll('input[name$="-floor"]')].find(i=>i.value===goto.value);if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}});
+goto?.addEventListener('change',()=>setFloor(goto.value,true));
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
 if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity(WORLD_TEXT.invalid[WORLD_LANGS.indexOf(lang)]);box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
@@ -3276,9 +3326,9 @@ form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
 const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
-el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();close();follow=false;const r=el.querySelector('input[name$="-floor"]'),all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}home()});
+el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()});
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
-const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
+const focusSpot=a=>{allCategories();setFloor(a.closest(".ui-floor").dataset.floor);go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
 view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8){follow=false;if(!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId)}fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
 const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};

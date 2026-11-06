@@ -121,8 +121,9 @@ The representation changes by swapping objects, not code: the prop kinds of any 
 | `desk` `board` `wall` `shelf` / `chair` `rug` | blocked / free, as before | the classroom's theme-coloured shapes |
 
 `WORLD_PROPS` (blocks walking), `WORLD_GROUND` (opens) and `WORLD_LOOK` (colour, emoji, once) are the whole table; the CSS is written only for the kinds a
-world uses. A new kind is one line in each. Real × virtual (a photo or plan of a real place behind the grid, like a theme-park floor guide) is not built:
-it would be an image layer on a floor, an additive step on the same props and spots.
+world uses. A new kind is one line in each. Real × virtual is not built. The direction: a photo the visitor picks (read in the page, never stored, like the emoji) as a floor's
+background layer, and, as a first form, depth instead of one flat plane: layers at different depths (parallax) so the space reads as more than two
+axes. Both are additive on the same props and spots.
 
 ## Direction arrows (two positions, one arrow)
 

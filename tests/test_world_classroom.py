@@ -450,7 +450,7 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
     assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands"}
-    assert record_demo.SCENE_WORLDS["lands"] == "overworld" and record_demo.SCENE_WORLDS["keys"] == "school"
+    assert record_demo.SCENES["lands"].world == "overworld" and record_demo.SCENES["keys"].world == "school"
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])
     (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")
@@ -517,18 +517,9 @@ def test_a_tool_can_name_itself_in_the_other_languages():
 # ---- lands: the same grid, other objects --------------------------------------------------------------------------------------------
 
 def _reach(floor):
-    """Tiles the player can walk to (breadth first over the floor's own walking grid)."""
+    """Tiles the player can walk to, and the walking grid they were found on."""
     blocked = ui.world_blocked(floor["width"], floor["height"], floor["tile"], floor["props"])
-    tile = floor["tile"]
-    start = (floor["player"]["x"] // tile, floor["player"]["y"] // tile)
-    seen, order = {start}, [start]
-    for x, y in order:
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            n = (x + dx, y + dy)
-            if n not in seen and 0 <= n[1] < len(blocked) and 0 <= n[0] < len(blocked[0]) and blocked[n[1]][n[0]] == "0":
-                seen.add(n)
-                order.append(n)
-    return seen, blocked
+    return set(ui.world_reach(blocked, (floor["player"]["x"] // floor["tile"], floor["player"]["y"] // floor["tile"]))), blocked
 
 
 @pytest.mark.parametrize("theme", sorted(ui.LAND_THEMES))

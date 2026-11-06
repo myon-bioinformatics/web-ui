@@ -69,12 +69,13 @@ class SchoolTests(unittest.TestCase):
         rows = page.evaluate(WALL)
         self.assertEqual(rows[int(point[1] // tile)][int(point[0] // tile)], "0", f"inside a solid tile at {point}")
 
+    def menu(self, page, name):
+        """Open (or close) one of the side or header menus: ``spots`` ☰, ``more`` ⋯, ``favorites`` ⭐, ``settings`` ⚙️."""
+        page.click(f'.ui-world-menu[data-menu="{name}"] summary')
+
     def settle(self, page, timeout=15000):
-        """Wait until the player stands still at its target."""
-        page.wait_for_function(
-            f"() => {{ const p = document.querySelector('{CLASSROOM} .ui-player'), s = p.style;"
-            "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }",
-            timeout=timeout)
+        """Wait until the player of the shown floor stands still at its target."""
+        page.wait_for_function(record_demo.SETTLED, timeout=timeout)
 
     def tap_map(self, page, x, y):
         box = page.evaluate(f"() => {{ const r = document.querySelector('{CLASSROOM}').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }}")
@@ -94,13 +95,13 @@ class SchoolTests(unittest.TestCase):
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["ねこ🐱", "ねこ🐱"])
-        page.click('.ui-world-menu[data-menu="settings"] summary')        # the ⚙️ menu (header) holds the picker button
+        self.menu(page, "settings")        # the ⚙️ menu (header) holds the picker button
         page.click("[data-pick-open]")
         page.fill('.ui-world-pick-form input', "🦖")
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["🦖", "🦖"])
-        page.click('.ui-world-menu[data-menu="settings"] summary')        # the ⚙️ menu (header) holds the picker button
+        self.menu(page, "settings")        # the ⚙️ menu (header) holds the picker button
         page.click("[data-pick-open]")
         self.assertTrue(page.is_visible(".ui-world-pick"))
         self.assertEqual(self.errors, [])
@@ -109,7 +110,7 @@ class SchoolTests(unittest.TestCase):
         """The README demos (tool/record_demo.py) are real operations; a UI change that breaks one fails here, not in the next README."""
         with tempfile.TemporaryDirectory() as out:
             paths = record_demo.record(out, browser=self.browser)
-            self.assertEqual({p.name for p in paths}, {f"{record_demo.SCENE_WORLDS[name]}-{name}.gif" for name in record_demo.SCENES})
+            self.assertEqual({p.name for p in paths}, {f"{sc.world}-{name}.gif" for name, sc in record_demo.SCENES.items()})
             for path in paths:
                 data = path.read_bytes()
                 self.assertEqual(data[:6], b"GIF89a", path.name)
@@ -249,7 +250,7 @@ class SchoolTests(unittest.TestCase):
         self.assertEqual([label(sel) for sel in (f"{head} .ui-world-home", f'{menu("favorites")} summary', f'{menu("settings")} summary')],
                          ["ホーム", "お気に入り", "全体設定"])
         # ⭐: star places on two floors (session only), jump to one from the panel, remove it
-        page.click('.ui-world-menu[data-menu="spots"] summary')
+        self.menu(page, "spots")
         page.click('.ui-world-spots[data-floor="classroom"] li:nth-child(1) .ui-world-star')
         page.select_option(".ui-world-goto", "yard")
         page.click('.ui-world-spots[data-floor="yard"] li:nth-child(2) .ui-world-star')
@@ -308,10 +309,10 @@ class SchoolTests(unittest.TestCase):
         page = self.open(path=posting)
         head = ".ui-world-head"
         self.start(page, "🦊")
-        page.click('.ui-world-menu[data-menu="spots"] summary')
+        self.menu(page, "spots")
         page.click('.ui-world-spots[data-floor="classroom"] li:nth-child(1) .ui-world-star')
         page.keyboard.press("Escape")
-        page.click(f'{head} .ui-world-menu[data-menu="settings"] summary')
+        self.menu(page, "settings")
         page.select_option(f"{head} [data-lang]", "de")
         page.keyboard.press("Escape")
         page.fill(".ui-board-post input", "hallo")                                          # a board message is only in the page
@@ -355,9 +356,9 @@ class SchoolTests(unittest.TestCase):
         page.select_option(".ui-world-goto", "forest")
         self.assertEqual(page.eval_on_selector('.ui-floor[data-floor="forest"] .ui-prop[data-kind="tree"]', "e => getComputedStyle(e).backgroundSize").split(",")[0], "32px 32px")
         spot = next(s for f in web_ui.world_validate(web_ui.example_data("overworld"))["floors"] if f["id"] == "forest" for s in f["spots"] if s["id"] == "forest-town")
-        page.click('.ui-world-menu[data-menu="spots"] summary')
+        self.menu(page, "spots")
         page.click('.ui-world-spots[data-floor="forest"] a[href="#overworld-spot-forest-town"]')
-        page.wait_for_function(record_demo.STILL, timeout=20000)
+        page.wait_for_function(record_demo.SETTLED, timeout=20000)
         x, y = page.evaluate("() => { const s = document.querySelector('.ui-floor[data-floor=\"forest\"] .ui-player').style; return [parseFloat(s.getPropertyValue('--px')), parseFloat(s.getPropertyValue('--py'))]; }")
         self.assertAlmostEqual(x, spot["x"], delta=1)
         self.assertAlmostEqual(y, spot["y"], delta=1)
@@ -368,7 +369,7 @@ class SchoolTests(unittest.TestCase):
         self.assertTrue(page.is_visible(".ui-world-foot .ui-world-bar"))
         self.assertFalse(page.is_visible(".ui-world-goto"))
         self.assertFalse(page.is_visible('.ui-world-menu[data-menu="more"]'))           # needs JS
-        page.click('.ui-world-menu[data-menu="spots"] summary')
+        self.menu(page, "spots")
         self.assertTrue(page.is_visible('.ui-world-spots[data-floor="classroom"]'))
         page.click('label[for="school-floor-yard"]')
         self.assertTrue(page.is_visible('.ui-world-spots[data-floor="yard"]'))

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Callable, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -35,14 +36,22 @@ FLOOR = web_ui.world_validate(SPEC)["floors"][0]
 W, H, T = FLOOR["width"], FLOOR["height"], FLOOR["tile"]
 CLASSROOM = f'.ui-floor[data-floor="{FLOOR["id"]}"]'
 PICKED = "() => !document.querySelector('.ui-world').hasAttribute('data-pick')"
-SETTLED = (f"() => {{ const p = document.querySelector('{CLASSROOM} .ui-player'), s = p.style;"
-           "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")
+SETTLED = ("() => { const f = [...document.querySelectorAll('.ui-floor')].find(f => getComputedStyle(f).display !== 'none'), p = f.querySelector('.ui-player'), s = p.style;"
+           "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")   # the shown floor's player has arrived
 PLAYER = (0.48, 0.69)                           # where a character standing at the door is on screen: a zoom target
-SCENES: dict = {}
 WORLDS = {"school": SPEC, "overworld": web_ui.example_data("overworld")}       # the specs a scene can open; a GIF is <world>-<scene>.gif
-SCENE_WORLDS: dict = {}
-STILL = ("() => { const f = [...document.querySelectorAll('.ui-floor')].find(f => getComputedStyle(f).display !== 'none'), p = f.querySelector('.ui-player'), s = p.style;"
-         "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")   # the shown floor's player has arrived
+
+
+class Scene(NamedTuple):
+    width: int
+    height: int
+    touch: bool
+    crop: str | None
+    fn: Callable
+    world: str
+
+
+SCENES: dict[str, Scene] = {}
 
 
 class Camera:
@@ -124,8 +133,7 @@ def encode(shots, *, width=None, tail_ms=TAIL_MS):
 
 def scene(name, width=560, height=720, touch=False, crop=".ui-world", world="school"):
     def add(fn):
-        SCENES[name] = (width, height, touch, crop, fn)
-        SCENE_WORLDS[name] = world
+        SCENES[name] = Scene(width, height, touch, crop, fn, world)
         return fn
     return add
 
@@ -326,7 +334,7 @@ def _lands(page, cam, tmp):
         cam.hold(1000)
     more(page, cam, "spots", 900)
     page.click('.ui-world-spots[data-floor="castle"] a[href="#overworld-spot-castle-town"]')
-    cam.until(STILL)
+    cam.until(SETTLED)
     cam.hold(900)
 
 
@@ -379,26 +387,26 @@ def record(out, names=None, *, chrome=None, width=None, force=False, browser=Non
     if unknown:
         raise ValueError("unknown scene: " + ", ".join(unknown) + " (have " + ", ".join(SCENES) + ")")
     out = Path(out)
-    targets = {n: out / f"{SCENE_WORLDS[n]}-{n}.gif" for n in names}
+    targets = {n: out / f"{SCENES[n].world}-{n}.gif" for n in names}
     if not force and any(p.exists() for p in targets.values()):
         raise FileExistsError("refusing to overwrite " + ", ".join(str(p) for p in targets.values() if p.exists()) + " (use --force)")
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp_name, contextlib.ExitStack() as stack:
         tmp = Path(tmp_name)
-        for world in {SCENE_WORLDS[n] for n in names}:
+        for world in {SCENES[n].world for n in names}:
             (tmp / f"{world}.html").write_text(web_ui.world_document(WORLDS[world]), encoding="utf-8")
         if browser is None:
             from playwright.sync_api import sync_playwright
             browser = launch(stack.enter_context(sync_playwright()), chrome)
             stack.callback(browser.close)
         for name in names:
-            w, h, touch, crop, fn = SCENES[name]
-            context = browser.new_context(viewport={"width": w, "height": h}, has_touch=touch, is_mobile=touch)
+            sc = SCENES[name]
+            context = browser.new_context(viewport={"width": sc.width, "height": sc.height}, has_touch=sc.touch, is_mobile=sc.touch)
             try:
                 page = context.new_page()
-                page.goto((tmp / f"{SCENE_WORLDS[name]}.html").as_uri())
-                cam = Camera(page, crop)
-                fn(page, cam, tmp)
+                page.goto((tmp / f"{sc.world}.html").as_uri())
+                cam = Camera(page, sc.crop)
+                sc.fn(page, cam, tmp)
                 targets[name].write_bytes(encode(cam.shots, width=width))
             finally:
                 context.close()
