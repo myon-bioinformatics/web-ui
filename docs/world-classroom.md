@@ -121,9 +121,33 @@ The representation changes by swapping objects, not code: the prop kinds of any 
 | `desk` `board` `wall` `shelf` / `chair` `rug` | blocked / free, as before | the classroom's theme-coloured shapes |
 
 `WORLD_PROPS` (blocks walking), `WORLD_GROUND` (opens) and `WORLD_LOOK` (colour, emoji, once) are the whole table; the CSS is written only for the kinds a
-world uses. A new kind is one line in each. Real × virtual is not built. The direction: a photo the visitor picks (read in the page, never stored, like the emoji) as a floor's
-background layer, and, as a first form, depth instead of one flat plane: layers at different depths (parallax) so the space reads as more than two
-axes. Both are additive on the same props and spots.
+world uses. A new kind is one line in each.
+
+## Real × virtual (🖼️📷)
+
+`"real": true` on a floor (also beside a `land` or `classroom`) lets the visitor put **a photo they choose or their camera** behind that floor's props, spots and
+player. It is shown in the page and nothing else: a photo is an object URL on an `<img>`, the camera a stream on a `<video>`; neither is drawn, read back,
+recorded, stored (not even in the ⭐/🌐 cache) or sent, and the guard test in `tests/test_python_wrapper.py` pins that. The camera is released by 🧹, by
+leaving the floor, or by closing the page; a refused or missing camera says ⚠️ and the floor stays plain.
+
+* On a real floor the ⋯ menu has one button, 🖼️📷. It opens the shared dialog (below) with 📷 camera, 🖼️ photo, 🧹 clear (only once something is shown) and ✖️.
+* Props are drawn over the picture, so a props-free floor (`EXAMPLES["overworld"]` ends with one) shows the picture whole, and a floor with a few solid props
+  (a house, a tree) puts them on top of the room. The walk grid is the same grid either way.
+* Words: `backdrop`, `camera`, `photo`, `clear`, `unavailable` in the same 11 languages as the rest of the chrome.
+
+### `ask()`: the one dialog for choosing or confirming
+
+`el.ask(glyph, choices, t?)` (`el` is the world element `bindWorlds()` returns) shows icons and resolves with the chosen value, or `null` for ✖️, Esc or a tap outside:
+
+```js
+const answer = await world.ask('🖼️📷', [{glyph: '📷', t: 'camera', value: 'camera'}, {glyph: '🖼️', t: 'photo', value: 'photo'}], 'backdrop');
+```
+
+A choice is `{glyph, t, value}`; `t` names a catalogue word (so the label is the aria-label and tooltip in the visitor's language) and the optional third
+argument labels the dialog. The look is the emoji picker's (one CSS rule set), keys do not walk the player while it is open, and 🏠 closes it. The 🏠 button keeps
+asking nothing (no confirmation); a confirmation anywhere is one line, e.g. `ask('🏠❓', [{glyph: '✅', t: 'ok', value: true}])`.
+
+A second direction is not built: depth instead of one flat plane, layers at different depths (parallax) so the space reads as more than two axes. It would be additive on the same props and spots.
 
 ## Direction arrows (two positions, one arrow)
 
@@ -173,6 +197,7 @@ python tool/record_demo.py docs/demo --only keys tap --force --width 400        
 | `school-header.gif` | the header: ⭐ stars on two floors and their list, the 🗺️ tool, 🌐 the language, 🏠 home |
 | `school-floors.gif` | the footer pulldown to the schoolyard, a spot's sheet, back to the classroom, the board spot |
 | `overworld-lands.gif` | six lands by the 🚪 pulldown (forest, mountain, desert, coast, castle), then walking to the castle town from the ☰ list |
+| `overworld-real.gif` | the real floor: ⋯ → 🖼️📷 → 🖼️ choose a photo, walk over it, then 🧹 (the photo is drawn by the recorder) |
 | `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
 
 A scene may end with `cam.zoom((x, y))` (or an anchor name or arrow emoji such as `cam.zoom("↘️")`): a smooth zoom toward that point that stays (the easing of Ironmate's `png_zoom_gif.py`, taken into this

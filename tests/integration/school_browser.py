@@ -24,9 +24,10 @@ POS = f"() => {{ const s = document.querySelector('{CLASSROOM} .ui-player').styl
 WALL = "() => document.querySelector('.ui-floor[data-floor=\"classroom\"]').dataset.blocked.split(',')"
 
 
-def launch(pw):
+def launch(pw, extra=()):
     chrome = os.environ.get("WEB_UI_CHROME")
-    return pw.chromium.launch(executable_path=chrome, args=["--no-sandbox"]) if chrome else pw.chromium.launch()
+    args = ["--no-sandbox", *extra]
+    return pw.chromium.launch(executable_path=chrome, args=args) if chrome else pw.chromium.launch(args=args)
 
 
 class SchoolTests(unittest.TestCase):
@@ -343,7 +344,7 @@ class SchoolTests(unittest.TestCase):
         page = self.open(path=path)
         self.start(page, "🧙")
         self.assertEqual(page.eval_on_selector_all(".ui-world-goto option", "els => els.map(e => e.value)"),
-                         ["meadow", "forest", "mountain", "desert", "coast", "castle"])
+                         ["meadow", "forest", "mountain", "desert", "coast", "castle", "real"])
         for land, kind in (("meadow", "water"), ("forest", "tree"), ("mountain", "mountain"), ("desert", "cactus"), ("coast", "water"), ("castle", "castle")):
             page.select_option(".ui-world-goto", land)
             page.wait_for_function(f"() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"{land}\"]')).display !== 'none'")
@@ -362,6 +363,104 @@ class SchoolTests(unittest.TestCase):
         x, y = page.evaluate("() => { const s = document.querySelector('.ui-floor[data-floor=\"forest\"] .ui-player').style; return [parseFloat(s.getPropertyValue('--px')), parseFloat(s.getPropertyValue('--py'))]; }")
         self.assertAlmostEqual(x, spot["x"], delta=1)
         self.assertAlmostEqual(y, spot["y"], delta=1)
+        self.assertEqual(self.errors, [])
+
+    def test_real_floor_shows_a_chosen_photo_or_the_camera_only_in_the_page(self):
+        """🖼️📷 on the real floor: ask() offers camera or photo; the picture sits behind the props, is released by 🧹 or by leaving (camera), and is never stored or sent."""
+        from PIL import Image
+        path = Path(self.tmp.name) / "overworld.html"
+        path.write_text(web_ui.world_document(web_ui.example_data("overworld")), encoding="utf-8")
+        photo = Path(self.tmp.name) / "room.png"
+        Image.new("RGB", (64, 48), (200, 80, 40)).save(photo)
+        browser = launch(self.pw, ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
+        self.addCleanup(browser.close)
+        context = browser.new_context(viewport={"width": 1280, "height": 800}, permissions=["camera"])
+        page = context.new_page()
+        errors, requests = [], []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("request", lambda r: requests.append(r.url))
+        page.goto(path.as_uri())
+        page.click('[data-emoji="🧙"]')
+        page.wait_for_function("() => !document.querySelector('.ui-world').hasAttribute('data-pick')")
+        real = '.ui-floor[data-floor="real"]'
+        floor_shown = lambda name: page.wait_for_function(f"() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"{name}\"]')).display !== 'none'")
+        hint = lambda: page.evaluate(f"() => getComputedStyle(document.querySelector('{real}'), '::after').content")
+        self.menu(page, "more")
+        self.assertFalse(page.is_visible("[data-real]"))                           # a land has no backdrop
+        self.menu(page, "more")
+        page.select_option(".ui-world-goto", "real")
+        floor_shown("real")
+        self.assertIn("🖼️📷", hint())                                              # until one is chosen, the floor says what it can show
+        self.menu(page, "more")
+        page.click("[data-real]")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-ask button", "els => els.map(e => [e.textContent, e.getAttribute('aria-label')])"),
+                         [["📷", "カメラ"], ["🖼️", "写真をえらぶ"], ["✖️", "閉じる"]])           # nothing to clear yet
+        self.assertEqual(page.get_attribute(".ui-world-ask [role=dialog]", "aria-label"), "写真かカメラをうしろに映す")
+        page.keyboard.press("Escape")
+        self.assertEqual(page.locator(".ui-world-ask").count(), 0)
+        self.assertEqual(page.locator(f"{real} .ui-real").count(), 0)
+        # a photo
+        self.menu(page, "more")
+        page.click("[data-real]")
+        with page.expect_file_chooser() as chooser:
+            page.click('.ui-world-ask button[data-t="photo"]')
+        chooser.value.set_files(str(photo))
+        page.wait_for_function(f"() => document.querySelector('{real} img.ui-real')?.complete")
+        info = page.evaluate(f"() => {{ const i = document.querySelector('{real} img.ui-real'), f = document.querySelector('{real}'); "
+                             "return [i.src.slice(0, 5), i.naturalWidth, i.offsetWidth, i.offsetHeight, getComputedStyle(i).pointerEvents, f.firstElementChild === i, f.hasAttribute('data-backdrop')]; }")
+        self.assertEqual(info, ["blob:", 64, 384, 384, "none", True, True])      # behind the props, the size of the floor, taps pass through
+        self.assertEqual(hint(), "none")
+        self.assertTrue(page.is_visible(f"{real} .ui-player") and page.is_visible(f"{real} .ui-spot"))
+        # 🧹 lets it go
+        self.menu(page, "more")
+        page.click("[data-real]")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-ask button", "els => els.map(e => e.textContent)"), ["📷", "🖼️", "🧹", "✖️"])
+        page.click('.ui-world-ask button[data-t="clear"]')
+        self.assertEqual(page.locator(f"{real} .ui-real").count(), 0)
+        self.assertIn("🖼️📷", hint())
+        # the camera: a stream on a <video>, stopped on leaving the floor
+        self.menu(page, "more")
+        page.click("[data-real]")
+        page.click('.ui-world-ask button[data-t="camera"]')
+        page.wait_for_function(f"() => {{ const v = document.querySelector('{real} video.ui-real'); return v && v.videoWidth > 0 && v.srcObject; }}")
+        page.evaluate(f"() => {{ window.__stream = document.querySelector('{real} video.ui-real').srcObject; }}")
+        self.assertTrue(page.evaluate("() => window.__stream.getTracks().every(t => t.readyState === 'live')"))
+        page.select_option(".ui-world-goto", "meadow")
+        floor_shown("meadow")
+        self.assertEqual(page.locator("video").count(), 0)
+        self.assertTrue(page.evaluate("() => window.__stream.getTracks().every(t => t.readyState === 'ended')"))
+        # nothing is stored or sent: no request but the page itself, and the cache holds no picture
+        self.assertTrue(all(u.startswith(("file:", "blob:", "data:")) for u in requests), requests)
+        self.assertNotIn("blob:", page.evaluate("() => JSON.stringify({...localStorage})"))
+        # the language of the words in the dialog follows 🌐; ask() is callable from the page that embeds the world
+        self.menu(page, "settings")
+        page.select_option("[data-lang]", "en")
+        self.menu(page, "settings")
+        page.evaluate("() => { document.querySelector('.ui-world').ask('❓', [{glyph: '✅', t: 'ok', value: 'yes'}], 'floor').then(v => { window.__answer = v; }); }")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-ask button", "els => els.map(e => e.getAttribute('aria-label'))"), ["Use this", "Close"])
+        page.click('.ui-world-ask button[data-t="ok"]')
+        page.wait_for_function("() => window.__answer === 'yes'")
+        page.evaluate("() => { document.querySelector('.ui-world').ask('❓', []).then(v => { window.__answer = v; }); }")
+        page.click(".ui-world-ask", position={"x": 4, "y": 4})                           # a tap outside the card cancels
+        page.wait_for_function("() => window.__answer === null")
+        self.assertEqual(errors, [])
+
+    def test_camera_that_cannot_open_says_so_and_keeps_the_floor_plain(self):
+        path = Path(self.tmp.name) / "overworld.html"
+        path.write_text(web_ui.world_document(web_ui.example_data("overworld")), encoding="utf-8")
+        page = self.open(path=path)
+        self.start(page, "🧙")
+        page.evaluate("() => { Object.defineProperty(navigator, 'mediaDevices', {value: {getUserMedia: () => Promise.reject(new DOMException('no', 'NotAllowedError'))}}); }")
+        page.select_option(".ui-world-goto", "real")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"real\"]')).display !== 'none'")
+        self.menu(page, "more")
+        page.click("[data-real]")
+        page.click('.ui-world-ask button[data-t="camera"]')
+        page.wait_for_selector('.ui-world-ask [data-t="unavailable"]')
+        self.assertIn("つかえません", page.get_attribute('.ui-world-ask [data-t="unavailable"]', "aria-label"))
+        self.assertEqual(page.locator("video, img.ui-real").count(), 0)
+        page.click('.ui-world-ask button[data-t="close"]')
+        self.assertEqual(page.locator(".ui-world-ask").count(), 0)
         self.assertEqual(self.errors, [])
 
     def test_without_javascript_the_footer_keeps_plain_floor_labels(self):

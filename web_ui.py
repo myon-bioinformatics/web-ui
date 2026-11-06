@@ -2477,8 +2477,10 @@ def world_validate(spec: Any) -> dict[str, Any]:
                       "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
     floors, spot_ids = [], set()
     for floor in map(_expand_floor, floors_in):
-        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player", "tile", "props"}:
-            raise ValueError("a floor has id, label, width, height, spots, actors, player, tile and props")
+        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player", "tile", "props", "real"}:
+            raise ValueError("a floor has id, label, width, height, spots, actors, player, tile, props and real")
+        if not isinstance(floor.get("real", False), bool):
+            raise ValueError("real is true or false")
         width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
         tile, props_in, props = floor.get("tile"), floor.get("props", []), []
         if tile is not None:
@@ -2537,7 +2539,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                 raise ValueError("the player starts on a free tile")
         floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
                        "width": width, "height": height, "spots": spots, "actors": actors, "player": player,
-                       **({"tile": tile, "props": props} if tile else {})})
+                       **({"tile": tile, "props": props} if tile else {}), **({"real": True} if floor.get("real") else {})})
     board = spec.get("board")
     if board is not None:
         if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_label", "offset_minutes", "zones", "shared_issue"} or not isinstance(board.get("items"), list) \
@@ -2625,7 +2627,7 @@ def _floor_kit(tile: int, id: str) -> tuple[Any, Any]:
 def _expand_floor(floor: Any) -> Any:
     """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)`` and ``{"land": {theme, cols, rows, seed,
     tile}}`` for ``land_floor(...)``, so JSON alone (no Python in the calling repository) can ask for a classroom or a land; ``spots``,
-    ``actors`` and ``player`` given beside it replace the generated ones."""
+    ``actors`` and ``player`` given beside it replace the generated ones, and ``real`` marks it as a floor with a photo or camera behind it."""
     if not isinstance(floor, dict):
         return floor
     makers = {"classroom": (classroom_floor, {"rows", "groups", "per_group", "tile"}), "land": (land_floor, {"theme", "cols", "rows", "seed", "tile"})}
@@ -2633,12 +2635,12 @@ def _expand_floor(floor: Any) -> Any:
     if kind is None:
         return floor
     build, allowed = makers[kind]
-    params, own = floor[kind], {"id", "label", kind, "spots", "actors", "player"}
+    params, own = floor[kind], {"id", "label", kind, "spots", "actors", "player", "real"}
     if (not isinstance(params, dict) or set(params) - allowed or set(floor) - own
             or not all(isinstance(floor[k], str) for k in ("id", "label") if k in floor)):
-        raise ValueError(f"a {kind} floor has id, label, {kind} ({', '.join(sorted(allowed))}) and optionally spots, actors and player")
+        raise ValueError(f"a {kind} floor has id, label, {kind} ({', '.join(sorted(allowed))}) and optionally spots, actors, player and real")
     built = build(**params, **{k: floor[k] for k in ("id", "label") if k in floor})
-    return {**built, **{k: floor[k] for k in ("spots", "actors", "player") if k in floor}}
+    return {**built, **{k: floor[k] for k in ("spots", "actors", "player", "real") if k in floor}}
 
 
 def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile: int = 32,
@@ -2851,8 +2853,13 @@ WORLD_TEXT = {
     "other": ("ほかの絵文字・文字（16文字まで）", "Another emoji or text (up to 16)", "Autre emoji ou texte (16 max)", "Otro emoji o texto (hasta 16)", "Outro emoji ou texto (até 16)", "رمز أو نص آخر (حتى 16)", "其他表情或文字（最多16个）", "Другой эмодзи или текст (до 16)", "Emoji atau teks lain (maks. 16)", "Anderes Emoji oder Text (bis 16)", "Emoji au maandishi mengine (hadi 16)"),
     "ok": ("これにする", "Use this", "Choisir", "Usar este", "Usar este", "استخدم هذا", "就用这个", "Выбрать", "Pakai ini", "Nehmen", "Tumia hii"),
     "invalid": ("1〜16文字の絵文字か文字を入力してください", "Enter 1 to 16 emoji or characters", "Saisissez 1 à 16 emoji ou caractères", "Escribe de 1 a 16 emoji o caracteres", "Digite de 1 a 16 emoji ou caracteres", "أدخل من 1 إلى 16 رمزًا أو حرفًا", "请输入1到16个表情或文字", "Введите от 1 до 16 эмодзи или символов", "Masukkan 1 sampai 16 emoji atau karakter", "Gib 1 bis 16 Emoji oder Zeichen ein", "Weka emoji au herufi 1 hadi 16"),
+    "backdrop": ("写真かカメラをうしろに映す", "Show a photo or the camera behind", "Afficher une photo ou la caméra derrière", "Mostrar una foto o la cámara detrás", "Mostrar uma foto ou a câmera atrás", "عرض صورة أو الكاميرا في الخلفية", "在背后显示照片或相机", "Показать фото или камеру на фоне", "Tampilkan foto atau kamera di belakang", "Foto oder Kamera dahinter zeigen", "Onyesha picha au kamera nyuma"),
+    "camera": ("カメラ", "Camera", "Caméra", "Cámara", "Câmera", "الكاميرا", "相机", "Камера", "Kamera", "Kamera", "Kamera"),
+    "photo": ("写真をえらぶ", "Choose a photo", "Choisir une photo", "Elegir una foto", "Escolher uma foto", "اختر صورة", "选择照片", "Выбрать фото", "Pilih foto", "Foto wählen", "Chagua picha"),
+    "clear": ("もとにもどす", "Clear it", "Effacer", "Quitar", "Remover", "مسح", "清除", "Убрать", "Hapus", "Entfernen", "Ondoa"),
+    "unavailable": ("つかえません（許可かカメラを確認）", "Not available (check permission or camera)", "Indisponible (vérifiez l'autorisation ou la caméra)", "No disponible (revisa el permiso o la cámara)", "Indisponível (verifique a permissão ou a câmera)", "غير متاح (تحقق من الإذن أو الكاميرا)", "无法使用（请检查权限或相机）", "Недоступно (проверьте разрешение или камеру)", "Tidak tersedia (periksa izin atau kamera)", "Nicht verfügbar (Berechtigung oder Kamera prüfen)", "Haipatikani (angalia ruhusa au kamera)"),
 }
-WORLD_BUILTIN_TOOLS = ("🏠", "⭐", "⚙", "🌐", "☰", "⋯", "🚪")       # emoji the page itself uses; a tool of your own takes another
+WORLD_BUILTIN_TOOLS = ("🏠", "⭐", "⚙", "🌐", "☰", "⋯", "🚪", "🖼", "📷", "🧹")       # emoji the page itself uses; a tool of your own takes another
 _WORLD_TOOL_KEYS = {"label", "label_en", "labels", "slot", "floor", "spots", "body"}
 _WORLD_LANG_CODES = tuple(code for code, _ in WORLD_LANGS)
 # What the page's script needs: the language codes and the words by index (one list per key), written once ahead of the script.
@@ -2874,7 +2881,7 @@ def _wt(key: str, labels: dict[str, str] | None = None) -> str:
 
 def _world_shell(world: dict[str, Any]) -> bool:
     """Header, side and footer instead of chips on top and controls below: every grid world, or any world with ``"shell": true``."""
-    return bool(world.get("shell") or world.get("tools") or any(f.get("tile") for f in world["floors"]))
+    return bool(world.get("shell") or world.get("tools") or any(f.get("tile") or f.get("real") for f in world["floors"]))
 
 
 def _world_categories(floors: list[dict[str, Any]]) -> list[str]:
@@ -2902,7 +2909,7 @@ def _floor_html(wid: str, f: dict[str, Any], close: str) -> tuple[str, list[str]
     props = "".join(f'<div class="ui-prop" data-kind="{q["kind"]}" aria-hidden="true" '
                     f'style="left:{q["x"]}px;top:{q["y"]}px;width:{q["w"]}px;height:{q["h"]}px"></div>' for q in f.get("props", []))
     grid = (f' data-tile="{tile}" data-blocked="{",".join(world_blocked(f["width"], f["height"], tile, f["props"]))}"') if tile else ""
-    stage = (f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}"{grid} '
+    stage = (f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}"{grid}{" data-real" if f.get("real") else ""} '
              f'style="width:{f["width"]}px;height:{f["height"]}px{f";--tile:{tile}px" if tile else ""}">{props}{spots}{actors}{player}</div>')
     sheet = [f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>{close}</article>'
              for s in [*f["spots"], *f["actors"]]]
@@ -2963,11 +2970,13 @@ def _shell_html(world: dict[str, Any], *, head: str, radios: str, view: str, tai
     side = icon("spots", "☰", _wt("places"), (f'<nav class="ui-world-chips">{chips}</nav>' if chips else "") +
                 "".join(rows("ui-world-spots", f["spots"], star=True, data=f' data-floor="{f["id"]}"') for f in floors))
     side += "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "side")
-    if playable:
+    real = any(f.get("real") for f in floors)
+    if playable or real:
         me = f'<button type="button" class="ui-world-grid-only" data-me hidden {_wt("me")}>🎯</button>' if tiled else ""
         walk = ('<div class="ui-world-motion-controls" hidden><form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
-                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button {_wt("walk")}>🚶</button></form>{me}</div>')
-        side += icon("more", "⋯", _wt("screen"), walk, hidden=True)
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button {_wt("walk")}>🚶</button></form>{me}</div>') if playable else ""
+        backdrop = f'<button type="button" class="ui-world-real" data-real hidden {_wt("backdrop")}>🖼️📷</button>' if real else ""
+        side += icon("more", "⋯", _wt("screen"), walk + backdrop, hidden=True)
     settings = ((f'<button type="button" class="ui-world-pause" aria-pressed="false" data-pause="⏸️" data-resume="▶️" {_wt("pause")}>⏸️</button>' if playable else "") +
                 (f'<button type="button" data-pick-open {_wt("avatar")}>🙂✏️</button>' if avatars else "") +
                 f'<label class="ui-world-lang">🌐 <select data-lang {_wt("language")}>' +
@@ -3128,6 +3137,9 @@ _WORLD_CSS = (
     ".ui-world-pick-grid button{min-height:48px;font-size:1.5rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);"
     "border-radius:var(--ui-radius);cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:48px;max-width:100%;padding:0 8px}"
     ".ui-world-pick-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center}"
+    ".ui-real{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;user-select:none;-webkit-user-select:none}"
+    ".ui-world[data-js] .ui-floor[data-real]:not([data-backdrop])::after{content:\"🖼️📷\";position:absolute;left:50%;top:50%;font-size:48px;line-height:1;opacity:.5;"
+    "pointer-events:none;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)))}.ui-world-real{font-size:1.5rem;line-height:1}"
     ".ui-world[data-pick] .ui-player{visibility:hidden}.ui-player span{white-space:nowrap}"
     "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
 )
@@ -3279,14 +3291,14 @@ export function utcOffsetLabel(offset){if(offset===0)return"UTC";const a=Math.ab
 export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
 function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
-function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
+function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0,onFloor=()=>{};
 // The floor and the category are radios (they work without JS): read the checked floor, tick a floor, or clear the category filter.
 const shown=()=>el.querySelector('input[name$="-floor"]:checked'),radio=(kind,value)=>el.querySelector(`input[name$="-${kind}"][value="${value}"]`),
  allCategories=()=>{const all=radio('cat','');if(all)all.checked=true},
  setFloor=(value,notify)=>{const r=radio('floor',value);if(r){r.checked=true;if(notify)r.dispatchEvent(new Event('change',{bubbles:true}))}};
 const floor=()=>{const r=shown();return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
 const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
-const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z)};
+const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z);onFloor()};
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
@@ -3318,6 +3330,30 @@ goto?.addEventListener('change',()=>setFloor(goto.value,true));
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
 if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity(WORLD_TEXT.invalid[WORLD_LANGS.indexOf(lang)]);box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
+// ask(glyph,choices,t): the world's one dialog for choosing or confirming. Icons in, the picked value out (a promise; null = ✖️, Esc or a tap outside).
+// A choice is {glyph,t,value} with t naming a catalogue word; el.ask lets the page that embeds the world call it too.
+let asking=null;
+const ask=(glyph,choices,t)=>new Promise(done=>{asking?.(null);const box=document.createElement('div'),card=document.createElement('div'),head=document.createElement('h3'),grid=document.createElement('div');
+ box.className='ui-world-pick ui-world-ask';card.setAttribute('role','dialog');card.setAttribute('aria-modal','true');if(t)card.dataset.t=t;
+ head.setAttribute('aria-hidden','true');head.textContent=glyph;grid.className='ui-world-pick-grid';
+ const end=v=>{asking=null;box.remove();el.removeAttribute('data-ask');view.focus({preventScroll:true});done(v)};
+ for(const c of[...choices,{glyph:'✖️',t:'close',value:null}]){const b=document.createElement('button');b.type='button';b.textContent=c.glyph;b.dataset.t=c.t;b.addEventListener('click',()=>end(c.value));grid.append(b)}
+ box.addEventListener('click',e=>{if(e.target===box)end(null)});box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();end(null)}});
+ card.append(head,grid);box.append(card);(pick?pick.parentElement:view.parentElement).append(box);say(box);el.setAttribute('data-ask','');asking=end;grid.querySelector('button').focus()});
+el.ask=ask;
+// 🖼️📷 a floor marked real can show a photo you pick or your camera behind its props. It is only shown (an object URL or a camera stream on an element of this page):
+// never drawn, read back, stored or sent. 🧹, leaving the floor (camera) or closing the page lets it go.
+const realBtn=el.querySelector('[data-real]'),file=realBtn&&document.createElement('input');
+let back=null,lastFloor=null;
+const unback=()=>{if(!back)return;back.stop();back.node.remove();back.floor.removeAttribute('data-backdrop');back=null},
+ backdrop=(node,stop,live)=>{unback();const f=floor();node.className='ui-real';node.setAttribute('aria-hidden','true');f.prepend(node);f.setAttribute('data-backdrop','');back={node,stop,live,floor:f}},
+ syncReal=()=>{const f=floor();if(f===lastFloor)return;lastFloor=f;if(realBtn)realBtn.hidden=!f.hasAttribute('data-real');if(back&&back.live&&back.floor!==f)unback()},
+ camera=async()=>{try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false}),v=document.createElement('video');v.muted=true;v.autoplay=true;v.playsInline=true;v.srcObject=stream;
+  backdrop(v,()=>{for(const t of stream.getTracks())t.stop();v.srcObject=null},true);v.play?.().catch(()=>{})}catch(e){ask('⚠️',[],'unavailable')}};
+if(file){file.type='file';file.accept='image/*';file.hidden=true;el.append(file);
+ file.addEventListener('change',()=>{const f=file.files[0];file.value='';if(!f||!f.type.startsWith('image/'))return;const url=URL.createObjectURL(f),img=new Image();img.alt='';img.draggable=false;img.src=url;backdrop(img,()=>URL.revokeObjectURL(url),false)})}
+realBtn?.addEventListener('click',()=>{shut();ask('🖼️📷',[{glyph:'📷',t:'camera',value:'camera'},{glyph:'🖼️',t:'photo',value:'photo'},...(back?[{glyph:'🧹',t:'clear',value:'clear'}]:[])],'backdrop').then(v=>{if(v==='camera')camera();else if(v==='photo')file.click();else if(v==='clear')unback()})});
+addEventListener('pagehide',unback);onFloor=syncReal;syncReal();
 el.querySelector('[data-me]')?.addEventListener('click',()=>{const p=walk.where?.();if(p){follow=true;lx=ly=undefined;go(p[0],p[1],Math.max(z,2))}});
 const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},chips=board?[...board.querySelectorAll("[data-zone-id]")].map(z=>({id:z.dataset.zoneId,rows:JSON.parse(z.dataset.rows),out:z.querySelector("[data-zone-clock]")})):[],tick=()=>{const clock=clockNow(),t=new Date().getTime()/1000,zones=new Map(chips.map(z=>{const c=boardClock(t,zoneOffset(z.rows,t));z.out.textContent=c.clock;return[z.id,c]})),at=m=>(m.dataset.zone?zones.get(m.dataset.zone):clock).minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.offsetLabel!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(at(m),hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(at(g)),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
@@ -3326,7 +3362,7 @@ form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
 const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
-el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()});
+el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();asking?.(null);shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()});
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{allCategories();setFloor(a.closest(".ui-floor").dataset.floor);go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
@@ -3336,7 +3372,7 @@ addEventListener("pointerup",end);addEventListener("pointercancel",end);view.add
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
 el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-rows a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-rows a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
 const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0]};
-el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&walk.step(...k))e.preventDefault()});
+el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&!el.hasAttribute("data-ask")&&walk.step(...k))e.preventDefault()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
 const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"],.ui-actor[href="#${CSS.escape(hash)}"]`);if(a){open(hash);if(a.dataset.x!==undefined)focusSpot(a)}else open(null)};
@@ -16290,7 +16326,10 @@ EXAMPLES.update({
                    {"id": "mountain", "land": {"theme": "mountain", "seed": 3}},
                    {"id": "desert", "land": {"theme": "desert", "seed": 4}},
                    {"id": "coast", "land": {"theme": "coast", "seed": 5}},
-                   {"id": "castle", "land": {"theme": "castle", "seed": 6}}],
+                   {"id": "castle", "land": {"theme": "castle", "seed": 6}},
+                   {"id": "real", "label": "実空間×仮想", "width": 384, "height": 384, "tile": 32, "real": True,
+                    "spots": [{"id": "real-gate", "label": "入口", "x": 192, "y": 96, "body": "⋯ の 🖼️📷 で、写真かカメラをうしろに映せます（ページの中だけ。保存も送信もしません）。"}],
+                    "player": {"emoji": "🙂", "x": 192, "y": 288, "speed": 96}}],
     },
     "catalog-report": {
         "schema": "web-ui-catalog/1", "title": "Analysis report",

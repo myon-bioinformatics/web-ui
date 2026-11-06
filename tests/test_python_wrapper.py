@@ -546,8 +546,14 @@ class WorldTests(unittest.TestCase):
         # chosen language and starred places in this browser (localStorage, key "ui-world:<id>"; the emoji and board messages are never written).
         # The one network call is the shared section's refresh button (opt in with shared_issue): an anonymous GET without credentials, cache or referrer.
         for word in ("sessionStorage", "indexedDB", "cookie", "XMLHttpRequest", "sendBeacon", "WebSocket",
-                     "caches", "Intl", "timeZone", "navigator", "geolocation", "pushState", "postMessage", "Worker"):
+                     "caches", "Intl", "timeZone", "geolocation", "pushState", "postMessage", "Worker"):
             self.assertTrue(word not in web_ui.WORLD_JS, word)                                # (replaceState only edits the #spot fragment)
+        # The one thing asked of the browser is a camera stream, shown on a <video> and nothing else: a chosen photo is an object URL on an <img>.
+        # Neither is drawn to a canvas, read back, recorded, stored or sent.
+        self.assertEqual(re.findall(r"navigator\.(\w+)", web_ui.WORLD_JS), ["mediaDevices"])
+        self.assertEqual(web_ui.WORLD_JS.count("getUserMedia"), 1)
+        for word in ("canvas", "drawImage", "FileReader", "ImageCapture", "MediaRecorder", "toDataURL", "toBlob", "createImageBitmap", "arrayBuffer", "readAsDataURL"):
+            self.assertTrue(word not in web_ui.WORLD_JS, word)
         self.assertEqual(sorted(re.findall(r"localStorage\.(\w+)", web_ui.WORLD_JS)), ["getItem", "setItem"])
         self.assertEqual(re.findall(r"save\(\{(\w+)", web_ui.WORLD_JS), ["lang", "fav"])        # the only two things written
         self.assertIn("'ui-world:'+el.id", web_ui.WORLD_JS)

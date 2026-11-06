@@ -338,6 +338,39 @@ def _lands(page, cam, tmp):
     cam.hold(900)
 
 
+@scene("real", world="overworld")
+def _real(page, cam, tmp):
+    """Real x virtual: choose a photo (a camera feed is chosen the same way) and it sits behind the floor; walk over it, then 🧹. The photo is drawn here."""
+    from PIL import Image, ImageDraw
+    room = Image.new("RGB", (640, 480), (214, 226, 232))
+    draw = ImageDraw.Draw(room)
+    draw.rectangle((0, 336, 640, 480), fill=(176, 132, 96))
+    draw.rectangle((88, 64, 296, 232), fill=(150, 200, 240), outline=(96, 96, 104), width=8)
+    draw.rectangle((408, 144, 552, 336), fill=(120, 92, 72))
+    room.save(tmp / "room.png")
+    choose(page, "🧙")
+    page.select_option(".ui-world-goto", "real")
+    cam.hold(1000)
+    more(page, cam, "more", 800)
+    page.click("[data-real]")
+    cam.hold(1000)
+    with page.expect_file_chooser() as chooser:
+        page.click('.ui-world-ask button[data-t="photo"]')
+    chooser.value.set_files(str(tmp / "room.png"))
+    page.wait_for_function("() => document.querySelector('.ui-real')?.complete")
+    cam.hold(1000)
+    more(page, cam, "spots", 700)
+    page.click('.ui-world-spots[data-floor="real"] a[href="#overworld-spot-real-gate"]')
+    cam.until(SETTLED)
+    cam.hold(800)
+    page.click(".ui-sheet-close:visible")
+    more(page, cam, "more", 600)
+    page.click("[data-real]")
+    cam.hold(700)
+    page.click('.ui-world-ask button[data-t="clear"]')
+    cam.hold(900)
+
+
 TERMINAL = ('<meta charset="utf-8"><body style="margin:0;background:#0d1117;color:#d1f7c4;font:20px/1.6 Meiryo,メイリオ,monospace">'
             '<pre style="margin:0;padding:24px;white-space:pre-wrap;word-break:break-all"></pre>')
 

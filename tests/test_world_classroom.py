@@ -449,8 +449,8 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
-    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands"}
-    assert record_demo.SCENES["lands"].world == "overworld" and record_demo.SCENES["keys"].world == "school"
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands", "real"}
+    assert record_demo.SCENES["lands"].world == "overworld" and record_demo.SCENES["real"].world == "overworld" and record_demo.SCENES["keys"].world == "school"
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])
     (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")
@@ -496,7 +496,9 @@ def test_the_chrome_speaks_the_eleven_languages_of_flutter_navigation_basic():
     for key, words in ui.WORLD_TEXT.items():                                   # every word in every language, none left as a stand-in
         assert len(words) == 11 and all(w.strip() for w in words), key
         assert len(set(words)) >= 6, key                                       # a few are the same word in several languages (Hotel-like), not all
-    assert all(f'data-t="{k}"' in ui.world_html(_world()) or k in ("invalid",) for k in ui.WORLD_TEXT)
+    runtime = ("invalid", "camera", "photo", "clear", "unavailable")           # said by the script (a validity message, the ask() choices), not in the markup
+    assert all(f'data-t="{k}"' in ui.world_html(ui.EXAMPLES["overworld"]) or k in runtime for k in ui.WORLD_TEXT)
+    assert all(f"'{k}'" in ui.WORLD_JS for k in runtime[1:])
     assert ui.WORLD_JS.startswith(ui.WORLD_MOTION_JS + ui.WORLD_SHARED_JS + ui.WORLD_TEXT_JS)
     catalogue = json.loads(ui.WORLD_TEXT_JS.split("WORLD_TEXT=")[1].rstrip(";\n"))
     assert catalogue == {k: list(v) for k, v in ui.WORLD_TEXT.items()}
@@ -574,16 +576,34 @@ def test_a_land_is_one_line_of_json_and_the_school_is_untouched():
 def test_the_overworld_example_swaps_objects_and_ships_only_the_kinds_it_uses():
     spec = ui.example_data("overworld")
     world = ui.world_validate(spec)
-    assert [f["id"] for f in world["floors"]] == ["meadow", "forest", "mountain", "desert", "coast", "castle"] and ui.world_validate(world) == world
+    assert [f["id"] for f in world["floors"]] == ["meadow", "forest", "mountain", "desert", "coast", "castle", "real"] and ui.world_validate(world) == world
     css = ui.world_css(spec, base=False)                                             # only this world's rules, not the fixed ones
     for kind in ("grass", "sand", "road", "water", "tree", "cactus", "mountain", "house", "castle"):
         assert f".ui-prop[data-kind={kind}]" in css, kind
     assert ".ui-prop[data-kind=bridge]" not in css and ".ui-prop[data-kind=desk]" not in css
     assert "center/contain no-repeat" in css and css.count("0 0/var(--tile) var(--tile)") >= 5       # the castle once, the rest once per tile
     html = ui.world_html(spec)
-    assert html.count('class="ui-floor"') == 6 and "ui-world-goto" in html and "🧭" in html and 'data-t="home"' in html
+    assert html.count('class="ui-floor"') == 7 and 'data-real style="width:384px;height:384px' in html and world["floors"][-1]["real"] is True and "ui-world-goto" in html and "🧭" in html and 'data-t="home"' in html
     assert ui.world_document(spec) == ui.world_document(ui.example_data("overworld"))
     assert ui.example_data("overworld") == json.loads(json.dumps(ui.EXAMPLES["overworld"]))
+
+
+def test_a_real_floor_asks_for_a_photo_or_camera_and_other_worlds_do_not():
+    floor = {"id": "r", "label": "R", "width": 128, "height": 128, "tile": 32, "real": True, "player": {"emoji": "🙂", "x": 48, "y": 48},
+             "spots": [{"id": "a", "label": "A", "x": 64, "y": 64, "body": "b"}]}
+    spec = {"schema": "web-ui-world/1", "id": "w", "floors": [floor]}
+    world = ui.world_validate(spec)
+    assert world["floors"][0]["real"] is True and ui.world_validate(world) == world
+    assert "real" not in ui.world_validate({**spec, "floors": [{k: v for k, v in floor.items() if k != "real"}]})["floors"][0]
+    html = ui.world_html(spec)
+    assert 'data-real style="width:128px' in html and 'class="ui-world-real" data-real hidden' in html and 'data-t="backdrop"' in html
+    plain = ui.world_html({**spec, "floors": [{k: v for k, v in floor.items() if k != "real"}]})
+    assert 'data-real style=' not in plain and 'class="ui-world-real"' not in plain                 # no button where no floor is real
+    land = ui.world_validate({"schema": "web-ui-world/1", "id": "l", "floors": [{"id": "x", "land": {"theme": "meadow"}, "real": True}]})
+    assert land["floors"][0]["real"] is True and land["floors"][0]["props"]                          # a land can be real too: props over the picture
+    for bad in ("yes", 1, None, []):
+        with pytest.raises(ValueError):
+            ui.world_validate({**spec, "floors": [{**floor, "real": bad}]})
 
 
 def test_node26_walks_a_land_like_python(tmp_path):
