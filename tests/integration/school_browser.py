@@ -94,13 +94,13 @@ class SchoolTests(unittest.TestCase):
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["ねこ🐱", "ねこ🐱"])
-        page.click('.ui-world-menu[data-menu="more"] summary')            # the ⋯ menu holds the picker button
+        page.click('.ui-world-menu[data-menu="settings"] summary')        # the ⚙️ menu (header) holds the picker button
         page.click("[data-pick-open]")
         page.fill('.ui-world-pick-form input', "🦖")
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["🦖", "🦖"])
-        page.click('.ui-world-menu[data-menu="more"] summary')            # the ⋯ menu holds the picker button
+        page.click('.ui-world-menu[data-menu="settings"] summary')        # the ⚙️ menu (header) holds the picker button
         page.click("[data-pick-open]")
         self.assertTrue(page.is_visible(".ui-world-pick"))
         self.assertEqual(self.errors, [])
@@ -236,6 +236,64 @@ class SchoolTests(unittest.TestCase):
         page.click('.ui-world-spots a[href="#school-spot-flowers"]')
         self.assertEqual(page.input_value(".ui-world-goto"), "yard")
         self.assertTrue(page.is_visible("#school-spot-flowers"))
+        self.assertEqual(self.errors, [])
+
+    def test_header_home_favorites_settings_language_and_emoji_tools(self):
+        """The header holds what is global: 🏠 ⭐ ⚙️ and the emoji tools; every button is an icon whose words are its aria-label."""
+        page = self.open(390, 844, True)
+        self.start(page)
+        head = ".ui-world-head"
+        menu = lambda name: f'{head} .ui-world-menu[data-menu="{name}"]'
+        label = lambda sel: page.get_attribute(sel, "aria-label")
+        self.assertEqual(self.errors, [])
+        self.assertEqual([label(sel) for sel in (f"{head} .ui-world-home", f'{menu("favorites")} summary', f'{menu("settings")} summary')],
+                         ["ホーム", "お気に入り", "全体設定"])
+        # ⭐: star places on two floors (session only), jump to one from the panel, remove it
+        page.click('.ui-world-menu[data-menu="spots"] summary')
+        page.click('.ui-world-spots[data-floor="classroom"] li:nth-child(1) .ui-world-star')
+        page.select_option(".ui-world-goto", "yard")
+        page.click('.ui-world-spots[data-floor="yard"] li:nth-child(2) .ui-world-star')
+        self.assertEqual(page.eval_on_selector_all(".ui-world-spots .ui-world-star[aria-pressed=true]", "els => els.map(e => e.textContent)"), ["★", "★"])
+        page.keyboard.press("Escape")
+        page.click(f'{menu("favorites")} summary')
+        self.assertFalse(page.is_visible(f"{head} .ui-world-empty"))
+        self.assertEqual(page.eval_on_selector_all(f"{head} .ui-world-favs a", "els => els.map(e => e.lastChild.textContent)"), ["黒板", "花だん"])
+        page.click(f'{head} .ui-world-favs a[href="#school-spot-classroom-board"]')    # a favourite on the other floor: go there
+        self.assertEqual(page.input_value(".ui-world-goto"), "classroom")
+        self.assertTrue(page.is_visible("#school-spot-classroom-board"))
+        self.assertFalse(page.evaluate(f"document.querySelector('{menu('favorites')}').open"))
+        page.click(f'{menu("favorites")} summary')
+        page.click(f'{head} .ui-world-favs li:nth-child(1) .ui-world-star')           # un-star from the panel
+        self.assertEqual(page.eval_on_selector_all(f"{head} .ui-world-favs a", "els => els.length"), 1)
+        # 🏠: first floor in view, sheet and menus closed, categories cleared
+        page.select_option(".ui-world-goto", "yard")
+        page.click(f"{head} .ui-world-home")
+        self.assertEqual(page.input_value(".ui-world-goto"), "classroom")
+        self.assertFalse(page.is_visible(".ui-sheet-item[data-open]"))
+        self.assertEqual(page.evaluate("location.hash"), "")
+        # ⚙️: pause is an icon that flips, 🌐 turns every label into English and back
+        page.click(f'{menu("settings")} summary')
+        page.click(f"{head} .ui-world-pause")
+        self.assertEqual(page.text_content(f"{head} .ui-world-pause"), "▶️")
+        self.assertEqual(page.get_attribute(f"{head} .ui-world-pause", "aria-pressed"), "true")
+        self.assertTrue(page.evaluate("document.querySelector('.ui-world').hasAttribute('data-motion-paused')"))
+        page.click(f"{head} .ui-world-pause")
+        self.assertEqual(page.text_content(f"{head} .ui-world-pause"), "⏸️")
+        page.click(f"{head} [data-lang]")
+        self.assertEqual([label(f"{head} .ui-world-home"), label(f'{menu("favorites")} summary'), label('.ui-world-dpad [data-step="0,-1"]'), label(".ui-world-goto")],
+                         ["Home", "Favorites", "Up", "Go to floor"])
+        self.assertEqual(page.get_attribute(f"{head} .ui-world-home", "title"), "Home")
+        page.click(f"{head} [data-lang]")
+        self.assertEqual(label(f"{head} .ui-world-home"), "ホーム")
+        # the emoji tools of the school example: 🗺️ lists places with arrows, 🏫 shows a note; one menu at a time
+        page.keyboard.press("Escape")
+        page.click(f'{menu("tool")}:has(summary:text("🗺️")) summary')
+        self.assertTrue(page.is_visible(f'{head} .ui-world-rows:not(.ui-world-favs) a[href="#school-spot-flowers"]'))
+        page.wait_for_function("() => document.querySelector('.ui-world-head .ui-world-rows:not(.ui-world-favs) a .ui-world-arrow').textContent !== '📍'")
+        self.assertEqual(page.eval_on_selector_all(f"{head} .ui-world-rows:not(.ui-world-favs) .ui-world-arrow", "els => els.map(e => e.textContent)"), ["⬆️", "🚪"])
+        page.click(f'{menu("tool")}:has(summary:text("🏫")) summary')
+        page.wait_for_function("() => document.querySelectorAll('.ui-world-menu[open]').length === 1")
+        self.assertIn("教室と校庭", page.inner_text(f'{menu("tool")}[open]'))
         self.assertEqual(self.errors, [])
 
     def test_without_javascript_the_footer_keeps_plain_floor_labels(self):

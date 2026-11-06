@@ -53,16 +53,40 @@ Python, the CLI and `py_launch.cjs` return identical bytes; `tests/test_world_cl
 
 ## Where things go (header, side, footer)
 
-A grid world keeps the page short: nothing is stacked under the map, so a phone and a PC need no vertical scrolling.
+A grid world (or any world with `"shell": true`, or with `tools`) keeps the page short: nothing is stacked under the map, so a phone and a PC need no
+vertical scrolling and nothing changes page. The screen is icons; the words are each button's `aria-label` and tooltip, in Japanese and English.
 
-* **Header**: only what does not fit the side: the info board (clock, announcements, the shared board).
-* **Side**: this screen's own controls, two 48px buttons that open a panel over the map (one at a time; Escape, a tap on the map or choosing an item closes it).
-  * **☰ 行き先**: the spots of the current floor (and the category chips, if any). Each row shows an arrow from you to the spot (⬆️ ↗️ ➡️ ↘️ ⬇️ ↙️ ⬅️ ↖️,
-    📍 within one tile) that follows you as you walk; tap a row to walk there and read its sheet. Works without JavaScript too (the rows are links).
-  * **⋯**: 動きを停止, the X / Y form (ここへ歩く), 自分の場所, 絵文字を変える. Shown by the script.
-* **Footer**: the door-to-door pulldown 🚪 that moves between floors. Without JavaScript the plain floor labels stand in for it.
+* **Header** (the whole world): the info board, then 🏠 / ⭐ / ⚙️ and the emoji tools you add.
+  * **🏠** home: first floor, everything in view, sheet and menus closed.
+  * **⭐** favourites: a ☆ in the ☰ list stars a place; the ⭐ panel lists them (on any floor) and takes you there. They live in the page only (a reload
+    starts empty), like the session-only favourites of flutter_navigation_basic.
+  * **⚙️** settings: ⏸️ pause the motion, 🙂✏️ change the emoji, 🌐 switch the labels between 日本語 and English.
+* **Side** (this screen): 48px buttons that open a panel over the map (one menu open at a time; Escape, a tap on the map or choosing an item closes it).
+  * **☰**: the places of this floor (and the category chips, if any). Each row has an arrow from you to the place (⬆️ ↗️ ➡️ ↘️ ⬇️ ↙️ ⬅️ ↖️, 📍 within one tile,
+    🚪 when it is on another floor) that follows you as you walk; tap a row to go there and read its sheet. Works without JavaScript too (the rows are links).
+  * **⋯**: 🚶 walk to X / Y and 🎯 find myself. Shown by the script.
+* **Footer**: 🚪 the pulldown that moves between floors, each as it is, no door-to-door wiring needed. Without JavaScript the plain floor labels stand in for it.
 
-Worlds without a tile grid keep the original layout and markup (floor chips on top, controls below).
+Worlds without a tile grid keep the original layout and markup (floor chips on top, controls below) unless they ask for the shell.
+A catalogue can too: `catalogue_world(items, shell=True)` turns a long list into floors you reach with the pulldown, with no scrolling.
+
+### Your own icons: `tools` (an emoji is the key, the feature is the value)
+
+```json
+"tools": {
+  "🗺️": {"label": "見どころ", "label_en": "Highlights", "spots": ["classroom-board", "flowers"]},
+  "🏫": {"label": "学校", "body": "教室と校庭があります。"},
+  "🛝": {"label": "校庭", "floor": "yard", "slot": "side"}
+}
+```
+
+Each entry adds one icon with exactly one feature: `spots` (a panel listing those places, with arrows), `body` (a panel with a note) or `floor` (a shortcut
+to that floor). `slot` is `head` (default) or `side`; `label` / `label_en` are the tooltip words. Up to 8; the page's own icons (🏠 ⭐ ⚙️ 🌐 ☰ ⋯ 🚪) are taken.
+Adding an icon is adding a key: nothing else in the page changes, and the key is the emoji itself.
+
+How flutter_navigation_basic's header maps here (so it can be archived): Home → 🏠; Favorite this page / Favorites → ☆ and ⭐ (session only); Menu → ☰ ⚙️;
+Language → 🌐 (labels switch, the content stays yours); Door-to-Door selector → 🚪 in the footer; the page's own action row → the emoji `tools`. Not taken over:
+the "leave this page?" confirmation (a world has no unsaved page to lose) and favouriting a whole floor.
 
 ## Direction arrows (two positions, one arrow)
 
@@ -78,15 +102,15 @@ names an anchor (`bottom-right`); `🎯` and `📍` mean the centre. The recorde
 * **Arrow keys or WASD**: one tile at a time; hold to keep walking (the map must have focus; typing in a field never moves you).
   On a floor without a grid the keys are left to the page.
 * **On-screen pad** (▲◀▶▼, 48px buttons, over the map's lower left): press and hold to keep walking; keyboard activation (Enter / Space) steps once.
-* **自分の場所** (⋯ menu): zoom to yourself and keep the camera on you. Dragging the map stops the following.
-* **X / Y form** and the stop button from the base world remain (⋯ menu).
+* **🎯 自分の場所** (⋯ menu): zoom to yourself and keep the camera on you. Dragging the map stops the following.
+* **X / Y form** (🚶, ⋯ menu) and the stop button (⏸️, ⚙️ menu) from the base world remain.
 
 ## The emoji comes first
 
 With `avatars`, the world opens with a picker (a plain `div` in the map, shown by the script, not a modal): choose one of the
 listed characters or type your own: an emoji, a short text such as an initial or a name, or both (`🐱たろう`), 1..16 characters.
 In `avatars` and the `player` the same rule holds: control and line-separator characters, bidirectional overrides and spaces at either end are
-refused; the label is set as text, never as markup. (`actors` and catalog pages keep the stricter emoji-only rule.) The player stays hidden until then. **絵文字を変える** (⋯ menu) reopens it. Nothing is stored; a reload
+refused; the label is set as text, never as markup. (`actors` and catalog pages keep the stricter emoji-only rule.) The player stays hidden until then. **🙂✏️** (⚙️ menu) reopens it. Nothing is stored; a reload
 asks again. Without JavaScript the picker, the pad and the player controls stay hidden and the static map and spots still work.
 
 ## Not included
@@ -104,11 +128,12 @@ python tool/record_demo.py docs/demo --only keys tap --force --width 400        
 | File | Shows |
 |---|---|
 | `school-pick.gif` | the picker comes first; choosing 🦊 puts it in the room |
-| `school-avatar-text.gif` | **絵文字を変える** (in ⋯), then typing text and an emoji (`先生🍎`) as the character |
+| `school-avatar-text.gif` | **🙂✏️** (in ⚙️), then typing text and an emoji (`先生🍎`) as the character |
 | `school-keys.gif` | arrow keys and WASD, a held key repeating, desks stopping the walk |
 | `school-tap.gif` | tapping a chair (the path goes around the desks) and tapping a desk (nearest free tile) |
-| `school-phone.gif` | a phone-sized screen: tap a character, the on-screen pad, drag the map away, **自分の場所** (in ⋯) |
+| `school-phone.gif` | a phone-sized screen: tap a character, the on-screen pad, drag the map away, **🎯** (in ⋯) |
 | `school-menu.gif` | the ☰ list with its arrows; tap **黒板** and the arrow turns into 📍 as you arrive |
+| `school-header.gif` | the header: ⭐ stars on two floors and their list, the 🗺️ tool, 🌐 the language, 🏠 home |
 | `school-floors.gif` | the footer pulldown to the schoolyard, a spot's sheet, back to the classroom, the board spot |
 | `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
 

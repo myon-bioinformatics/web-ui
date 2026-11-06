@@ -163,7 +163,8 @@ def pad(page, cam, step, ms):
 
 
 def more(page, cam, name="more", ms=700):
-    """Open a side menu: ``more`` is the ⋯ menu (picker, find myself, pause, walk to X/Y), ``spots`` is the ☰ list of places."""
+    """Open a menu: ``settings`` is the header's ⚙️ (pause, change emoji, language), ``favorites`` the header's ⭐, ``spots`` the side's ☰
+    list of places and ``more`` the side's ⋯ (walk to X/Y, find myself)."""
     page.click(f'.ui-world-menu[data-menu="{name}"] summary')
     cam.hold(ms)
 
@@ -183,7 +184,7 @@ def _avatar_text(page, cam, tmp):
     """Change the character later: type any text, an emoji or both."""
     choose(page, "🙂")
     cam.hold(600)
-    more(page, cam)
+    more(page, cam, "settings")
     page.click("[data-pick-open]")
     cam.hold(900)
     page.click(".ui-world-pick-form input")
@@ -260,6 +261,33 @@ def _menu(page, cam, tmp):
     page.click(".ui-sheet-close:visible")
     cam.hold(600)
     more(page, cam, "spots", 1600)
+
+
+@scene("header")
+def _header(page, cam, tmp):
+    """The header: ⭐ star two places (one on another floor), see them in the ⭐ list, 🗺️ an emoji tool, 🌐 the language, 🏠 back home."""
+    choose(page, "🦊")
+    cam.hold(500)
+    more(page, cam, "spots", 900)
+    page.click('.ui-world-spots[data-floor="classroom"] li:nth-child(1) .ui-world-star')
+    cam.hold(700)
+    page.keyboard.press("Escape")
+    page.select_option(".ui-world-goto", "yard")
+    cam.hold(700)
+    more(page, cam, "spots", 600)
+    page.click('.ui-world-spots[data-floor="yard"] li:nth-child(2) .ui-world-star')
+    cam.hold(700)
+    page.keyboard.press("Escape")
+    page.click('.ui-world-head .ui-world-menu[data-menu="favorites"] summary')
+    cam.hold(1500)
+    page.click('.ui-world-head .ui-world-menu[data-menu="tool"]:has(summary:text("🗺️")) summary')
+    cam.hold(1500)
+    more(page, cam, "settings", 800)
+    page.click(".ui-world-head [data-lang]")
+    cam.hold(1200)
+    page.keyboard.press("Escape")
+    page.click(".ui-world-head .ui-world-home")
+    cam.hold(1000)
 
 
 @scene("floors")
@@ -365,9 +393,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         for path in record(args.out, args.only, chrome=args.chrome, width=args.width, force=args.force):
-            print(f"{path}  {path.stat().st_size // 1024} KiB")
+            print(f"🎞️ {path}  📦 {path.stat().st_size // 1024} KiB")
     except (ValueError, OSError, ImportError, TimeoutError) as exc:
-        parser.exit(1, f"{exc}\n")
+        parser.exit(1, f"⛔ {exc}\n")
 
 
 if __name__ == "__main__":

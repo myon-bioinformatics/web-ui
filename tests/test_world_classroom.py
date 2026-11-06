@@ -279,6 +279,62 @@ def test_node26_direction_matches_python_oracle(tmp_path):
     assert {"➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️", "⬆️", "↗️", "📍"} == set(got)
 
 
+def _world(**extra):
+    spec = ui.example_data("school")
+    spec.pop("tools", None)
+    return {**spec, **extra}
+
+
+def test_tools_map_an_emoji_to_one_feature_and_are_checked():
+    world = ui.world_validate(_world(tools={"🏫": {"label": "学校", "body": "ここは学校です。"}, "🛝": {"floor": "yard", "slot": "side"},
+                                            "🗺️": {"label": "地図", "label_en": "Map", "spots": ["classroom-board", "flowers"]}}))
+    assert list(world["tools"]) == ["🏫", "🛝", "🗺️"]
+    assert world["tools"]["🛝"] == {"label": "🛝", "label_en": "🛝", "slot": "side", "floor": "yard"}       # the emoji is the default name
+    assert world["tools"]["🗺️"]["spots"] == ["classroom-board", "flowers"] and world["tools"]["🏫"]["slot"] == "head"
+    assert ui.world_validate(world) == world                                                              # the expanded form is ordinary data
+    assert "tools" not in ui.world_validate(_world())
+    bad = [{"🏠": {"body": "x"}}, {"⚙️": {"body": "x"}}, {"🌐": {"body": "x"}}, {"a": {"body": "x"}},                # the page's own icons; plain ASCII
+           {"🏫": {}}, {"🏫": {"body": "x", "floor": "yard"}}, {"🏫": {"floor": "roof"}}, {"🏫": {"spots": []}}, {"🏫": {"spots": ["nope"]}},
+           {"🏫": {"body": "x", "slot": "top"}}, {"🏫": {"body": "x", "icon": "y"}}, {"🏫": "x"}, {f"{chr(0x1F600 + i)}": {"body": "x"} for i in range(9)}]
+    for tools in bad:
+        with pytest.raises(ValueError):
+            ui.world_validate(_world(tools=tools))
+    with pytest.raises(ValueError):
+        ui.world_validate({"schema": ui.WORLD_SCHEMA, "shots": [{"id": "a", "label": "a", "title": "a"}], "tools": {"🏫": {"body": "x"}}})
+    with pytest.raises(ValueError):
+        ui.world_validate(_world(shell="yes"))
+
+
+def test_a_shell_world_is_icons_in_a_header_a_side_and_a_footer():
+    html = ui.world_html(_world(tools={"🗺️": {"label": "地図", "label_en": "Map", "spots": ["classroom-board", "flowers"]},
+                                       "🏫": {"label": "学校", "body": "ここは学校です。"}, "🛝": {"label": "校庭", "floor": "yard", "slot": "side"}}))
+    head = html[html.index('<header class="ui-world-head">'):html.index("</header>")]
+    side = html[html.index('<div class="ui-world-side">'):html.index('<footer class="ui-world-foot">')]
+    assert [m for m in ("🏠", "🗺️", "🏫", "⭐", "⚙️") if m in head] == ["🏠", "🗺️", "🏫", "⭐", "⚙️"] and head.index("🏠") < head.index("🗺️") < head.index("⭐") < head.index("⚙️")
+    assert "☰" in side and "⋯" in side and "🛝" in side and 'for="school-floor-yard"' in side and "🚪" in html[html.index("<footer"):]
+    assert 'data-ja="ホーム" data-en="Home"' in head and 'aria-label="地図" title="地図" data-ja="地図" data-en="Map"' in head
+    assert "data-lang" in head and "data-pick-open" in head and 'class="ui-world-pause"' in head and " data-me " in side         # global in the header, local in the side
+    assert 'class="ui-world-pause"' not in side and "data-pick-open" not in side
+    assert '<a href="#school-spot-flowers" data-x="480" data-y="96" data-floor="yard">' in html                                  # a place on another floor shows 🚪, not an arrow
+    assert html.count("ui-world-star") >= 5 and 'class="ui-world-rows ui-world-favs"' in head
+    assert "✖️" in html   and ">Close<" not in html and "ほかの絵文字・文字 <input" not in html                                   # icons, with the words in aria-label
+    assert 'data-grid data-shell' in html and ' data-shell' in html
+    old = ui.world_html({"schema": ui.WORLD_SCHEMA, "floors": [{"id": "a", "label": "A", "width": 128, "height": 128, "spots": [{"id": "s", "x": 8, "y": 8, "label": "S"}]}]})
+    assert "ui-world-head" not in old and "data-shell" not in old and ">Close<" in old                          # worlds without a grid keep their layout and markup
+
+
+def test_any_world_may_ask_for_the_shell_and_a_catalogue_can_too():
+    cat = ui.catalogue_world([{"id": "a", "label": "A", "group": "g1", "emoji": "🌍"}, {"id": "b", "label": "B", "group": "g2"}], shell=True,
+                             tools={"💡": {"label": "ヒント", "body": "押すと詳しく出ます。"}})
+    html = ui.world_html(cat)
+    assert " data-shell" in html and "data-grid" not in html and "ui-world-dpad" not in html and " data-me " not in html and "💡" in html
+    assert 'class="ui-world-goto"' in html and 'data-floor="f1"' in html and 'data-floor="f2"' in html
+    plain = ui.world_html(ui.catalogue_world([{"id": "a", "label": "A", "group": "g1"}]))
+    assert "data-shell" not in plain and "ui-world-head" not in plain
+    css = ui.world_css(cat)
+    assert '.ui-world-spots[data-floor="f1"]{display:block}' in css and '.ui-world-spots[data-floor' not in ui.world_css(ui.catalogue_world([{"id": "a", "label": "A", "group": "g1"}]))
+
+
 def test_a_floor_can_ask_for_a_classroom_in_plain_json():
     params = {"rows": 3, "groups": 2, "per_group": 3, "tile": 32}
     world = {"schema": ui.WORLD_SCHEMA, "avatars": ["🙂"], "floors": [{"id": "room", "label": "教室A", "classroom": params}]}
@@ -393,7 +449,7 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
-    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "floors", "oneliner"}
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner"}
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])
     (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")

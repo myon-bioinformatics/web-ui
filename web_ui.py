@@ -2415,8 +2415,11 @@ def world_validate(spec: Any) -> dict[str, Any]:
     """Checked copy of a ``web-ui-world/1`` spec: optional ``shots`` (scroll scenes) and ``floors`` (maps with spots)."""
     if not isinstance(spec, dict) or spec.get("schema") != WORLD_SCHEMA:
         raise ValueError(f"expected schema {WORLD_SCHEMA}")
-    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board", "avatars"}:
-        raise ValueError("a world has schema, id, title, shots, floors, zoom_max, board and avatars")
+    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board", "avatars", "shell", "tools"}:
+        raise ValueError("a world has schema, id, title, shots, floors, zoom_max, board, avatars, shell and tools")
+    shell = spec.get("shell", False)
+    if not isinstance(shell, bool):
+        raise ValueError("shell is true or false")
     avatars = spec.get("avatars", [])
     if not isinstance(avatars, list) or len(avatars) > 24 or len(set(map(str, avatars))) != len(avatars):
         raise ValueError("avatars is a list of up to 24 different emoji or short texts")
@@ -2543,8 +2546,38 @@ def world_validate(spec: Any) -> dict[str, Any]:
                  "offset_label": board.get("offset_label", False), "zones": zones, "shared_issue": shared_issue,
                  "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
+    tools: dict[str, dict[str, Any]] = {}
+    tools_in = spec.get("tools", {})
+    if not isinstance(tools_in, dict) or len(tools_in) > 8 or (tools_in and not floors):
+        raise ValueError("tools maps up to 8 emoji to a feature, on a world with floors")
+    floor_ids = {f["id"] for f in floors}
+    spot_ids_all = {s["id"] for f in floors for s in f["spots"]}
+    for key, tool in tools_in.items():
+        emoji = _world_emoji(key)
+        if _plain_emoji(emoji) in WORLD_BUILTIN_TOOLS or emoji in tools:
+            raise ValueError(f"{emoji} is already used by the page itself; tools take other emoji")
+        if not isinstance(tool, dict) or set(tool) - _WORLD_TOOL_KEYS or sum(k in tool for k in ("floor", "spots", "body")) != 1:
+            raise ValueError("a tool has label, label_en, slot and exactly one of floor, spots or body")
+        slot = tool.get("slot", "head")
+        if slot not in ("head", "side"):
+            raise ValueError("slot is head or side")
+        label = _world_text(tool.get("label", emoji), "label", 24)
+        built = {"label": label, "label_en": _world_text(tool.get("label_en", label), "label_en", 24), "slot": slot}
+        if "floor" in tool:
+            if tool["floor"] not in floor_ids:
+                raise ValueError(f"tool floor must be one of {sorted(floor_ids)}")
+            built["floor"] = tool["floor"]
+        elif "spots" in tool:
+            picked = tool["spots"]
+            if not isinstance(picked, list) or not 1 <= len(picked) <= 16 or any(p not in spot_ids_all for p in picked):
+                raise ValueError("tool spots lists 1..16 spot ids of the world")
+            built["spots"] = list(picked)
+        else:
+            built["body"] = _world_text(tool["body"], "body", 400)
+        tools[emoji] = built
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
-            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board, **({"avatars": avatars} if avatars else {})}
+            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board, **({"avatars": avatars} if avatars else {}),
+            **({"shell": True} if shell else {}), **({"tools": tools} if tools else {})}
 
 
 def _expand_classroom(floor: Any) -> Any:
@@ -2652,6 +2685,34 @@ def _board_html(board: dict[str, Any] | None) -> str:
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}{shared}</div>')
 
 
+# The words of a shell world's chrome. The page shows icons; these are the aria-label and tooltip, in Japanese and English
+# (🌐 switches between them in the page, like the header language of flutter_navigation_basic).
+WORLD_TEXT = {"home": ("ホーム", "Home"), "favorites": ("お気に入り", "Favorites"), "settings": ("全体設定", "Settings"), "places": ("行き先の一覧", "Places"),
+              "screen": ("この画面の操作", "This screen"), "pause": ("動きを止める", "Pause motion"), "avatar": ("絵文字を変える", "Change emoji"),
+              "language": ("言語（日本語 / English）", "Language (日本語 / English)"), "me": ("自分の場所", "Find me"), "walk": ("ここへ歩く", "Walk here"),
+              "close": ("閉じる", "Close"), "star": ("お気に入り", "Favorite"), "floor": ("フロアを移動", "Go to floor"), "move": ("移動", "Move"),
+              "up": ("上へ", "Up"), "left": ("左へ", "Left"), "right": ("右へ", "Right"), "down": ("下へ", "Down"),
+              "pick": ("あなたの絵文字をえらんでください", "Pick your emoji"), "other": ("ほかの絵文字・文字（16文字まで）", "Another emoji or text (up to 16)"),
+              "ok": ("これにする", "Use this")}
+WORLD_BUILTIN_TOOLS = ("🏠", "⭐", "⚙", "🌐", "☰", "⋯", "🚪")       # emoji the page itself uses; a tool of your own takes another
+_WORLD_TOOL_KEYS = {"label", "label_en", "slot", "floor", "spots", "body"}
+
+
+def _plain_emoji(value: str) -> str:
+    return value.replace("\ufe0e", "").replace("\ufe0f", "")
+
+
+def _wt(key: str, ja: str | None = None, en: str | None = None) -> str:
+    """aria-label, title and the two languages of one word of the chrome (``ja``/``en`` override the catalogue, for a tool's own label)."""
+    ja, en = (ja, en or ja) if ja else WORLD_TEXT[key]
+    return f'aria-label="{escape(ja, quote=True)}" title="{escape(ja, quote=True)}" data-ja="{escape(ja, quote=True)}" data-en="{escape(en, quote=True)}"'
+
+
+def _world_shell(world: dict[str, Any]) -> bool:
+    """Header, side and footer instead of chips on top and controls below: every grid world, or any world with ``"shell": true``."""
+    return bool(world.get("shell") or world.get("tools") or any(f.get("tile") for f in world["floors"]))
+
+
 def _map_html(world: dict[str, Any]) -> str:
     wid, floors = world["id"], world["floors"]
     radios = "".join(
@@ -2686,43 +2747,79 @@ def _map_html(world: dict[str, Any]) -> str:
             f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
             f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
     avatars, tiled = world.get("avatars", []), any(f.get("tile") for f in floors)
-    steps = "".join(f'<button type="button" data-step="{d}" aria-label="{a}">{g}</button>'
-                    for d, a, g in (("0,-1", "上へ", "▲"), ("-1,0", "左へ", "◀"), ("1,0", "右へ", "▶"), ("0,1", "下へ", "▼")))
-    extra = (('<button type="button" class="ui-world-grid-only" data-me hidden>自分の場所</button>' if tiled else "") +
-             ('<button type="button" data-pick-open>絵文字を変える</button>' if avatars else ""))
+    shell = _world_shell(world)
+    if shell:                                                                     # the Close link of a shell world is an icon
+        plain = f'<a class="ui-sheet-close" href="#{wid}-map">Close</a>'
+        sheet = [x.replace(plain, f'<a class="ui-sheet-close" href="#{wid}-map" {_wt("close")}>✖️</a>') for x in sheet]
+    steps = "".join(f'<button type="button" data-step="{d}" ' + (_wt(k) if shell else f'aria-label="{a}"') + f'>{g}</button>'
+                    for d, k, a, g in (("0,-1", "up", "上へ", "▲"), ("-1,0", "left", "左へ", "◀"), ("1,0", "right", "右へ", "▶"), ("0,1", "down", "下へ", "▼")))
     playable = bool(world["board"] or any(f["player"] or f["actors"] for f in floors))
-    controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
-                '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
-                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
-                if playable else "")
-    pick = ((f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>'
-             '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
-             '</div><form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
-             '<button>これにする</button></form></div></div>') if avatars else "")
-    head = f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"{" data-grid" if tiled else ""} aria-label="{escape(world["title"], quote=True)}">'
+    if shell:
+        pick = ((f'<div class="ui-world-pick" role="group" {_wt("pick")} hidden><div><h3 aria-hidden="true">🙂👇</h3>'
+                 '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
+                 '</div><form class="ui-world-pick-form"><label><span aria-hidden="true">✏️</span> <input name="emoji" maxlength="32" size="8" autocomplete="off" '
+                 f'placeholder="🙂 A" {_wt("other")}></label><button {_wt("ok")}>✅</button></form></div></div>') if avatars else "")
+    else:
+        pick = ((f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>'
+                 '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
+                 '</div><form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
+                 '<button>これにする</button></form></div></div>') if avatars else "")
+    head = (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"'
+            f'{" data-grid" if tiled else ""}{" data-shell" if shell else ""} aria-label="{escape(world["title"], quote=True)}">')
     view = f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
     tail = f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside>{pick}</section>'
-    if not tiled:
+    if not shell:
+        extra = '<button type="button" data-pick-open>絵文字を変える</button>' if avatars else ""
+        controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+                    '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                    f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
+                    if playable else "")
         return f'{head}{radios}<nav class="ui-world-bar">{labels}</nav>{_board_html(world["board"])}{view}{controls}{tail}'
-    # A grid world keeps the page short: the header is the info board, the side (☰ ⋯) holds this screen's own controls and the
-    # footer is the pulldown that moves door to door between floors (plain floor labels stand in for it until JS runs).
-    lists = "".join(
-        f'<ul class="ui-world-spots" data-floor="{f["id"]}">' + "".join(
-            f'<li data-category="{s["category"]}"><a href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}">'
-            f'<span class="ui-world-arrow" aria-hidden="true">{WORLD_HERE}</span>{escape(s["label"])}</a></li>' for s in f["spots"]) + '</ul>' for f in floors)
+    # A shell world keeps the page short and says it with icons (the words are the aria-label and title, in two languages):
+    #   header  the board and the tools of the whole world: 🏠 home, ⭐ favourites, ⚙️ settings, and any emoji of your own (`tools`)
+    #   side    ☰ the places of this floor, ⋯ the controls of this screen; 48px buttons whose panel opens over the map
+    #   footer  🚪 the pulldown that moves between floors (plain floor labels stand in for it until JS runs)
+    def icon(kind: str, glyph: str, attrs: str, panel: str, hidden: bool = False) -> str:
+        return (f'<details class="ui-world-menu" data-menu="{kind}"{" hidden" if hidden else ""}><summary {attrs}>{glyph}</summary>'
+                f'<div class="ui-world-panel">{panel}</div></details>')
+    on_floor = {sp["id"]: f["id"] for f in floors for sp in f["spots"]}
+    def rows(ul_class: str, spots: list[dict[str, Any]], star: bool = False, data: str = "") -> str:
+        return f'<ul class="ui-world-rows {ul_class}"{data}>' + "".join(
+            f'<li data-category="{sp["category"]}"><a href="#{wid}-spot-{sp["id"]}" data-x="{sp["x"]}" data-y="{sp["y"]}" data-floor="{on_floor[sp["id"]]}">'
+            f'<span class="ui-world-arrow" aria-hidden="true">{WORLD_HERE}</span>{escape(sp["label"])}</a>'
+            + (f'<button type="button" class="ui-world-star" aria-pressed="false" {_wt("star")}>☆</button>' if star else "") + '</li>' for sp in spots) + '</ul>'
+    by_id = {sp["id"]: sp for f in floors for sp in f["spots"]}
+    def custom(emoji: str, tool: dict[str, Any]) -> str:
+        attrs = _wt("", tool["label"], tool["label_en"])
+        if "floor" in tool:                                                       # a floor shortcut: its radio, so it works without JS too
+            return f'<label class="ui-world-tool" for="{wid}-floor-{tool["floor"]}" {attrs}>{escape(emoji)}</label>'
+        panel = rows("", [by_id[i] for i in tool["spots"]]) if "spots" in tool else f'<p>{escape(tool["body"])}</p>'
+        return icon("tool", escape(emoji), attrs, panel)
+    tools = world.get("tools", {})
     chips = ("".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
              if categories else "")
-    spots_menu = (f'<details class="ui-world-menu" data-menu="spots"><summary aria-label="行き先の一覧">☰</summary><div class="ui-world-panel">'
-                  f'<h3>行き先</h3>{f"<nav class=ui-world-chips>{chips}</nav>" if chips else ""}{lists}</div></details>')
-    more_menu = (f'<details class="ui-world-menu" data-menu="more" hidden><summary aria-label="そのほか">⋯</summary>'
-                 f'<div class="ui-world-panel">{controls}</div></details>') if controls else ""
-    dpad = f'<div class="ui-world-dpad ui-world-grid-only" role="group" aria-label="移動" hidden>{steps}</div>' if playable else ""
+    side = icon("spots", "☰", _wt("places"), (f'<nav class="ui-world-chips">{chips}</nav>' if chips else "") +
+                "".join(rows("ui-world-spots", f["spots"], star=True, data=f' data-floor="{f["id"]}"') for f in floors))
+    side += "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "side")
+    if playable:
+        me = f'<button type="button" class="ui-world-grid-only" data-me hidden {_wt("me")}>🎯</button>' if tiled else ""
+        walk = ('<div class="ui-world-motion-controls" hidden><form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button {_wt("walk")}>🚶</button></form>{me}</div>')
+        side += icon("more", "⋯", _wt("screen"), walk, hidden=True)
+    settings = ((f'<button type="button" class="ui-world-pause" aria-pressed="false" data-pause="⏸️" data-resume="▶️" {_wt("pause")}>⏸️</button>' if playable else "") +
+                (f'<button type="button" data-pick-open {_wt("avatar")}>🙂✏️</button>' if avatars else "") +
+                f'<button type="button" data-lang aria-pressed="false" {_wt("language")}>🌐</button>')
+    header_tools = (f'<a class="ui-world-home" href="#{wid}-map" data-home {_wt("home")}>🏠</a>' +
+                    "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "head") +
+                    icon("favorites", "⭐", _wt("favorites"), '<p class="ui-world-empty" aria-hidden="true">☆</p><ul class="ui-world-rows ui-world-favs"></ul>', hidden=True) +
+                    icon("settings", "⚙️", _wt("settings"), settings, hidden=True))
+    dpad = f'<div class="ui-world-dpad ui-world-grid-only" role="group" {_wt("move")} hidden>{steps}</div>' if tiled and playable else ""
     foot = (f'<footer class="ui-world-foot"><nav class="ui-world-bar">{floor_labels}</nav>'
-            '<label class="ui-world-goto-wrap">🚪 <select class="ui-world-goto" aria-label="ドアからドアへ移動">' +
+            f'<label class="ui-world-goto-wrap">🚪 <select class="ui-world-goto" {_wt("floor")}>' +
             "".join(f'<option value="{f["id"]}"{" selected" if i == 0 else ""}>{escape(f["label"])}</option>' for i, f in enumerate(floors)) +
             '</select></label></footer>') if len(floors) > 1 else ""
-    return (f'{head}{radios}{_board_html(world["board"])}<div class="ui-world-body">{view}{dpad}'
-            f'<div class="ui-world-side">{spots_menu}{more_menu}</div></div>{foot}{tail}')
+    return (f'{head}{radios}<header class="ui-world-head">{_board_html(world["board"])}<nav class="ui-world-tools">{header_tools}</nav></header>'
+            f'<div class="ui-world-body">{view}{dpad}<div class="ui-world-side">{side}</div></div>{foot}{tail}')
 
 
 def world_html(spec: Any) -> str:
@@ -2786,7 +2883,7 @@ _WORLD_CSS = (
     ".ui-prop[data-kind=shelf]{background:color-mix(in srgb,var(--ui-muted) 35%,var(--ui-panel))}"
     ".ui-prop[data-kind=chair]{border:0;background:radial-gradient(circle,var(--ui-muted) 0 52%,transparent 54%)}"
     ".ui-prop[data-kind=rug]{border-style:dashed;background:color-mix(in srgb,var(--ui-accent) 10%,transparent)}"
-    ".ui-world[data-grid]{--ui-world-h:min(56vh,512px);--ui-world-foot:56px}"
+    ".ui-world[data-shell]{--ui-world-h:min(56vh,512px);--ui-world-foot:56px}"
     # Header: the info board. Side: this screen's own controls, as 48px buttons that open a panel over the map (the page never grows taller).
     # Footer: the door-to-door pulldown.
     ".ui-world-body{position:relative;display:flex}.ui-world-body>.ui-world-view{flex:1;min-width:0}"
@@ -2795,22 +2892,37 @@ _WORLD_CSS = (
     ".ui-world-menu>summary{display:flex;align-items:center;justify-content:center;width:48px;height:48px;box-sizing:border-box;list-style:none;cursor:pointer;"
     "user-select:none;-webkit-user-select:none;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);color:var(--ui-fg);border-radius:var(--ui-radius)}"
     ".ui-world-menu>summary::-webkit-details-marker{display:none}.ui-world-menu[open]>summary{background:var(--ui-accent);color:var(--ui-bg)}"
+    ".ui-world-home,.ui-world-tool{display:flex;align-items:center;justify-content:center;width:48px;height:48px;box-sizing:border-box;text-decoration:none;color:var(--ui-fg);cursor:pointer;"
+    "font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);border-radius:var(--ui-radius)}"
+    ".ui-world-head{position:relative;z-index:3;display:flex;align-items:center;border-bottom:1px solid var(--ui-border);background:var(--ui-panel)}"
+    ".ui-world-head .ui-board{flex:1;min-width:0;border-bottom:0}.ui-world-head .ui-board-track{flex:4 1 4rem}"
+    ".ui-world-tools{display:flex;gap:8px;padding:4px 8px}"
+    ".ui-world-tools .ui-world-home,.ui-world-tools .ui-world-tool,.ui-world-tools .ui-world-menu>summary{width:40px;height:40px}"
+    ".ui-world-panel p{margin:0}.ui-world-panel>button{min-width:48px}.ui-world-panel button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
+    ".ui-world-tools .ui-world-panel{top:100%;right:8px;width:min(320px,calc(100% - 16px));max-height:min(60vh,384px)}"
+    ".ui-world-settings,.ui-world-tools .ui-world-panel{display:flex;flex-wrap:wrap;gap:8px}.ui-world-tools .ui-world-panel[hidden]{display:none}"
+    ".ui-world-star{flex:none;min-width:40px;min-height:40px;border:0;background:none;color:var(--ui-accent);font-size:1.25rem;line-height:1;cursor:pointer;display:none}"
+    ".ui-world[data-js] .ui-world-star{display:inline-flex;align-items:center;justify-content:center}"
+    ".ui-world-rows li{display:flex;align-items:center}.ui-world-rows li>a{flex:1;min-width:0}"
+    ".ui-world-favs{width:100%}.ui-world-favs:empty{display:none}"
+    ".ui-world-empty{margin:0;width:100%;text-align:center;font-size:1.5rem;color:var(--ui-muted)}"
+    ".ui-world-panel:has(.ui-world-favs:not(:empty)) .ui-world-empty{display:none}"
     ".ui-world-panel{position:absolute;top:8px;right:72px;width:min(320px,calc(100% - 88px));max-height:calc(100% - 16px);overflow:auto;box-sizing:border-box;"
     "padding:16px;border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);border-radius:var(--ui-radius);box-shadow:0 8px 24px rgb(0 0 0 / .25)}"
     ".ui-world-panel h3{margin:0 0 8px}.ui-world-panel button{min-height:40px}"
-    ".ui-world[data-grid] .ui-world-motion-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0}"
-    ".ui-world[data-grid] .ui-world-motion-controls[hidden]{display:none}.ui-world-motion-controls .ui-world-walk{align-items:end}"
+    ".ui-world[data-shell] .ui-world-motion-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0}"
+    ".ui-world[data-shell] .ui-world-motion-controls[hidden]{display:none}.ui-world-motion-controls .ui-world-walk{align-items:end}"
     ".ui-world-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}"
     ".ui-world-chips label{border:1px solid var(--ui-border);padding:.25rem .75rem;cursor:pointer;background:var(--ui-bg);border-radius:var(--ui-radius)}"
-    ".ui-world-spots{display:none;list-style:none;margin:0;padding:0}"
-    ".ui-world-spots a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 8px;color:inherit;text-decoration:none;border-radius:var(--ui-radius)}"
-    ".ui-world-spots a:hover,.ui-world-spots a:focus-visible{background:var(--ui-bg)}"
+    ".ui-world-rows{list-style:none;margin:0;padding:0}.ui-world-spots{display:none}"
+    ".ui-world-rows a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 8px;color:inherit;text-decoration:none;border-radius:var(--ui-radius)}"
+    ".ui-world-rows a:hover,.ui-world-rows a:focus-visible{background:var(--ui-bg)}"
     ".ui-world-arrow{flex:none;width:2em;text-align:center}"
     ".ui-world-foot{display:flex;align-items:center;gap:8px;box-sizing:border-box;min-height:var(--ui-world-foot);padding:8px;border-top:1px solid var(--ui-border)}"
     ".ui-world-foot .ui-world-bar{padding:0;border:0}"
     ".ui-world-goto-wrap{display:none;align-items:center;gap:8px;flex:1}.ui-world[data-js] .ui-world-goto-wrap{display:flex}.ui-world[data-js] .ui-world-foot .ui-world-bar{display:none}"
     ".ui-world-goto{flex:1;min-width:0;max-width:384px;min-height:40px;font:inherit;color:var(--ui-fg);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:var(--ui-radius)}"
-    ".ui-world[data-grid] .ui-sheet{z-index:3;right:80px;bottom:calc(var(--ui-world-foot) + 8px)}.ui-world[data-grid]:not(:has(.ui-world-foot)) .ui-sheet{bottom:8px}"
+    ".ui-world[data-shell] .ui-sheet{z-index:3;right:80px;bottom:calc(var(--ui-world-foot) + 8px)}.ui-world[data-shell]:not(:has(.ui-world-foot)) .ui-sheet{bottom:8px}"
     ".ui-world-body>.ui-world-dpad{position:absolute;left:8px;bottom:8px;z-index:1;opacity:.9}.ui-world-dpad[hidden]{display:none}"
     ".ui-world-dpad{display:grid;grid-template-columns:repeat(3,48px);grid-auto-rows:48px;gap:8px}"
     ".ui-world-dpad button{min-width:48px;min-height:48px;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-panel);"
@@ -2849,7 +2961,7 @@ def world_css(spec: Any, *, base: bool = True) -> str:
         rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
     categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
-    if any(f.get("tile") for f in world["floors"]):
+    if _world_shell(world):
         for f in world["floors"]:
             rules.append(f'.ui-world:has(#{wid}-floor-{f["id"]}:checked) .ui-world-spots[data-floor="{f["id"]}"]{{display:block}}')
         for c in categories:
@@ -2892,8 +3004,8 @@ export function gridRoute(rows,tile,a,b){const cell=p=>[Math.min(rows[0].length-
 export function direction(a,b,eps=8){const dx=b[0]-a[0],dy=b[1]-a[1];if(Math.abs(dx)<=eps&&Math.abs(dy)<=eps)return"📍";const ax=Math.abs(dx),ay=Math.abs(dy),sx=dx>0?1:-1,sy=dy>0?1:-1;if(ay*12<=ax*5)return sx>0?"➡️":"⬅️";if(ax*12<=ay*5)return sy>0?"⬇️":"⬆️";return sx>0?(sy>0?"↘️":"↗️"):(sy>0?"↙️":"↖️")}
 export function cleanAvatar(text){const t=String(text).trim(),n=[...t].length;return n>=1&&n<=16&&!/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}‪-‮⁦-⁩]|^\p{Zs}|\p{Zs}$/u.test(t)?t:null}
 function bindPlayer(el,floor,onMove){
- const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};controls.closest('[data-menu]')?.removeAttribute('hidden');
- const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form'),gridOnly=[...el.querySelectorAll('.ui-world-grid-only')];
+ const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
+ const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=el.querySelector('.ui-world-pause'),form=controls.querySelector('form'),gridOnly=[...el.querySelectorAll('.ui-world-grid-only')];
  let paused=false,base=performance.now(),elapsed=0;
  const time=()=>Math.min(1e9,elapsed+(paused||reduced.matches?0:(performance.now()-base)/1000));
  const freeze=()=>{elapsed=time();base=performance.now()};
@@ -2907,7 +3019,7 @@ function bindPlayer(el,floor,onMove){
   b.addEventListener('pointerdown',e=>{e.preventDefault();walk.step(dx,dy);stop();const s=states.get(floor());timer=setInterval(()=>walk.step(dx,dy),s&&s.grid?Math.max(40,500*s.grid.tile/s.speed):160)});
   for(const n of['pointerup','pointercancel','pointerleave'])b.addEventListener(n,stop);
   b.addEventListener('click',e=>{if(e.detail===0)walk.step(dx,dy)})}
- button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?'動きを再開':'動きを停止';});
+ button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?(button.dataset.resume||'動きを再開'):(button.dataset.pause||'動きを停止');});
  let wasReduced=reduced.matches;
  reduced.addEventListener('change',()=>{if(!wasReduced&&!paused)elapsed=Math.min(1e9,elapsed+(performance.now()-base)/1000);base=performance.now();wasReduced=reduced.matches;for(const s of states.values())place(s,time());});
  form.addEventListener('submit',e=>{e.preventDefault();if(form.reportValidity())walk(+form.elements.x.value,+form.elements.y.value)});
@@ -2978,11 +3090,19 @@ const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
 // Side menus (☰ ⋯), the footer pulldown (door to door) and the arrows from the player to each listed spot.
-const menus=[...el.querySelectorAll('.ui-world-menu')],shut=()=>{for(const m of menus)m.open=false},goto=el.querySelector('.ui-world-goto'),listed=[...el.querySelectorAll('.ui-world-spots a')];
-const aim=p=>{for(const a of listed){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),g=direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(floor().dataset.tile)||16);if(out.textContent!==g)out.textContent=g}if(goto){const r=el.querySelector('input[name$="-floor"]:checked');if(r&&goto.value!==r.value)goto.value=r.value}};
+const menus=[...el.querySelectorAll('.ui-world-menu')],shut=()=>{for(const m of menus)m.open=false},goto=el.querySelector('.ui-world-goto'),rows='.ui-world-rows a';
+for(const m of menus)m.hidden=false;
+const aim=p=>{for(const a of el.querySelectorAll(rows)){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),f=floor(),g=a.dataset.floor===f.dataset.floor?direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(f.dataset.tile)||16):'🚪';if(out.textContent!==g)out.textContent=g}if(goto){const r=el.querySelector('input[name$="-floor"]:checked');if(r&&goto.value!==r.value)goto.value=r.value}};
 let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}aim(p)});
 for(const m of menus)m.addEventListener('toggle',()=>{if(m.open)for(const o of menus)if(o!==m)o.open=false});
 view.addEventListener('pointerdown',shut);
+// ⭐ favourites live in the page only (nothing is stored): the ★ of a place lists it in the header's ⭐ panel, on any floor.
+const favs=el.querySelector('.ui-world-favs'),fav=new Set(),spotRows=()=>[...el.querySelectorAll('.ui-world-spots a')],
+ showFavs=()=>{for(const a of spotRows()){const on=fav.has(a.getAttribute('href')),b=a.parentElement.querySelector('.ui-world-star');b.setAttribute('aria-pressed',String(on));b.textContent=on?'★':'☆'}
+  favs.replaceChildren(...spotRows().filter(a=>fav.has(a.getAttribute('href'))).map(a=>{const li=document.createElement('li'),b=document.createElement('button');b.type='button';b.className='ui-world-star';b.setAttribute('aria-pressed','true');b.setAttribute('aria-label','お気に入り');b.textContent='★';li.append(a.cloneNode(true),b);return li}))};
+// 🌐: the chrome's aria-labels and tooltips in Japanese or English (every labelled element carries both).
+el.querySelector('[data-lang]')?.addEventListener('click',e=>{const b=e.currentTarget,to=b.getAttribute('aria-pressed')==='true'?'ja':'en';b.setAttribute('aria-pressed',String(to==='en'));el.lang=to;for(const n of el.querySelectorAll('[data-ja]')){n.setAttribute('aria-label',n.dataset[to]);n.setAttribute('title',n.dataset[to])}});
+if(favs)el.addEventListener('click',e=>{const b=e.target.closest('.ui-world-star');if(!b)return;const h=b.parentElement.querySelector('a').getAttribute('href');if(fav.has(h))fav.delete(h);else fav.add(h);showFavs()});
 goto?.addEventListener('change',()=>{const r=[...el.querySelectorAll('input[name$="-floor"]')].find(i=>i.value===goto.value);if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}});
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
@@ -2995,6 +3115,7 @@ form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
 const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
+el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();close();follow=false;const r=el.querySelector('input[name$="-floor"]'),all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}home()});
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
 const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
@@ -3002,7 +3123,7 @@ view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)retur
 const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
 addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-spots a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-spots a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-rows a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-rows a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
 const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0]};
 el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&walk.step(...k))e.preventDefault()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
@@ -3024,11 +3145,13 @@ def world_document(spec: Any, *, theme: str = "modern") -> str:
 
 
 def catalogue_world(items: Any, *, id: str = "catalogue", title: str = "Catalogue", columns: int = 8,
-                    cell: tuple[int, int] = (160, 64), margin: int = 64) -> dict[str, Any]:
+                    cell: tuple[int, int] = (160, 64), margin: int = 64, shell: bool = False,
+                    tools: dict[str, Any] | None = None) -> dict[str, Any]:
     """A ``web-ui-world/1`` map from a flat catalogue, one floor per ``group`` (more than 64 in a group continue on another floor).
 
     Each item is ``{"id", "label", "group"}`` plus optional ``"emoji"``, ``"category"`` (a filter chip) and ``"body"`` (the info sheet).
-    The page never changes: tap a spot, read its sheet. Spots sit on a grid whose sizes default to multiples of 8. For a list of screens like
+    The page never changes: tap a spot, read its sheet. ``shell=True`` gives it the header / side / footer layout (🏠 ⭐ ⚙️, ☰ the places, a
+    floor pulldown) so a long catalogue needs no scrolling and no page change; ``tools`` adds emoji of your own (see ``web-ui-world/1``). Spots sit on a grid whose sizes default to multiples of 8. For a list of screens like
     flutter_navigation_basic's ``screens.json`` map the fields first, e.g. ``{"id": s["name"], "label": s["title"], "emoji": s["emoji"],
     "group": s["category"], "category": s["domainKey"], "body": s["description"]}``; the data itself stays with its owner."""
     if not isinstance(items, list) or not 1 <= len(items) <= 512:
@@ -3062,7 +3185,7 @@ def catalogue_world(items: Any, *, id: str = "catalogue", title: str = "Catalogu
                                      for i, spot in enumerate(chunk)]})
     if len(floors) > 8:
         raise ValueError("a world has at most 8 floors: fewer groups, or fewer than 64 items in each")
-    spec = {"schema": WORLD_SCHEMA, "id": id, "title": title, "floors": floors}
+    spec = {"schema": WORLD_SCHEMA, "id": id, "title": title, "floors": floors, **({"shell": True} if shell else {}), **({"tools": tools} if tools else {})}
     return world_validate(spec)
 
 
@@ -15894,6 +16017,8 @@ EXAMPLES.update({
     "school": {
         "schema": WORLD_SCHEMA, "id": "school", "title": "School (prototype)", "zoom_max": 4,
         "avatars": ["🙂", "😎", "🤓", "🐱", "🐶", "🐰", "🦊", "🐼", "🐸", "🦄", "🐙", "🌸", "⭐", "🍎", "⚽", "🚀", "先生", "A"],
+        "tools": {"🗺️": {"label": "見どころ", "label_en": "Highlights", "spots": ["classroom-board", "flowers"]},
+                  "🏫": {"label": "学校", "label_en": "School", "body": "教室と校庭があります。フッターの🚪で行き来できます。"}},
         "board": {"title": "INFO", "items": [
             {"text": "朝の会", "at": "08:40"}, {"text": "1時間目", "at": "09:00"}, {"text": "給食", "at": "12:20"},
             {"text": "下校", "at": "15:30"}, {"text": "今日の授業", "gauge": {"from": "09:00", "to": "15:30"}}]},
