@@ -3295,7 +3295,7 @@ function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-vie
 // The floor and the category are radios (they work without JS): read the checked floor, tick a floor, or clear the category filter.
 const shown=()=>el.querySelector('input[name$="-floor"]:checked'),radio=(kind,value)=>el.querySelector(`input[name$="-${kind}"][value="${value}"]`),
  allCategories=()=>{const all=radio('cat','');if(all)all.checked=true},
- setFloor=(value,notify)=>{const r=radio('floor',value);if(r){r.checked=true;if(notify)r.dispatchEvent(new Event('change',{bubbles:true}))}};
+ setFloor=(value,notify)=>{const r=radio('floor',value);if(r){r.checked=true;const select=el.querySelector('.ui-world-goto');if(select)select.value=r.value;if(notify)r.dispatchEvent(new Event('change',{bubbles:true}))}};
 const floor=()=>{const r=shown();return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
 const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
 const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z);onFloor()};

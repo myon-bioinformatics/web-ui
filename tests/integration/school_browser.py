@@ -365,11 +365,11 @@ class SchoolTests(unittest.TestCase):
 
     def test_real_floor_shows_a_chosen_photo_or_the_camera_only_in_the_page(self):
         """🖼️📷 on the real floor: ask() offers camera or photo; the picture sits behind the props, is released by 🧹 or by leaving (camera), and is never stored or sent."""
-        from PIL import Image
+        from tool.image_support.png import rgb_png
         path = Path(self.tmp.name) / "overworld.html"
         path.write_text(web_ui.world_document(web_ui.example_data("overworld")), encoding="utf-8")
         photo = Path(self.tmp.name) / "room.png"
-        Image.new("RGB", (64, 48), (200, 80, 40)).save(photo)
+        photo.write_bytes(rgb_png(64, 48, (200, 80, 40)))
         browser = record_demo.launch(self.pw, extra=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
         self.addCleanup(browser.close)
         context = browser.new_context(viewport={"width": 1280, "height": 800}, permissions=["camera"])
