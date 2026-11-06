@@ -8,7 +8,7 @@ import web_ui as ui
 
 def spec():
     value = ui.example_data('world')
-    value['board']['shared_issue'] = 'myon-bioinformatics/web-ui/123'
+    value['board']['shared_issue'] = 'myon-bioinformatics/PySaiyanWeBoo/123'
     return value
 
 
@@ -43,7 +43,7 @@ def test_shared_node(tmp_path):
 
 def test_approved_example_destination():
     value = ui.example_data('world')
-    assert value['board']['shared_issue'] == 'myon-bioinformatics/web-ui/110'
+    assert value['board']['shared_issue'] == 'myon-bioinformatics/PySaiyanWeBoo/110'
     html = ui.world_document(value)
-    assert 'https://github.com/myon-bioinformatics/web-ui/issues/110#new_comment_field' in html
+    assert 'https://github.com/myon-bioinformatics/PySaiyanWeBoo/issues/110#new_comment_field' in html
     assert 'issues/123#new_comment_field' not in html

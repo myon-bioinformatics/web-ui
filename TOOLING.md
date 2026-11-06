@@ -54,7 +54,7 @@ current PyPI release without conflict.
 uv run pytest -v
 uv run --group stagehand pytest -v
 uv run --locked --group stagehand python tool/web_ui_tooling_meta.py
-python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/web-ui --root . --output-dir /tmp/web-ui-metadata
+python -S tool/vendor/gh_identity.py repo-metadata --format v1 --repository myon-bioinformatics/PySaiyanWeBoo --root . --output-dir /tmp/PySaiyanWeBoo-metadata
 ```
 
 `web_ui_tooling_meta.py` delegates Python runtime and Git/GitHub CLI/Node/npx versions

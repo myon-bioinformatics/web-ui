@@ -1,4 +1,4 @@
-# web-ui
+# PySaiyanWeBoo
 
 <p align="center">
   <img src="docs/brand/icon.png" alt="web-ui icon" width="160" />
