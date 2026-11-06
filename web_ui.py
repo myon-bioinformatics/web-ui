@@ -2307,6 +2307,52 @@ def _world_id(value: Any, label: str, seen: set[str]) -> str:
     return value
 
 
+# Direction from two positions. A point is the centre of an object or the middle of one of its edges; the arrow says which way to go
+# from the first point to reach the second (screen y grows downward, so a target below is ⬇️ and a target above and to the right is ↗️).
+# The page repeats this arithmetic (``direction`` in WORLD_JS); integers only meet an integer slope test, so both always agree.
+WORLD_ANCHORS = {"center": (.5, .5), "left": (0, .5), "right": (1, .5), "top": (.5, 0), "bottom": (.5, 1),
+                 "top-left": (0, 0), "top-right": (1, 0), "bottom-left": (0, 1), "bottom-right": (1, 1)}
+WORLD_HERE = "📍"
+_WORLD_ARROWS = {(1, 0): "➡️", (1, 1): "↘️", (0, 1): "⬇️", (-1, 1): "↙️", (-1, 0): "⬅️", (-1, -1): "↖️", (0, -1): "⬆️", (1, -1): "↗️"}
+# Plain, text and emoji forms of an arrow name the same anchor, as in Ironmate's focus arrows; 🎯 and 📍 mean the centre.
+_WORLD_ARROW_ANCHORS = {"←": "left", "⬅": "left", "→": "right", "➡": "right", "↑": "top", "⬆": "top", "↓": "bottom", "⬇": "bottom",
+                        "↖": "top-left", "↗": "top-right", "↙": "bottom-left", "↘": "bottom-right", "🎯": "center", "📍": "center"}
+
+
+def world_point(rect: Any, at: str = "center") -> tuple[float, float]:
+    """The point of ``rect`` (``(x, y, w, h)``, or a dict with those keys) named by ``at``: ``center``, an edge (``left``, ``right``,
+    ``top``, ``bottom``) or a corner (``top-left`` ...). A spot or a person is a rect with no size."""
+    if at not in WORLD_ANCHORS:
+        raise ValueError(f"at is one of {', '.join(WORLD_ANCHORS)}: {at!r}")
+    x, y, w, h = (rect[k] for k in "xywh") if isinstance(rect, dict) else rect
+    return x + w * WORLD_ANCHORS[at][0], y + h * WORLD_ANCHORS[at][1]
+
+
+def world_direction(a: Any, b: Any, eps: float = 8) -> str:
+    """The arrow pointing from point ``a`` to point ``b``: eight sectors of 45 degrees, or 📍 when both axes are within ``eps``.
+
+    The sectors are tested with an integer slope (5/12, about 22.6 degrees), so no trigonometry and no rounding can differ in the browser."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    if abs(dx) <= eps and abs(dy) <= eps:
+        return WORLD_HERE
+    ax, ay = abs(dx), abs(dy)
+    if ay * 12 <= ax * 5:
+        key = (1 if dx > 0 else -1, 0)
+    elif ax * 12 <= ay * 5:
+        key = (0, 1 if dy > 0 else -1)
+    else:
+        key = (1 if dx > 0 else -1, 1 if dy > 0 else -1)
+    return _WORLD_ARROWS[key]
+
+
+def world_arrow_anchor(arrow: str) -> str:
+    """The anchor an arrow emoji names (``↘️`` is ``bottom-right``, ``⬅`` is ``left``, ``🎯`` is ``center``); variation selectors are ignored."""
+    name = arrow.replace("︎", "").replace("️", "")
+    if name not in _WORLD_ARROW_ANCHORS:
+        raise ValueError(f"not an arrow: {arrow!r}")
+    return _WORLD_ARROW_ANCHORS[name]
+
+
 def _world_emoji(value: Any) -> str:
     """An emoji (or any short non-ASCII symbol string); plain ASCII is refused so text cannot pose as a character."""
     if not isinstance(value, str) or not 1 <= len(value) <= 16 or any(c.isascii() for c in value):
@@ -2616,7 +2662,7 @@ def _map_html(world: dict[str, Any]) -> str:
     radios += "".join(
         f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
         f'{" checked" if not c else ""}>' for c in cat_ids)
-    labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
+    floor_labels = labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
     if categories:
         labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
     stages, sheet = [], []
@@ -2642,21 +2688,41 @@ def _map_html(world: dict[str, Any]) -> str:
     avatars, tiled = world.get("avatars", []), any(f.get("tile") for f in floors)
     steps = "".join(f'<button type="button" data-step="{d}" aria-label="{a}">{g}</button>'
                     for d, a, g in (("0,-1", "上へ", "▲"), ("-1,0", "左へ", "◀"), ("1,0", "右へ", "▶"), ("0,1", "下へ", "▼")))
-    extra = ((f'<div class="ui-world-grid-only" hidden><div class="ui-world-dpad" role="group" aria-label="移動">{steps}</div></div>'
-              '<button type="button" class="ui-world-grid-only" data-me hidden>自分の場所</button>' if tiled else "") +
+    extra = (('<button type="button" class="ui-world-grid-only" data-me hidden>自分の場所</button>' if tiled else "") +
              ('<button type="button" data-pick-open>絵文字を変える</button>' if avatars else ""))
+    playable = bool(world["board"] or any(f["player"] or f["actors"] for f in floors))
+    controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+                '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
+                if playable else "")
     pick = ((f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>'
              '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) +
              '</div><form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
              '<button>これにする</button></form></div></div>') if avatars else "")
-    return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"{" data-grid" if tiled else ""} '
-            f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
-            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>' +
-            ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
-             '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
-             f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
-             if world["board"] or any(f["player"] or f["actors"] for f in floors) else "") +
-            f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside>{pick}</section>')
+    head = f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"{" data-grid" if tiled else ""} aria-label="{escape(world["title"], quote=True)}">'
+    view = f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>'
+    tail = f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside>{pick}</section>'
+    if not tiled:
+        return f'{head}{radios}<nav class="ui-world-bar">{labels}</nav>{_board_html(world["board"])}{view}{controls}{tail}'
+    # A grid world keeps the page short: the header is the info board, the side (☰ ⋯) holds this screen's own controls and the
+    # footer is the pulldown that moves door to door between floors (plain floor labels stand in for it until JS runs).
+    lists = "".join(
+        f'<ul class="ui-world-spots" data-floor="{f["id"]}">' + "".join(
+            f'<li data-category="{s["category"]}"><a href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}">'
+            f'<span class="ui-world-arrow" aria-hidden="true">{WORLD_HERE}</span>{escape(s["label"])}</a></li>' for s in f["spots"]) + '</ul>' for f in floors)
+    chips = ("".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
+             if categories else "")
+    spots_menu = (f'<details class="ui-world-menu" data-menu="spots"><summary aria-label="行き先の一覧">☰</summary><div class="ui-world-panel">'
+                  f'<h3>行き先</h3>{f"<nav class=ui-world-chips>{chips}</nav>" if chips else ""}{lists}</div></details>')
+    more_menu = (f'<details class="ui-world-menu" data-menu="more" hidden><summary aria-label="そのほか">⋯</summary>'
+                 f'<div class="ui-world-panel">{controls}</div></details>') if controls else ""
+    dpad = f'<div class="ui-world-dpad ui-world-grid-only" role="group" aria-label="移動" hidden>{steps}</div>' if playable else ""
+    foot = (f'<footer class="ui-world-foot"><nav class="ui-world-bar">{floor_labels}</nav>'
+            '<label class="ui-world-goto-wrap">🚪 <select class="ui-world-goto" aria-label="ドアからドアへ移動">' +
+            "".join(f'<option value="{f["id"]}"{" selected" if i == 0 else ""}>{escape(f["label"])}</option>' for i, f in enumerate(floors)) +
+            '</select></label></footer>') if len(floors) > 1 else ""
+    return (f'{head}{radios}{_board_html(world["board"])}<div class="ui-world-body">{view}{dpad}'
+            f'<div class="ui-world-side">{spots_menu}{more_menu}</div></div>{foot}{tail}')
 
 
 def world_html(spec: Any) -> str:
@@ -2720,9 +2786,32 @@ _WORLD_CSS = (
     ".ui-prop[data-kind=shelf]{background:color-mix(in srgb,var(--ui-muted) 35%,var(--ui-panel))}"
     ".ui-prop[data-kind=chair]{border:0;background:radial-gradient(circle,var(--ui-muted) 0 52%,transparent 54%)}"
     ".ui-prop[data-kind=rug]{border-style:dashed;background:color-mix(in srgb,var(--ui-accent) 10%,transparent)}"
-    ".ui-world[data-grid]{--ui-world-h:min(56vh,512px)}"
-    ".ui-world[data-grid] .ui-world-motion-controls{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}"
-    ".ui-world[data-grid] .ui-world-motion-controls[hidden]{display:none}.ui-world[data-grid] .ui-world-grid-only{order:-1}"
+    ".ui-world[data-grid]{--ui-world-h:min(56vh,512px);--ui-world-foot:56px}"
+    # Header: the info board. Side: this screen's own controls, as 48px buttons that open a panel over the map (the page never grows taller).
+    # Footer: the door-to-door pulldown.
+    ".ui-world-body{position:relative;display:flex}.ui-world-body>.ui-world-view{flex:1;min-width:0}"
+    ".ui-world-side{display:flex;flex-direction:column;gap:8px;padding:8px;z-index:2;border-left:1px solid var(--ui-border);background:var(--ui-panel)}"
+    ".ui-world-menu[hidden]{display:none}"
+    ".ui-world-menu>summary{display:flex;align-items:center;justify-content:center;width:48px;height:48px;box-sizing:border-box;list-style:none;cursor:pointer;"
+    "user-select:none;-webkit-user-select:none;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);color:var(--ui-fg);border-radius:var(--ui-radius)}"
+    ".ui-world-menu>summary::-webkit-details-marker{display:none}.ui-world-menu[open]>summary{background:var(--ui-accent);color:var(--ui-bg)}"
+    ".ui-world-panel{position:absolute;top:8px;right:72px;width:min(320px,calc(100% - 88px));max-height:calc(100% - 16px);overflow:auto;box-sizing:border-box;"
+    "padding:16px;border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);border-radius:var(--ui-radius);box-shadow:0 8px 24px rgb(0 0 0 / .25)}"
+    ".ui-world-panel h3{margin:0 0 8px}.ui-world-panel button{min-height:40px}"
+    ".ui-world[data-grid] .ui-world-motion-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0}"
+    ".ui-world[data-grid] .ui-world-motion-controls[hidden]{display:none}.ui-world-motion-controls .ui-world-walk{align-items:end}"
+    ".ui-world-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}"
+    ".ui-world-chips label{border:1px solid var(--ui-border);padding:.25rem .75rem;cursor:pointer;background:var(--ui-bg);border-radius:var(--ui-radius)}"
+    ".ui-world-spots{display:none;list-style:none;margin:0;padding:0}"
+    ".ui-world-spots a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 8px;color:inherit;text-decoration:none;border-radius:var(--ui-radius)}"
+    ".ui-world-spots a:hover,.ui-world-spots a:focus-visible{background:var(--ui-bg)}"
+    ".ui-world-arrow{flex:none;width:2em;text-align:center}"
+    ".ui-world-foot{display:flex;align-items:center;gap:8px;box-sizing:border-box;min-height:var(--ui-world-foot);padding:8px;border-top:1px solid var(--ui-border)}"
+    ".ui-world-foot .ui-world-bar{padding:0;border:0}"
+    ".ui-world-goto-wrap{display:none;align-items:center;gap:8px;flex:1}.ui-world[data-js] .ui-world-goto-wrap{display:flex}.ui-world[data-js] .ui-world-foot .ui-world-bar{display:none}"
+    ".ui-world-goto{flex:1;min-width:0;max-width:384px;min-height:40px;font:inherit;color:var(--ui-fg);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:var(--ui-radius)}"
+    ".ui-world[data-grid] .ui-sheet{z-index:3;right:80px;bottom:calc(var(--ui-world-foot) + 8px)}.ui-world[data-grid]:not(:has(.ui-world-foot)) .ui-sheet{bottom:8px}"
+    ".ui-world-body>.ui-world-dpad{position:absolute;left:8px;bottom:8px;z-index:1;opacity:.9}.ui-world-dpad[hidden]{display:none}"
     ".ui-world-dpad{display:grid;grid-template-columns:repeat(3,48px);grid-auto-rows:48px;gap:8px}"
     ".ui-world-dpad button{min-width:48px;min-height:48px;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-panel);"
     "color:var(--ui-fg);border-radius:var(--ui-radius);cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}"
@@ -2760,6 +2849,11 @@ def world_css(spec: Any, *, base: bool = True) -> str:
         rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
     categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    if any(f.get("tile") for f in world["floors"]):
+        for f in world["floors"]:
+            rules.append(f'.ui-world:has(#{wid}-floor-{f["id"]}:checked) .ui-world-spots[data-floor="{f["id"]}"]{{display:block}}')
+        for c in categories:
+            rules.append(f'.ui-world:has(#{wid}-cat-value-{c}:checked) .ui-world-spots li:not([data-category="{c}"]){{display:none}}')
     for f in world["floors"]:
         for a in f["actors"]:
             path = villager_path(a["seed"] if a["seed"] is not None else zlib.crc32(f"{wid}:{a['id']}".encode()),
@@ -2795,9 +2889,10 @@ export function gridPath(rows,s,g){const W=rows[0].length,H=rows.length,fit=c=>[
  let end=g;if(!parent.has(k(g))){const d=c=>(c[0]-g[0])**2+(c[1]-g[1])**2;end=order.reduce((a,b)=>d(b)<d(a)?b:a)}
  const path=[end];for(let p=parent.get(k(end));p;p=parent.get(k(p)))path.push(p);return path.reverse()}
 export function gridRoute(rows,tile,a,b){const cell=p=>[Math.min(rows[0].length-1,Math.max(0,Math.floor(p[0]/tile))),Math.min(rows.length-1,Math.max(0,Math.floor(p[1]/tile)))],t=cell(b),path=gridPath(rows,cell(a),t),mid=path.slice(1).map(c=>[(c[0]+.5)*tile,(c[1]+.5)*tile]),end=path[path.length-1];return end[0]===t[0]&&end[1]===t[1]?[a,...mid.slice(0,-1),b]:[a,...mid]}
+export function direction(a,b,eps=8){const dx=b[0]-a[0],dy=b[1]-a[1];if(Math.abs(dx)<=eps&&Math.abs(dy)<=eps)return"📍";const ax=Math.abs(dx),ay=Math.abs(dy),sx=dx>0?1:-1,sy=dy>0?1:-1;if(ay*12<=ax*5)return sx>0?"➡️":"⬅️";if(ax*12<=ay*5)return sy>0?"⬇️":"⬆️";return sx>0?(sy>0?"↘️":"↗️"):(sy>0?"↙️":"↖️")}
 export function cleanAvatar(text){const t=String(text).trim(),n=[...t].length;return n>=1&&n<=16&&!/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}‪-‮⁦-⁩]|^\p{Zs}|\p{Zs}$/u.test(t)?t:null}
 function bindPlayer(el,floor,onMove){
- const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
+ const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};controls.closest('[data-menu]')?.removeAttribute('hidden');
  const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form'),gridOnly=[...el.querySelectorAll('.ui-world-grid-only')];
  let paused=false,base=performance.now(),elapsed=0;
  const time=()=>Math.min(1e9,elapsed+(paused||reduced.matches?0:(performance.now()-base)/1000));
@@ -2882,7 +2977,13 @@ const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
-let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}});
+// Side menus (☰ ⋯), the footer pulldown (door to door) and the arrows from the player to each listed spot.
+const menus=[...el.querySelectorAll('.ui-world-menu')],shut=()=>{for(const m of menus)m.open=false},goto=el.querySelector('.ui-world-goto'),listed=[...el.querySelectorAll('.ui-world-spots a')];
+const aim=p=>{for(const a of listed){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),g=direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(floor().dataset.tile)||16);if(out.textContent!==g)out.textContent=g}if(goto){const r=el.querySelector('input[name$="-floor"]:checked');if(r&&goto.value!==r.value)goto.value=r.value}};
+let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}aim(p)});
+for(const m of menus)m.addEventListener('toggle',()=>{if(m.open)for(const o of menus)if(o!==m)o.open=false});
+view.addEventListener('pointerdown',shut);
+goto?.addEventListener('change',()=>{const r=[...el.querySelectorAll('input[name$="-floor"]')].find(i=>i.value===goto.value);if(r){r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}))}});
 // Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
 const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
 if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity('1〜16文字の絵文字か文字を入力してください');box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
@@ -2901,16 +3002,16 @@ view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)retur
 const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
 addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot,.ui-actor");if(a){e.preventDefault();if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-spots a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-spots a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
 const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0]};
-el.addEventListener("keydown",e=>{if(e.key==="Escape")close();const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&walk.step(...k))e.preventDefault()});
+el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&walk.step(...k))e.preventDefault()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
 const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"],.ui-actor[href="#${CSS.escape(hash)}"]`);if(a){open(hash);if(a.dataset.x!==undefined)focusSpot(a)}else open(null)};
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,motionRoute,routeSample,gridPath,gridRoute,cleanAvatar,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,motionRoute,routeSample,gridPath,gridRoute,direction,cleanAvatar,bindWorlds};
 bindWorlds();
 """
 

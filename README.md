@@ -59,7 +59,7 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 [Motion and clock ownership](docs/world-motion.md) explains Python-generated plans, the browser
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 [School world](docs/world-classroom.md) adds a floor `tile` grid with solid `props` (desks, board, shelves; `classroom_floor()` writes a classroom),
-world `avatars` (pick an emoji, a short text or both first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`).
+world `avatars` (pick an emoji, a short text or both first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`). The page stays short: the info board on top, ☰ ⋯ side menus (places with direction arrows, settings) and a door-to-door pulldown in the footer.
 From another repository: `echo '{"schema":"web-ui-world/1","floors":[{"classroom":{}}]}' | python -S web_ui.py --world - > school.html` (`--world -` reads stdin; Node: `node vendor/py_launch.cjs -- web_ui.py --world -`).
 
 Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --force` ([what each shows](docs/world-classroom.md#demos)):
@@ -67,8 +67,10 @@ Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --forc
 | Pick a character | Type your own | Arrow keys / WASD |
 |---|---|---|
 | <img src="docs/demo/school-pick.gif" width="240" alt="The picker comes first; a fox walks into the room"> | <img src="docs/demo/school-avatar-text.gif" width="240" alt="Typing 先生 and an apple as the character"> | <img src="docs/demo/school-keys.gif" width="240" alt="A cat walks with the keys and is stopped by desks"> |
-| **Tap to walk** | **Phone** | **Floors and spots** |
-| <img src="docs/demo/school-tap.gif" width="240" alt="Tapping a chair; the player walks around the desks"> | <img src="docs/demo/school-phone.gif" width="240" alt="On a phone: the pad, dragging the map, 自分の場所"> | <img src="docs/demo/school-floors.gif" width="240" alt="Schoolyard, a spot's sheet, back to the classroom"> |
+| **Tap to walk** | **Phone** | **Side menu (☰ ⋯)** |
+| <img src="docs/demo/school-tap.gif" width="240" alt="Tapping a chair; the player walks around the desks"> | <img src="docs/demo/school-phone.gif" width="240" alt="On a phone: the pad, dragging the map, 自分の場所 in the ⋯ menu"> | <img src="docs/demo/school-menu.gif" width="240" alt="The ☰ list shows an arrow to each place; tapping 黒板 walks there and the arrow becomes 📍"> |
+| **Door to door (footer)** | | |
+| <img src="docs/demo/school-floors.gif" width="240" alt="The footer pulldown moves to the schoolyard and back"> | | |
 
 <img src="docs/demo/school-oneliner.gif" width="320" alt="One command writes the school page; the page opens with the picker">
 

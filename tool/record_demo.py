@@ -44,11 +44,18 @@ SCENES: dict = {}
 class Camera:
     """Screenshots with their real times; scenes call hold/until where the GIF should show time passing."""
 
-    def __init__(self, page):
-        self.page, self.shots = page, []
+    def __init__(self, page, crop=None):
+        self.page, self.crop, self.shots = page, crop, []
+
+    def png(self):
+        """One screenshot; with ``crop`` (a selector) only that element's box, so the GIF is the world and not the empty page around it."""
+        if not self.crop:
+            return self.page.screenshot(type="png")
+        box = self.page.eval_on_selector(self.crop, "e => { const r = e.getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width, height: r.height} }")
+        return self.page.screenshot(type="png", clip={k: round(v) for k, v in box.items()})
 
     def snap(self):
-        self.shots.append((time.monotonic(), self.page.screenshot(type="png")))
+        self.shots.append((time.monotonic(), self.png()))
 
     def hold(self, ms):
         end = time.monotonic() + ms / 1000
@@ -58,10 +65,13 @@ class Camera:
             self.page.wait_for_timeout(max(0, FRAME_MS - (time.monotonic() - began) * 1000))
 
     def zoom(self, anchor=(0.5, 0.5), factor=2.5, steps=6, hold_ms=1500):
-        """Zoom into what is on screen toward ``anchor`` (x, y from 0 to 1) and stay there: the demos are shown small in the README.
-        Every pixel changes in a zoom, so it costs a few frames of GIF size; it does not zoom back (the loop starts over)."""
+        """Zoom into what is on screen toward ``anchor`` and stay there: the demos are shown small in the README.
+        ``anchor`` is (x, y) from 0 to 1, an anchor name (``"bottom-right"``) or an arrow emoji (``↘️``, ``⬅``, ``🎯`` for the centre), the
+        same table web_ui uses for directions. Every pixel changes in a zoom, so it costs a few frames of GIF size; it does not zoom back."""
         from PIL import Image
-        source = Image.open(io.BytesIO(self.page.screenshot(type="png"))).convert("RGB")
+        if isinstance(anchor, str):
+            anchor = web_ui.WORLD_ANCHORS[anchor if anchor in web_ui.WORLD_ANCHORS else web_ui.world_arrow_anchor(anchor)]
+        source = Image.open(io.BytesIO(self.png())).convert("RGB")
         width, height = source.size
         forward = []
         for i in range(1, steps + 1):
@@ -108,9 +118,9 @@ def encode(shots, *, width=None, tail_ms=TAIL_MS):
     return out.getvalue()
 
 
-def scene(name, width=560, height=720, touch=False):
+def scene(name, width=560, height=720, touch=False, crop=".ui-world"):
     def add(fn):
-        SCENES[name] = (width, height, touch, fn)
+        SCENES[name] = (width, height, touch, crop, fn)
         return fn
     return add
 
@@ -152,6 +162,12 @@ def pad(page, cam, step, ms):
     cam.hold(300)
 
 
+def more(page, cam, name="more", ms=700):
+    """Open a side menu: ``more`` is the ⋯ menu (picker, find myself, pause, walk to X/Y), ``spots`` is the ☰ list of places."""
+    page.click(f'.ui-world-menu[data-menu="{name}"] summary')
+    cam.hold(ms)
+
+
 @scene("pick")
 def _pick(page, cam, tmp):
     """The picker comes first; choosing a character puts it in the room."""
@@ -167,6 +183,7 @@ def _avatar_text(page, cam, tmp):
     """Change the character later: type any text, an emoji or both."""
     choose(page, "🙂")
     cam.hold(600)
+    more(page, cam)
     page.click("[data-pick-open]")
     cam.hold(900)
     page.click(".ui-world-pick-form input")
@@ -225,8 +242,24 @@ def _phone(page, cam, tmp):
         cam.hold(FRAME_MS)
     page.mouse.up()
     cam.hold(700)
+    more(page, cam)
     page.click("[data-me]")
     cam.hold(1400)
+
+
+@scene("menu")
+def _menu(page, cam, tmp):
+    """The side menu: the ☰ list shows an arrow from you to each place; tap one and the arrow turns to 📍 as you arrive."""
+    choose(page, "🐱")
+    cam.hold(500)
+    pad(page, cam, "0,-1", 900)
+    more(page, cam, "spots", 1800)
+    page.click('.ui-world-spots a[href="#school-spot-classroom-board"]')
+    cam.until(SETTLED)
+    cam.hold(800)
+    page.click(".ui-sheet-close:visible")
+    cam.hold(600)
+    more(page, cam, "spots", 1600)
 
 
 @scene("floors")
@@ -234,13 +267,13 @@ def _floors(page, cam, tmp):
     """Floors and spots: go to the schoolyard, tap a spot, read it, come back to the classroom."""
     choose(page, "🐸")
     cam.hold(500)
-    page.click('label:has-text("校庭")')
+    page.select_option(".ui-world-goto", "yard")
     cam.hold(1200)
     page.click('a.ui-spot[href="#school-spot-flowers"]')
     cam.hold(1600)
     page.click(".ui-sheet-close:visible")
     cam.hold(600)
-    page.click('label:has-text("教室")')
+    page.select_option(".ui-world-goto", "classroom")
     cam.hold(900)
     page.click('a.ui-spot[href="#school-spot-classroom-board"]')
     cam.hold(1600)
@@ -252,7 +285,7 @@ TERMINAL = ('<meta charset="utf-8"><body style="margin:0;background:#0d1117;colo
             '<pre style="margin:0;padding:24px;white-space:pre-wrap;word-break:break-all"></pre>')
 
 
-@scene("oneliner")
+@scene("oneliner", crop=None)
 def _oneliner(page, cam, tmp):
     """From another repository: one command writes the school page. The output shown is the real output of that run."""
     spec = '{"schema":"web-ui-world/1","avatars":["🙂","先生"],"floors":[{"classroom":{"rows":5,"groups":3}}]}'
@@ -309,12 +342,12 @@ def record(out, names=None, *, chrome=None, width=None, force=False, browser=Non
             browser = launch(stack.enter_context(sync_playwright()), chrome)
             stack.callback(browser.close)
         for name in names:
-            w, h, touch, fn = SCENES[name]
+            w, h, touch, crop, fn = SCENES[name]
             context = browser.new_context(viewport={"width": w, "height": h}, has_touch=touch, is_mobile=touch)
             try:
                 page = context.new_page()
                 page.goto((tmp / "school.html").as_uri())
-                cam = Camera(page)
+                cam = Camera(page, crop)
                 fn(page, cam, tmp)
                 targets[name].write_bytes(encode(cam.shots, width=width))
             finally:

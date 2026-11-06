@@ -94,11 +94,13 @@ class SchoolTests(unittest.TestCase):
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["ねこ🐱", "ねこ🐱"])
+        page.click('.ui-world-menu[data-menu="more"] summary')            # the ⋯ menu holds the picker button
         page.click("[data-pick-open]")
         page.fill('.ui-world-pick-form input', "🦖")
         page.press('.ui-world-pick-form input', "Enter")
         self.assertFalse(page.is_visible(".ui-world-pick"))
         self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => els.map(e => e.textContent)"), ["🦖", "🦖"])
+        page.click('.ui-world-menu[data-menu="more"] summary')            # the ⋯ menu holds the picker button
         page.click("[data-pick-open]")
         self.assertTrue(page.is_visible(".ui-world-pick"))
         self.assertEqual(self.errors, [])
@@ -195,10 +197,62 @@ class SchoolTests(unittest.TestCase):
         self.assertNotEqual(self.cell(page), before)
         self.assertEqual(self.errors, [])
 
+    def test_side_menus_footer_pulldown_and_arrows(self):
+        """Header: the board. Side: ☰ places with arrows, ⋯ settings. Footer: the door-to-door pulldown. The page never grows taller."""
+        page = self.open(390, 844, True)
+        self.start(page)
+        self.assertLessEqual(page.evaluate("document.documentElement.scrollHeight - innerHeight"), 0)
+        self.assertFalse(page.is_visible(".ui-world-panel"))
+        self.assertFalse(page.is_visible(".ui-world-foot .ui-world-bar"))              # the pulldown replaces the floor labels
+        spots, more = '.ui-world-menu[data-menu="spots"]', '.ui-world-menu[data-menu="more"]'
+        arrows = lambda floor: page.eval_on_selector_all(f'.ui-world-spots[data-floor="{floor}"] .ui-world-arrow', "els => els.map(e => e.textContent)")
+        page.click(f"{spots} summary")
+        self.assertTrue(page.is_visible('.ui-world-spots[data-floor="classroom"]'))
+        self.assertFalse(page.is_visible('.ui-world-spots[data-floor="yard"]'))
+        page.wait_for_function("() => document.querySelector('.ui-world-arrow').textContent !== '📍'")
+        self.assertEqual(arrows("classroom"), ["⬆️", "⬆️", "⬆️"])                      # standing at the door: all three are ahead
+        page.click(f"{more} summary")                                                  # one menu at a time
+        page.wait_for_function(f"() => !document.querySelector('{spots}').open")      # (the toggle event is queued)
+        page.keyboard.press("Escape")
+        self.assertFalse(page.evaluate(f"document.querySelector('{more}').open"))
+        page.click(f"{spots} summary")
+        page.click('.ui-world-spots a[href="#school-spot-classroom-board"]')          # a place in the list: walk there and read it
+        self.assertFalse(page.evaluate(f"document.querySelector('{spots}').open"))
+        page.wait_for_function("() => { const p = document.querySelector('.ui-floor[data-floor=\"classroom\"] .ui-player'); const s = p.style;"
+                               " return Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")
+        self.assertTrue(page.is_visible("#school-spot-classroom-board"))
+        page.click(".ui-sheet-close:visible")
+        page.click(f"{spots} summary")
+        page.wait_for_function("() => document.querySelector('.ui-world-arrow').textContent === '📍'")   # arrived: within a tile
+        player = page.evaluate(POS)                                                    # the page's arrows are the oracle's, point for point
+        want = [web_ui.world_direction(player, [x, y], 32) for x, y in ((192, 16), (192, 112), (192, 432))]
+        self.assertEqual(arrows("classroom"), want)
+        self.assertEqual(want[0], "📍")
+        page.keyboard.press("Escape")
+        page.select_option(".ui-world-goto", "yard")                                   # door to door: the footer pulldown
+        page.click(f"{spots} summary")
+        self.assertTrue(page.is_visible('.ui-world-spots[data-floor="yard"]'))
+        self.assertFalse(page.is_visible('.ui-world-spots[data-floor="classroom"]'))
+        page.click('.ui-world-spots a[href="#school-spot-flowers"]')
+        self.assertEqual(page.input_value(".ui-world-goto"), "yard")
+        self.assertTrue(page.is_visible("#school-spot-flowers"))
+        self.assertEqual(self.errors, [])
+
+    def test_without_javascript_the_footer_keeps_plain_floor_labels(self):
+        page = self.open(js=False)
+        self.assertTrue(page.is_visible(".ui-world-foot .ui-world-bar"))
+        self.assertFalse(page.is_visible(".ui-world-goto"))
+        self.assertFalse(page.is_visible('.ui-world-menu[data-menu="more"]'))           # needs JS
+        page.click('.ui-world-menu[data-menu="spots"] summary')
+        self.assertTrue(page.is_visible('.ui-world-spots[data-floor="classroom"]'))
+        page.click('label[for="school-floor-yard"]')
+        self.assertTrue(page.is_visible('.ui-world-spots[data-floor="yard"]'))
+        self.assertFalse(page.is_visible('.ui-world-spots[data-floor="classroom"]'))
+
     def test_open_floor_has_no_grid_pad_and_keeps_free_walking(self):
         page = self.open()
         self.start(page)
-        page.click('label[for="school-floor-yard"]')
+        page.select_option(".ui-world-goto", "yard")                        # the footer pulldown moves to the other floor
         page.wait_for_selector(".ui-world-dpad", state="hidden")
         page.keyboard.press("ArrowUp")                                      # no grid here: the key is left to the page
         self.assertEqual(self.errors, [])

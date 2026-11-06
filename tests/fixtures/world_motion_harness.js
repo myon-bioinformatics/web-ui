@@ -11,7 +11,7 @@ globalThis.location={hash:'',pathname:'/',search:''};
 globalThis.history={replaceState(){}};
 const reduced={matches:false,addEventListener(name,f){this.change=f}};
 globalThis.matchMedia=()=>reduced;
-function node(){return {dataset:{},style:{setProperty(k,v){this[k]=String(v)}},events:{},addEventListener(n,f){this.events[n]=f},setAttribute(n,v){this[n]=v},toggleAttribute(n,v){this[n]=v}}}
+function node(){return {dataset:{},closest:()=>null,style:{setProperty(k,v){this[k]=String(v)}},events:{},addEventListener(n,f){this.events[n]=f},setAttribute(n,v){this[n]=v},toggleAttribute(n,v){this[n]=v}}}
 const actor=node(), avatar=node(), button=node(), board=node(), form=node();
 form.elements={x:{value:'100'},y:{value:'32'}};form.reportValidity=()=>true;
 const controls=node();controls.querySelector=s=>s==='form'?form:s==='output'?board:button;

@@ -230,6 +230,55 @@ def test_node26_grid_route_matches_python_oracle(tmp_path):
         assert ok == (result['glyphs'][glyphs.index(text)] is not None), text
 
 
+def test_direction_is_the_arrow_from_the_first_point_to_the_second():
+    here = [100, 100]
+    assert [ui.world_direction(here, p) for p in ([200, 100], [200, 200], [100, 200], [0, 200], [0, 100], [0, 0], [100, 0], [200, 0])] == \
+        ["➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️", "⬆️", "↗️"]                         # screen y grows downward: a target below is ⬇️
+    assert ui.world_direction(here, [104, 96]) == ui.WORLD_HERE == "📍"       # both axes within eps (8)
+    assert ui.world_direction(here, [104, 96], eps=0) == "↗️" and ui.world_direction(here, [100, 100], eps=0) == "📍"
+    assert ui.world_direction([0, 0], [240, 99]) == "➡️" and ui.world_direction([0, 0], [240, 101]) == "↘️"      # the 5/12 slope edge
+    assert ui.world_direction([5, 5], [5, 5]) == "📍"
+    for a, b in ((here, [180, 7]), (here, [3, 250]), ([9, 8], [90, 100])):    # swapping the points turns the arrow around
+        turned = {"➡️": "⬅️", "↘️": "↖️", "⬇️": "⬆️", "↙️": "↗️", "⬅️": "➡️", "↖️": "↘️", "⬆️": "⬇️", "↗️": "↙️"}
+        assert ui.world_direction(b, a) == turned[ui.world_direction(a, b)]
+
+
+def test_points_come_from_the_centre_or_an_edge_of_each_object():
+    desk = {"x": 64, "y": 32, "w": 96, "h": 32}
+    assert ui.world_point(desk) == (112, 48) and ui.world_point(desk, "center") == (112, 48)
+    assert [ui.world_point(desk, at) for at in ("left", "right", "top", "bottom")] == [(64, 48), (160, 48), (112, 32), (112, 64)]
+    assert [ui.world_point((0, 0, 8, 8), at) for at in ("top-left", "top-right", "bottom-left", "bottom-right")] == [(0, 0), (8, 0), (0, 8), (8, 8)]
+    assert ui.world_point((50, 60, 0, 0)) == (50, 60)                          # a spot or a person: a rect with no size
+    with pytest.raises(ValueError):
+        ui.world_point(desk, "middle")
+    # a chair centred under the desk: its top edge meets the desk's bottom edge (here), and from the chair's centre the desk is straight up
+    chair = (96, 64, 32, 32)
+    assert ui.world_direction(ui.world_point(chair, "top"), ui.world_point(desk, "bottom"), eps=0) == "📍"
+    assert ui.world_direction(ui.world_point(chair), ui.world_point(desk)) == "⬆️"
+
+
+def test_arrow_names_an_anchor_in_any_form():
+    assert [ui.world_arrow_anchor(a) for a in ("↘️", "↘", "↘\ufe0e", "⬅", "⬅️", "←", "→", "➡️", "↑", "⬆️", "↓", "⬇", "↖", "↗️", "↙", "🎯", "📍")] == \
+        ["bottom-right"] * 3 + ["left"] * 3 + ["right"] * 2 + ["top"] * 2 + ["bottom"] * 2 + ["top-left", "top-right", "bottom-left", "center", "center"]
+    assert all(ui.world_arrow_anchor(a) in ui.WORLD_ANCHORS for a in "←→↑↓↖↗↙↘🎯")
+    for bad in ("", "x", "➕", "↘️↘️"):
+        with pytest.raises(ValueError):
+            ui.world_arrow_anchor(bad)
+
+
+def test_node26_direction_matches_python_oracle(tmp_path):
+    node = _node26()
+    rng = random.Random(23)
+    cases = [[[rng.randint(-300, 300), rng.randint(-300, 300)], [rng.randint(-300, 300), rng.randint(-300, 300)], rng.choice([0, 8, 16, 32])] for _ in range(400)]
+    cases += [[[rng.uniform(-300, 300), rng.uniform(-300, 300)], [rng.uniform(-300, 300), rng.uniform(-300, 300)], rng.choice([0.5, 8, 24])] for _ in range(400)]
+    cases += [[[0, 0], [240, 99], 8], [[0, 0], [240, 101], 8], [[0, 0], [99, 240], 8], [[0, 0], [101, 240], 8], [[3, 3], [3, 3], 0], [[0, 0], [8, 8], 8], [[0, 0], [9, 8], 8]]
+    module = tmp_path / 'direction.mjs'
+    module.write_text(ui.WORLD_JS.removesuffix('bindWorlds();\n') + '\nconst cases=' + json.dumps(cases) + ';console.log(JSON.stringify(cases.map(([a,b,e])=>direction(a,b,e))))\n')
+    got = json.loads(subprocess.check_output([node, str(module)], text=True))
+    assert got == [ui.world_direction(a, b, e) for a, b, e in cases]
+    assert {"➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️", "⬆️", "↗️", "📍"} == set(got)
+
+
 def test_a_floor_can_ask_for_a_classroom_in_plain_json():
     params = {"rows": 3, "groups": 2, "per_group": 3, "tile": 32}
     world = {"schema": ui.WORLD_SCHEMA, "avatars": ["🙂"], "floors": [{"id": "room", "label": "教室A", "classroom": params}]}
@@ -344,7 +393,7 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
-    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "floors", "oneliner"}
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "floors", "oneliner"}
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])
     (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")
@@ -376,3 +425,9 @@ def test_demo_zoom_goes_in_toward_the_anchor_and_stays_on_the_real_clock():
     frames = [Image.open(io.BytesIO(png)).convert("RGB") for _, png in camera.shots]
     assert frames[3].getpixel((20, 20)) == (255, 0, 0)          # at the peak the bottom-left corner fills the picture
     assert record_demo.time.monotonic() >= times[-1] + 0.3      # the real clock was let catch up (the peak is held 300 ms)
+    for anchor in ("↙️", "↙", "bottom-left", (0, 1)):          # an arrow emoji, an anchor name or a fraction: the same corner
+        camera = record_demo.Camera(Page())
+        camera.zoom(anchor=anchor, factor=2, steps=2, hold_ms=20)
+        assert Image.open(io.BytesIO(camera.shots[-1][1])).convert("RGB").getpixel((20, 20)) == (255, 0, 0), anchor
+    with pytest.raises(ValueError):
+        record_demo.Camera(Page()).zoom(anchor="x")
