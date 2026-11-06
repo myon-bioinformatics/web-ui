@@ -2179,14 +2179,14 @@ def minutes_until(now: float, at: int) -> int:
     Immediately after the target, the next occurrence is tomorrow (up to 1440).
     """
     now = _motion_number(now, "now (minutes since midnight)", 0, 1440)
-    at = _world_int(at, "at (minutes since midnight)", 0, 1439)
+    at = _bounded_int(at, "at (minutes since midnight)", 0, 1439)
     return math.ceil((at - now) % 1440)
 
 
 def board_clock(now: float, offset_minutes: int) -> dict[str, Any]:
     """Injected Unix seconds + fixed UTC-offset minutes, independent of host TZ."""
     now = _motion_number(now, "now (Unix seconds)", 0, 253402214400)
-    offset_minutes = _world_int(offset_minutes, "offset_minutes", -840, 840)
+    offset_minutes = _bounded_int(offset_minutes, "offset_minutes", -840, 840)
     seconds = (now + offset_minutes * 60) % 86400
     whole = math.floor(seconds)
     return {"clock": f"{whole // 3600:02d}:{whole // 60 % 60:02d}", "minutes": seconds / 60}
@@ -2292,11 +2292,11 @@ def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, ma
     """A seeded loop for one villager: straight walks at constant ``speed`` to random points, a random pause at each (1..4 s),
     then a walk back to the start so the loop is seamless. Returns ``{"duration": seconds, "keys": [(percent, x, y), ...]}``;
     between keys the motion is linear, a pause is two keys at the same point."""
-    seed = _world_int(seed, "seed", 0, 2**32 - 1)
-    width = _world_int(width, "width", 64, 4096)
-    height = _world_int(height, "height", 64, 4096)
-    margin = _world_int(margin, "margin", 0, min(width, height) // 2)
-    stops = _world_int(stops, "stops", 1, 64)
+    seed = _bounded_int(seed, "seed", 0, 2**32 - 1)
+    width = _bounded_int(width, "width", 64, 4096)
+    height = _bounded_int(height, "height", 64, 4096)
+    margin = _bounded_int(margin, "margin", 0, min(width, height) // 2)
+    stops = _bounded_int(stops, "stops", 1, 64)
     speed = _motion_number(speed, "speed", 1, 480)
     rng = random.Random(seed)
     point = lambda: (round(margin + rng.random() * max(0, width - 2 * margin), 1), round(margin + rng.random() * max(0, height - 2 * margin), 1))
@@ -2422,19 +2422,19 @@ def _world_gauge(gauge: Any) -> dict[str, Any]:
         glyphs = GAUGE_GLYPHS[glyphs]
     elif not isinstance(glyphs, (list, tuple)) or len(glyphs) != 2:
         raise ValueError("glyphs is a preset name or [elapsed, remaining]")
-    return {"from": gauge["from"], "to": gauge["to"], "cells": _world_int(gauge.get("cells", 10), "cells", 3, 20),
+    return {"from": gauge["from"], "to": gauge["to"], "cells": _bounded_int(gauge.get("cells", 10), "cells", 3, 20),
             "glyphs": [_gauge_glyph(g) for g in glyphs]}
 
 
 def _world_tile(value: Any) -> int:
     """A tile size: 16..128 and a multiple of 8."""
-    tile = _world_int(value, "tile", 16, 128)
+    tile = _bounded_int(value, "tile", 16, 128)
     if tile % 8:
         raise ValueError("tile is a multiple of 8")
     return tile
 
 
-def _world_int(value: Any, label: str, low: int, high: int) -> int:
+def _bounded_int(value: Any, label: str, low: int, high: int) -> int:
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f"{label} must be an integer from {low} to {high}")
     return value
@@ -2481,7 +2481,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
             raise ValueError("a floor has id, label, width, height, spots, actors, player, tile, props and real")
         if not isinstance(floor.get("real", False), bool):
             raise ValueError("real is true or false")
-        width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
+        width, height = _bounded_int(floor.get("width"), "width", 64, 4096), _bounded_int(floor.get("height"), "height", 64, 4096)
         tile, props_in, props = floor.get("tile"), floor.get("props", []), []
         if tile is not None:
             tile = _world_tile(tile)
@@ -2492,8 +2492,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
         for prop in props_in:
             if not isinstance(prop, dict) or set(prop) != {"kind", "x", "y", "w", "h"} or prop["kind"] not in tuple(WORLD_PROPS):
                 raise ValueError(f"a prop has kind ({', '.join(WORLD_PROPS)}), x, y, w and h")
-            x, y = _world_int(prop["x"], "x", 0, width), _world_int(prop["y"], "y", 0, height)
-            w, h = _world_int(prop["w"], "w", tile, width), _world_int(prop["h"], "h", tile, height)
+            x, y = _bounded_int(prop["x"], "x", 0, width), _bounded_int(prop["y"], "y", 0, height)
+            w, h = _bounded_int(prop["w"], "w", tile, width), _bounded_int(prop["h"], "h", tile, height)
             if any(v % tile for v in (x, y, w, h)) or x + w > width or y + h > height:
                 raise ValueError("a prop lies on tiles, inside the floor")
             props.append({"kind": prop["kind"], "x": x, "y": y, "w": w, "h": h})
@@ -2507,8 +2507,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
             category = spot.get("category", "")
             if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
                 raise ValueError("category must be a lowercase token")
-            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _world_int(spot.get("x"), "x", 0, width),
-                          "y": _world_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
+            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _bounded_int(spot.get("x"), "x", 0, width),
+                          "y": _bounded_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
                           "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
         actors = []
         actors_in = floor.get("actors", [])
@@ -2519,7 +2519,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                 raise ValueError("an actor has id, emoji, label, body, seed and speed")
             seed = actor.get("seed")
             if seed is not None:
-                _world_int(seed, "seed", 0, 2**31 - 1)
+                _bounded_int(seed, "seed", 0, 2**31 - 1)
             speed = actor.get("speed", 48)
             if type(speed) not in (int, float) or not 8 <= speed <= 240:
                 raise ValueError("speed must be from 8 to 240 (map units per second)")
@@ -2533,8 +2533,8 @@ def world_validate(spec: Any) -> dict[str, Any]:
             speed = player.get("speed", 96)
             if type(speed) not in (int, float) or not 8 <= speed <= 480:
                 raise ValueError("speed must be from 8 to 480 (map units per second)")
-            player = {"emoji": _world_avatar(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
-                      "y": _world_int(player.get("y"), "y", 0, height), "speed": speed}
+            player = {"emoji": _world_avatar(player.get("emoji")), "x": _bounded_int(player.get("x"), "x", 0, width),
+                      "y": _bounded_int(player.get("y"), "y", 0, height), "speed": speed}
             if tile and world_blocked(width, height, tile, props)[min(player["y"], height - 1) // tile][min(player["x"], width - 1) // tile] == "1":
                 raise ValueError("the player starts on a free tile")
         floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
@@ -2576,7 +2576,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                           "gauge": None if gauge is None else _world_gauge(gauge), "zone": where})
         board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
                  "offset_label": board.get("offset_label", False), "zones": zones, "shared_issue": shared_issue,
-                 "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
+                 "offset_minutes": (_bounded_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
     tools: dict[str, dict[str, Any]] = {}
     tools_in = spec.get("tools", {})
@@ -2649,8 +2649,8 @@ def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile:
     with an aisle between blocks; a blackboard and teacher's desk at the front, shelves and a door at the back.
     Every size is a multiple of ``tile`` (a multiple of 8). The player starts at the door.
     """
-    rows, groups, per_group = (_world_int(rows, "rows", 1, 8), _world_int(groups, "groups", 1, 6),
-                               _world_int(per_group, "per_group", 1, 4))
+    rows, groups, per_group = (_bounded_int(rows, "rows", 1, 8), _bounded_int(groups, "groups", 1, 6),
+                               _bounded_int(per_group, "per_group", 1, 4))
     tile = _world_tile(tile)
     side, front, back = 2, 5, 3                                           # tiles: side walkway, board area, door area
     cols, depth = 2 * side + groups * per_group + groups - 1, front + 2 * rows + back
@@ -2700,7 +2700,7 @@ def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: i
     look = LAND_THEMES.get(theme)
     if look is None:
         raise ValueError(f"theme is one of {', '.join(LAND_THEMES)}")
-    cols, rows, seed = _world_int(cols, "cols", 12, 48), _world_int(rows, "rows", 12, 32), _world_int(seed, "seed", 0, 2**31 - 1)
+    cols, rows, seed = _bounded_int(cols, "cols", 12, 48), _bounded_int(rows, "rows", 12, 32), _bounded_int(seed, "seed", 0, 2**31 - 1)
     tile = _world_tile(tile)
     if cols * tile > 4096 or rows * tile > 4096:
         raise ValueError("the land fits in 4096 units")
@@ -5330,10 +5330,10 @@ def door_validate(spec: Any) -> dict[str, Any]:
     if current is not None and current not in seen_href:
         raise ValueError("current must be the href of one of the pages")
     discoverable = sum(p["group"] == "discover" for p in pages)
-    k = _world_int(spec.get("k", 3), "k", 0, 8)
+    k = _bounded_int(spec.get("k", 3), "k", 0, 8)
     if k > discoverable:
         raise ValueError(f"k is {k} but only {discoverable} pages can be drawn")
-    return {"schema": DOOR_SCHEMA, "pages": pages, "current": current, "k": k, "seed": _world_int(spec.get("seed", 0), "seed", 0, 2**32 - 1)}
+    return {"schema": DOOR_SCHEMA, "pages": pages, "current": current, "k": k, "seed": _bounded_int(spec.get("seed", 0), "seed", 0, 2**32 - 1)}
 
 
 def emoji_path(notation: str, pages: list[dict[str, Any]]) -> list[str]:
@@ -5705,6 +5705,19 @@ def _is_int(value: Any) -> bool:
 
 def _reject_json_constant(name: str) -> Any:
     raise ValueError("JSON constants (NaN, Infinity) are not allowed")
+
+
+def _json_nonfinite(name: str) -> Any:
+    """``parse_constant`` of the pattern and studio parsers: NaN and Infinity are refused with their name."""
+    raise ValueError(f"non-finite JSON constant: {name}")
+
+
+def _json_finite_float(raw: str) -> float:
+    """``parse_float`` (and the base of ``parse_int``) of the pattern and studio parsers: a number beyond the double range is refused."""
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError("JSON number out of range")
+    return value
 
 
 def _json_line(line: str) -> Any:
@@ -7126,10 +7139,6 @@ def _pat_need(condition: Any, message: str) -> None:
         raise ValueError(message)
 
 
-def _pat_finite(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(value)
-
-
 def pattern_query(req: Any) -> Any:
     """Pure collection operations (catalogue 011, 012, 014-018): ``stable_sort``, ``custom_sort`` (a named comparator, never code), ``group_by``, ``facet``, ``tag``, ``range`` and ``geo``
     (haversine, in km). Sorting is stable; mixed key types are refused."""
@@ -7178,21 +7187,21 @@ def pattern_query(req: Any) -> Any:
         return [item for item in items if matches(item)]
     if op == "range":
         key, low, high = req.get("key"), req.get("minimum"), req.get("maximum")
-        _pat_need(isinstance(key, str) and _pat_finite(low) and _pat_finite(high) and low <= high, "invalid numeric range")
+        _pat_need(isinstance(key, str) and _js_num(low) and _js_num(high) and low <= high, "invalid numeric range")
         result = []
         for item in items:
             _pat_need(isinstance(item, dict) and key in item, "missing range key")
-            _pat_need(_pat_finite(item[key]), "invalid range value")
+            _pat_need(_js_num(item[key]), "invalid range value")
             if low <= item[key] <= high:
                 result.append(item)
         return result
     if op == "geo":
         lat, lon, radius = (req.get(k) for k in ("latitude", "longitude", "radius_km"))
-        _pat_need(all(_pat_finite(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
+        _pat_need(all(_js_num(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
         def distance(row: Any) -> float:
             _pat_need(isinstance(row, dict), "invalid point")
             a, b = row.get("latitude"), row.get("longitude")
-            _pat_need(_pat_finite(a) and _pat_finite(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
+            _pat_need(_js_num(a) and _js_num(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
             p1, p2 = math.radians(lat), math.radians(a)
             dp, dl = p2 - p1, math.radians(b - lon)
             h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
@@ -7337,7 +7346,7 @@ def pattern_score(payload: Any) -> Any:
     if operation == "minheap":
         _pat_need(not (set(payload) - {"operation", "values", "pops"}), "unexpected heap fields")
         values, pops = payload.get("values"), payload.get("pops", 0)
-        _pat_need(isinstance(values, list) and all(_pat_finite(x) for x in values), "heap values must be finite numbers")
+        _pat_need(isinstance(values, list) and all(_js_num(x) for x in values), "heap values must be finite numbers")
         _pat_need(type(pops) is int and 0 <= pops <= len(values), "invalid pop count")
         heap = values.copy()
         heapq.heapify(heap)
@@ -8099,12 +8108,12 @@ def pattern_structure(mode: str) -> dict[str, Any]:
 _PAT_JS_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
 
 
-def _pat_js_int(value: Any) -> bool:
+def _js_int(value: Any) -> bool:
     """Number.isInteger for a JSON number."""
     return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
-def _pat_js_num(value: Any) -> bool:
+def _js_num(value: Any) -> bool:
     """typeof value === "number" && Number.isFinite(value)."""
     return type(value) in (int, float) and math.isfinite(value)
 
@@ -8145,7 +8154,7 @@ def _pat_future_task(raw: Any, index: int) -> dict[str, Any]:
     _pat_js_fields(task, ("value", "delay_ms", "reject"), ("value",))
     delay = task.get("delay_ms")
     delay = 0 if delay is None else delay
-    _pat_need(_pat_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
+    _pat_need(_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
     _pat_need("reject" not in task or (isinstance(task["reject"], str) and task["reject"] != ""), "reject must be a nonempty string")
     return {"value": task["value"], "at": max(1, int(delay)), "reject": task.get("reject"), "rejects": "reject" in task, "index": index}
 
@@ -8184,7 +8193,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             step = _pat_js_object(raw, "step")
             _pat_js_fields(step, ("op", "by"), ("op",))
             if step["op"] in ("add", "multiply"):
-                _pat_need(_pat_js_num(step.get("by")), "numeric by required")
+                _pat_need(_js_num(step.get("by")), "numeric by required")
             elif step["op"] == "uppercase":
                 _pat_js_fields(step, ("op",))
             else:
@@ -8198,7 +8207,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             return {"schema": "future-patterns/1", "mode": mode, "value": {"caught": str(error), "fallback": req["fallback"]}}
     if mode == "timeout":
         timeout = req.get("timeout_ms")
-        _pat_need(_pat_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
+        _pat_need(_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
         _pat_need(job["at"] <= timeout, "timeout")      # a tie goes to the task: its timer was created first
     value = _pat_future_settle(job)
     for step in steps:
@@ -8206,7 +8215,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             _pat_need(isinstance(value, str), "string input required")
             value = value.upper()
         else:
-            _pat_need(_pat_js_num(value), "numeric input required")
+            _pat_need(_js_num(value), "numeric input required")
             value = value + step["by"] if step["op"] == "add" else value * step["by"]
     return {"schema": "future-patterns/1", "mode": mode, "value": value}
 
@@ -8216,7 +8225,7 @@ def _pat_stream_events(raw: Any) -> list[dict[str, Any]]:
     last = -1
     for event in raw:
         _pat_need(isinstance(event, dict) and sorted(event) == ["at_ms", "value"], "event shape")
-        _pat_need(_pat_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
+        _pat_need(_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
         last = event["at_ms"]
     return raw
 
@@ -8268,14 +8277,14 @@ def pattern_stream(request: Any) -> dict[str, Any]:
             elif op == "map_add":
                 moved = []
                 for x in xs:
-                    _pat_need(_pat_js_num(x["value"]) and _pat_js_num(step.get("value")), "map_add numbers")
+                    _pat_need(_js_num(x["value"]) and _js_num(step.get("value")), "map_add numbers")
                     moved.append({**x, "value": x["value"] + step["value"]})
                 xs = moved
             else:
                 raise ValueError("step operation")
     if mode in ("debounce", "throttle"):
         ms = request.get("duration_ms")
-        _pat_need(_pat_js_int(ms) and 0 < ms <= 60000, "duration")
+        _pat_need(_js_int(ms) and 0 < ms <= 60000, "duration")
         if mode == "debounce":
             xs = [x for i, x in enumerate(xs) if i + 1 >= len(xs) or xs[i + 1]["at_ms"] - x["at_ms"] > ms]
         else:
@@ -8288,9 +8297,9 @@ def pattern_stream(request: Any) -> dict[str, Any]:
             xs = kept
     if mode in ("buffer", "window"):
         size = request.get("size")
-        _pat_need(_pat_js_int(size) and 0 < size <= 1000, "size")
+        _pat_need(_js_int(size) and 0 < size <= 1000, "size")
         step = size if mode == "buffer" else (1 if request.get("step") is None else request["step"])
-        _pat_need(_pat_js_int(step) and 0 < step <= 1000, "step")
+        _pat_need(_js_int(step) and 0 < step <= 1000, "step")
         size, step = int(size), int(step)
         out = []
         for i in range(0, len(xs), step):
@@ -8301,7 +8310,7 @@ def pattern_stream(request: Any) -> dict[str, Any]:
         xs = out
     if mode == "broadcast":
         count = request.get("subscribers")
-        _pat_need(_pat_js_int(count) and 1 <= count <= 16, "subscribers")
+        _pat_need(_js_int(count) and 1 <= count <= 16, "subscribers")
         return {"schema": "stream-patterns/1", "mode": mode, "subscribers": [[dict(x) for x in xs] for _ in range(int(count))]}
     return {"schema": "stream-patterns/1", "mode": mode, "events": xs}
 
@@ -8314,13 +8323,13 @@ def _pat_concurrency_tasks(raw: Any) -> list[dict[str, Any]]:
         _pat_need(all(k in ("value", "delay_ms") for k in item) and "value" in item, "task keys")
         delay = item.get("delay_ms")
         delay = 0 if delay is None else delay
-        _pat_need(_pat_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
+        _pat_need(_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
         jobs.append({"value": item["value"], "delay": int(delay), "index": index})
     return jobs
 
 
 def _pat_safe_int(value: Any) -> bool:
-    return _pat_js_int(value) and abs(value) <= 2 ** 53 - 1
+    return _js_int(value) and abs(value) <= 2 ** 53 - 1
 
 
 def pattern_concurrency(request: Any) -> dict[str, Any]:
@@ -8347,7 +8356,7 @@ def pattern_concurrency(request: Any) -> dict[str, Any]:
     else:
         jobs = _pat_concurrency_tasks(request.get("tasks"))
         limit = 1 if mode in ("work_queue", "progress") else request.get("concurrency")
-        _pat_need(_pat_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
+        _pat_need(_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
         metrics = {"values": [j["value"] for j in jobs], "max_active": min(int(limit), len(jobs))}
         result = {"values": metrics["values"], "progress": [{"completed": i + 1, "total": len(jobs)} for i in range(len(jobs))]} if mode == "progress" else metrics
     return {"schema": "concurrency-patterns/1", "mode": mode, "result": result}
@@ -8375,7 +8384,7 @@ def pattern_event_loop(request: Any) -> dict[str, Any]:
         for raw in steps:
             step = _pat_event_fields(raw, ("op", "value"), ("op", "value"))
             if step["op"] == "map_add":
-                _pat_need(_pat_js_num(step["value"]) and all(_pat_js_num(x) for x in out), "numbers required")
+                _pat_need(_js_num(step["value"]) and all(_js_num(x) for x in out), "numbers required")
                 out = [x + step["value"] for x in out]
             elif step["op"] == "where_equals":
                 out = [x for x in out if _pat_js_json(x) == _pat_js_json(step["value"])]
@@ -8391,7 +8400,7 @@ def pattern_event_loop(request: Any) -> dict[str, Any]:
     elif mode == "suspend_resume":
         _pat_event_fields(req, ("mode", "values", "pause_after"), ("mode", "values", "pause_after"))
         pause = req["pause_after"]
-        _pat_need(_pat_js_int(pause) and 0 <= pause <= len(values), "pause_after")
+        _pat_need(_js_int(pause) and 0 <= pause <= len(values), "pause_after")
         result = {"values": list(values), "trace": ["paused", "resumed"]}
     else:
         _pat_event_fields(req, ("mode", "values"))
@@ -8404,7 +8413,7 @@ class PatternDebouncer:
     that ``clear_timeout(handle)`` accepts."""
 
     def __init__(self, callback: Any, delay_ms: Any, set_timeout: Any, clear_timeout: Any) -> None:
-        if not callable(callback) or not _pat_js_num(delay_ms) or delay_ms < 0:
+        if not callable(callback) or not _js_num(delay_ms) or delay_ms < 0:
             raise TypeError("invalid debounce arguments")
         self.callback, self.delay_ms, self.set_timeout, self.clear_timeout = callback, delay_ms, set_timeout, clear_timeout
         self.timer: Any = None
@@ -8431,8 +8440,8 @@ def pattern_virtual_window(params: Any) -> dict[str, Any]:
     count, height, top, viewport = (params.get(k) for k in ("count", "itemHeight", "scrollTop", "viewportHeight"))
     overscan = params["overscan"] if "overscan" in params else 2
     for value in (count, height, top, viewport, overscan):
-        _pat_need(_pat_js_num(value) and value >= 0, "invalid viewport number")
-    _pat_need(_pat_js_int(count) and _pat_js_int(overscan) and height != 0, "invalid viewport configuration")
+        _pat_need(_js_num(value) and value >= 0, "invalid viewport number")
+    _pat_need(_js_int(count) and _js_int(overscan) and height != 0, "invalid viewport configuration")
     count, overscan = int(count), int(overscan)
     start = max(0, min(count, math.floor(top / height) - overscan))
     end = max(start, min(count, math.ceil((top + viewport) / height) + overscan))
@@ -8450,12 +8459,12 @@ def pattern_interaction(request: Any) -> dict[str, Any]:
     _pat_need(op == "debounce", "unsupported operation")
     _pat_need(all(k in ("operation", "delay_ms", "calls") for k in request), "unknown request keys")
     delay, calls = request.get("delay_ms"), request.get("calls")
-    _pat_need(_pat_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
+    _pat_need(_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
     _pat_need(isinstance(calls, list) and len(calls) <= 1000, "calls must be array <=1000")
     last = 0
     for call in calls:
         _pat_need(isinstance(call, dict) and "at_ms" in call and (call.keys() == {"at_ms", "value"} or call.keys() == {"at_ms", "cancel"}), "call shape")
-        _pat_need(_pat_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
+        _pat_need(_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
         _pat_need("value" in call or call["cancel"] is True, "call shape")
         last = call["at_ms"]
     clock = [0]
@@ -8536,15 +8545,8 @@ def pattern_run(family: str, request: Any) -> Any:
 
 def pattern_parse(text: str) -> Any:
     """Strict JSON for a pattern request: NaN, Infinity and a number beyond the float range are refused, and so is nesting deeper than the interpreter can hold."""
-    def constant(name: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {name}")
-    def number(raw: str) -> float:
-        value = float(raw)
-        if not math.isfinite(value):
-            raise ValueError("JSON number out of range")
-        return value
     try:
-        return json.loads(text, parse_constant=constant, parse_float=number)
+        return json.loads(text, parse_constant=_json_nonfinite, parse_float=_json_finite_float)
     except RecursionError:
         raise ValueError("JSON nested too deeply") from None
 
@@ -10040,7 +10042,7 @@ def _scr_state(state: Any) -> dict[str, Any]:
         raise ValueError("invalid state")
     if merged["submitted"] is not None and not isinstance(merged["submitted"], str):
         raise ValueError("invalid state")
-    if not _pat_js_int(merged["index"]) or not 0 <= merged["index"] <= 2 or not _pat_js_int(merged["elapsed"]) or not 0 <= merged["elapsed"] <= SCREEN_ASYNC_MS:
+    if not _js_int(merged["index"]) or not 0 <= merged["index"] <= 2 or not _js_int(merged["elapsed"]) or not 0 <= merged["elapsed"] <= SCREEN_ASYNC_MS:
         raise ValueError("invalid state")
     if type(merged["open"]) is not bool or type(merged["loading"]) is not bool or type(merged["enabled"]) is not bool:
         raise ValueError("invalid state")
@@ -10081,7 +10083,7 @@ def screen_step(screen_id: int, state: Any, event: Any) -> dict[str, Any]:
     elif kind == "submit":
         nxt["submitted"] = current["value"]
     elif kind == "select":
-        if not _pat_js_int(event.get("index")) or not 0 <= event["index"] <= 2:
+        if not _js_int(event.get("index")) or not 0 <= event["index"] <= 2:
             raise ValueError("index must be 0..2")
         nxt["index"] = int(event["index"])
     elif kind in ("open", "close"):
@@ -10090,7 +10092,7 @@ def screen_step(screen_id: int, state: Any, event: Any) -> dict[str, Any]:
         if not current["loading"]:
             nxt["loading"], nxt["elapsed"] = True, 0
     elif kind == "tick":
-        if not _pat_js_int(event.get("ms")) or not 0 <= event["ms"] <= 60000:
+        if not _js_int(event.get("ms")) or not 0 <= event["ms"] <= 60000:
             raise ValueError("ms must be 0..60000")
         if current["loading"]:
             nxt["elapsed"] = current["elapsed"] + int(event["ms"])
@@ -10226,7 +10228,7 @@ def _scr_run_screen(request: Any) -> dict[str, Any]:
     _pat_need(all(key == "operation" or key in allowed[operation] for key in request), "unknown request keys")
     screen = request.get("screen")
     if operation in ("view", "route", "links"):
-        _pat_need(_pat_js_int(screen), f"screen must be an integer 1..{SCREEN_COUNT}")
+        _pat_need(_js_int(screen), f"screen must be an integer 1..{SCREEN_COUNT}")
         screen = int(screen)
     if operation == "view":
         events = request.get("events", [])
@@ -10245,10 +10247,10 @@ def _scr_run_screen(request: Any) -> dict[str, Any]:
         key, arguments = request.get("key"), request.get("arguments", [])
         _pat_need(isinstance(key, str) and len(key) <= 200, "key must be text")
         _pat_need(isinstance(arguments, list) and len(arguments) <= 20 and all(isinstance(a, list) and len(a) == 2 and isinstance(a[0], str) and
-                                                                                  (a[1] is None or isinstance(a[1], str) or _pat_js_int(a[1]) and abs(a[1]) <= NATIVE_SAFE)
+                                                                                  (a[1] is None or isinstance(a[1], str) or _js_int(a[1]) and abs(a[1]) <= NATIVE_SAFE)
                                                                                   for a in arguments), "arguments must be [name, value] pairs")
         return {"schema": "screens/1", "operation": operation, "result": screen_text(request.get("locale", "eng"), key,
-                                                                                    [(a[0], int(a[1]) if _pat_js_int(a[1]) else a[1]) for a in arguments])}
+                                                                                    [(a[0], int(a[1]) if _js_int(a[1]) else a[1]) for a in arguments])}
     if operation == "route":
         return {"schema": "screens/1", "operation": operation, "result": screen_route(screen)}
     return {"schema": "screens/1", "operation": operation, "result": screen_links_view(screen, request.get("locale", "eng"))}
@@ -10299,7 +10301,7 @@ def native_step(number: int, state: dict[str, Any], action: Any) -> dict[str, An
     _pat_need(all(key in {"type", *{"reorder": ("old", "new"), "swap": ("a", "b"), "select": ("item", "value")}.get(kind, ())} for key in action), "unknown action keys")
     if kind == "reorder":
         old, target = action.get("old"), action.get("new")
-        _pat_need(_pat_js_int(old) and _pat_js_int(target) and 0 <= old < len(items) and 0 <= target <= len(items), "old must be 0..n-1 and new 0..n")
+        _pat_need(_js_int(old) and _js_int(target) and 0 <= old < len(items) and 0 <= target <= len(items), "old must be 0..n-1 and new 0..n")
         old, target = int(old), int(target)
         if target > old:
             target -= 1
@@ -10363,7 +10365,7 @@ def native_parallel(number: int, values: list[int] | None = None, engine: str = 
     if engine not in ("worker", "fallback"):
         raise ValueError("engine must be worker or fallback")
     values = [1, 2, 3, 4, 5] if values is None else values
-    if not isinstance(values, list) or len(values) > NATIVE_MAX_VALUES or not all(_pat_js_int(v) for v in values):
+    if not isinstance(values, list) or len(values) > NATIVE_MAX_VALUES or not all(_js_int(v) for v in values):
         raise ValueError(f"values must be an array of at most {NATIVE_MAX_VALUES} integers")
     total = 0
     for value in values:
@@ -10379,7 +10381,7 @@ def pattern_native(request: Any) -> dict[str, Any]:
     "engine": "worker" | "fallback"}`` for the sum of squares. The answer is the state and the lines and buttons the example shows."""
     _pat_need(isinstance(request, dict), "request object")
     number = request.get("pattern")
-    _pat_need(_pat_js_int(number) and int(number) in NATIVE_NUMBERS, "pattern must be one of " + ", ".join(map(str, NATIVE_NUMBERS)))
+    _pat_need(_js_int(number) and int(number) in NATIVE_NUMBERS, "pattern must be one of " + ", ".join(map(str, NATIVE_NUMBERS)))
     number = int(number)
     if number in NATIVE_PARALLEL:
         _pat_need(all(key in ("pattern", "values", "engine") for key in request), "unknown request keys")
@@ -10433,7 +10435,7 @@ def contract_screens(screens: Any, count: int = SCREEN_COUNT) -> dict[str, Any]:
     blocks of eighteen decides; one emoji and one ``useCaseKey`` for each screen; every pattern name a non-empty string; and a ``detail`` (a purpose, a time to use it, three design points,
     a pitfall and a snippet) for the integration and auth screens only."""
     _pat_need(isinstance(screens, list) and len(screens) <= CONTRACT_MAX_ROWS, f"screens must be an array of at most {CONTRACT_MAX_ROWS} rows")
-    _pat_need(_pat_js_int(count) and 1 <= count <= SCREEN_COUNT, f"count must be an integer from 1 to {SCREEN_COUNT}")
+    _pat_need(_js_int(count) and 1 <= count <= SCREEN_COUNT, f"count must be an integer from 1 to {SCREEN_COUNT}")
     count = int(count)
     failures: list[str] = []
     if len(screens) != count:
@@ -10529,7 +10531,7 @@ def contract_locales(locales: Any) -> dict[str, Any]:
 def _con_num(boxes: dict[str, Any], name: str, field: str) -> float:
     """One measurement of one box, read only when a rule needs it (a box a rule does not look at may lack the fields that rule does not use, as in the original)."""
     box = boxes[name]
-    _pat_need(isinstance(box, dict) and _pat_finite(box.get(field)), f"box {name!r} needs a numeric {field}")
+    _pat_need(isinstance(box, dict) and _js_num(box.get(field)), f"box {name!r} needs a numeric {field}")
     return box[field]
 
 
@@ -10546,7 +10548,7 @@ def contract_layout(request: Any) -> dict[str, Any]:
     ``y`` and ``height`` for the others); a number that is missing, not finite or a bool is a ``ValueError``."""
     _pat_need(isinstance(request, dict) and all(key in ("operation", "viewport", "boxes", "within", "aligned", "stacked") for key in request), "unknown request keys")
     viewport = request.get("viewport")
-    _pat_need(isinstance(viewport, dict) and _pat_finite(viewport.get("width")) and viewport["width"] > 0 and _pat_finite(viewport.get("height")) and viewport["height"] > 0,
+    _pat_need(isinstance(viewport, dict) and _js_num(viewport.get("width")) and viewport["width"] > 0 and _js_num(viewport.get("height")) and viewport["height"] > 0,
               "viewport needs a positive width and height")
     boxes = request.get("boxes")
     _pat_need(isinstance(boxes, dict) and len(boxes) <= CONTRACT_MAX_BOXES, f"boxes must be an object of at most {CONTRACT_MAX_BOXES} boxes")
@@ -10570,7 +10572,7 @@ def contract_layout(request: Any) -> dict[str, Any]:
         _pat_need(isinstance(entry, dict) and all(key in ("name", "below", "min_height") for key in entry) and isinstance(entry.get("name"), str) and entry["name"] in boxes, "stacked entries need a box name")
         floor = _con_names(entry, "below", boxes)
         minimum = entry.get("min_height", CONTRACT_MIN_ROW_HEIGHT)
-        _pat_need(_pat_finite(minimum) and minimum >= 0, "min_height must be a non-negative number")
+        _pat_need(_js_num(minimum) and minimum >= 0, "min_height must be a non-negative number")
         name = entry["name"]
         if floor and num(name, "y") < max(num(other, "y") + num(other, "height") for other in floor) - CONTRACT_EDGE:
             failures.append(f"{name}: overlaps the row above")
@@ -10621,15 +10623,15 @@ def contract_swap(request: Any) -> dict[str, Any]:
     before, after = _con_png(request.get("before"), "before"), _con_png(request.get("after"), "after")
     _pat_need(before[:2] == after[:2], "capture dimensions changed during the gesture")
     scale = geometry.get("device_scale_factor")
-    _pat_need(_pat_finite(scale) and scale > 0, "invalid device scale factor")
+    _pat_need(_js_num(scale) and scale > 0, "invalid device scale factor")
     viewport = geometry.get("viewport")
-    _pat_need(isinstance(viewport, dict) and all(_pat_finite(viewport.get(key)) for key in ("width", "height")), "viewport needs a width and height")
+    _pat_need(isinstance(viewport, dict) and all(_js_num(viewport.get(key)) for key in ("width", "height")), "viewport needs a width and height")
     _pat_need(all(abs(before[index] - viewport[key] * scale) <= 1 for index, key in enumerate(("width", "height"))), "PNG dimensions do not match the recorded viewport")
     slots = geometry.get("slots")
     _pat_need(isinstance(slots, list) and len(slots) == 2, "exactly two pre-drag slots are required")
     boxes = []
     for slot in slots:
-        _pat_need(isinstance(slot, dict) and all(_pat_finite(slot.get(key)) for key in ("x", "y", "width", "height")), "invalid card bounds")
+        _pat_need(isinstance(slot, dict) and all(_js_num(slot.get(key)) for key in ("x", "y", "width", "height")), "invalid card bounds")
         x, y, width, height = (slot[key] for key in ("x", "y", "width", "height"))
         _pat_need(width > 16 and height > 16, "card interior is too small")
         box = tuple(round(value * scale) for value in (x + 8, y + 8, x + width - 8, y + height - 8))
@@ -11775,30 +11777,17 @@ _STU_PNG_URI = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
 def studio_parse(text: str) -> Any:
     """JSON the way ``JSON.parse`` reads it: every number is a double (so ``9007199254740993`` is ``9007199254740992``), whole numbers up to 2**53 are integers, and NaN, Infinity or a
     number beyond the double range is refused."""
-    def constant(name: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {name}")
-
-    def number(raw: str) -> float:
-        value = float(raw)
-        if not math.isfinite(value):
-            raise ValueError("JSON number out of range")
-        return value
-
     def whole(raw: str) -> Any:
-        value = number(raw)
+        value = _json_finite_float(raw)
         return int(value) if abs(value) <= 2 ** 53 else value
     try:
-        return json.loads(text, parse_constant=constant, parse_float=number, parse_int=whole)
+        return json.loads(text, parse_constant=_json_nonfinite, parse_float=_json_finite_float, parse_int=whole)
     except RecursionError:
         raise ValueError("JSON nested too deeply") from None
 
 
 class StudioError(ValueError):
     """A scene, matrix or request the studio refuses; the text is core.js's (Japanese)."""
-
-
-def _stu_fail(message: str) -> None:
-    raise StudioError(message)
 
 
 def _stu_need(condition: Any, message: str) -> None:
@@ -11814,11 +11803,6 @@ def _stu_round(x: float) -> int:
 
 def _stu_num(value: Any, low: float, high: float) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
-
-
-def _stu_int(value: Any) -> bool:
-    """Number.isInteger of a JSON value (1.0 is the integer 1 in JavaScript)."""
-    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
 def _stu_color(value: Any) -> bool:
@@ -12020,7 +12004,7 @@ def studio_heat_color(value: Any, low: Any, high: Any, levels: Any = 0) -> str:
     if value is None:
         return "none"
     finite = lambda v: type(v) in (int, float) and math.isfinite(v)
-    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _stu_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
+    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _js_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
     levels = int(levels)
     t = 0.5 if high == low else max(0, min(1, (value - low) / (high - low)))
     if levels:
@@ -12091,7 +12075,7 @@ def studio_png_payload(data: Any) -> dict[str, Any]:
 def studio_validate(scene: Any) -> dict[str, Any]:
     """The scene if it is well formed (at most 100 layers and 4 MP), as a copy; otherwise a StudioError with core.js's text."""
     width, height = _stu_get(scene, "width"), _stu_get(scene, "height")
-    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _stu_int(width) and _stu_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
+    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _js_int(width) and _js_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
               and width * height <= 4194304 and _stu_color(scene.get("background")) and isinstance(scene.get("layers"), list) and len(scene["layers"]) <= 100,
               "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
     ids: set[str] = set()
@@ -12118,7 +12102,7 @@ def studio_validate(scene: Any) -> dict[str, Any]:
             _stu_need(isinstance(src, str) and _stu_len(src) <= 12000000 and _STU_PNG_URI.fullmatch(src) is not None, "画像は埋め込みPNGが必要です")
             image_bytes += len(src)
             _stu_need(image_bytes <= 20000000, "シーンの画像合計は20MB以下にしてください")
-            _stu_need(_stu_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _stu_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
+            _stu_need(_js_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _js_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
             _stu_need(not _stu_defined(layer, "sampling") or layer["sampling"] in ("pixelated", "smooth"), "補間方式が不正です")
         elif kind == "heatmap":
             studio_matrix({"z": layer.get("z"), "x": layer.get("xlabels"), "y": layer.get("ylabels"), "zmin": layer.get("low"), "zmax": layer.get("high")})
@@ -12131,7 +12115,7 @@ def studio_validate(scene: Any) -> dict[str, Any]:
             studio_arrow_geometry(layer["w"], layer["h"], head, placement)
             _stu_need(not _stu_defined(layer, "headStyle") or layer["headStyle"] in ("triangle", "beginner"), "矢羽根の形が不正です")
         if kind == "clock":
-            _stu_need(_stu_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _stu_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
+            _stu_need(_js_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _js_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
     return studio_clone(scene)
 
 
@@ -12139,8 +12123,8 @@ def studio_mosaic_rgba(data: Any, width: Any, height: Any, cell: Any, levels: An
     """Area means of the original's RGBA blocks (``cell`` pixels square, the partial blocks at the right and bottom kept): RGB weighted by alpha so hidden colors of transparent pixels do
     not tint opaque ones, then each channel cut into ``levels`` steps. Run it on the ORIGINAL each time: a mosaic of a mosaic does not give the detail back."""
     raw = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
-    _stu_need(_stu_int(width) and _stu_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
-              and _stu_int(cell) and 1 <= cell <= 512 and _stu_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
+    _stu_need(_js_int(width) and _js_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
+              and _js_int(cell) and 1 <= cell <= 512 and _js_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
     width, height, cell, levels = int(width), int(height), int(cell), int(levels)
     out = bytearray(len(raw))
     steps = levels - 1
@@ -12611,7 +12595,7 @@ def studio_workspace_history(text: Any) -> StudioHistory:
     _studio_workspace_size(text)
     record = studio_parse(text)
     _stu_need(isinstance(record, dict) and record.get("schema") == STUDIO_WORKSPACE_SCHEMA and isinstance(record.get("items"), list) and 1 <= len(record["items"]) <= 40
-              and _stu_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
+              and _js_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
     states = [studio_validate(item) for item in record["items"]]
     history = StudioHistory(states[0])
     history.items = states
@@ -16028,12 +16012,6 @@ IRONY_CARDS = (
 )
 
 
-def _play_int(value: Any, label: str, low: int, high: int) -> int:
-    if type(value) is not int or not low <= value <= high:
-        raise ValueError(f"{label} must be an integer from {low} to {high}")
-    return value
-
-
 def play_random(state: int) -> int:
     """xorshift32 word, identical in Python and JS; zero is mapped to a fixed nonzero state."""
     x = state or 0x6D2B79F5
@@ -16050,7 +16028,7 @@ def counter_garden(seed: int, actions: list[int]) -> dict[str, Any]:
     farming); the resulting bit mask and specimens can be reused as test inputs.
     Undo is replay with the last action removed, reset is replay with no actions.
     """
-    _play_int(seed, "seed", 0, 0xFFFFFFFF)
+    _bounded_int(seed, "seed", 0, 0xFFFFFFFF)
     if not isinstance(actions, list) or len(actions) > 4096:
         raise ValueError("actions must be a list of at most 4096 steps")
     state, value, cells, history = seed, 0, {}, [0]
@@ -16074,8 +16052,8 @@ def counter_garden(seed: int, actions: list[int]) -> dict[str, Any]:
 
 def irony_round(seed: int, round_index: int) -> dict[str, Any]:
     """A shuffled six-card deck, three shuffled choices, no adjacent repeated cards across decks."""
-    _play_int(seed, "seed", 0, 0xFFFFFFFF)
-    _play_int(round_index, "round", 0, 4095)
+    _bounded_int(seed, "seed", 0, 0xFFFFFFFF)
+    _bounded_int(round_index, "round", 0, 4095)
     state, previous, order = seed, None, []
     for _ in range(round_index // len(IRONY_CARDS) + 1):
         order = list(range(len(IRONY_CARDS)))
@@ -16097,7 +16075,7 @@ def irony_round(seed: int, round_index: int) -> dict[str, Any]:
 
 def studio_audio_plan(text: str, bpm: int = 120, note_unit: int = 8) -> list[dict[str, Any]]:
     """Bounded monophonic score in integer microseconds; no audio dependency."""
-    _play_int(bpm, "bpm", 30, 300)
+    _bounded_int(bpm, "bpm", 30, 300)
     if type(note_unit) is not int or note_unit not in (4, 8):
         raise ValueError("note_unit must be 4 or 8")
     if not isinstance(text, str) or len(text) > 8192:
@@ -16120,7 +16098,7 @@ def studio_audio_plan(text: str, bpm: int = 120, note_unit: int = 8) -> list[dic
 
 def progression_notes(key: str, progression: str, *, minor: bool = False, octave: int = 4) -> list[str]:
     """Arpeggiate the studio's computed chords into explicit octave-bearing notes."""
-    _play_int(octave, "octave", 0, 7)
+    _bounded_int(octave, "octave", 0, 7)
     if not isinstance(progression, str) or len(progression) > 1024:
         raise ValueError("progression must be at most 1024 characters")
     chords = convert_progression(key, progression, minor=minor)
@@ -16161,7 +16139,7 @@ def timeline_events(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         zone = row["zone"]
         if not isinstance(zone, str) or not re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*", zone):
             raise ValueError("zone must be an IANA name")
-        millis = _play_int(row["utc_ms"], "utc_ms", 1577836800000, 2208988799999)
+        millis = _bounded_int(row["utc_ms"], "utc_ms", 1577836800000, 2208988799999)
         try:
             local = dt.datetime.fromtimestamp(millis / 1000, dt.timezone.utc).astimezone(ZoneInfo(zone))
         except ZoneInfoNotFoundError as exc:
@@ -16192,7 +16170,7 @@ def timeline_wall_to_utc(wall: str, zone: str, *, fold: int | None = None) -> in
     if len(candidates) == 2 and fold is None:
         raise ValueError("this local time occurs twice; choose fold=0 or fold=1")
     millis = candidates[fold or 0] if len(candidates) == 2 else candidates[0]
-    _play_int(millis, "utc_ms", 1577836800000, 2208988799999)
+    _bounded_int(millis, "utc_ms", 1577836800000, 2208988799999)
     return millis
 
 

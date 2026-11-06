@@ -1,13 +1,12 @@
 import copy
 import json
 import os
-import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from support import node26
 
 from collection_filter import filter_request
 
@@ -45,15 +44,7 @@ def test_malformed_json_fails_without_partial_output():
         assert result.stdout == ""
 
 
-def _node26():
-    node = shutil.which("node")
-    if not node:
-        return False
-    out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=10).stdout
-    return bool(re.match(r"v(\d+)", out.strip())) and int(re.match(r"v(\d+)", out.strip()).group(1)) >= 26
-
-
-@pytest.mark.skipif(not _node26(), reason="Node 26+ is optional in Python-only environments")
+@pytest.mark.skipif(not node26(), reason="Node 26+ is optional in Python-only environments")
 def test_node_reaches_the_same_tool_through_the_shared_launcher():
     # No Node twin: Node runs collection_filter.py via vendor/py_launch.cjs, so both routes share one implementation.
     env = {**os.environ, "PYTHON": sys.executable}

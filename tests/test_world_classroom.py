@@ -7,12 +7,12 @@ import json
 import math
 from pathlib import Path
 import random
-import shutil
 import subprocess
 import sys
 
 import pytest
 import web_ui as ui
+from support import node26
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 import record_demo  # noqa: E402  (the GIF recorder for the README demos)
@@ -190,10 +190,7 @@ def test_validation_is_idempotent_for_the_school_example():
 
 
 def _node26():
-    node = shutil.which('node')
-    if not node or int(subprocess.check_output([node, '--version'], text=True).lstrip('v').split('.')[0]) < 26:
-        pytest.skip('existing Node 26+ required; no installation')
-    return node
+    return node26() or pytest.skip('existing Node 26+ required; no installation')
 
 
 def test_node26_grid_route_matches_python_oracle(tmp_path):

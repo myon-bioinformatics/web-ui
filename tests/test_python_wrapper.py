@@ -11,6 +11,7 @@ import zlib
 import unittest
 from pathlib import Path
 from unittest import mock
+from support import flutter_case, node26
 
 import json
 import math
@@ -21,17 +22,6 @@ import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _node_at_least_26() -> bool:
-    if shutil.which("node") is None:
-        return False
-    try:
-        done = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
-    return bool(match and int(match.group(1)) >= 26)
 
 
 class PythonWrapperTests(unittest.TestCase):
@@ -190,7 +180,7 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('<script type="module" src="./js/ui.js"></script>', linked.stdout)
 
     def test_run_node_wraps_diagnostics_script(self):
-        if not _node_at_least_26():
+        if not node26():
             self.skipTest('node 26+ not available')
         with tempfile.TemporaryDirectory() as out:
             web_ui.write_js(out)
@@ -263,7 +253,7 @@ class BundledCssTests(unittest.TestCase):
                         self.assertGreaterEqual(web_ui.contrast_ratio(theme[f"--ui-{text}"], theme[f"--ui-{ground}"]), minimum, (hue, dark, text))
         self.assertEqual(web_ui.theme_palette(0.3), web_ui.theme_palette(0.3))
 
-    @unittest.skipUnless(_node_at_least_26(), "Node 26+ not available")
+    @unittest.skipUnless(node26(), "Node 26+ not available")
     def test_node_reaches_the_bundle_through_the_shared_launcher(self):
         # No Node twin and no web_ui.cjs: Node runs web_ui.py via vendor/py_launch.cjs, so the bytes cannot differ.
         args = ["--css-bundle", "--theme", "green"]
@@ -2602,10 +2592,6 @@ class PlaygroundTests(unittest.TestCase):
         self.assertIn("examples/playground.html", web_ui.example_pages())
         self.assertIn("./playground.html", web_ui.example_pages()["examples/index.html"])
         self.assertEqual(json.loads(re.search(r'data-play="([^"]*)"', html).group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["status"], web_ui.COUNTER_STATUS)
-
-
-def flutter_case(tid, sid, name, result="success", **done):
-    return [{"type": "testStart", "test": {"id": tid, "suiteID": sid, "name": name}}, {"type": "testDone", "testID": tid, "result": result, **done}]
 
 
 def ndjson(events):

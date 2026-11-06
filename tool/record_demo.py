@@ -407,9 +407,11 @@ def _oneliner(page, cam, tmp):
     cam.hold(1400)
 
 
-def launch(pw, chrome=None):
+def launch(pw, chrome=None, extra=()):
+    """Chromium for the recorder and the browser tests: ``WEB_UI_CHROME`` (or ``chrome``) names an installed Chrome (then run without its sandbox); ``extra`` are more flags."""
     chrome = chrome or os.environ.get("WEB_UI_CHROME")
-    return pw.chromium.launch(executable_path=chrome, args=["--no-sandbox"]) if chrome else pw.chromium.launch()
+    args = ["--no-sandbox", *extra] if chrome else list(extra)
+    return pw.chromium.launch(executable_path=chrome, args=args) if chrome else pw.chromium.launch(args=args)
 
 
 def record(out, names=None, *, chrome=None, width=None, force=False, browser=None):

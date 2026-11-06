@@ -4,7 +4,6 @@ The emoji picker comes first, then the player walks by tap, arrow keys / WASD an
 Solid props (desks, board, shelves) are never entered, whichever way the player moves.
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error. WEB_UI_CHROME may name a local Chrome.
 """
-import os
 from pathlib import Path
 import sys
 import tempfile
@@ -24,12 +23,6 @@ POS = f"() => {{ const s = document.querySelector('{CLASSROOM} .ui-player').styl
 WALL = "() => document.querySelector('.ui-floor[data-floor=\"classroom\"]').dataset.blocked.split(',')"
 
 
-def launch(pw, extra=()):
-    chrome = os.environ.get("WEB_UI_CHROME")
-    args = ["--no-sandbox", *extra]
-    return pw.chromium.launch(executable_path=chrome, args=args) if chrome else pw.chromium.launch(args=args)
-
-
 class SchoolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -37,7 +30,7 @@ class SchoolTests(unittest.TestCase):
         cls.page_path = Path(cls.tmp.name) / "school.html"
         cls.page_path.write_text(web_ui.world_document(SPEC), encoding="utf-8")
         cls.pw = sync_playwright().start()
-        cls.browser = launch(cls.pw)
+        cls.browser = record_demo.launch(cls.pw)
 
     @classmethod
     def tearDownClass(cls):
@@ -377,7 +370,7 @@ class SchoolTests(unittest.TestCase):
         path.write_text(web_ui.world_document(web_ui.example_data("overworld")), encoding="utf-8")
         photo = Path(self.tmp.name) / "room.png"
         Image.new("RGB", (64, 48), (200, 80, 40)).save(photo)
-        browser = launch(self.pw, ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
+        browser = record_demo.launch(self.pw, extra=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
         self.addCleanup(browser.close)
         context = browser.new_context(viewport={"width": 1280, "height": 800}, permissions=["camera"])
         page = context.new_page()

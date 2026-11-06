@@ -22,6 +22,8 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
+from support import flutter_case  # noqa: E402
 from web_ui import (EXAMPLE_STUBS, showcase_document, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
                     clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label,
                     world_document, zone_offset, zone_rows)
@@ -45,6 +47,18 @@ def photo_device(playwright):
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+
+class PageCase(unittest.TestCase):
+    """A browser test whose ``setUp`` leaves ``self.browser``, ``self.playwright_manager``, ``self.server``, ``self.errors`` (page errors) and ``self.external`` (requests
+    beyond the page's own origin) behind; the tearDown that closes them in that order and requires both lists to be empty is shared."""
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
 
 
 class ControlsBrowserTests(unittest.TestCase):
@@ -1919,7 +1933,7 @@ class PhotoBrowserTests(unittest.TestCase):
             w.photo_evidence(outcomes={'png': 'works'})
 
 
-class PhotoPageBrowserTests(unittest.TestCase):
+class PhotoPageBrowserTests(PageCase):
     """The photo studio page in Chromium: import outcomes, upright pixels, drawing, history, export, and keeping nothing."""
 
     def setUp(self):
@@ -1939,13 +1953,6 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.page.on('console', lambda message: self.errors.append('console: ' + message.text) if message.type == 'error' else None)
         self.page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
         self.page.goto(self.origin + '/photo.html')
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def mime(self, case_id):
         return {'png': 'image/png', 'jpeg': 'image/jpeg', 'webp': 'image/webp', 'gif': 'image/gif', 'avif': 'image/avif', 'heic': 'image/heic'}.get(self.cases[case_id]['format'], 'image/png')
@@ -2300,7 +2307,7 @@ class BtkAdapterBrowserTests(unittest.TestCase):
             server.shutdown()
 
 
-class ClipboardBrowserTests(unittest.TestCase):
+class ClipboardBrowserTests(PageCase):
     """The clipboard loops in Chromium: the read order, error codes and text rules equal Python's (and so Ironmate's and Dart's), and the shelf, the temporary clipboard and the
     photo studio use them."""
 
@@ -2331,13 +2338,6 @@ class ClipboardBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 800, 'height': 900}, accept_downloads=True)
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, name):
         page = self.context.new_page()
@@ -2631,12 +2631,8 @@ def web_ui_module():
     return web_ui
 
 
-def flutter_case(tid, sid, name, result='success', **done):
-    return [{'type': 'testStart', 'test': {'id': tid, 'suiteID': sid, 'name': name}}, {'type': 'testDone', 'testID': tid, 'result': result, **done}]
 
-
-
-class PlaygroundBrowserTests(unittest.TestCase):
+class PlaygroundBrowserTests(PageCase):
     """The playground in a real browser: the counter, the hold-to-repeat button and the irony card equal Python's rules, and the page behaves like the Dart widgets did."""
 
     SEED = 7
@@ -2650,13 +2646,6 @@ class PlaygroundBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 800, 'height': 1700})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, clock=False):
         page = self.context.new_page()
@@ -2877,7 +2866,7 @@ class PlaygroundBrowserTests(unittest.TestCase):
         self.assertTrue(all(a != b for a, b in zip(seen, seen[1:])))
 
 
-class ReportBrowserTests(unittest.TestCase):
+class ReportBrowserTests(PageCase):
     """The test report in a real browser: SHA-256, the Flutter tally and conversion, JUnit reading and the failure history equal Python's on seeded fuzz, and the page works."""
 
     def setUp(self):
@@ -2888,13 +2877,6 @@ class ReportBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -3192,7 +3174,7 @@ class ReportBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('[data-report-input]').input_value(), self.JUNIT, 'a refused file leaves the text alone')
 
 
-class McpBrowserTests(unittest.TestCase):
+class McpBrowserTests(PageCase):
     """The MCP lab in a real browser: every request of seeded scripts gets the same answer from the page's server as from Python's, the client demos and the helpers agree, and the
     page works."""
 
@@ -3208,13 +3190,6 @@ class McpBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -4109,7 +4084,7 @@ def pat_request(family, r):
     raise AssertionError(family)
 
 
-class PatternBrowserTests(unittest.TestCase):
+class PatternBrowserTests(PageCase):
     """The patterns page in a real browser: its twins give Python's answer to every request (the recorded original outputs, and seeded random requests, including the refusals and their
     text), the catalogue and its search agree, and the page works."""
 
@@ -4123,13 +4098,6 @@ class PatternBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -4937,7 +4905,7 @@ class PatternBridgeBrowserTests(unittest.TestCase):
         self.assertEqual((answer['status'], json.loads(answer['text'])['families']), (200, options))
 
 
-class ScreensBrowserTests(unittest.TestCase):
+class ScreensBrowserTests(PageCase):
     """The screens page in a real browser: the Hub, every kind of screen in several languages, the native examples (a Web Worker, real mouse drags with a long press) and a phone-sized
     layout. What the page shows is what Python's `screen_*` and `native_*` say; the requests themselves are checked against Python in PatternBrowserTests."""
 
@@ -4949,13 +4917,6 @@ class ScreensBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, hash_='', init=None, context=None):
         page = (context or self.context).new_page()
@@ -5401,7 +5362,7 @@ class ScreensBrowserTests(unittest.TestCase):
                 page.close()
 
 
-class ImageStudioBrowserTests(unittest.TestCase):
+class ImageStudioBrowserTests(PageCase):
     """The image studio page in a real browser: its twin gives Python's answer (the recorded core.js outputs, and seeded random scenes, layers, histories and refusals with their text), and the
     editor places, moves, edits, imports, exports and restores layers."""
 
@@ -5413,13 +5374,6 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1400}, accept_downloads=True)
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, size=None, accept=True):
         page = self.context.new_page()
