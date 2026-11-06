@@ -1,0 +1,210 @@
+"""School world: the walking grid oracle, validation, the classroom generator, the emitted HTML, and Node parity.
+
+Browser behaviour (picker, keys, pad, taps, collisions) is in tests/integration/school_browser.py.
+"""
+import json
+import math
+import random
+import shutil
+import subprocess
+
+import pytest
+import web_ui as ui
+
+GRID = ["00000",
+        "01110",
+        "00010",
+        "01000",
+        "00000"]
+
+
+def classroom(**kw):
+    return ui.world_validate({"schema": ui.WORLD_SCHEMA, "id": "school", "floors": [ui.classroom_floor(**kw)]})["floors"][0]
+
+
+def test_path_is_shortest_and_avoids_solid_tiles():
+    path = ui.world_path(GRID, [0, 0], [4, 4])
+    assert path[0] == [0, 0] and path[-1] == [4, 4] and len(path) == 9
+    assert all(GRID[y][x] == "0" for x, y in path)
+    assert all(abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1 for a, b in zip(path, path[1:]))
+    assert ui.world_path(GRID, [3, 3], [3, 3]) == [[3, 3]]
+    assert ui.world_path(GRID, [0, 0], [0, 0]) == [[0, 0]]
+
+
+def test_solid_or_cut_off_or_outside_goal_ends_at_the_nearest_reachable_tile():
+    assert ui.world_path(GRID, [0, 0], [2, 1])[-1] == [2, 0]                # solid goal: the first nearest tile in search order
+    walled = ["0100", "0100", "0100"]
+    assert ui.world_path(walled, [0, 0], [3, 1])[-1] == [0, 1]              # the other side is cut off: nearest on this side
+    assert ui.world_path(GRID, [0, 0], [-9, 99])[-1] == [0, 4]              # outside clamps into the grid
+    assert ui.world_path(["1"], [0, 0], [0, 0]) == [[0, 0]]                 # the start always counts as free
+
+
+def test_route_points_end_at_the_target_when_reachable_and_at_a_tile_centre_otherwise():
+    blocked = ["00000", "01110", "00000"]
+    points = ui.world_route_points(blocked, 32, [16, 16], [144, 80])        # reachable: ends exactly at the tapped point
+    assert points[0] == [16, 16] and points[-1] == [144, 80]
+    assert points[1] in ([48, 16], [16, 48])                                # around the block, through tile centres
+    assert all(blocked[int(y // 32)][int(x // 32)] == "0" for x, y in points)
+    points = ui.world_route_points(blocked, 32, [16, 16], [80, 48])         # a solid tile: ends at a free neighbour's centre
+    assert points[-1] in ([80, 16], [80, 80]) and blocked[int(points[-1][1] // 32)][int(points[-1][0] // 32)] == "0"
+    assert ui.world_route_points(blocked, 32, [20, 20], [20, 20]) == [[20, 20], [20, 20]]
+
+
+def test_route_is_constant_speed_and_stays_on_free_tiles():
+    floor = classroom()
+    blocked = ui.world_blocked(floor["width"], floor["height"], floor["tile"], floor["props"])
+    rng = random.Random(7)
+    free = [(x, y) for y, row in enumerate(blocked) for x, v in enumerate(row) if v == "0"]
+    for _ in range(60):
+        (ax, ay), (bx, by) = rng.sample(free, 2)
+        a = [ax * 32 + rng.uniform(1, 31), ay * 32 + rng.uniform(1, 31)]
+        b = [bx * 32 + rng.uniform(1, 31), by * 32 + rng.uniform(1, 31)]
+        points = ui.world_route_points(blocked, 32, a, b)
+        route = ui.world_route(points, at=2, speed=96, width=floor["width"], height=floor["height"])
+        length = sum(math.dist(p, q) for p, q in zip(points, points[1:]))
+        end = route[-1]["at"] + route[-1]["duration"]
+        assert end - 2 == pytest.approx(length / 96)
+        assert ui.world_route_sample(route, 2) == pytest.approx(a)
+        assert ui.world_route_sample(route, 1e9) == pytest.approx(b)
+        for i in range(int((end - 2) / .05) + 1):
+            x, y = ui.world_route_sample(route, 2 + i * .05)
+            assert blocked[int(y // 32)][int(x // 32)] == "0", (a, b, x, y)
+        # retargeting samples the old route first, then starts a new one from there
+        here = ui.world_route_sample(route, 2 + (end - 2) / 2)
+        assert ui.world_route(ui.world_route_points(blocked, 32, here, a), at=5, speed=96)[0]["from"] == pytest.approx(here)
+
+
+def test_a_route_with_nowhere_to_go_is_one_still_segment():
+    route = ui.world_route([[10, 20]], at=3, speed=50)
+    assert len(route) == 1 and route[0]["duration"] == 0
+    assert ui.world_route_sample(route, 0) == [10, 20] and ui.world_route_sample(route, 9) == [10, 20]
+
+
+@pytest.mark.parametrize("rows,groups,per_group,tile", [(1, 1, 1, 16), (4, 3, 2, 32), (8, 6, 4, 32), (3, 2, 3, 64), (5, 4, 1, 128)])
+def test_classroom_generator_is_valid_aligned_and_fully_walkable(rows, groups, per_group, tile):
+    floor = classroom(rows=rows, groups=groups, per_group=per_group, tile=tile)
+    blocked = ui.world_blocked(floor["width"], floor["height"], tile, floor["props"])
+    assert floor["width"] % tile == 0 and floor["height"] % tile == 0 and tile % 8 == 0
+    desks = [p for p in floor["props"] if p["kind"] == "desk"]
+    chairs = [p for p in floor["props"] if p["kind"] == "chair"]
+    assert len(chairs) == rows * groups * per_group and len(desks) == len(chairs) + 1   # one chair per student desk, plus the teacher's desk
+    start = [floor["player"]["x"] // tile, floor["player"]["y"] // tile]
+    seen = {tuple(start)}
+    frontier = [tuple(start)]
+    for x, y in frontier:                                                    # every free tile can be reached from the door
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (x + dx, y + dy)
+            if 0 <= n[0] < len(blocked[0]) and 0 <= n[1] < len(blocked) and blocked[n[1]][n[0]] == "0" and n not in seen:
+                seen.add(n)
+                frontier.append(n)
+    free = {(x, y) for y, row in enumerate(blocked) for x, v in enumerate(row) if v == "0"}
+    assert seen == free
+    assert all((c["x"] // tile, c["y"] // tile) in free for c in chairs)
+
+
+def test_default_classroom_sizes_are_multiples_of_eight():
+    floor = classroom()
+    numbers = [floor["width"], floor["height"], floor["tile"], floor["player"]["x"] - 16, floor["player"]["y"] - 16]
+    for p in floor["props"]:
+        numbers += [p["x"], p["y"], p["w"], p["h"]]
+    assert all(n % 8 == 0 for n in numbers)
+
+
+def test_the_old_world_is_unchanged_by_the_new_fields():
+    value = ui.world_validate(ui.example_data("world"))
+    assert "avatars" not in value and all("tile" not in f and "props" not in f for f in value["floors"])
+    html = ui.world_html(ui.example_data("world"))
+    for marker in ("ui-prop", "data-blocked", "data-grid", "ui-world-pick", "data-step", "data-me", "ui-world-grid-only"):
+        assert marker not in html
+
+
+def test_school_html_has_props_grid_pad_and_picker_and_escapes_text():
+    school = ui.example_data("school")
+    school["floors"][0]["spots"][0]["label"] = "<b>黒板</b>"
+    html = ui.world_html(school)
+    assert html.count('class="ui-prop"') == len(ui.world_validate(school)["floors"][0]["props"])
+    assert 'data-grid' in html and html.count('data-step="') == 4 and 'data-me' in html and 'data-pick-open' in html
+    assert html.count('data-emoji="') == len(school["avatars"]) and 'maxlength="16"' in html
+    assert "<b>黒板</b>" not in html and "&lt;b&gt;" in html
+    rows = html.split('data-blocked="')[1].split('"')[0].split(",")
+    floor = ui.world_validate(school)["floors"][0]
+    assert len(rows) == floor["height"] // floor["tile"] and all(len(r) == floor["width"] // floor["tile"] for r in rows)
+    assert set("".join(rows)) <= {"0", "1"}
+    assert 'hidden' in html.split('class="ui-world-pick"')[1].split(">")[0]       # opened by the script only
+    assert "[data-kind=desk]" in ui.world_css(school) and "[data-kind=desk]" not in ui.world_css(school, base=False)
+
+
+@pytest.mark.parametrize("change", [
+    lambda f: f.update(tile=12),                                              # not a multiple of 8
+    lambda f: f.update(tile=7),
+    lambda f: f.update(tile=48),                                              # does not divide the floor
+    lambda f: f.update(tile=True),
+    lambda f: f["props"].append({"kind": "sofa", "x": 0, "y": 0, "w": 32, "h": 32}),
+    lambda f: f["props"].append({"kind": "desk", "x": 8, "y": 0, "w": 32, "h": 32}),   # off the tiles
+    lambda f: f["props"].append({"kind": "desk", "x": 352, "y": 0, "w": 64, "h": 32}),  # outside the floor
+    lambda f: f["props"].append({"kind": "desk", "x": 0, "y": 0, "w": 0, "h": 32}),
+    lambda f: f["props"].append({"kind": "desk", "x": 0, "y": 0, "w": 32}),
+    lambda f: f["props"].append({"kind": ["desk"], "x": 0, "y": 0, "w": 32, "h": 32}),
+    lambda f: f.update(props=f["props"] * 11),                                 # too many
+    lambda f: f["player"].update(x=80, y=176),                                # starts on a desk
+    lambda f: f.update(extra=1),
+])
+def test_floor_validation_refuses(change):
+    floor = ui.classroom_floor()
+    change(floor)
+    with pytest.raises(ValueError):
+        ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [floor]})
+
+
+def test_props_need_a_tile_grid_and_avatars_are_bounded():
+    floor = ui.classroom_floor()
+    del floor["tile"]
+    with pytest.raises(ValueError):
+        ui.world_validate({"schema": ui.WORLD_SCHEMA, "floors": [floor]})
+    base = {"schema": ui.WORLD_SCHEMA, "floors": [ui.classroom_floor()]}
+    for bad in (["a"], ["🙂", "🙂"], ["🙂"] * 2 + ["x"], [f"{chr(0x1f600 + i)}" for i in range(25)], "🙂", [1], [""]):
+        with pytest.raises(ValueError):
+            ui.world_validate({**base, "avatars": bad})
+    assert ui.world_validate({**base, "avatars": ["🙂", "🐱"]})["avatars"] == ["🙂", "🐱"]
+    for bad in ({"rows": 0}, {"groups": 7}, {"per_group": 5}, {"tile": 12}, {"tile": 8}):
+        with pytest.raises(ValueError):
+            ui.classroom_floor(**bad)
+
+
+def test_validation_is_idempotent_for_the_school_example():
+    once = ui.world_validate(ui.example_data("school"))
+    assert ui.world_validate(once) == once
+
+
+def _node26():
+    node = shutil.which('node')
+    if not node or int(subprocess.check_output([node, '--version'], text=True).lstrip('v').split('.')[0]) < 26:
+        pytest.skip('existing Node 26+ required; no installation')
+    return node
+
+
+def test_node26_grid_route_matches_python_oracle(tmp_path):
+    node = _node26()
+    floor = classroom()
+    blocked = ui.world_blocked(floor["width"], floor["height"], floor["tile"], floor["props"])
+    rng = random.Random(11)
+    routes = [[[rng.uniform(-40, 420), rng.uniform(-40, 560)], [rng.uniform(-40, 420), rng.uniform(-40, 560)]] for _ in range(150)]
+    routes += [[[16, 16], [16, 16]], [[176, 496], [80, 176]], [[176, 496], [80, 272]], [[0, 0], [383.9, 511.9]]]
+    cases = [[GRID, 32, [10, 10], [140, 140]], [GRID, 32, [10, 10], [80, 48]], [["1"], 32, [5, 5], [20, 20]]]
+    cases += [[blocked, 32, a, b] for a, b in routes]
+    glyphs = ["🐱", " 🦖x", "abc", "", "1", "👨‍👩‍👧", "🇯🇵", "❤️", "①", "a🐱"]
+    module = tmp_path / 'grid.mjs'
+    module.write_text(ui.WORLD_JS.removesuffix('bindWorlds();\n') + '\nconst cases=' + json.dumps(cases) + ';const times=[0,0.4,1,2.5,7,1e6];'
+                      'console.log(JSON.stringify({routes:cases.map(([r,t,a,b])=>gridRoute(r,t,a,b)),'
+                      'samples:cases.map(([r,t,a,b])=>{const route=motionRoute(gridRoute(r,t,a,b),2,96,384,512);return times.map(x=>routeSample(route,2+x))}),'
+                      'glyphs:' + json.dumps(glyphs) + '.map(firstGlyph)}))\n')
+    result = json.loads(subprocess.check_output([node, str(module)], text=True))
+    for (rows, tile, a, b), actual, samples in zip(cases, result['routes'], result['samples']):
+        expected = ui.world_route_points(rows, tile, a, b)
+        assert len(actual) == len(expected)
+        for got, want in zip(actual, expected):
+            assert got == pytest.approx(want, abs=1e-9)
+        route = ui.world_route(expected, at=2, speed=96, width=384, height=512)
+        for t, point in zip([0, 0.4, 1, 2.5, 7, 1e6], samples):
+            assert point == pytest.approx(ui.world_route_sample(route, 2 + t), abs=1e-9)
+    assert result['glyphs'] == ['🐱', '🦖', None, None, None, '👨‍👩‍👧', '🇯🇵', '❤️', None, None]
