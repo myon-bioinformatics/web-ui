@@ -40,14 +40,14 @@ def test_canonical_repository_metadata_and_separate_tooling(tmp_path, monkeypatc
     output = tmp_path / "metadata"
     subprocess.run(
         [sys.executable, "-S", str(ROOT / "tool/vendor/gh_identity.py"), "repo-metadata",
-         "--format", "v1", "--repository", "myon-bioinformatics/web-ui", "--root", str(checkout),
+         "--format", "v1", "--repository", "myon-bioinformatics/PySaiyanWeBoo", "--root", str(checkout),
          "--output-dir", str(output)],
         check=True, env=env, capture_output=True, text=True,
     )
     record_path = output / "repository-metadata.json"
     record = json.loads(record_path.read_text())
     assert record == json.loads((output / "repository-metadata.jsonl").read_text())
-    assert record["repository"] == {"full_name": "myon-bioinformatics/web-ui"}
+    assert record["repository"] == {"full_name": "myon-bioinformatics/PySaiyanWeBoo"}
     assert record["head"]["sha"] == sha
     assert record["head"]["short_sha"] == sha[:8]
     assert record["head"]["branch"] == "topic/canonical"

@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "web-ui"
+name = "PySaiyanWeBoo"
 version = "0.1.0"
 description = "Shared CSS themes, semantic UI components, and small JavaScript utilities"
 requires-python = ">=3.11"

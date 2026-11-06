@@ -1380,6 +1380,49 @@ wheels = [
 ]
 
 [[package]]
+name = "pysaiyanweboo"
+version = "0.1.0"
+source = { editable = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pillow" },
+    { name = "pytest" },
+    { name = "pyyaml" },
+]
+gradio = [
+    { name = "gradio" },
+    { name = "playwright" },
+    { name = "pytest" },
+]
+stagehand = [
+    { name = "stagehand" },
+]
+world-test = [
+    { name = "anyio" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pillow", specifier = ">=13.0.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+gradio = [
+    { name = "gradio", specifier = ">=6.30.0" },
+    { name = "playwright", specifier = ">=1.63.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+]
+stagehand = [{ name = "stagehand", specifier = ">=4" }]
+world-test = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "pytest", specifier = ">=8" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1657,49 +1700,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
-]
-
-[[package]]
-name = "web-ui"
-version = "0.1.0"
-source = { editable = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "pillow" },
-    { name = "pytest" },
-    { name = "pyyaml" },
-]
-gradio = [
-    { name = "gradio" },
-    { name = "playwright" },
-    { name = "pytest" },
-]
-stagehand = [
-    { name = "stagehand" },
-]
-world-test = [
-    { name = "anyio" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pillow", specifier = ">=13.0.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pyyaml", specifier = ">=6" },
-]
-gradio = [
-    { name = "gradio", specifier = ">=6.30.0" },
-    { name = "playwright", specifier = ">=1.63.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
-]
-stagehand = [{ name = "stagehand", specifier = ">=4" }]
-world-test = [
-    { name = "anyio", specifier = ">=4.15.1" },
-    { name = "pytest", specifier = ">=8" },
 ]
 
 [[package]]
