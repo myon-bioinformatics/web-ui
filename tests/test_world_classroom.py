@@ -354,3 +354,25 @@ def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
     with pytest.raises(SystemExit) as exit_info:
         record_demo.main([str(tmp_path), "--only", "pick"])
     assert exit_info.value.code == 1 and "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_demo_zoom_goes_in_toward_the_anchor_and_stays_on_the_real_clock():
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    class Page:                                                 # a screenshot of a red corner (bottom left) on blue
+        def screenshot(self, type):
+            image = Image.new("RGB", (40, 40), (0, 0, 255))
+            image.paste((255, 0, 0), (0, 20, 20, 40))
+            out = io.BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+
+    camera = record_demo.Camera(Page())
+    camera.zoom(anchor=(0, 1), factor=2, steps=4, hold_ms=300)
+    assert len(camera.shots) == 4                               # three steps in, then the peak
+    times = [t for t, _ in camera.shots]
+    assert times == sorted(times) and round((times[-1] - times[-2]) * 1000) == 60 and round((times[1] - times[0]) * 1000) == 60
+    frames = [Image.open(io.BytesIO(png)).convert("RGB") for _, png in camera.shots]
+    assert frames[3].getpixel((20, 20)) == (255, 0, 0)          # at the peak the bottom-left corner fills the picture
+    assert record_demo.time.monotonic() >= times[-1] + 0.3      # the real clock was let catch up (the peak is held 300 ms)

@@ -6,7 +6,9 @@ Playwright drives a real Chrome through each scene. The ``Camera`` keeps a scree
 so a GIF plays at the speed the page really moved. Encoding follows Ironmate's ``png_zoom_gif.py``: one shared palette (no dither,
 so frames never flicker), delays in 10 ms units (never below 20 ms, which browsers stretch), the animation loops, and an existing
 output is refused unless ``--force``. Unlike that zoom (every pixel changes), a walking player changes few pixels, so frames are
-written as deltas (``optimize=True``): about a third of the size, decoding to exactly the same pictures. Needs Playwright and Pillow, like the browser tests. Scenes are ordinary functions, so a new
+written as deltas (``optimize=True``): about a third of the size, decoding to exactly the same pictures. The zoom step
+(``cam.zoom``) is Ironmate's smooth zoom-in, kept to what the demos need and run through this same encoder, not a second copy of
+that tool; this repository is the canonical home of both. Needs Playwright and Pillow, like the browser tests. Scenes are ordinary functions, so a new
 operation is one ``@scene`` below; ``tests/integration/school_browser.py`` records every scene to keep them from rotting.
 """
 from __future__ import annotations
@@ -35,6 +37,7 @@ CLASSROOM = f'.ui-floor[data-floor="{FLOOR["id"]}"]'
 PICKED = "() => !document.querySelector('.ui-world').hasAttribute('data-pick')"
 SETTLED = (f"() => {{ const p = document.querySelector('{CLASSROOM} .ui-player'), s = p.style;"
            "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")
+PLAYER = (0.48, 0.69)                           # where a character standing at the door is on screen: a zoom target
 SCENES: dict = {}
 
 
@@ -53,6 +56,28 @@ class Camera:
             began = time.monotonic()
             self.snap()
             self.page.wait_for_timeout(max(0, FRAME_MS - (time.monotonic() - began) * 1000))
+
+    def zoom(self, anchor=(0.5, 0.5), factor=2.5, steps=6, hold_ms=1500):
+        """Zoom into what is on screen toward ``anchor`` (x, y from 0 to 1) and stay there: the demos are shown small in the README.
+        Every pixel changes in a zoom, so it costs a few frames of GIF size; it does not zoom back (the loop starts over)."""
+        from PIL import Image
+        source = Image.open(io.BytesIO(self.page.screenshot(type="png"))).convert("RGB")
+        width, height = source.size
+        forward = []
+        for i in range(1, steps + 1):
+            t = i / steps
+            scale = 1 + (factor - 1) * t * t * (3 - 2 * t)          # smoothstep, as in png_zoom_gif
+            w, h = max(1, round(width / scale)), max(1, round(height / scale))
+            left, top = round((width - w) * anchor[0]), round((height - h) * anchor[1])
+            forward.append(source.crop((left, top, left + w, top + h)).resize(source.size, Image.Resampling.LANCZOS))
+        path = [(f, 60) for f in forward[:-1]] + [(forward[-1], hold_ms)]
+        t = time.monotonic()
+        for frame, ms in path:
+            png = io.BytesIO()
+            frame.save(png, format="PNG")
+            self.shots.append((t, png.getvalue()))
+            t += ms / 1000
+        time.sleep(max(0, t - time.monotonic()))                  # the clock catches up with the frames just added
 
     def until(self, script, ms=20000):
         end = time.monotonic() + ms / 1000
@@ -133,7 +158,8 @@ def _pick(page, cam, tmp):
     cam.hold(1200)
     page.click('[data-emoji="🦊"]')
     cam.until(PICKED)
-    cam.hold(1200)
+    cam.hold(600)
+    cam.zoom(PLAYER)
 
 
 @scene("avatar-text")
@@ -149,7 +175,8 @@ def _avatar_text(page, cam, tmp):
         cam.hold(400)
     page.keyboard.press("Enter")
     cam.until(PICKED)
-    cam.hold(1200)
+    cam.hold(600)
+    cam.zoom(PLAYER)
 
 
 @scene("keys")

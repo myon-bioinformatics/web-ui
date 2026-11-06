@@ -90,6 +90,8 @@ python tool/record_demo.py docs/demo --only keys tap --force --width 400        
 | `school-floors.gif` | the schoolyard, a spot's sheet, back to the classroom, the board spot |
 | `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
 
+A scene may end with `cam.zoom((x, y))`: a smooth zoom toward that point that stays (the easing of Ironmate's `png_zoom_gif.py`, taken into this
+tool and written by the same encoder rather than kept as a second tool), because the README shows the GIFs small.
 A new operation is one `@scene` function in the tool. `tests/integration/school_browser.py` records every scene, so a UI change that breaks a demo
 fails the browser job instead of leaving a stale GIF. The page asks for Meiryo first; these were recorded on Linux, where it is absent, so the fallback
 face shows (record on Windows to get Meiryo).
