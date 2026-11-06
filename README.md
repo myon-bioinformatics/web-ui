@@ -62,6 +62,16 @@ projection, keyboard/reduced-motion controls, and daily countdown/timezone seman
 world `avatars` (pick an emoji, a short text or both first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`).
 From another repository: `echo '{"schema":"web-ui-world/1","floors":[{"classroom":{}}]}' | python -S web_ui.py --world - > school.html` (`--world -` reads stdin; Node: `node vendor/py_launch.cjs -- web_ui.py --world -`).
 
+Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --force` ([what each shows](docs/world-classroom.md#demos)):
+
+| Pick a character | Type your own | Arrow keys / WASD |
+|---|---|---|
+| <img src="docs/demo/school-pick.gif" width="240" alt="The picker comes first; a fox walks into the room"> | <img src="docs/demo/school-avatar-text.gif" width="240" alt="Typing 先生 and an apple as the character"> | <img src="docs/demo/school-keys.gif" width="240" alt="A cat walks with the keys and is stopped by desks"> |
+| **Tap to walk** | **Phone** | **Floors and spots** |
+| <img src="docs/demo/school-tap.gif" width="240" alt="Tapping a chair; the player walks around the desks"> | <img src="docs/demo/school-phone.gif" width="240" alt="On a phone: the pad, dragging the map, 自分の場所"> | <img src="docs/demo/school-floors.gif" width="240" alt="Schoolyard, a spot's sheet, back to the classroom"> |
+
+<img src="docs/demo/school-oneliner.gif" width="320" alt="One command writes the school page; the page opens with the picker">
+
 Map extras, all optional in the same spec: emoji `actors` (villagers that walk straight at constant speed and pause at random, seeded), a
 `player` that walks to the spot you tap, and an info `board`. The board has a clock (`"offset_label": true` adds the UTC offset such as
 `UTC+9`, never a place name), optional **zone clocks** (`"zones": [{"id": "tokyo", "label": "Tokyo", "tz": "Asia/Tokyo"}]`, up to 6;

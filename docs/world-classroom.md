@@ -70,6 +70,30 @@ asks again. Without JavaScript the picker, the pad and the player controls stay 
 
 ## Not included
 
+## Demos
+
+Each GIF is a real run of the generated page in Chrome, recorded by `tool/record_demo.py` (Playwright keeps a screenshot with its real
+time whenever a scene waits; Pillow writes one shared palette and delta frames). They are regenerated, never edited by hand:
+
+```sh
+WEB_UI_CHROME=/path/to/chrome python tool/record_demo.py docs/demo --force            # all scenes
+python tool/record_demo.py docs/demo --only keys tap --force --width 400               # some, smaller
+```
+
+| File | Shows |
+|---|---|
+| `school-pick.gif` | the picker comes first; choosing 🦊 puts it in the room |
+| `school-avatar-text.gif` | **絵文字を変える**, then typing text and an emoji (`先生🍎`) as the character |
+| `school-keys.gif` | arrow keys and WASD, a held key repeating, desks stopping the walk |
+| `school-tap.gif` | tapping a chair (the path goes around the desks) and tapping a desk (nearest free tile) |
+| `school-phone.gif` | a phone-sized screen: tap a character, the on-screen pad, drag the map away, **自分の場所** |
+| `school-floors.gif` | the schoolyard, a spot's sheet, back to the classroom, the board spot |
+| `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
+
+A new operation is one `@scene` function in the tool. `tests/integration/school_browser.py` records every scene, so a UI change that breaks a demo
+fails the browser job instead of leaving a stale GIF. The page asks for Meiryo first; these were recorded on Linux, where it is absent, so the fallback
+face shows (record on Windows to get Meiryo).
+
 Other people's avatars. Showing several visitors at once needs a server or peer connection, which this static, no-storage layer
 deliberately does not have. The shared GitHub board (`docs/world-shared-board.md`) remains the only shared channel.
 

@@ -2,14 +2,20 @@
 
 Browser behaviour (picker, keys, pad, taps, collisions) is in tests/integration/school_browser.py.
 """
+import io
 import json
 import math
+from pathlib import Path
 import random
 import shutil
 import subprocess
+import sys
 
 import pytest
 import web_ui as ui
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
+import record_demo  # noqa: E402  (the GIF recorder for the README demos)
 
 GRID = ["00000",
         "01110",
@@ -300,3 +306,51 @@ def test_node26_reaches_the_same_page_through_py_launch():
     expected = ui.world_document(ONE_LINER)
     result = _cli("--", "web_ui.py", "--world", "-", stdin=json.dumps(ONE_LINER, ensure_ascii=False), command=[node, "vendor/py_launch.cjs"])
     assert result.returncode == 0 and result.stdout.decode("utf-8") == expected
+
+
+def _png(color, mark=None, size=(64, 48)):
+    from PIL import Image
+    image = Image.new("RGB", size, color)
+    if mark:
+        image.paste(mark, (8, 8, 24, 24))
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_demo_gif_keeps_real_timing_and_decodes_to_the_same_pictures():
+    pytest.importorskip("PIL")
+    from PIL import Image, ImageChops
+    shots = [(10.0, _png((13, 17, 23))), (10.003, _png((13, 17, 23), (255, 0, 0))), (10.5, _png((13, 17, 23), (0, 255, 0))), (11.0, _png((0, 0, 255)))]
+    gif = record_demo.encode(shots, tail_ms=700)
+    image = Image.open(io.BytesIO(gif))
+    assert gif[:6] == b"GIF89a" and image.n_frames == 4 and image.info["loop"] == 0
+    delays = []
+    for index in range(image.n_frames):
+        image.seek(index)
+        delays.append(image.info["duration"])
+    assert delays == [20, 500, 500, 700]                       # 3 ms is lifted to 20 ms; real gaps round to 10 ms; the tail is the last frame
+    for index, (_, png) in enumerate(shots):                   # delta frames still show exactly what was on screen
+        image.seek(index)
+        assert ImageChops.difference(image.convert("RGB"), Image.open(io.BytesIO(png)).convert("RGB")).getbbox() is None
+
+
+def test_demo_gif_merges_still_frames_and_can_shrink():
+    pytest.importorskip("PIL")
+    from PIL import Image
+    shots = [(0.0, _png("black")), (0.1, _png("black")), (0.2, _png("black")), (0.3, _png("white"))]
+    image = Image.open(io.BytesIO(record_demo.encode(shots, width=32)))
+    assert image.size == (32, 24) and image.n_frames == 2
+
+
+def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "floors", "oneliner"}
+    with pytest.raises(ValueError, match="unknown scene: nope"):
+        record_demo.record(tmp_path, ["nope"])
+    (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")
+    with pytest.raises(FileExistsError, match="--force"):
+        record_demo.record(tmp_path, ["pick"])
+    assert (tmp_path / "school-pick.gif").read_bytes() == b"GIF89a"
+    with pytest.raises(SystemExit) as exit_info:
+        record_demo.main([str(tmp_path), "--only", "pick"])
+    assert exit_info.value.code == 1 and "refusing to overwrite" in capsys.readouterr().err

@@ -14,6 +14,8 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tool"))
+import record_demo  # noqa: E402
 import web_ui  # noqa: E402
 
 SPEC = web_ui.example_data("school")
@@ -100,6 +102,17 @@ class SchoolTests(unittest.TestCase):
         page.click("[data-pick-open]")
         self.assertTrue(page.is_visible(".ui-world-pick"))
         self.assertEqual(self.errors, [])
+
+    def test_every_demo_scene_records_a_gif(self):
+        """The README demos (tool/record_demo.py) are real operations; a UI change that breaks one fails here, not in the next README."""
+        with tempfile.TemporaryDirectory() as out:
+            paths = record_demo.record(out, browser=self.browser)
+            self.assertEqual({p.name for p in paths}, {f"school-{name}.gif" for name in record_demo.SCENES})
+            for path in paths:
+                data = path.read_bytes()
+                self.assertEqual(data[:6], b"GIF89a", path.name)
+                self.assertGreater(len(data), 20_000, path.name)               # something moved
+                self.assertLess(len(data), 3 * 1024 * 1024, path.name)         # and the README stays light
 
     def test_without_javascript_the_static_map_stays_and_nothing_interactive_shows(self):
         page = self.open(js=False)
