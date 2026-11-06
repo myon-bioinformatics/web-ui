@@ -50,13 +50,13 @@ and judge for themselves. A machine (Playwright) can do the same by clicking the
 
 ## On the Pages front page
 
-`index.html` carries a live demo: the generated `<style>` (the `css` output) and the radios (the `html`
+`index.html` carries a live demo in its 🎛️ Try it room (open `index.html#try`): the generated `<style>` (the `css` output) and the radios (the `html`
 output, labeled from the sweep result kept in `web_ui._INDEX_LAYOUT_CANDIDATES`). `index.html` itself is
-written by `web_ui.example_pages()` and a test keeps them equal; unit tests keep the CSS and the radios equal
+written by `web_ui.example_pages()` (`front_document()` over the library's builders) and a test keeps them equal; unit tests keep the CSS and the radios equal
 to the presets. After changing the presets or the page, run the sweep, update the labels, and regenerate:
 
 ```sh
-python tool/layout_presets.py sweep index.html --presets layout-presets.json \
+python tool/layout_presets.py sweep "file://$PWD/index.html#try" --presets layout-presets.json \
   --items ".ui-matrix-tiles li" --widths 320 384 768 1280 --out /tmp/candidates.json
 python -S web_ui.py --site build/site && cp build/site/index.html index.html
 ```

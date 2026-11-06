@@ -780,8 +780,12 @@ def render_document(
     module_mode: str = "inline",
     module_nonce: str | None = None,
     trusted_html: str | None = None,
+    favicon: str | None = None,
+    touch_icon: str | None = None,
 ) -> str:
     """Wrap escaped text or trusted HTML with CSS; scripts are opt-in links only.
+
+    ``favicon`` and ``touch_icon`` are optional PNG links (a local path or an HTTPS URL) for the tab and the home screen.
 
     CSS is caller-authored. Reject an HTML raw-text terminator rather than allow
     it to escape the style element. Stylesheets allow local or HTTPS paths;
@@ -804,6 +808,12 @@ def render_document(
     for href in stylesheets:
         _require_local_or_https(href, label="stylesheet")
         links.append(f'<link rel="stylesheet" href="{escape(href, quote=True)}">')
+    for href, tag in ((favicon, '<link rel="icon" type="image/png" href="{}">'), (touch_icon, '<link rel="apple-touch-icon" href="{}">')):
+        if href is not None:
+            if not isinstance(href, str) or not href:
+                raise ValueError("an icon is a path or an HTTPS URL")
+            _require_local_or_https(href, label="icon", allow_query=False)
+            links.append(tag.format(escape(href, quote=True)))
     style = f"<style>{css}</style>" if css else ""
     head_remote_scripts = [remote_script_tag(src) for src in remote_scripts]
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
@@ -3660,6 +3670,82 @@ def theme_wall_document(count: int) -> str:
     if type(count) is not int or count < 0:
         raise ValueError("theme wall count must be a nonnegative integer")
     return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
+
+
+# The seed dial: random_theme() is the reference, theme.js is Python's own generator written out for the page (CPython's Mersenne Twister, seeded the way
+# random.Random(int) seeds it, then the same steps in the same order), so one seed gives the same tokens here and there (checked on thousands of seeds).
+_JS["theme.js"] = r"""/* web-ui theme: a seeded palette in the page. Python (web_ui.random_theme) is the reference: the same Mersenne Twister as random.Random(seed) and the same steps, so a seed gives the same tokens. */
+const N=624;
+function mersenne(seed){if(!Number.isSafeInteger(seed))throw new RangeError("seed must be a safe integer");const s=new Uint32Array(N),key=[];let n=Math.abs(seed),i,j,k;
+ do{key.push(n%4294967296);n=Math.floor(n/4294967296)}while(n>0);
+ s[0]=19650218;for(i=1;i<N;i++)s[i]=Math.imul(1812433253,s[i-1]^s[i-1]>>>30)+i;
+ i=1;j=0;for(k=Math.max(N,key.length);k;k--){s[i]=(s[i]^Math.imul(s[i-1]^s[i-1]>>>30,1664525))+key[j]+j;i++;j++;if(i>=N){s[0]=s[N-1];i=1}if(j>=key.length)j=0}
+ for(k=N-1;k;k--){s[i]=(s[i]^Math.imul(s[i-1]^s[i-1]>>>30,1566083941))-i;i++;if(i>=N){s[0]=s[N-1];i=1}}
+ s[0]=0x80000000;let pos=N;
+ const word=()=>{if(pos>=N){for(let a=0;a<N;a++){const y=s[a]&0x80000000|s[(a+1)%N]&0x7fffffff;s[a]=s[(a+397)%N]^y>>>1^(y&1?0x9908b0df:0)}pos=0}
+  let y=s[pos++];y^=y>>>11;y^=y<<7&0x9d2c5680;y^=y<<15&0xefc60000;y^=y>>>18;return y>>>0};
+ return()=>{const a=word()>>>5,b=word()>>>6;return(a*67108864+b)/9007199254740992}}
+const roundEven=x=>{const f=Math.floor(x),d=x-f;return d<0.5?f:d>0.5?f+1:f%2?f+1:f};
+const mod1=x=>{x%=1;return x<0?x+1:x};
+const wave=(m1,m2,h)=>{h=mod1(h);return h<1/6?m1+(m2-m1)*h*6:h<0.5?m2:h<2/3?m1+(m2-m1)*(2/3-h)*6:m1};
+function hsl(hue,sat,light){const h=mod1(hue),l=Math.min(Math.max(light,0),1),s=Math.min(Math.max(sat,0),1);let rgb;
+ if(s===0)rgb=[l,l,l];else{const m2=l<=0.5?l*(1+s):l+s-l*s,m1=2*l-m2;rgb=[wave(m1,m2,h+1/3),wave(m1,m2,h),wave(m1,m2,h-1/3)]}
+ return"#"+rgb.map(c=>roundEven(c*255).toString(16).padStart(2,"0")).join("")}
+export function luminance(color){const lin=[1,3,5].map(i=>{const c=parseInt(color.slice(i,i+2),16)/255;return c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4});return 0.2126*lin[0]+0.7152*lin[1]+0.0722*lin[2]}
+export function contrast(a,b){const x=luminance(a),y=luminance(b);return(Math.max(x,y)+0.05)/(Math.min(x,y)+0.05)}
+function readable(hue,sat,grounds,minimum){const step=grounds.reduce((t,g)=>t+luminance(g),0)/grounds.length>0.18?-0.02:0.02;let light=0.5;
+ for(let i=0;i<50;i++){const c=hsl(hue,sat,light);if(grounds.every(g=>contrast(c,g)>=minimum))return c;light+=step}return step<0?"#000000":"#ffffff"}
+/** The --ui-* tokens of a seed: the same object, in the same order, as web_ui.random_theme(seed). Every text pair meets WCAG AA by construction. */
+export function randomTheme(seed){const r=mersenne(seed),hue=r(),dark=r()<0.5,sat=0.15+r()*0.35,bgL=dark?0.07+r()*0.07:0.92+r()*0.06;
+ const bg=hsl(hue,sat,bgL),panel=hsl(hue,sat,Math.min(1,bgL+(dark?0.05:0.04))),grounds=[bg,panel];
+ const fg=readable(hue+(r()-0.5)*0.1,0.25,grounds,7),muted=readable(hue,0.12,grounds,4.5),border=hsl(hue,0.2,bgL+(dark?0.16:-0.16));
+ const accent=readable(hue+0.15+r()*0.5,0.55+r()*0.3,grounds,4.5),danger=readable(r()*0.03,0.7,grounds,4.5),radius=["0",".25rem",".5rem","1rem"][Math.floor(r()*4)];
+ return{"--ui-bg":bg,"--ui-panel":panel,"--ui-fg":fg,"--ui-muted":muted,"--ui-border":border,"--ui-accent":accent,"--ui-danger":danger,"--ui-radius":radius}}
+/** Put a seed's tokens on an element (the <body> by default) as inline custom properties; clearSeed() takes them off again. */
+export function applySeed(seed,target=document.body){const tokens=randomTheme(seed);for(const[name,value]of Object.entries(tokens))target.style.setProperty(name,value);
+ target.style.colorScheme=luminance(tokens["--ui-bg"])<0.18?"dark":"light";target.dataset.uiSeeded=String(seed);return tokens}
+export function clearSeed(target=document.body){for(const name of Object.keys(randomTheme(0)))target.style.removeProperty(name);target.style.removeProperty("color-scheme");delete target.dataset.uiSeeded}
+/** The seed dial: [data-ui-seed] inputs (range or number), [data-ui-seed-roll], [data-ui-seed-off], [data-ui-seed-out], and any [data-seed] element to pick by tap.
+    A named theme (bindTheme's controls) takes over again. The seed is remembered in this browser (localStorage, best effort). Returns the seed in effect or null. */
+export function bindSeed(root=document,{key="web-ui-seed",target=document.body}={}){
+ const dials=[...root.querySelectorAll("[data-ui-seed]")],outs=[...root.querySelectorAll("[data-ui-seed-out]")],picks=[...root.querySelectorAll("[data-seed]")];
+ const top=Math.max(1,...dials.map(d=>Number(d.max)||0)),show=seed=>{for(const d of dials)d.value=seed===null?d.min||"0":String(seed);for(const o of outs)o.textContent=seed===null?"–":String(seed);
+  for(const p of picks)p.toggleAttribute("data-picked",seed!==null&&Number(p.dataset.seed)===seed)};
+ const use=seed=>{applySeed(seed,target);show(seed);try{localStorage.setItem(key,String(seed))}catch{}return seed};
+ const off=()=>{clearSeed(target);show(null);try{localStorage.removeItem(key)}catch{}return null};
+ const valid=text=>/^\d{1,10}$/.test(text)&&Number(text)<=2147483647;
+ for(const d of dials)d.addEventListener("input",()=>valid(d.value)&&use(Number(d.value)));
+ for(const b of root.querySelectorAll("[data-ui-seed-roll]"))b.addEventListener("click",()=>use(Math.floor(Math.random()*(top+1))));
+ for(const b of root.querySelectorAll("[data-ui-seed-off]"))b.addEventListener("click",off);
+ for(const p of picks)p.addEventListener("click",()=>use(Number(p.dataset.seed)));
+ for(const c of root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]"))c.addEventListener("change",off);
+ let saved=null;try{saved=localStorage.getItem(key)}catch{}
+ return valid(saved)?use(Number(saved)):off()}
+"""
+
+
+def seed_roll_html(css: str = "") -> str:
+    """The 🎲 button ``bindSeed()`` binds: one tap puts a random seed's palette on the page."""
+    klass = f' class="{escape(css, quote=True)}"' if css else ""
+    return f'<button{klass} type="button" data-ui-seed-roll aria-label="Random seed" title="Random seed">🎲</button>'
+
+
+def theme_switch_html(*, legend: str = "Theme") -> str:
+    """The named themes as radios (``bindTheme()`` binds them): modern is checked; the others are THEMES and CANDIDATE_THEMES."""
+    return (f'<fieldset class="ui-layout-switch"><legend>{escape(legend)}</legend>'
+            + "".join(f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
+                      for t in (*THEMES, *CANDIDATE_THEMES)) + "</fieldset>")
+
+
+def seed_dial_html(*, maximum: int = 99) -> str:
+    """The controls ``bindSeed()`` from theme.js binds: a dial (range), the number it shows, 🎲 for a random seed and ✖️ for the named theme again."""
+    if type(maximum) is not int or not 1 <= maximum <= 2**31 - 1:
+        raise ValueError("the dial's maximum is an integer from 1 to 2147483647")
+    return ('<fieldset class="ui-layout-switch ui-seed"><legend>🎲 seed</legend>'
+            f'<input class="ui-seed-dial" type="range" min="0" max="{maximum}" step="1" value="0" data-ui-seed aria-label="seed">'
+            '<output class="ui-seed-out" data-ui-seed-out aria-live="polite">–</output>'
+            + seed_roll_html("ui-button") +
+            '<button class="ui-button" type="button" data-ui-seed-off aria-label="Back to the named theme" title="Back to the named theme">✖️</button></fieldset>')
 
 
 # --- Pages and examples as Python data: specs in, single-file pages out (no HTML files) ---------------
@@ -15072,6 +15158,22 @@ export function bindCurl(root=document){return[...root.querySelectorAll("[data-u
 globalThis.webUiCurl={curlTokenize,parseCurl,maskCurl,bindCurl};
 if(typeof document!=="undefined")bindCurl();
 """
+CURL_SAMPLE = ('curl -X POST https://api.example.com/items -H "Authorization: Bearer abc" -H "Content-Type: application/json" '
+               '-d \'{"name":"demo"}\'')
+
+
+def curl_panel_html(sample: str = CURL_SAMPLE, *, heading_level: int = 2) -> str:
+    """The request-draft panel ``curl.js`` binds: a curl command is read in the page (never run or sent) and shown as JSON, credentials as ``***``."""
+    if not isinstance(sample, str) or len(sample) > 2000:
+        raise ValueError("the sample is a curl command of at most 2000 characters")
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 2
+    return (f'<section class="ui-panel" id="curl" data-ui-curl><h{level}>📋 Request draft (curl)</h{level}><p class="ui-muted">Paste a curl command: it is read in this '
+            'page and never run or sent. Credentials show as <code>***</code>; the body is shown as written, so do not paste real secrets. '
+            'Python reads it the same way (<code>web_ui.parse_curl</code>).</p>'
+            f'<textarea class="ui-input" data-curl-input rows="4" aria-label="curl command">{escape(sample)}</textarea> '
+            '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>')
+
+
 _STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
                  't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
 
@@ -16636,8 +16738,88 @@ _INDEX_LAYOUT_CANDIDATES = {"schema": "web-ui-layout-candidates/1", "presets": {
     name: {"passed": [320, 384, 768, 1280], "failed": []} for name in ("grid8", "compact", "device", "wide")}}
 
 
+# --- The front page as a generic layout: one main view and rooms behind 🚪 --------------------------------------------------------------------
+# GitHub Pages is not hand-built: index.html is front_document() over the library's own builders (see _index_page), kept equal by a test. To add something
+# to the page, add a room made from a builder; to improve the page, improve the builder. The main view fills one 48px-barred viewport; a room opens over it
+# through :target (no script; :has(:target) so a link to an anchor inside a room opens it too). Pixel values are multiples of 8.
+FRONT_RESERVED = "rooms"
+_FRONT_CSS = (
+    ".ui-front{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-front-bar,.ui-room-bar{display:flex;align-items:center;gap:8px;box-sizing:border-box;height:48px;padding:0 8px;border-bottom:1px solid var(--ui-border);"
+    "background:var(--ui-panel)}.ui-front-bar{flex:none}.ui-room-bar{position:sticky;top:0;z-index:2;justify-content:flex-end}"
+    ".ui-front-bar img{flex:none;width:32px;height:32px;border-radius:var(--ui-radius)}"
+    ".ui-front-title{flex:1;min-width:0;margin:0;font-size:1rem;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    ".ui-front-bar a,.ui-front-bar button,.ui-room-bar a{display:flex;align-items:center;justify-content:center;flex:none;width:40px;height:40px;box-sizing:border-box;"
+    "padding:0;font:inherit;font-size:1.25rem;line-height:1;text-decoration:none;color:var(--ui-fg);border:1px solid var(--ui-border);background:var(--ui-bg);"
+    "border-radius:var(--ui-radius);cursor:pointer}"
+    ".ui-front>.ui-world{flex:1;min-height:0;display:flex;flex-direction:column;margin:0;border:0;border-radius:0}"
+    ".ui-front>.ui-world .ui-world-body{flex:1;min-height:0}.ui-front>.ui-world .ui-world-view{height:auto}"
+    ".ui-room{position:fixed;inset:0;z-index:20;overflow:auto;scroll-padding-top:56px;visibility:hidden;background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-room:is(:target,:has(:target)){visibility:visible}"
+    ".ui-seed{align-items:center}.ui-seed-dial{flex:1;min-width:8rem;accent-color:var(--ui-accent)}.ui-seed-out{min-width:3ch;text-align:center}"
+    ".ui-wall-cell[data-seed]{cursor:pointer}.ui-wall-cell[data-picked]{outline:2px solid var(--ui-accent);outline-offset:2px}"
+)
+
+
+def front_css() -> str:
+    """The rules of front_html(): the viewport-high main view, its bar, the rooms, and the seed dial and wall cells that ``bindSeed()`` drives."""
+    return _FRONT_CSS
+
+
+def front_rooms(rooms: Any) -> list[dict[str, str]]:
+    """Checked rooms: ``id`` (a lowercase token, not "rooms", unique), ``emoji``, ``title``, ``text``, optional ``link`` and ``html`` (trusted; it must hold the element with that id)."""
+    if not isinstance(rooms, (list, tuple)) or not 1 <= len(rooms) <= 24:
+        raise ValueError("a front page has 1..24 rooms")
+    seen, out = set(), []
+    for room in rooms:
+        if not isinstance(room, dict) or set(room) - {"id", "emoji", "title", "text", "link", "html"} or not {"id", "emoji", "title", "html"} <= set(room):
+            raise ValueError("a room has id, emoji, title, html and optionally text and link")
+        rid = room["id"]
+        if not isinstance(rid, str) or not _WORLD_TOKEN.fullmatch(rid) or rid == FRONT_RESERVED or rid in seen:
+            raise ValueError("a room id is a unique lowercase token, and not " + FRONT_RESERVED)
+        if not isinstance(room["html"], str) or f'id="{rid}"' not in room["html"]:
+            raise ValueError("a room's html holds the element whose id is the room's id")
+        seen.add(rid)
+        out.append({"id": rid, "emoji": _world_text(room["emoji"], "emoji", 16), "title": _world_text(room["title"], "title", 60),
+                    "text": _world_text(room.get("text", ""), "text", 200, required=False),
+                    "link": _world_text(room.get("link", "Open"), "link", 40), "html": room["html"]})
+    return out
+
+
+def front_html(main: str, rooms: Any, *, title: str, lead: str = "", tags: Any = (), icon: str | None = None, tools: str = "") -> str:
+    """A page that is one view and a door: ``main`` (trusted HTML) fills the viewport under a bar (``icon``, the ``title``, trusted ``tools`` such as seed_roll_html(),
+    and 🚪); 🚪 opens the menu of ``rooms`` and each room opens over the view, ✖️ closes it. The menu's cards and the bars are built here from the rooms' data."""
+    checked = front_rooms(rooms)
+    if not isinstance(main, str) or not isinstance(tools, str):
+        raise ValueError("main and tools are HTML strings")
+    if not isinstance(tags, (list, tuple)) or len(tags) > 6:
+        raise ValueError("tags list at most 6 entries")
+    if icon is not None:
+        _require_local_or_https(icon, label="icon", allow_query=False)
+    name = _world_text(title, "title", 80)
+    door = '<a href="#rooms" aria-label="Rooms" title="Rooms">🚪</a>'
+    close = '<a href="#" aria-label="Close" title="Close">✖️</a>'
+    room = lambda inner, bar, rid="": ('<section class="ui-room"' + (f' id="{rid}"' if rid else "") + f'><nav class="ui-room-bar" aria-label="Rooms">{bar}</nav>'
+                                       f'<div class="ui-page">{inner}</div></section>')
+    cards = "".join(f'<article class="ui-card"><h2>{escape(r["emoji"])} {escape(r["title"])}</h2><p>{escape(r["text"])}</p><a href="#{r["id"]}">{escape(r["link"])} →</a></article>'
+                    for r in checked)
+    menu = room(f'<header class="stub-header"><div><h2 class="ui-title">🚪 {escape(name)}</h2><p class="ui-muted">{escape(lead)}</p></div>'
+                f'<div class="stub-meta">{"".join(badge(_world_text(t, "tag", 24)) for t in tags)}</div></header><section class="ui-grid">{cards}</section>', close, FRONT_RESERVED)
+    picture = f'<img src="{escape(icon, quote=True)}" width="32" height="32" alt="{escape(name, quote=True)} icon">' if icon else ""
+    return (f'<main class="ui-front"><header class="ui-front-bar">{picture}<h1 class="ui-front-title">{escape(name)}</h1>{tools}{door}</header>{main}</main>'
+            + menu + "".join(room(r["html"], door + close) for r in checked))
+
+
+def front_document(main: str, rooms: Any, *, title: str, lead: str = "", tags: Any = (), icon: str | None = None, tools: str = "", css: str = "",
+                   scripts: str = "", document_title: str | None = None, favicon: str | None = None, theme: str = "modern") -> str:
+    """front_html() as a single-file page: the bundled CSS, front_css(), your ``css`` (trusted), and ``scripts`` (trusted module script tags, e.g. from module_script())."""
+    return render_document(trusted_html=front_html(main, rooms, title=title, lead=lead, tags=tags, icon=icon, tools=tools) + scripts,
+                           title=document_title or title, theme=theme, css=bundled_css() + front_css() + css, favicon=favicon, touch_icon=icon)
+
+
 def _index_page() -> str:
-    """The front page (index.html): one self-contained page holding every example. Needs a checkout (tool/layout_presets.py)."""
+    """The front page (index.html): front_document() over the library's own builders and the EXAMPLES specs; nothing in it is written for the page alone.
+    The overworld is the main view; every other example is a room. Needs a checkout (tool/layout_presets.py)."""
     import importlib
     root = Path(__file__).resolve().parent
     sys.path.insert(0, str(root / "tool"))
@@ -16645,57 +16827,44 @@ def _index_page() -> str:
         layout_presets = importlib.import_module("layout_presets")
     finally:
         sys.path.pop(0)
-    world, school, presets = example_data("world"), example_data("school"), example_data("layout-presets")
-    css = bundled_css() + layout_presets.css(presets) + world_css(world) + world_css(school, base=False) + _WALL_CSS
-    theme_radios = "".join(
-        f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
-        for t in (*THEMES, *CANDIDATE_THEMES))
-    cards = "".join(
-        f'<article class="ui-card"><h2>{title}</h2><p>{text}</p><a href="#{anchor}">{link} →</a></article>'
-        for title, text, anchor, link in (
-            ("Try it", "Switch theme and layout live: no reload, no stylesheet swap.", "try", "Open the switches"),
-            ("MCP workspace", "Reusable MCP-style result/evidence/history structure, with a declarative mock.", "mcp", "Open MCP stub"),
-            ("API workspace", "Same semantic workspace with consumer-owned API behavior.", "api", "Open API stub"),
-            ("World (prototype)", "One page, a camera: scroll the shots, pan and zoom the map.", "world", "Open the world"),
-            ("School (prototype)", "Pick an emoji, then walk between desks by tap, keys or the pad.", "school", "Open the school"),
-            ("Random themes", "Seeded palettes side by side; every text pair meets WCAG AA.", "wall", "Open the wall")))
+    world, school, overworld, presets = example_data("world"), example_data("school"), example_data("overworld"), example_data("layout-presets")
     tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
-    body = (
-        '<main class="ui-page"><header class="stub-header"><div>'
-        '<img src="./docs/brand/icon.png" width="80" height="80" alt="PySaiyanWeBoo icon"><h1 class="ui-title">PySaiyanWeBoo</h1>'
-        '<p class="ui-muted">Shared static-first UI contract for myon-bioinformatics projects.</p></div>'
-        '<div class="stub-meta"><span class="ui-tag">v1</span><span class="ui-tag">build-free</span></div></header>'
-        f'<section class="ui-grid">{cards}</section>'
-        '<section class="ui-panel" id="try"><h2>Try it</h2><p class="ui-muted">Both switches act at once: no reload. The theme is saved in '
-        'this browser; the layout is plain CSS.</p>'
-        f'<fieldset class="ui-layout-switch"><legend>Theme</legend>{theme_radios}</fieldset>'
-        f'{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'
-        f'<section>{stub_html(EXAMPLE_STUBS["mcp"], heading_level=2)}</section>'
-        f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
-        '<section class="ui-panel" id="curl" data-ui-curl><h2>Request draft (curl)</h2><p class="ui-muted">Paste a curl command: it is read in this '
-        'page and never run or sent. Credentials show as <code>***</code>; the body is shown as written, so do not paste real secrets. '
-        'Python reads it the same way (<code>web_ui.parse_curl</code>).</p>'
-        '<textarea class="ui-input" data-curl-input rows="4" aria-label="curl command">curl -X POST https://api.example.com/items -H '
-        '"Authorization: Bearer abc" -H "Content-Type: application/json" -d \'{"name":"demo"}\'</textarea> '
-        '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>'
-        '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
-        'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
-        f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'
-        '<section class="ui-panel" id="school"><h2>School (prototype)</h2><p class="ui-muted">The same world with a tile grid and props: pick an emoji, '
-        'then walk by tap, arrow keys / WASD or the on-screen pad. Desks, the board and shelves are solid; chairs are not. '
-        f'From <code>EXAMPLES["school"]</code>; Python plans the walk, the page only plays it.</p>{world_html(school)}</section>'
-        '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
-        f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
-        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
-    return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
-            '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
-            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>PySaiyanWeBoo — static UI contract</title>\n'
-            f'  <style>{css}</style>\n<link rel="apple-touch-icon" href="./docs/brand/icon.png"></head>\n'
-            f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
+    section = lambda inner: f"<section>{inner}</section>"
+    rooms = [
+        {"id": "try", "emoji": "🎛️", "title": "Try it", "text": "Switch theme, layout and seed live: no reload, no stylesheet swap.", "link": "Open the switches",
+         "html": '<section class="ui-panel" id="try"><h2>🎛️ Try it</h2><p class="ui-muted">The switches act at once: no reload. The theme and the seed are saved in '
+                 'this browser; the layout is plain CSS. The seed is the same palette Python draws (<code>web_ui.random_theme</code>).</p>'
+                 f'{theme_switch_html()}{seed_dial_html()}{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'},
+        {"id": "mcp", "emoji": "🔌", "title": "MCP workspace", "text": "Reusable MCP-style result/evidence/history structure, with a declarative mock.",
+         "link": "Open MCP stub", "html": section(stub_html(EXAMPLE_STUBS["mcp"], heading_level=2))},
+        {"id": "api", "emoji": "🔗", "title": "API workspace", "text": "Same semantic workspace with consumer-owned API behavior.",
+         "link": "Open API stub", "html": section(stub_html(EXAMPLE_STUBS["api"], heading_level=2))},
+        {"id": "curl", "emoji": "📋", "title": "Request draft", "text": "Paste a curl command: it is read in the page and never run.",
+         "link": "Open the draft", "html": curl_panel_html()},
+        {"id": "world", "emoji": "🌍", "title": "World (prototype)", "text": "One page, a camera: scroll the shots, pan and zoom the map.", "link": "Open the world",
+         "html": '<section class="ui-panel" id="world"><h2>🌍 World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
+                 'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
+                 f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'},
+        {"id": "school", "emoji": "🏫", "title": "School (prototype)", "text": "Pick an emoji, then walk between desks by tap, keys or the pad.",
+         "link": "Open the school",
+         "html": '<section class="ui-panel" id="school"><h2>🏫 School (prototype)</h2><p class="ui-muted">The same world with a tile grid and props: pick an emoji, '
+                 'then walk by tap, arrow keys / WASD or the on-screen pad. Desks, the board and shelves are solid; chairs are not. '
+                 f'From <code>EXAMPLES["school"]</code>; Python plans the walk, the page only plays it.</p>{world_html(school)}</section>'},
+        {"id": "wall", "emoji": "🎲", "title": "Random themes", "text": "Seeded palettes side by side; tap one to wear it. Every text pair meets WCAG AA.",
+         "link": "Open the wall",
+         "html": '<section class="ui-panel" id="wall"><h2>🎲 Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; tap one to wear it. '
+                 f'Every text pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section>'},
+    ]
+    css = layout_presets.css(presets) + world_css(world) + world_css(overworld, base=False) + world_css(school, base=False) + _WALL_CSS
+    scripts = (module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["theme.js"] + "bindSeed();\n")
+               + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
+    return front_document(world_html(overworld), rooms, title="PySaiyanWeBoo", lead="Shared static-first UI contract for myon-bioinformatics projects.",
+                          tags=("v1", "build-free"), icon="./docs/brand/icon.png", tools=seed_roll_html(), css=css, scripts=scripts,
+                          document_title="PySaiyanWeBoo — static UI contract", favicon="./docs/brand/favicon.png")
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, composition.js, coordinates.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, theme.js, shelf.js, door.js, composition.js, coordinates.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

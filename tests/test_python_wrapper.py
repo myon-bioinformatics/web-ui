@@ -366,6 +366,17 @@ class WorldTests(unittest.TestCase):
         for fragment in (web_ui.world_html(WORLD), web_ui.theme_wall(range(12)), web_ui.world_css(WORLD), web_ui.WORLD_JS):
             self.assertIn(fragment, page)
 
+    def test_front_page_is_assembled_from_the_librarys_own_builders(self):
+        """Nothing in index.html is written for the page alone: every part is a public builder's output (or an EXAMPLES spec through one)."""
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        for fragment in (web_ui.world_html(web_ui.example_data("overworld")), web_ui.world_html(web_ui.example_data("school")),
+                         web_ui.stub_html(web_ui.EXAMPLE_STUBS["mcp"], heading_level=2), web_ui.stub_html(web_ui.EXAMPLE_STUBS["api"], heading_level=2),
+                         web_ui.curl_panel_html(), web_ui.theme_switch_html(), web_ui.seed_dial_html(), web_ui.seed_roll_html(), web_ui.front_css(),
+                         web_ui.module_script(web_ui.js_source("theme.js") + "bindSeed();\n"), web_ui.module_script(web_ui.js_source("curl.js"))):
+            self.assertIn(fragment, page)
+        self.assertEqual(page.count('class="ui-front"'), 1)
+        self.assertEqual(page.count('class="ui-room"'), 8)                                                       # the menu and seven rooms
+
     def test_villagers_walk_straight_at_constant_speed_pause_at_random_and_loop_seamlessly(self):
         for seed in range(60):
             for width, height, speed in ((960, 640, 48), (640, 640, 32), (320, 480, 64)):

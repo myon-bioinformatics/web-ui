@@ -726,6 +726,8 @@ class StubBrowserTests(unittest.TestCase):
                         page.on('pageerror', lambda error: errors.append(str(error)))
                         page.goto(f'{origin}/{name}')
                         for sid in ids:
+                            if name == 'index.html':
+                                page.goto(f'{origin}/{name}#{sid}')                   # on the front page each stub is a room behind the door
                             for query in ('tools/list', 'a$&b <x> "q"'):
                                 page.fill(f'#{sid}-query', query)
                                 page.click(f'#{sid}-run')
@@ -754,7 +756,7 @@ class StubBrowserTests(unittest.TestCase):
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     requests = []
-                    page.goto(origin + '/index.html')
+                    page.goto(origin + '/index.html#curl')
                     page.on('request', lambda request: requests.append(request.url))
                     # The flutter editor's 47 golden cases, then 1500 seeded inputs (odd whitespace, bad escapes, shell characters ...):
                     # the page's answer equals Python's, errors included.
@@ -796,6 +798,117 @@ class StubBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class FrontPageBrowserTests(unittest.TestCase):
+    """The front page: the overworld fills one viewport, everything else is a room behind 🚪, and the seed dial wears Python's palettes."""
+    ROOMS = ('try', 'mcp', 'api', 'curl', 'world', 'school', 'wall')
+    TOKENS = ('--ui-bg', '--ui-panel', '--ui-fg', '--ui-muted', '--ui-border', '--ui-accent', '--ui-danger', '--ui-radius')
+
+    def setUp(self):
+        self.server, self.origin = WorldBrowserTests.serve({'index.html': (ROOT / 'index.html').read_text(encoding='utf-8')})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = self.playwright.chromium.launch()
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def open(self, viewport=None, hash='', **options):
+        page = self.browser.new_page(viewport=viewport or {'width': 390, 'height': 844}, **options)
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda r: self.external.append(r.url) if not r.url.startswith(self.origin + '/') else None)
+        page.goto(f'{self.origin}/index.html{hash}')
+        return page
+
+    def tokens(self, page):
+        return page.evaluate('names => Object.fromEntries(names.map(n => [n, document.body.style.getPropertyValue(n)]))', list(self.TOKENS))
+
+    def test_the_world_fills_the_viewport_and_the_rooms_wait_behind_the_door(self):
+        for viewport in ({'width': 390, 'height': 844}, {'width': 1280, 'height': 800}):
+            page = self.open(viewport)
+            self.assertLessEqual(page.evaluate('document.documentElement.scrollHeight'), viewport['height'], viewport)   # one screen, no scrolling
+            world = page.locator('#overworld-map')
+            expect(world).to_be_visible()
+            expect(world).to_have_attribute('data-js', '')
+            box = world.bounding_box()
+            self.assertGreaterEqual(box['height'], viewport['height'] - 48, viewport)                                      # all but the 48px bar
+            self.assertGreaterEqual(box['width'], viewport['width'], viewport)
+            for room in self.ROOMS:
+                expect(page.locator(f'#{room}')).to_be_hidden()
+            page.click('.ui-front-bar a[href="#rooms"]')                                                                    # 🚪
+            expect(page.locator('#rooms')).to_be_visible()
+            for room in self.ROOMS:
+                page.goto(f'{self.origin}/index.html#rooms')
+                page.click(f'#rooms a[href="#{room}"]')
+                expect(page.locator(f'#{room}')).to_be_visible()
+                expect(page.locator('#rooms')).to_be_hidden()
+                self.assertLessEqual(page.evaluate('document.documentElement.scrollHeight'), viewport['height'])
+                page.click(f'.ui-room:has(#{room}) .ui-room-bar a[href="#"]')                                               # ✖️ back to the world
+                expect(page.locator(f'#{room}')).to_be_hidden()
+                self.assertEqual(page.evaluate('location.hash'), '')
+            page.close()
+
+    def test_every_room_opens_from_its_link_alone_and_without_script(self):
+        page = self.open(hash='#school', java_script_enabled=False)
+        for room in self.ROOMS:
+            page.goto(f'{self.origin}/index.html#{room}')
+            expect(page.locator(f'#{room}')).to_be_visible()
+        page.goto(f'{self.origin}/index.html')
+        expect(page.locator('#overworld-map')).to_be_visible()
+        expect(page.locator('#wall')).to_be_hidden()
+        page.close()
+
+    def test_the_seed_dial_wears_the_palette_python_draws_for_that_seed(self):
+        import web_ui
+        page = self.open(hash='#try')
+        expect(page.locator('[data-ui-seed-out]')).to_have_text('–')
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})                                          # no seed: the named theme rules
+        for seed in (7, 0, 99, 3):
+            page.locator('[data-ui-seed]').fill(str(seed))
+            self.assertEqual(self.tokens(page), web_ui.random_theme(seed), seed)
+            expect(page.locator('[data-ui-seed-out]')).to_have_text(str(seed))
+            expect(page.locator('body')).to_have_attribute('data-ui-seeded', str(seed))
+            bg = web_ui.random_theme(seed)['--ui-bg']
+            self.assertEqual(page.evaluate('getComputedStyle(document.body).backgroundColor'),
+                             'rgb(%d, %d, %d)' % tuple(int(bg[i:i + 2], 16) for i in (1, 3, 5)))                       # the page really repaints
+        page.reload()                                                                                                       # remembered in this browser
+        self.assertEqual(self.tokens(page), web_ui.random_theme(3))
+        expect(page.locator('[data-ui-seed]')).to_have_value('3')
+        page.check('input[name="ui-theme"][value="green"]')                                                                 # a named theme takes over
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})
+        expect(page.locator('[data-ui-seed-out]')).to_have_text('–')
+        self.assertIsNone(page.evaluate('localStorage.getItem("web-ui-seed")'))
+        expect(page.locator('body')).not_to_have_attribute('data-ui-seeded', re.compile('.'))
+        page.locator('[data-ui-seed]').fill('12')
+        page.click('[data-ui-seed-off]')                                                                                    # ✖️
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})
+        page.close()
+
+    def test_the_bar_dice_rolls_a_seed_on_the_world_and_a_wall_cell_is_picked_by_a_tap(self):
+        import web_ui
+        page = self.open()
+        page.evaluate('Math.random = () => 0.5')
+        page.click('.ui-front-bar [data-ui-seed-roll]')                                                                     # 🎲 on the main page: floor(0.5 * 100)
+        self.assertEqual(self.tokens(page), web_ui.random_theme(50))
+        bg = web_ui.random_theme(50)['--ui-bg']
+        self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("#overworld-map")).backgroundColor'),
+                         'rgb(%d, %d, %d)' % tuple(int(bg[i:i + 2], 16) for i in (1, 3, 5)))
+        page.goto(f'{self.origin}/index.html#wall')
+        page.click('.ui-wall-cell[data-seed="5"] h3')
+        self.assertEqual(self.tokens(page), web_ui.random_theme(5))
+        expect(page.locator('.ui-wall-cell[data-picked]')).to_have_count(1)
+        expect(page.locator('.ui-wall-cell[data-seed="5"]')).to_have_attribute('data-picked', '')
+        page.click('.ui-wall-cell[data-seed="11"] h3')
+        expect(page.locator('.ui-wall-cell[data-seed="11"]')).to_have_attribute('data-picked', '')
+        expect(page.locator('.ui-wall-cell[data-picked]')).to_have_count(1)
+        page.close()
+
+
 class GeneratedSiteBrowserTests(unittest.TestCase):
     def test_generated_front_page_works_offline_without_external_modules(self):
         from web_ui import write_site
@@ -807,9 +920,10 @@ class GeneratedSiteBrowserTests(unittest.TestCase):
                     page = browser.new_page()
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
-                    page.goto((Path(directory) / 'index.html').as_uri())
+                    page.goto((Path(directory) / 'index.html').as_uri() + '#try')
                     page.check('input[name="ui-theme"][value="green"]')
                     expect(page.locator('body')).to_have_attribute('data-ui-theme', 'green')
+                    page.goto((Path(directory) / 'index.html').as_uri() + '#api')
                     page.fill('#api-query', '/local/offline')
                     page.click('#api-run')
                     expect(page.locator('#api-output')).to_contain_text('/local/offline')
