@@ -10,6 +10,10 @@ Shared CSS themes, semantic UI components, and small JavaScript utilities for st
 
 **Static-first · build-free runtime · dependency-light · cross-repository**
 
+## Name origin
+
+PySaiyanWeBoo combines Py (Python), Saiyan, Web, and Boo. Like Majin Buu in Dragon Ball Z, it absorbs work from many other repositories and makes it its own. And like a Saiyan, who grows stronger through every battle and every round of training, it keeps getting better with each change and test. It serves all of this together as web pages. It was formerly named web-ui.
+
 ## v1 foundation
 
 ```text
