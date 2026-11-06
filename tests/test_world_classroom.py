@@ -449,7 +449,8 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
-    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner"}
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands"}
+    assert record_demo.SCENE_WORLDS["lands"] == "overworld" and record_demo.SCENE_WORLDS["keys"] == "school"
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])
     (tmp_path / "school-pick.gif").write_bytes(b"GIF89a")
@@ -511,3 +512,97 @@ def test_a_tool_can_name_itself_in_the_other_languages():
     for bad in ({"ja": "x"}, {"en": "x"}, {"xx": "x"}, {"fr": ""}, {"fr": "x" * 25}, ["fr"], "fr"):
         with pytest.raises(ValueError):
             ui.world_validate(_world(tools={"🗺️": {"labels": bad, "spots": ["flowers"]}}))
+
+
+# ---- lands: the same grid, other objects --------------------------------------------------------------------------------------------
+
+def _reach(floor):
+    """Tiles the player can walk to (breadth first over the floor's own walking grid)."""
+    blocked = ui.world_blocked(floor["width"], floor["height"], floor["tile"], floor["props"])
+    tile = floor["tile"]
+    start = (floor["player"]["x"] // tile, floor["player"]["y"] // tile)
+    seen, order = {start}, [start]
+    for x, y in order:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (x + dx, y + dy)
+            if n not in seen and 0 <= n[1] < len(blocked) and 0 <= n[0] < len(blocked[0]) and blocked[n[1]][n[0]] == "0":
+                seen.add(n)
+                order.append(n)
+    return seen, blocked
+
+
+@pytest.mark.parametrize("theme", sorted(ui.LAND_THEMES))
+@pytest.mark.parametrize("size", [(24, 16, 32), (12, 12, 32), (48, 32, 64), (30, 20, 16)])
+def test_every_land_is_valid_and_its_town_and_landmark_can_be_walked_to(theme, size):
+    cols, rows, tile = size
+    for seed in (0, 1, 7, 12345):
+        floor = ui.land_floor(theme, cols, rows, seed=seed, tile=tile, id=theme)
+        checked = ui.world_validate({"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [floor]})["floors"][0]
+        assert checked["props"] == floor["props"] and checked["player"] == floor["player"] and len(floor["props"]) <= 512 and floor["width"] == cols * tile and floor["height"] == rows * tile
+        assert all(v % 8 == 0 for q in floor["props"] for v in (q["x"], q["y"], q["w"], q["h"]))
+        reach, blocked = _reach(floor)
+        for spot in floor["spots"]:
+            cell = (spot["x"] // tile, spot["y"] // tile)
+            assert cell in reach and blocked[cell[1]][cell[0]] == "0", (theme, seed, spot["id"])
+        assert [s["id"] for s in floor["spots"]] == [f"{theme}-town", f"{theme}-landmark"]
+
+
+def test_a_land_is_the_same_every_time_and_the_seed_makes_another():
+    assert ui.land_floor("forest", seed=4) == ui.land_floor("forest", seed=4)
+    assert ui.land_floor("forest", seed=4) != ui.land_floor("forest", seed=5)
+    assert ui.land_floor("meadow", seed=4)["props"] != ui.land_floor("forest", seed=4)["props"]
+    assert ui.land_floor("meadow")["label"] == ui.LAND_THEMES["meadow"]["label"] and ui.land_floor("meadow", label="北")["label"] == "北"
+    for bad in (dict(theme="moon"), dict(cols=11), dict(rows=11), dict(cols=49), dict(tile=20), dict(tile=128, cols=40), dict(seed=-1), dict(seed=2**31)):
+        with pytest.raises(ValueError):
+            ui.land_floor(**bad)
+
+
+def test_ground_opens_the_tiles_it_covers_and_the_other_kinds_only_block():
+    props = [{"kind": "water", "x": 0, "y": 0, "w": 128, "h": 32}, {"kind": "bridge", "x": 32, "y": 0, "w": 32, "h": 32},
+             {"kind": "tree", "x": 0, "y": 32, "w": 64, "h": 32}, {"kind": "road", "x": 0, "y": 32, "w": 32, "h": 32}]
+    assert ui.world_blocked(128, 64, 32, props) == ["1011", "0100"]                 # a bridge through water, a road through trees
+    desk_then_rug = [{"kind": "desk", "x": 0, "y": 0, "w": 32, "h": 32}, {"kind": "rug", "x": 0, "y": 0, "w": 32, "h": 32}]
+    assert ui.world_blocked(32, 32, 32, desk_then_rug) == ["1"]                     # chairs and rugs never open anything: the classroom is as it was
+    assert set(ui.WORLD_GROUND) == {"grass", "sand", "road", "bridge"} and all(k in ui.WORLD_PROPS for k in ui.WORLD_LOOK)
+
+
+def test_a_land_is_one_line_of_json_and_the_school_is_untouched():
+    spec = {"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [{"id": "n", "label": "北", "land": {"theme": "coast", "seed": 3}}]}
+    floor = ui.world_validate(spec)["floors"][0]
+    assert {k: v for k, v in floor.items() if k != "spots"} == {k: v for k, v in ui.land_floor("coast", seed=3, id="n", label="北").items() if k != "spots"}
+    assert [(s["id"], s["x"], s["y"]) for s in floor["spots"]] == [(s["id"], s["x"], s["y"]) for s in ui.land_floor("coast", seed=3, id="n")["spots"]]
+    own = ui.world_validate({**spec, "floors": [{"id": "n", "land": {"theme": "desert"}, "spots": [{"id": "x", "x": 64, "y": 64, "label": "x"}]}]})["floors"][0]
+    assert [s["id"] for s in own["spots"]] == ["x"] and own["props"] == ui.land_floor("desert", id="n")["props"]
+    for bad in ({"land": {"theme": "meadow", "color": "red"}}, {"land": "meadow"}, {"land": {}, "classroom": {}}, {"land": {}, "width": 64}):
+        with pytest.raises(ValueError):
+            ui.world_validate({**spec, "floors": [{"id": "n", **bad}]})
+    school = ui.world_css(ui.example_data("school"))
+    assert "data-kind=water" not in school and "svg+xml" not in school                # no land rule leaks into a world without lands
+
+
+def test_the_overworld_example_swaps_objects_and_ships_only_the_kinds_it_uses():
+    spec = ui.example_data("overworld")
+    world = ui.world_validate(spec)
+    assert [f["id"] for f in world["floors"]] == ["meadow", "forest", "mountain", "desert", "coast", "castle"] and ui.world_validate(world) == world
+    css = ui.world_css(spec, base=False)                                             # only this world's rules, not the fixed ones
+    for kind in ("grass", "sand", "road", "water", "tree", "cactus", "mountain", "house", "castle"):
+        assert f".ui-prop[data-kind={kind}]" in css, kind
+    assert ".ui-prop[data-kind=bridge]" not in css and ".ui-prop[data-kind=desk]" not in css
+    assert "center/contain no-repeat" in css and css.count("0 0/var(--tile) var(--tile)") >= 5       # the castle once, the rest once per tile
+    html = ui.world_html(spec)
+    assert html.count('class="ui-floor"') == 6 and "ui-world-goto" in html and "🧭" in html and 'data-t="home"' in html
+    assert ui.world_document(spec) == ui.world_document(ui.example_data("overworld"))
+    assert ui.example_data("overworld") == json.loads(json.dumps(ui.EXAMPLES["overworld"]))
+
+
+def test_node26_walks_a_land_like_python(tmp_path):
+    node = _node26()
+    floor = ui.land_floor("forest", seed=9)
+    blocked = ui.world_blocked(floor["width"], floor["height"], floor["tile"], floor["props"])
+    cases = [[blocked, floor["tile"], [floor["player"]["x"], floor["player"]["y"]], [s["x"], s["y"]]] for s in floor["spots"]]
+    cases.append([blocked, floor["tile"], [floor["player"]["x"], floor["player"]["y"]], [48, 48]])
+    module = tmp_path / "land.mjs"
+    module.write_text(ui.WORLD_JS.removesuffix("bindWorlds();\n") + "\nconst cases=" + json.dumps(cases) + ";console.log(JSON.stringify(cases.map(([r,t,a,b])=>gridRoute(r,t,a,b))))\n")
+    for (rows, tile, a, b), actual in zip(cases, json.loads(subprocess.check_output([node, str(module)], text=True))):
+        want = ui.world_route_points(rows, tile, a, b)
+        assert len(actual) == len(want) and all(g == pytest.approx(w, abs=1e-9) for g, w in zip(actual, want))

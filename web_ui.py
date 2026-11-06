@@ -41,7 +41,7 @@ import urllib.error
 import urllib.request
 import zlib
 import xml.etree.ElementTree as ET
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.
@@ -2077,7 +2077,17 @@ def world_motion_sample(segment: dict[str, Any], elapsed: float) -> list[float]:
 # A floor may carry a tile grid and props (desks, chairs, a blackboard ...). Solid props block walking; the walk
 # is planned on the grid (breadth first, fixed neighbour order, so Python and the browser pick the same path) and
 # played as a chain of the same constant-speed segments as above.
-WORLD_PROPS = {"desk": True, "board": True, "wall": True, "shelf": True, "chair": False, "rug": False}   # kind -> blocks walking
+WORLD_PROPS = {"desk": True, "board": True, "wall": True, "shelf": True, "chair": False, "rug": False,
+               "grass": False, "sand": False, "road": False, "bridge": False,
+               "water": True, "tree": True, "cactus": True, "mountain": True, "house": True, "castle": True}   # kind -> blocks walking
+# Ground kinds are laid first and open the tiles they cover (a road through trees, a bridge over water); the other kinds only block.
+WORLD_GROUND = frozenset({"grass", "sand", "road", "bridge"})
+# How the terrain kinds look: a colour (none: the ground shows through) and, for some, an emoji repeated once per tile, or drawn once across
+# the prop (CSS only, written for the kinds a world uses). A floor becomes another place by swapping its kinds; the walking rules above are
+# all the grid needs.
+WORLD_LOOK = {"grass": ("#8fd694", "", False), "sand": ("#efd9a0", "", False), "road": ("#d2b48c", "", False), "bridge": ("#a9784a", "", False),
+              "water": ("#5aaae0", "🌊", False), "mountain": ("#b8a58f", "⛰️", False), "tree": ("", "🌲", False), "cactus": ("", "🌵", False),
+              "house": ("", "🏠", False), "castle": ("", "🏰", True)}
 _WORLD_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
@@ -2085,10 +2095,11 @@ def world_blocked(width: int, height: int, tile: int, props: list[dict[str, Any]
     """The walking grid: one string per tile row, ``"1"`` for a tile covered by a solid prop and ``"0"`` otherwise."""
     cells = [["0"] * (width // tile) for _ in range(height // tile)]
     for prop in props:
-        if WORLD_PROPS[prop["kind"]]:
+        if prop["kind"] in WORLD_GROUND or WORLD_PROPS[prop["kind"]]:
+            mark = "0" if prop["kind"] in WORLD_GROUND else "1"
             for cy in range(prop["y"] // tile, (prop["y"] + prop["h"]) // tile):
                 for cx in range(prop["x"] // tile, (prop["x"] + prop["w"]) // tile):
-                    cells[cy][cx] = "1"
+                    cells[cy][cx] = mark
     return ["".join(row) for row in cells]
 
 
@@ -2586,15 +2597,21 @@ def world_validate(spec: Any) -> dict[str, Any]:
 
 
 def _expand_classroom(floor: Any) -> Any:
-    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)``, so JSON alone (no Python in
-    the calling repository) can ask for a classroom; ``spots``, ``actors`` and ``player`` given beside it replace the generated ones."""
-    if not isinstance(floor, dict) or "classroom" not in floor:
+    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)`` and ``{"land": {theme, cols, rows, seed,
+    tile}}`` for ``land_floor(...)``, so JSON alone (no Python in the calling repository) can ask for a classroom or a land; ``spots``,
+    ``actors`` and ``player`` given beside it replace the generated ones."""
+    if not isinstance(floor, dict):
         return floor
-    params, own = floor["classroom"], {"id", "label", "classroom", "spots", "actors", "player"}
-    if (not isinstance(params, dict) or set(params) - {"rows", "groups", "per_group", "tile"} or set(floor) - own
+    makers = {"classroom": (classroom_floor, {"rows", "groups", "per_group", "tile"}), "land": (land_floor, {"theme", "cols", "rows", "seed", "tile"})}
+    kind = next((k for k in makers if k in floor), None)
+    if kind is None:
+        return floor
+    build, allowed = makers[kind]
+    params, own = floor[kind], {"id", "label", kind, "spots", "actors", "player"}
+    if (not isinstance(params, dict) or set(params) - allowed or set(floor) - own
             or not all(isinstance(floor[k], str) for k in ("id", "label") if k in floor)):
-        raise ValueError("a classroom floor has id, label, classroom (rows, groups, per_group, tile) and optionally spots, actors and player")
-    built = classroom_floor(**params, **{k: floor[k] for k in ("id", "label") if k in floor})
+        raise ValueError(f"a {kind} floor has id, label, {kind} ({', '.join(sorted(allowed))}) and optionally spots, actors and player")
+    built = build(**params, **{k: floor[k] for k in ("id", "label") if k in floor})
     return {**built, **{k: floor[k] for k in ("spots", "actors", "player") if k in floor}}
 
 
@@ -2626,6 +2643,100 @@ def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile:
                       spot("teacher", "先生の机", cols / 2, 3.5, "先生の席です。"),
                       spot("door", "出入口", cols / 2, depth - 1.5 - 1, "廊下や校庭へ出られます。")],
             "player": {"emoji": "🙂", "x": int((door + .5) * tile), "y": int((depth - .5) * tile), "speed": 96}}
+
+
+# The lands of an overworld, like the countries of a Dragon Quest map: each theme swaps the objects (ground, edge, scatter, pond, houses) and
+# nothing else. ``houses`` is how many of the village's eight plots are built; ``pond`` is (w, h) tiles, or "sea" for a strip along the north.
+LAND_THEMES = {
+    "meadow": {"label": "🌱 草原", "ground": "grass", "edge": "water", "fill": "tree", "density": .07, "pond": (4, 3), "houses": 6, "castle": False,
+               "town": ("🏘️ はじまりの村", "家がならぶ、のどかな村です。"), "landmark": ("🌼 ひろば", "見晴らしのよい広場です。")},
+    "forest": {"label": "🌲 森", "ground": "grass", "edge": "tree", "fill": "tree", "density": .28, "pond": None, "houses": 2, "castle": False,
+               "town": ("🏡 森の家", "木々にかこまれた小さな家です。"), "landmark": ("⛩️ ほこら", "森の奥にある古いほこらです。")},
+    "mountain": {"label": "⛰️ 山", "ground": "grass", "edge": "mountain", "fill": "mountain", "density": .16, "pond": None, "houses": 2, "castle": False,
+                 "town": ("⛺ 山のふもと", "旅人が休むキャンプ地です。"), "landmark": ("🕳️ ほら穴", "山の奥へ続くほら穴です。")},
+    "desert": {"label": "🏜️ 砂漠", "ground": "sand", "edge": "mountain", "fill": "cactus", "density": .05, "pond": (3, 2), "houses": 4, "castle": False,
+               "town": ("🏜️ 砂の町", "日よけの屋根がならぶ町です。"), "landmark": ("🌴 オアシス", "水と木陰のある休み場です。")},
+    "coast": {"label": "🌊 海辺", "ground": "sand", "edge": "water", "fill": "tree", "density": .04, "pond": "sea", "houses": 6, "castle": False,
+              "town": ("⚓ みなと町", "船がとまる小さな港町です。"), "landmark": ("🐚 砂浜", "貝がらが落ちている浜辺です。")},
+    "castle": {"label": "🏰 城下町", "ground": "grass", "edge": "mountain", "fill": "tree", "density": .06, "pond": None, "houses": 4, "castle": True,
+               "town": ("🏰 お城", "町を見まもる大きなお城です。"), "landmark": ("🎪 広場", "市が立つにぎやかな広場です。")},
+}
+_LAND_PLOTS = ((-2, -1), (2, -1), (-2, 1), (2, 1), (-4, -1), (4, -1), (-4, 1), (4, 1))        # village plots beside the crossroads (tiles)
+
+
+def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: int = 1, tile: int = 32,
+               id: str = "land", label: str | None = None) -> dict[str, Any]:
+    """One land of an overworld: ground, an edge, scattered trees or rocks, perhaps a pond, a village on a crossroads and a road to it.
+
+    The same arguments always give the same land (a small seeded generator, not ``random``). The player starts at the foot of the road; two
+    spots, the town and a landmark (the nearest bank of the water, else the farthest reachable tile), sit on tiles that can be walked to.
+    """
+    look = LAND_THEMES.get(theme)
+    if look is None:
+        raise ValueError(f"theme is one of {', '.join(LAND_THEMES)}")
+    cols, rows, seed = _world_int(cols, "cols", 12, 48), _world_int(rows, "rows", 12, 32), _world_int(seed, "seed", 0, 2**31 - 1)
+    if _world_int(tile, "tile", 16, 128) % 8 or cols * tile > 4096 or rows * tile > 4096:
+        raise ValueError("tile is a multiple of 8 and the land fits in 4096 units")
+    state = seed % 2147483646 + 1
+    def rand() -> float:                                                                   # Park-Miller: the same numbers in every Python
+        nonlocal state
+        state = state * 48271 % 2147483647
+        return state / 2147483647
+    cx, cy = cols // 2, rows // 2
+    props: list[dict[str, Any]] = []
+    prop = lambda kind, x, y, w=1, h=1: props.append({"kind": kind, "x": x * tile, "y": y * tile, "w": w * tile, "h": h * tile})  # noqa: E731
+    taken: set[tuple[int, int]] = set()                                                    # tiles with something solid on them
+    reserved: set[tuple[int, int]] = {(cx, y) for y in range(cy - 1 if look["castle"] else cy, rows - 1)}
+    reserved |= {(x, cy) for x in range(max(1, cx - 4), min(cols - 1, cx + 5))} | {(x, rows - 2) for x in range(cx - 1, cx + 2)}
+    prop(look["ground"], 0, 0, cols, rows)
+    for kind_args in ((0, 0, cols, 1), (0, rows - 1, cols, 1), (0, 1, 1, rows - 2), (cols - 1, 1, 1, rows - 2)):
+        prop(look["edge"], *kind_args)
+    water: set[tuple[int, int]] = set()
+    if look["pond"] == "sea":
+        prop("water", 1, 1, cols - 2, 3)
+        water = {(x, y) for x in range(1, cols - 1) for y in range(1, 4)}
+    elif look["pond"]:
+        pw, ph = look["pond"]
+        for _ in range(40):                                                                # away from the crossroads, or no pond at all
+            x, y = 2 + int(rand() * (cols - pw - 3)), 2 + int(rand() * (rows - ph - 3))
+            if not any(abs(x + i - cx) <= 6 and y + j >= cy - 4 for i in range(pw) for j in range(ph)):
+                prop("water", x, y, pw, ph)
+                water = {(x + i, y + j) for i in range(pw) for j in range(ph)}
+                break
+    taken |= water
+    plots = [(cx + dx, cy + dy) for dx, dy in _LAND_PLOTS[:look["houses"]]]
+    for x, y in plots:
+        prop("house", x, y)
+    if look["castle"]:
+        prop("castle", cx - 1, cy - 3, 3, 2)
+        taken |= {(cx + i, cy - 3 + j) for i in range(-1, 2) for j in range(2)}
+    taken |= set(plots)
+    for y in range(1, rows - 1):                                                           # scattered trees or rocks, a row of them in one prop
+        run = 0
+        for x in range(1, cols):
+            put = x < cols - 1 and (x, y) not in taken and (x, y) not in reserved and rand() < look["density"]
+            if put:
+                run += 1
+            elif run:
+                prop(look["fill"], x - run, y, run, 1)
+                run = 0
+    prop("road", cx, cy - (1 if look["castle"] else 0), 1, rows - 1 - cy + (1 if look["castle"] else 0))
+    prop("road", max(1, cx - 4), cy, min(cols - 1, cx + 5) - max(1, cx - 4), 1)
+    blocked = world_blocked(cols * tile, rows * tile, tile, props)
+    dist, order = {(cx, rows - 2): 0}, [(cx, rows - 2)]
+    for x, y in order:
+        for dx, dy in _WORLD_STEPS:
+            n = (x + dx, y + dy)
+            if n not in dist and 0 <= n[0] < cols and 0 <= n[1] < rows and blocked[n[1]][n[0]] == "0":
+                dist[n] = dist[(x, y)] + 1
+                order.append(n)
+    shore = [c for c in dist if c != (cx, cy) and any((c[0] + dx, c[1] + dy) in water for dx, dy in _WORLD_STEPS)]
+    far = (min(shore, key=lambda c: (dist[c], c[1], c[0])) if shore                       # with water: the nearest bank; without: the farthest tile
+           else min((c for c in dist if c != (cx, cy)), key=lambda c: (-dist[c], c[1], c[0])))
+    spot = lambda name, text, at: {"id": f"{id}-{name}", "x": int((at[0] + .5) * tile), "y": int((at[1] + .5) * tile), "label": text[0], "body": text[1]}  # noqa: E731
+    return {"id": id, "label": label or look["label"], "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [],
+            "spots": [spot("town", look["town"], (cx, cy)), spot("landmark", look["landmark"], far)],
+            "player": {"emoji": "🙂", "x": int((cx + .5) * tile), "y": int((rows - 1.5) * tile), "speed": 96}}
 
 
 def _shots_html(world: dict[str, Any]) -> str:
@@ -2993,6 +3104,13 @@ def world_css(spec: Any, *, base: bool = True) -> str:
         radio = f"#{wid}-floor-{f['id']}"
         rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
+    for kind in sorted({q["kind"] for f in world["floors"] for q in f.get("props", [])} & WORLD_LOOK.keys()):
+        colour, glyph, once = WORLD_LOOK[kind]
+        picture = ""
+        if glyph:
+            svg = f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text x='16' y='25' font-size='26' text-anchor='middle'>{glyph}</text></svg>"
+            picture = f'url("data:image/svg+xml,{quote(svg)}") ' + ("center/contain no-repeat," if once else "0 0/var(--tile) var(--tile),")
+        rules.append(f".ui-prop[data-kind={kind}]{{border:0;border-radius:0;background:{picture}{colour or 'transparent'}}}")
     categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
     if _world_shell(world):
         for f in world["floors"]:
@@ -16107,6 +16225,22 @@ EXAMPLES.update({
                         {"id": "dog", "emoji": "🐕", "label": "いぬ", "body": "迷い込んだようです。", "speed": 64},
                         {"id": "bird", "emoji": "🐦", "label": "とり", "body": "屋根にとまっています。", "speed": 32}],
              "player": {"emoji": "🙂", "x": 320, "y": 320, "speed": 96}}],
+    },
+    # Lands side by side, like the countries of a Dragon Quest map: one line each (`land`), the footer's 🚪 pulldown travels between them.
+    # Swap `theme` (meadow, forest, mountain, desert, coast, castle) or the `seed` and the land is another place; spots/actors/player given
+    # beside `land` replace the generated ones.
+    "overworld": {
+        "schema": WORLD_SCHEMA, "id": "overworld", "title": "Overworld (prototype)", "zoom_max": 4,
+        "avatars": ["🙂", "🧙", "🧝", "🦸", "🐱", "🐶", "🦊", "🐉", "🦄", "⚔️", "🛡️", "🚀"],
+        "tools": {"🧭": {"label": "町", "label_en": "Towns", "labels": {"fr": "Villes", "es": "Pueblos", "de": "Orte", "zh": "城镇"},
+                         "spots": ["meadow-town", "forest-town", "desert-town", "coast-town", "castle-town"]}},
+        "board": {"title": "TRAVEL", "items": [{"text": "旅のはじまり"}, {"text": "🚪で土地をわたろう"}, {"text": "道をたどると町に着きます"}]},
+        "floors": [{"id": "meadow", "land": {"theme": "meadow", "seed": 1}},
+                   {"id": "forest", "land": {"theme": "forest", "seed": 2}},
+                   {"id": "mountain", "land": {"theme": "mountain", "seed": 3}},
+                   {"id": "desert", "land": {"theme": "desert", "seed": 4}},
+                   {"id": "coast", "land": {"theme": "coast", "seed": 5}},
+                   {"id": "castle", "land": {"theme": "castle", "seed": 6}}],
     },
     "catalog-report": {
         "schema": "web-ui-catalog/1", "title": "Analysis report",

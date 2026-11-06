@@ -109,7 +109,7 @@ class SchoolTests(unittest.TestCase):
         """The README demos (tool/record_demo.py) are real operations; a UI change that breaks one fails here, not in the next README."""
         with tempfile.TemporaryDirectory() as out:
             paths = record_demo.record(out, browser=self.browser)
-            self.assertEqual({p.name for p in paths}, {f"school-{name}.gif" for name in record_demo.SCENES})
+            self.assertEqual({p.name for p in paths}, {f"{record_demo.SCENE_WORLDS[name]}-{name}.gif" for name in record_demo.SCENES})
             for path in paths:
                 data = path.read_bytes()
                 self.assertEqual(data[:6], b"GIF89a", path.name)
@@ -333,6 +333,34 @@ class SchoolTests(unittest.TestCase):
         self.assertEqual(page.eval_on_selector_all(".ui-world-spots .ui-world-star[aria-pressed=true]", "els => els.length"), 0)
         page.evaluate("localStorage.setItem('ui-world:school-map', 'not json')")
         page.reload()
+        self.assertEqual(self.errors, [])
+
+    def test_overworld_lands_are_swapped_by_the_pulldown_and_walked_across(self):
+        """Six lands from one line of JSON each: terrain is CSS (colour and an emoji per tile), the walk is the same grid."""
+        path = Path(self.tmp.name) / "overworld.html"
+        path.write_text(web_ui.world_document(web_ui.example_data("overworld")), encoding="utf-8")
+        page = self.open(path=path)
+        self.start(page, "🧙")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-goto option", "els => els.map(e => e.value)"),
+                         ["meadow", "forest", "mountain", "desert", "coast", "castle"])
+        for land, kind in (("meadow", "water"), ("forest", "tree"), ("mountain", "mountain"), ("desert", "cactus"), ("coast", "water"), ("castle", "castle")):
+            page.select_option(".ui-world-goto", land)
+            page.wait_for_function(f"() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"{land}\"]')).display !== 'none'")
+            style = page.eval_on_selector(f'.ui-floor[data-floor="{land}"] .ui-prop[data-kind="{kind}"]',
+                                          "e => { const c = getComputedStyle(e); return [c.backgroundImage, c.backgroundSize, c.borderTopWidth] }")
+            self.assertIn("data:image/svg+xml", style[0], land)
+            self.assertEqual(style[2], "0px")
+            self.assertTrue(page.is_visible(f'.ui-floor[data-floor="{land}"] .ui-player'))
+        self.assertIn("contain", style[1])                                           # the castle is drawn once; the trees below once per tile
+        page.select_option(".ui-world-goto", "forest")
+        self.assertEqual(page.eval_on_selector('.ui-floor[data-floor="forest"] .ui-prop[data-kind="tree"]', "e => getComputedStyle(e).backgroundSize").split(",")[0], "32px 32px")
+        spot = next(s for f in web_ui.world_validate(web_ui.example_data("overworld"))["floors"] if f["id"] == "forest" for s in f["spots"] if s["id"] == "forest-town")
+        page.click('.ui-world-menu[data-menu="spots"] summary')
+        page.click('.ui-world-spots[data-floor="forest"] a[href="#overworld-spot-forest-town"]')
+        page.wait_for_function(record_demo.STILL, timeout=20000)
+        x, y = page.evaluate("() => { const s = document.querySelector('.ui-floor[data-floor=\"forest\"] .ui-player').style; return [parseFloat(s.getPropertyValue('--px')), parseFloat(s.getPropertyValue('--py'))]; }")
+        self.assertAlmostEqual(x, spot["x"], delta=1)
+        self.assertAlmostEqual(y, spot["y"], delta=1)
         self.assertEqual(self.errors, [])
 
     def test_without_javascript_the_footer_keeps_plain_floor_labels(self):

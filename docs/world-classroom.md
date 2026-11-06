@@ -95,6 +95,35 @@ per word in that order; a test checks every word in every language). Markup carr
 on the world and remembers the choice. A tool of your own names itself with `label`, `label_en` and `labels`; a missing language falls back to English, then Japanese.
 The content (spot labels, bodies, the board) is yours and is not translated. Arabic changes the words only: the map is not mirrored.
 
+## Lands: other spaces from the same grid
+
+A land is a floor made of terrain instead of furniture, so a world can be a Dragon Quest-style map of several lands (`EXAMPLES["overworld"]`,
+six lands, a few lines of JSON) and the footer's 🚪 pulldown moves between them. Nothing links one land to another.
+
+```json
+{"schema": "web-ui-world/1", "id": "trip", "floors": [
+  {"id": "north", "label": "北", "land": {"theme": "castle"}},
+  {"id": "sea", "land": {"theme": "coast", "cols": 24, "rows": 16, "seed": 5, "tile": 32}}]}
+```
+
+* `theme`: `meadow 🌱`, `forest 🌲`, `mountain ⛰️`, `desert 🏜️`, `coast 🌊`, `castle 🏰` (`LAND_THEMES`: each swaps the ground, the edge, the scattered
+  object, the pond, how many houses). The same arguments always give the same land; `seed` makes another. `cols` 12..48, `rows` 12..32, `tile` a multiple of 8.
+* Each land has a road from the player's start to a village crossroads, and two spots (the town; a landmark on the nearest bank of the water, else the
+  farthest tile) on tiles that can be walked to. `spots`, `actors` and `player` beside `land` replace the generated ones, like `classroom`.
+* From Python: `web_ui.land_floor(theme, cols, rows, seed=, tile=, id=, label=)`; from another repository: `... | python -S web_ui.py --world - > lands.html`.
+
+The representation changes by swapping objects, not code: the prop kinds of any floor can be mixed.
+
+| Kind | Walk | Looks like |
+|---|---|---|
+| `grass` `sand` `road` `bridge` (ground) | yes, and they **open** the tiles under them (a road through trees, a bridge over water) | a colour |
+| `water` `tree` `cactus` `mountain` `house` `castle` | blocked | 🌊 🌲 🌵 ⛰️ 🏠 🏰, one per tile (the castle once across its prop) |
+| `desk` `board` `wall` `shelf` / `chair` `rug` | blocked / free, as before | the classroom's theme-coloured shapes |
+
+`WORLD_PROPS` (blocks walking), `WORLD_GROUND` (opens) and `WORLD_LOOK` (colour, emoji, once) are the whole table; the CSS is written only for the kinds a
+world uses. A new kind is one line in each. Real × virtual (a photo or plan of a real place behind the grid, like a theme-park floor guide) is not built:
+it would be an image layer on a floor, an additive step on the same props and spots.
+
 ## Direction arrows (two positions, one arrow)
 
 `world_point(rect, at)` takes the centre (`center`), the middle of an edge (`left` `right` `top` `bottom`) or a corner (`top-left` ...) of an object;
@@ -124,7 +153,7 @@ asks again. Without JavaScript the picker, the pad and the player controls stay 
 
 ## Demos
 
-Each GIF is a real run of the generated page in Chrome, recorded by `tool/record_demo.py` (Playwright keeps a screenshot with its real
+Each GIF (`<world>-<scene>.gif`) is a real run of the generated page in Chrome, recorded by `tool/record_demo.py` (Playwright keeps a screenshot with its real
 time whenever a scene waits; Pillow writes one shared palette and delta frames). They are regenerated, never edited by hand:
 
 ```sh
@@ -142,6 +171,7 @@ python tool/record_demo.py docs/demo --only keys tap --force --width 400        
 | `school-menu.gif` | the ☰ list with its arrows; tap **黒板** and the arrow turns into 📍 as you arrive |
 | `school-header.gif` | the header: ⭐ stars on two floors and their list, the 🗺️ tool, 🌐 the language, 🏠 home |
 | `school-floors.gif` | the footer pulldown to the schoolyard, a spot's sheet, back to the classroom, the board spot |
+| `overworld-lands.gif` | six lands by the 🚪 pulldown (forest, mountain, desert, coast, castle), then walking to the castle town from the ☰ list |
 | `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
 
 A scene may end with `cam.zoom((x, y))` (or an anchor name or arrow emoji such as `cam.zoom("↘️")`): a smooth zoom toward that point that stays (the easing of Ironmate's `png_zoom_gif.py`, taken into this
@@ -150,7 +180,7 @@ The frames are cropped to the world, not the whole page. A new operation is one 
 fails the browser job instead of leaving a stale GIF. The page asks for Meiryo first; these were recorded on Linux, where it is absent, so the fallback
 face shows (record on Windows to get Meiryo).
 
-Other people's avatars. Showing several visitors at once needs a server or peer connection, which this static, no-storage layer
+Other people's avatars. Showing several visitors at once needs a server or peer connection, which this static layer
 deliberately does not have. The shared GitHub board (`docs/world-shared-board.md`) remains the only shared channel.
 
 ## Verification

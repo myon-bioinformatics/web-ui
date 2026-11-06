@@ -1,4 +1,4 @@
-"""Record the school world's operations as demo GIFs (for the README).
+"""Record the school world's (and the overworld's) operations as demo GIFs (for the README).
 
     python tool/record_demo.py docs/demo [--only pick keys ...] [--chrome PATH] [--width 480] [--force]
 
@@ -39,6 +39,10 @@ SETTLED = (f"() => {{ const p = document.querySelector('{CLASSROOM} .ui-player')
            "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")
 PLAYER = (0.48, 0.69)                           # where a character standing at the door is on screen: a zoom target
 SCENES: dict = {}
+WORLDS = {"school": SPEC, "overworld": web_ui.example_data("overworld")}       # the specs a scene can open; a GIF is <world>-<scene>.gif
+SCENE_WORLDS: dict = {}
+STILL = ("() => { const f = [...document.querySelectorAll('.ui-floor')].find(f => getComputedStyle(f).display !== 'none'), p = f.querySelector('.ui-player'), s = p.style;"
+         "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")   # the shown floor's player has arrived
 
 
 class Camera:
@@ -118,9 +122,10 @@ def encode(shots, *, width=None, tail_ms=TAIL_MS):
     return out.getvalue()
 
 
-def scene(name, width=560, height=720, touch=False, crop=".ui-world"):
+def scene(name, width=560, height=720, touch=False, crop=".ui-world", world="school"):
     def add(fn):
         SCENES[name] = (width, height, touch, crop, fn)
+        SCENE_WORLDS[name] = world
         return fn
     return add
 
@@ -311,6 +316,20 @@ def _floors(page, cam, tmp):
     cam.hold(600)
 
 
+@scene("lands", world="overworld")
+def _lands(page, cam, tmp):
+    """Lands side by side: the 🚪 pulldown travels from land to land (swapped objects, nothing else), then walk to the castle town by its ☰ row."""
+    choose(page, "🧙")
+    cam.hold(900)
+    for land in ("forest", "mountain", "desert", "coast", "castle"):
+        page.select_option(".ui-world-goto", land)
+        cam.hold(1000)
+    more(page, cam, "spots", 900)
+    page.click('.ui-world-spots[data-floor="castle"] a[href="#overworld-spot-castle-town"]')
+    cam.until(STILL)
+    cam.hold(900)
+
+
 TERMINAL = ('<meta charset="utf-8"><body style="margin:0;background:#0d1117;color:#d1f7c4;font:20px/1.6 Meiryo,メイリオ,monospace">'
             '<pre style="margin:0;padding:24px;white-space:pre-wrap;word-break:break-all"></pre>')
 
@@ -351,7 +370,7 @@ def launch(pw, chrome=None):
 
 
 def record(out, names=None, *, chrome=None, width=None, force=False, browser=None):
-    """Record the named scenes (all by default) into out/school-<name>.gif; returns the written paths.
+    """Record the named scenes (all by default) into out/<world>-<name>.gif (school-keys.gif, overworld-lands.gif); returns the written paths.
 
     ``browser`` is an already running Playwright Chromium (the browser tests share theirs); otherwise one is launched and closed here.
     """
@@ -360,13 +379,14 @@ def record(out, names=None, *, chrome=None, width=None, force=False, browser=Non
     if unknown:
         raise ValueError("unknown scene: " + ", ".join(unknown) + " (have " + ", ".join(SCENES) + ")")
     out = Path(out)
-    targets = {n: out / f"school-{n}.gif" for n in names}
+    targets = {n: out / f"{SCENE_WORLDS[n]}-{n}.gif" for n in names}
     if not force and any(p.exists() for p in targets.values()):
         raise FileExistsError("refusing to overwrite " + ", ".join(str(p) for p in targets.values() if p.exists()) + " (use --force)")
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp_name, contextlib.ExitStack() as stack:
         tmp = Path(tmp_name)
-        (tmp / "school.html").write_text(web_ui.world_document(SPEC), encoding="utf-8")
+        for world in {SCENE_WORLDS[n] for n in names}:
+            (tmp / f"{world}.html").write_text(web_ui.world_document(WORLDS[world]), encoding="utf-8")
         if browser is None:
             from playwright.sync_api import sync_playwright
             browser = launch(stack.enter_context(sync_playwright()), chrome)
@@ -376,7 +396,7 @@ def record(out, names=None, *, chrome=None, width=None, force=False, browser=Non
             context = browser.new_context(viewport={"width": w, "height": h}, has_touch=touch, is_mobile=touch)
             try:
                 page = context.new_page()
-                page.goto((tmp / "school.html").as_uri())
+                page.goto((tmp / f"{SCENE_WORLDS[name]}.html").as_uri())
                 cam = Camera(page, crop)
                 fn(page, cam, tmp)
                 targets[name].write_bytes(encode(cam.shots, width=width))
@@ -387,7 +407,7 @@ def record(out, names=None, *, chrome=None, width=None, force=False, browser=Non
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("out", type=Path, help="directory for school-<scene>.gif")
+    parser.add_argument("out", type=Path, help="directory for <world>-<scene>.gif")
     parser.add_argument("--only", nargs="+", metavar="SCENE", help="scenes to record: " + ", ".join(SCENES))
     parser.add_argument("--chrome", help="Chrome/Chromium executable (default: WEB_UI_CHROME or Playwright's)")
     parser.add_argument("--width", type=int, help="shrink every GIF to this width in pixels")

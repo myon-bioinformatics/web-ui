@@ -60,6 +60,7 @@ through `:target`. `random_theme(seed)` and `--theme-wall N` show seeded random 
 projection, keyboard/reduced-motion controls, and daily countdown/timezone semantics.
 [School world](docs/world-classroom.md) adds a floor `tile` grid with solid `props` (desks, board, shelves; `classroom_floor()` writes a classroom),
 world `avatars` (pick an emoji, a short text or both first) and walking by tap, arrow keys/WASD or an on-screen pad around the furniture (`EXAMPLES["school"]`). The page stays short and iconic: header 🏠 ⭐ ⚙️ plus emoji tools you add (`"tools": {"🗺️": ...}`), side ☰ ⋯ menus (places with direction arrows), a 🚪 floor pulldown in the footer; `shell: true` gives any world or `catalogue_world` the same layout.
+`land` floors (`land_floor()`, `EXAMPLES["overworld"]`; themes meadow, forest, mountain, desert, coast, castle) make a Dragon Quest-style map of several lands from the same grid by swapping prop kinds (`WORLD_PROPS`, `WORLD_GROUND`, `WORLD_LOOK`). 🌐 speaks the 11 languages of flutter_navigation_basic; the starred places and the language are a light `localStorage` cache (`ui-world:<id>`), nothing else is stored.
 From another repository: `echo '{"schema":"web-ui-world/1","floors":[{"classroom":{}}]}' | python -S web_ui.py --world - > school.html` (`--world -` reads stdin; Node: `node vendor/py_launch.cjs -- web_ui.py --world -`).
 
 Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --force` ([what each shows](docs/world-classroom.md#demos)):
@@ -69,8 +70,8 @@ Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --forc
 | <img src="docs/demo/school-pick.gif" width="240" alt="The picker comes first; a fox walks into the room"> | <img src="docs/demo/school-avatar-text.gif" width="240" alt="Typing 先生 and an apple as the character"> | <img src="docs/demo/school-keys.gif" width="240" alt="A cat walks with the keys and is stopped by desks"> |
 | **Tap to walk** | **Phone** | **Side menu (☰ ⋯)** |
 | <img src="docs/demo/school-tap.gif" width="240" alt="Tapping a chair; the player walks around the desks"> | <img src="docs/demo/school-phone.gif" width="240" alt="On a phone: the pad, dragging the map, 自分の場所 in the ⋯ menu"> | <img src="docs/demo/school-menu.gif" width="240" alt="The ☰ list shows an arrow to each place; tapping 黒板 walks there and the arrow becomes 📍"> |
-| **Header (🏠 ⭐ ⚙️ 🗺️ 🌐)** | **Door to door (footer)** | |
-| <img src="docs/demo/school-header.gif" width="240" alt="Star two places on two floors, open the star list, the map tool, the language, home"> | <img src="docs/demo/school-floors.gif" width="240" alt="The footer pulldown moves to the schoolyard and back"> | |
+| **Header (🏠 ⭐ ⚙️ 🗺️ 🌐)** | **Door to door (footer)** | **Lands (🌱 🌲 ⛰️ 🏜️ 🌊 🏰)** |
+| <img src="docs/demo/school-header.gif" width="240" alt="Star two places on two floors, open the star list, the map tool, the language, home"> | <img src="docs/demo/school-floors.gif" width="240" alt="The footer pulldown moves to the schoolyard and back"> | <img src="docs/demo/overworld-lands.gif" width="240" alt="The pulldown travels across forest, mountain, desert, coast and castle lands; the player walks to the castle town"> |
 
 <img src="docs/demo/school-oneliner.gif" width="320" alt="One command writes the school page; the page opens with the picker">
 
