@@ -5900,6 +5900,39 @@ def junit_file_summary(path: Path) -> dict[str, Any]:
             "failures": [{k: f[k] for k in ("name", "class", "message_sha256", "kind")} for f in report["failures"]]}
 
 
+# The command line speaks in icons first (like the pages): a glyph leads each option's help and each human line on stderr.
+# Machine output (stdout JSON/HTML, the `listening` line) is untouched, and a stream that cannot show a glyph (an old code page) gets the plain words.
+CLI_ICONS = {
+    "title": "🏷️", "theme": "🎨", "css": "💅", "catalog": "📚", "world": "🌍", "example": "🧪", "btk_adapter": "🔌", "pattern": "🧩", "url": "🔗",
+    "pattern_serve": "🛰️", "port": "🔢", "allow_origin": "🌐", "site": "🏗️", "theme_wall": "🎭", "css_bundle": "📦", "asset_base": "📁",
+    "with_scripts": "📜", "with_remote_scripts": "📡", "embed_ui": "🧱", "module_mode": "⚙️", "trusted_html": "🔓", "sri": "🔐",
+    "junit": "🧾", "previous": "⏮️", "flutter_events": "🐦", "to": "➡️", "run_tests": "▶️", "test_file": "📄", "report": "📋", "history": "🕘",
+    "receipt": "🧷", "ledger": "📒", "retry_failed": "🔁", "name_pattern": "🔎", "timeout": "⏱️", "expect_exit": "🚦", "output_dir": "📂",
+    "studio_render": "🖌️", "studio_heatmap": "🌡️", "studio_base64": "🔡", "format": "📐", "scale": "🔍", "data_uri": "📎", "output": "💾", "force": "♻️",
+}
+
+
+def _cli_glyph(glyph: str, stream: Any = None) -> str:
+    """``glyph`` and a space, or nothing when the stream's encoding cannot write it."""
+    encoding = getattr(stream or sys.stderr, "encoding", None)
+    try:
+        glyph.encode(encoding if isinstance(encoding, str) else "utf-8")
+    except (UnicodeError, LookupError):
+        return ""
+    return glyph + " "
+
+
+def _say(glyph: str, text: str) -> None:
+    """One human line on stderr: ⛔ a refusal, ⚠️ something skipped, ❌ a failed test."""
+    print(_cli_glyph(glyph) + text, file=sys.stderr)
+
+
+class _IconParser(argparse.ArgumentParser):
+    def error(self, message: str) -> Any:                                    # argparse's own line, led by ⛔ (callers that look for "error:" still find it)
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{_cli_glyph('⛔')}{self.prog}: error: {message}\n")
+
+
 def _retry_report(report: Path) -> Path:
     return report.with_name(report.stem + ".retry" + report.suffix)
 
@@ -5911,7 +5944,7 @@ def _ledger_best_effort(ledger: Path | None, runner: str, attempts: list[dict[st
     try:
         failure_ledger_file(ledger, runner, attempts)
     except (OSError, ValueError, TypeError) as exc:
-        print(f"warning: failure ledger update skipped: {exc}", file=sys.stderr)
+        _say("⚠️", f"failure ledger update skipped: {exc}")
 
 
 def run_test_suite(runner: str, *, root: Path, files: list[str], report: Path, history: Path, retry_failed: bool = False, timeout: int = 300,
@@ -5967,7 +6000,7 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
     that selected nothing (only file-level cases) fails closed. Node owns the regex semantics of ``name_pattern``.
     """
     if not files:
-        print("node runner: no test files selected", file=sys.stderr)
+        _say("⛔", "node runner: no test files selected")
         return 2
     report = report.resolve()
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -5981,15 +6014,15 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
     try:
         code = subprocess.run(command, cwd=root, timeout=timeout, check=False).returncode
     except FileNotFoundError:
-        print("node runner: Node executable not found", file=sys.stderr)
+        _say("⛔", "node runner: Node executable not found")
         return 127
     except subprocess.TimeoutExpired:
-        print(f"node runner: timed out after {timeout}s", file=sys.stderr)
+        _say("⛔", f"node runner: timed out after {timeout}s")
         return 124
     try:
         cases = junit_cases(report.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        print(f"node runner: missing or invalid Node JUnit: {report}", file=sys.stderr)
+        _say("⛔", f"node runner: missing or invalid Node JUnit: {report}")
         return code if code != 0 else 1
     summary = {"passed": 0, "failed": 0, "skipped": 0, "total": len(cases), "failures": [], "names": [c["name"] for c in cases]}
     for case in cases:
@@ -6001,11 +6034,11 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
         else:
             summary["passed"] += 1
     if summary["passed"] + summary["failed"] == 0:
-        print("node runner: no executed tests (all skipped)", file=sys.stderr)
+        _say("⛔", "node runner: no executed tests (all skipped)")
         return code if code != 0 else 1
     selected = {(root / name).resolve() for name in files}
     if name_pattern is not None and all((root / name).resolve() in selected for name in summary["names"]):
-        print("node runner: no selected tests (only file-level JUnit cases)", file=sys.stderr)
+        _say("⛔", "node runner: no selected tests (only file-level JUnit cases)")
         return code if code != 0 else 1
     summary.update({"runner": "node", "exit_code": code, "ok": code == 0 and summary["failed"] == 0, "junit": str(report)})
     if receipt is not None:
@@ -6013,7 +6046,7 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
         receipt.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"node: passed={summary['passed']} failed={summary['failed']} skipped={summary['skipped']} exit={code}")
     for failure in summary["failures"]:
-        print(f"FAIL {failure['name']}: {failure['message']}", file=sys.stderr)
+        _say("❌", f"{failure['name']}: {failure['message']}")
     return code if code != 0 else (1 if summary["failed"] else 0)
 
 
@@ -12328,7 +12361,7 @@ def _studio_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
             payload = studio_png_payload(args.studio_base64.read_bytes())
             _studio_write(args.output, payload["dataUri"] if args.data_uri else payload["base64"], args.force)
     except (StudioError, ValueError, OSError, UnicodeError, ArithmeticError) as error:
-        print(f"invalid studio input: {error}", file=sys.stderr)
+        _say("⛔", f"invalid studio input: {error}")
         return 2
     return 0
 
@@ -16248,7 +16281,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                         raise ValueError("previous JUnit report is missing or not a regular file")
                     report["diff"] = junit_diff(text, previous.read_bytes().decode("utf-8"))
             except (OSError, ValueError) as error:
-                print(f"invalid JUnit: {error}", file=sys.stderr)
+                _say("⛔", f"invalid JUnit: {error}")
                 return 2
             out(report)
             status = max(status, 0 if report["ok"] else 1)
@@ -16261,7 +16294,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                 args.to.parent.mkdir(parents=True, exist_ok=True)
                 args.to.write_text(converted["xml"], encoding="utf-8")
         except (OSError, ValueError) as error:
-            print(f"invalid Flutter events: {error}", file=sys.stderr)
+            _say("⛔", f"invalid Flutter events: {error}")
             return 2
         summary = counts_summary(flutter_outcomes(text), source="flutter-json")
         print(counts_line(summary["counts"]))
@@ -16269,7 +16302,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         return 0 if summary["ok"] else 1
     if args.run_tests:
         if not args.test_file:
-            print("external runner requires --test-file", file=sys.stderr)
+            _say("⛔", "external runner requires --test-file")
             return 2
         root = Path.cwd()
         try:
@@ -16278,7 +16311,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
             return run_test_suite(args.run_tests, root=root, files=args.test_file, report=args.report, history=args.history, ledger=args.ledger, retry_failed=args.retry_failed,
                                   timeout=int(args.timeout))
         except (ValueError, OSError) as error:
-            print(f"external runner: {error}", file=sys.stderr)
+            _say("⛔", f"external runner: {error}")
             return 2
     command = list(args.command)
     if command and command[0] == "--":
@@ -16288,16 +16321,16 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     try:
         status, receipt = expected_child_failure(command, expect_exit=args.expect_exit, output_dir=args.output_dir, timeout=args.timeout)
     except ValueError as error:
-        print(f"--expect-exit: {error}", file=sys.stderr)
+        _say("⛔", f"--expect-exit: {error}")
         return 2
     out(receipt)
     return status
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--title", default="web-ui")
-    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
+    parser = _IconParser(description=__doc__)
+    parser.add_argument("--title", default="web-ui", help="page title (default %(default)s)")
+    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern", help="theme (default %(default)s)")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--catalog", type=Path, metavar="FILE",
                         help="print a script-free page for a web-ui-catalog/1 JSON spec and exit")
@@ -16330,11 +16363,11 @@ def main(argv: list[str] | None = None) -> int:
         help="opt-in HTTPS classic scripts from the documented allowlist (e.g. plotly.js, pptxgenjs)",
     )
     parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
-    parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")
+    parser.add_argument("--module-mode", choices=("inline", "data"), default="inline", help="how --embed-ui carries the module (default %(default)s)")
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     parser.add_argument("--sri", type=Path, metavar="FILE",
                         help="print the sha384 SRI and SHA-256 hex of FILE (for pinning a new asset) and exit")
-    reports = parser.add_argument_group("test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
+    reports = parser.add_argument_group("🧾 test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
     reports.add_argument("--junit", nargs="+", type=Path, metavar="FILE", help="read JUnit XML reports (fail closed) and print one JSON report per file; exit 1 if a test failed, 2 if a report is invalid")
     reports.add_argument("--previous", type=Path, metavar="FILE", help="with --junit and one file: also say what is new, recurring or resolved against this earlier JUnit report")
     reports.add_argument("--flutter-events", type=Path, metavar="FILE", help="read Flutter machine JSON events: print the outcome counts (exit 1 unless ok); with --to also write the JUnit XML")
@@ -16350,7 +16383,7 @@ def main(argv: list[str] | None = None) -> int:
     reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
     reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
     reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
-    studio = parser.add_argument_group("image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
+    studio = parser.add_argument_group("🖌️ image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
     studio.add_argument("--studio-render", type=Path, metavar="FILE", help="check an ironmate-image-studio/1 scene and print it as SVG (or --format json); exit 2 on an invalid scene")
     studio.add_argument("--studio-heatmap", type=Path, metavar="FILE", help="turn a matrix JSON (rows, or a Plotly heatmap) into an editable scene and print it")
     studio.add_argument("--studio-base64", type=Path, metavar="FILE", help="print a PNG file as Base64 for hand-off (--data-uri for a data URI); a non-PNG is exit 2")
@@ -16360,6 +16393,10 @@ def main(argv: list[str] | None = None) -> int:
     studio.add_argument("-o", "--output", type=Path, metavar="FILE", help="with the --studio-* options: write here instead of stdout (refuses to overwrite)")
     studio.add_argument("--force", action="store_true", help="with --output: replace an existing file")
     parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
+    for action in parser._actions:                                           # the icon table above leads each option's help
+        glyph = CLI_ICONS.get(action.dest)
+        if glyph and action.help and action.help is not argparse.SUPPRESS:
+            action.help = _cli_glyph(glyph, sys.stdout) + action.help
     args = parser.parse_args(argv)
     if args.pattern_serve:
         return _bridge_main(parser, args)
@@ -16402,7 +16439,7 @@ def main(argv: list[str] | None = None) -> int:
             result = pattern_run(args.pattern, pattern_parse(raw.decode("utf-8")))
             sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
         except (ValueError, UnicodeError, OSError) as exc:
-            print(f"invalid pattern request: {exc}", file=sys.stderr)
+            _say("⛔", f"invalid pattern request: {exc}")
             return 2
         return 0
     if args.btk_adapter:

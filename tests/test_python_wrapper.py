@@ -2979,7 +2979,7 @@ class ReportTests(unittest.TestCase):
             with mock.patch("sys.stderr") as err:
                 self.assertEqual(self.suite(tmp, invoke, ledger=ledger), 1)
             self.assertEqual(ledger.read_text(), "{broken")
-            self.assertIn("warning: failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
+            self.assertIn("⚠️ failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
 
     @unittest.skipUnless(shutil.which("node"), "Node unavailable")
     def test_real_node_success_failure_and_filters(self):
@@ -4177,7 +4177,7 @@ class PatternTests(unittest.TestCase):
         for stdin in (b'{"mode":"redux","initial":NaN,"actions":[]}', b"[1", b'{"mode":"x"}', "{\"a\":\"".encode() + b"\xff\"}", b" " * (web_ui.PATTERN_MAX_INPUT + 1)):
             done = run("--pattern", "reduce", input=stdin)
             self.assertEqual((done.returncode, done.stdout), (2, b""), stdin[:20])
-            self.assertTrue(done.stderr.startswith(b"invalid pattern request: "))
+            self.assertTrue(done.stderr.startswith("⛔ invalid pattern request: ".encode()))
         self.assertEqual(run("--pattern", "list").stdout.decode().split(), sorted(web_ui.PATTERN_RUNNERS))
         done = run("--pattern", "nonsense", input=b"{}")
         self.assertEqual(done.returncode, 2)
@@ -4972,7 +4972,7 @@ class ImageStudioTests(unittest.TestCase):
                     with self.subTest(text=text, option=option):
                         code, out, err = self.run_cli(option, bad)
                         self.assertEqual((code, out), (2, b""))
-                        self.assertTrue(err.startswith("invalid studio input: "))
+                        self.assertTrue(err.startswith("⛔ invalid studio input: "))
             self.assertEqual(self.run_cli("--studio-render", tmp / "missing.json")[0], 2)
             text = tmp / "t.png"
             text.write_bytes(b"not a png")
@@ -5774,7 +5774,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {"failures": [], "ok": True, "operation": "layout", "truncated": 0}))
         done = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--pattern", "contract"], input='{"operation":"layout"}', capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 2)
-        self.assertIn("invalid pattern request: viewport needs a positive width and height", done.stderr)
+        self.assertIn("⛔ invalid pattern request: viewport needs a positive width and height", done.stderr)
 
     @unittest.skipUnless(os.environ.get("FLUTTER_NAVIGATION_BASIC_CHECKOUT"), "set FLUTTER_NAVIGATION_BASIC_CHECKOUT to a checkout of the original to rebuild the golden")
     def test_the_golden_is_what_the_tool_builds_from_the_original(self):
