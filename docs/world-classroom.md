@@ -157,7 +157,10 @@ the metro beside them and the Seine, with a 🔥 in each block. Nothing is drawn
 * Two points on one tile: the earlier keeps it and the other goes to the nearest free tile (never into water). Roads and water are merged into rectangles, so a
   place stays far below the 512-prop limit.
 * The coordinates in `EXAMPLES["cities"]` are approximate (about 100 m, read off public maps): a miniature shows where things stand relative to each other, not exact positions.
-  There are no facility names in TOKYO, only stations and exits.
+  There are no facility names in TOKYO, only stations and exits, and no religious buildings in any of the three cities (`tests/test_world_places.py` keeps it so).
+* Evidence: `tests/integration/school_browser.py` (`CitiesTests`) walks to every spot of the three cities on a phone and a desktop, touches every sign, and checks the
+  tools, keys, categories, favourites, six widths, eleven languages and the page without JavaScript. With `WEB_UI_SHOTS=DIR` it also keeps a WebP of each check with
+  a `manifest.json` and an `index.html`; the reviewed set lives under `docs/evidence/cities-<date>/`. The three `cities-*.gif` demos are the same operations in motion.
 * From Python: `web_ui.place_floor(points, meters=, tile=, links=, rivers=, area=, start=, id=, label=)`; from another repository: `--world -` with `place` as above.
   At the page's first view the whole floor is shown, so crowded places overlap their names until you zoom (wheel, pinch, or ⭐ and ☰ to go to one).
 
@@ -236,6 +239,9 @@ python tool/record_demo.py docs/demo --only keys tap --force --width 400        
 | `school-floors.gif` | the footer pulldown to the schoolyard, a spot's sheet, back to the classroom, the board spot |
 | `overworld-lands.gif` | six lands by the 🚪 pulldown (forest, mountain, desert, coast, castle), then walking to the castle town from the ☰ list |
 | `overworld-real.gif` | the real floor: ⋯ → 🖼️📷 → 🖼️ choose a photo, walk over it, then 🧹 (the photo is drawn by the recorder) |
+| `cities-tokyo.gif` | Parallel Tokyo: the 🚉 tool (the six exits of Tokyo Station), Marunouchi to Yaesu through the concourse, the electronic board's dot and text, on to Kanda by ☰ |
+| `cities-london.gif` | Reverse London: 🎡 in the header, King's Cross to Waterloo over the Thames bridge, the wooden **nogard** board: dot, text, 🐉, dot |
+| `cities-paris.gif` | Fake Paris: 🥖 in the header, a 🔥 in each block, Gare du Nord to the **rive gauche** board by the Seine, then the Eiffel Tower |
 | `school-oneliner.gif` | the one command from another repository; the byte count and time shown are that run's real output |
 
 A scene may end with `cam.zoom((x, y))` (or an anchor name or arrow emoji such as `cam.zoom("↘️")`): a smooth zoom toward that point that stays (the easing of Ironmate's `png_zoom_gif.py`, taken into this

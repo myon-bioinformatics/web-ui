@@ -444,7 +444,8 @@ def test_demo_gif_merges_still_frames_and_can_shrink():
 
 
 def test_demo_recorder_refuses_before_it_opens_a_browser(tmp_path, capsys):
-    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands", "real"}
+    assert set(record_demo.SCENES) >= {"pick", "avatar-text", "keys", "tap", "phone", "menu", "header", "floors", "oneliner", "lands", "real", "tokyo", "london", "paris"}
+    assert {record_demo.SCENES[n].world for n in ("tokyo", "london", "paris")} == {"cities"}
     assert record_demo.SCENES["lands"].world == "overworld" and record_demo.SCENES["real"].world == "overworld" and record_demo.SCENES["keys"].world == "school"
     with pytest.raises(ValueError, match="unknown scene: nope"):
         record_demo.record(tmp_path, ["nope"])

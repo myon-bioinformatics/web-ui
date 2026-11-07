@@ -86,8 +86,10 @@ Demos, recorded from real Chrome by `python tool/record_demo.py docs/demo --forc
 | <img src="docs/demo/school-tap.gif" width="240" alt="Tapping a chair; the player walks around the desks"> | <img src="docs/demo/school-phone.gif" width="240" alt="On a phone: the pad, dragging the map, 自分の場所 in the ⋯ menu"> | <img src="docs/demo/school-menu.gif" width="240" alt="The ☰ list shows an arrow to each place; tapping 黒板 walks there and the arrow becomes 📍"> |
 | **Header (🏠 ⭐ ⚙️ 🗺️ 🌐)** | **Door to door (footer)** | **Lands (🌱 🌲 ⛰️ 🏜️ 🌊 🏰)** |
 | <img src="docs/demo/school-header.gif" width="240" alt="Star two places on two floors, open the star list, the map tool, the language, home"> | <img src="docs/demo/school-floors.gif" width="240" alt="The footer pulldown moves to the schoolyard and back"> | <img src="docs/demo/overworld-lands.gif" width="240" alt="The pulldown travels across forest, mountain, desert, coast and castle lands; the player walks to the castle town"> |
-| **Real × virtual (🖼️📷)** | | |
-| <img src="docs/demo/overworld-real.gif" width="240" alt="Choosing a photo in the ⋯ menu puts it behind the floor; the player walks over it; 🧹 takes it away"> | | |
+| **Real × virtual (🖼️📷)** | **Parallel Tokyo (🗼 🚉)** | **Reverse London (🎡 🐉)** |
+| <img src="docs/demo/overworld-real.gif" width="240" alt="Choosing a photo in the ⋯ menu puts it behind the floor; the player walks over it; 🧹 takes it away"> | <img src="docs/demo/cities-tokyo.gif" width="240" alt="The 🚉 tool lists the six exits of Tokyo Station; the player walks from Marunouchi to Yaesu, touches the electronic board in the concourse, then walks to Kanda"> | <img src="docs/demo/cities-london.gif" width="240" alt="🎡 opens Reverse London; the player walks from King's Cross over the Thames bridge to Waterloo; the wooden nogard board shows a dot, its text, a dragon, the dot"> |
+| **Fake Paris (🥖 🔥)** | | |
+| <img src="docs/demo/cities-paris.gif" width="240" alt="🥖 opens Fake Paris with a fire in each block; the player walks from Gare du Nord to the rive gauche board by the Seine, touches it, then walks to the Eiffel Tower"> | | |
 
 <img src="docs/demo/school-oneliner.gif" width="320" alt="One command writes the school page; the page opens with the picker">
 
