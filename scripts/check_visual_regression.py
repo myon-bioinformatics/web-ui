@@ -74,13 +74,13 @@ def compare(
     return 1 if failed else 0
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-dir", type=Path, default=Path("."))
     parser.add_argument("--baseline-dir", type=Path, default=Path("tests/visual-baseline"))
     parser.add_argument("--require-baseline", action="store_true")
     parser.add_argument("--pattern", default=DEFAULT_PATTERN)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     return compare(
         args.candidate_dir,
         args.baseline_dir,

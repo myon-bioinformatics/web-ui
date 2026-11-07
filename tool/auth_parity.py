@@ -69,10 +69,10 @@ def python_answers(corpus):
             'query': [web_ui.auth_query_pairs(p) for p in corpus['query']]}
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('flutter_checkout', type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     corpus_path = ROOT / 'tests/fixtures/mock_auth_contract.json'
     corpus = json.loads(corpus_path.read_text())
     with tempfile.TemporaryDirectory(prefix='web-ui-auth-dart-') as tmp:
