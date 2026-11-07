@@ -31,7 +31,8 @@ jobs:
           node-version: "26"
       - name: Clear prior capture evidence
         run: rm -rf screenshot-evidence web-ui-desktop-1440x900.png web-ui-mobile-390x844.png web-ui-contract-v1-desktop-1440x900.png web-ui-contract-v1-mobile-390x844.png web-ui-github-like-desktop-1440x900.png web-ui-github-like-mobile-390x844.png
-      - run: npx --yes playwright@1.63.0 install --with-deps --only-shell chromium
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps --only-shell chromium
       - name: Build example pages in memory and write them for capture
         run: python3 -S web_ui.py --site build/site
       - name: Serve examples
@@ -55,12 +56,12 @@ jobs:
           PY
       - name: Capture desktop and mobile with Chromium
         run: |
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-desktop-1440x900.png
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
-          npx --yes playwright@1.63.0 screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
+          npx playwright screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/index.html web-ui-desktop-1440x900.png
+          npx playwright screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/index.html web-ui-mobile-390x844.png
+          npx playwright screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-desktop-1440x900.png
+          npx playwright screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/contract/v1/example.html web-ui-contract-v1-mobile-390x844.png
+          npx playwright screenshot --browser=chromium --viewport-size="1440,900" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-desktop-1440x900.png
+          npx playwright screenshot --browser=chromium --viewport-size="390,844" http://127.0.0.1:8000/examples/github-like.html web-ui-github-like-mobile-390x844.png
       - name: Seal current-run capture receipt
         if: always()
         env:
