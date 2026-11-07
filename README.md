@@ -1,7 +1,7 @@
 # PySaiyanWeBoo
 
 <p align="center">
-  <img src="docs/brand/icon.png" alt="web-ui icon" width="160" />
+  <img src="docs/brand/icon.png" alt="PySaiyanWeBoo icon" width="160" />
 </p>
 
 [Icon](docs/brand/icon.png) · [Favicon](docs/brand/favicon.png)
@@ -40,7 +40,7 @@ stay with each consumer. [Schema, examples and adoption boundary](docs/catalog-p
 Card-style flow diagrams and atomic flow edits now belong to [ascii_artist's accepted Python implementation](https://github.com/myon-bioinformatics/ascii_artist/blob/a9af65cc443e6129176f83268142bff2c2397b66/docs/card-flows.md).
 Pin `a9af65cc443e6129176f83268142bff2c2397b66` (or a later tested revision) when migrating: use `validate_flow`, `flow_html`, `flow_mermaid`, `flow_document`, `flow_css`, and `patch_flow` from `ascii_artist.py`.
 The CLI routes are `python -S ascii_artist.py flow-cards` and `python -S ascii_artist.py flow-patch`; the existing small CJS entry forwards to the same Python implementation.
-`flow_document()` embeds its CSS by default, so it does not depend on the removed web-ui `css/` paths. The replacement retains card rendering, text escaping, bounded/atomic patch validation and behavioral regression tests; web-ui no longer maintains a second flow engine.
+`flow_document()` embeds its CSS by default, so it does not depend on the removed PySaiyanWeBoo `css/` paths. The replacement retains card rendering, text escaping, bounded/atomic patch validation and behavioral regression tests; PySaiyanWeBoo no longer maintains a second flow engine.
 
 ## Themes
 
@@ -452,7 +452,7 @@ built-in generic type syntax such as `tuple[int, int]`.
 
 - expand the component gallery
 - consolidate Ironmate metadata-only discovery in the portfolio; retain working consumer demos
-- add API/MCP Stub patterns without moving domain logic into web-ui
+- add API/MCP Stub patterns without moving domain logic into PySaiyanWeBoo
 - expand themes beyond Modern and GitHub-like
 - keep HTML contract v1 stable while `markdown.py` and `ascii_artist` integrations adopt it
 
@@ -465,15 +465,15 @@ Browser/UI verification keeps two separate lanes: deterministic Playwright/Chrom
 
 ## Shared screenshot checks
 
-CI checks all six named Chromium desktop/mobile PNGs with browser-test-kit at
+CI checks all six named Chromium desktop/mobile PNGs with BrowserTestKit at
 `6a2e32a4bbe49be5268e6b30040d665a89eecf66`, checked out separately in the screenshot job.
-See the [shared screenshot guide](https://github.com/myon-bioinformatics/browser-test-kit/blob/6a2e32a4bbe49be5268e6b30040d665a89eecf66/docs/screenshot-evidence.md).
+See the [shared screenshot guide](https://github.com/myon-bioinformatics/BrowserTestKit/blob/6a2e32a4bbe49be5268e6b30040d665a89eecf66/docs/screenshot-evidence.md).
 The shared structural PNG checks supplement the existing local candidate/baseline
 comparison. Missing/invalid required captures fail CI; available PNGs are uploaded
 even after failure (14 days). This lane does not measure Firefox/WebKit; image validity does not establish semantic correctness.
 
 The screenshot lane now seals a current-run multi-image receipt via pinned
-browser-test-kit, requires all six PNGs and their recorded SHA-256/size, and
+BrowserTestKit, requires all six PNGs and their recorded SHA-256/size, and
 checks the explicit tested head SHA plus run ID/attempt. Output is cleared before
 capture. Failed receipts are preserved but cannot cover required success. CI also
 mutates isolated copies of the real bundle to prove rejection of missing images,
@@ -484,11 +484,11 @@ Public source placement and automatic Python CI updates: [vendor automation](doc
 
 ## Platform differences: what is claimed, and where it is checked
 
-Python and JavaScript run everywhere; what differs is the engine, the device and the input. The doctrine is browser-test-kit's (`docs/platform-doctrine.md`), applied here:
+Python and JavaScript run everywhere; what differs is the engine, the device and the input. The doctrine is BrowserTestKit's (`docs/platform-doctrine.md`), applied here:
 
 - **Layer 1, the rules**: Python is the reference and the page's module gives identical answers (Chromium compares them on seeded fuzz; a one-character change in a rule fails a test).
   Engine and OS do not enter, so this layer is the same everywhere by construction.
-- **Layer 2, the page in an engine**: the photo studio's page tests (upright pixels equal Pillow, drawing, history, export, import outcomes) and browser-test-kit's probe
+- **Layer 2, the page in an engine**: the photo studio's page tests (upright pixels equal Pillow, drawing, history, export, import outcomes) and BrowserTestKit's probe
   (`python web_ui.py --btk-adapter list`, one `btk-platform-adapter/1` per page that has state, built from Python; key elements fit without overflow, overlap or clipping at
   320-1280 px and a real click or tap changes what the page promises). `.github/workflows/platform-matrix.yml` runs both on Chromium, Firefox, WebKit, a Pixel 7 profile and an
   iPhone 13 profile on Linux runners and keeps each engine's own decode report (`Check this browser`) as an artifact. Chromium and its Pixel profile also run locally.
@@ -496,14 +496,14 @@ Python and JavaScript run everywhere; what differs is the engine, the device and
   is **not verified** until the page's JSON is kept from a device. Nothing here says otherwise.
 
 Running the probe against the local pages: `python -S web_ui.py --site build/site`, serve it on port 8000, then
-`python -S web_ui.py --btk-adapter web-ui-photo-studio > adapter.json` and `python browser-test-kit/tools/platform_probe.py collect --browser chromium --profile pixel --adapter adapter.json
+`python -S web_ui.py --btk-adapter web-ui-photo-studio > adapter.json` and `python BrowserTestKit/tools/platform_probe.py collect --browser chromium --profile pixel --adapter adapter.json
 --widths 320 384 --out out`. It found a real defect while this was written: the showcase title was clipped at 320 px (it now wraps). The examples are generated, not published, so the probe
 uses `http://127.0.0.1:8000/examples/...` (`--url` overrides it); the page viewer for multi-browser captures needs https pages and stays Flutter-only for now.
 
 ## Multi-browser captures of Flutter pages
 
 `web_ui.EXAMPLES["flutter-pages"]` (`--example flutter-pages`) lists the representative flutter_navigation_basic pages by emoji
-(route table + published URL), and `tool/capture_matrix.py` turns browser-test-kit captures and
+(route table + published URL), and `tool/capture_matrix.py` turns BrowserTestKit captures and
 Ironmate's comparison sheet into a static viewer opened by emoji. See [capture matrix](docs/capture-matrix.md).
 Its tile layout switches live between presets (8px grid, compact, device width, wide); see [layout presets](docs/layout-presets.md)
 for the JSON, the CSS generator (Python; Node reaches it through `vendor/py_launch.cjs`) and the sweep that lists every preset that holds.
