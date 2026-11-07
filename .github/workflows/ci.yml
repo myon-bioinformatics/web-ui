@@ -1,4 +1,4 @@
-name: Tooling smoke
+name: CI
 on:
   push:
     branches: [main]
