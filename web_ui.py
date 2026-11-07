@@ -15174,6 +15174,275 @@ def curl_panel_html(sample: str = CURL_SAMPLE, *, heading_level: int = 2) -> str
             '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>')
 
 
+# --- Source panel: a name (one GET) or pasted JSON, read through a declarative spec into tables -----------------------------------
+SOURCE_LIMIT = 2 * 1024 * 1024
+_SOURCE_PLACEHOLDER = re.compile(r"\{([a-z0-9_.]+)\}")
+
+
+def source_spec(spec: Any) -> dict[str, Any]:
+    """Check a source-panel spec (a consumer's JSON) and return it. The consumer keeps the protocol: only the shape is checked here.
+
+    ``id`` (panel id), ``label``, ``name`` (regex a trimmed lower-cased name must match), ``url`` (https, one ``{name}``), ``title`` (``{key}`` takes a
+    top-level value), ``tables``: each ``{headers, rows: [[cell...]]}`` (one row) or ``{headers, each: path, sort?, cells: [cell...]}`` (one row per
+    list item). A cell is ``{key: path}`` (dot path, objects only) plus at most one of ``pick``/``sort``/``sep`` (a list: sort by number, pick a path,
+    join with ``sep``, default ``", "``), ``div`` (a number divided; one decimal when whole) or ``yes`` (a boolean shown as this text, else empty)."""
+    if not isinstance(spec, dict):
+        raise ValueError("a source spec is an object")
+    known = {"id", "label", "heading", "note", "placeholder", "name", "url", "title", "tables", "limit", "error", "missing"}
+    if set(spec) - known or not {"id", "label", "name", "url", "title", "tables"} <= set(spec):
+        raise ValueError("a source spec has id, label, name, url, title and tables (and heading, note, placeholder, limit, error, missing)")
+    text = lambda key, size: isinstance(spec.get(key, ""), str) and len(spec.get(key, "")) <= size  # noqa: E731
+    if not (isinstance(spec["id"], str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", spec["id"])):
+        raise ValueError("id is a lower-case token")
+    if not all(text(k, 400) for k in ("label", "heading", "note", "placeholder", "title", "error", "missing")):
+        raise ValueError("source spec texts are at most 400 characters")
+    pattern = spec["name"]
+    if not (isinstance(pattern, str) and 0 < len(pattern) <= 200 and pattern.isascii() and pattern.isprintable() and "(?" not in pattern):
+        raise ValueError("name is a plain ASCII pattern of at most 200 characters, without groups that start with (?")
+    try:
+        re.compile(pattern, re.ASCII)
+    except re.error:
+        raise ValueError("name is not a valid pattern") from None
+    url = spec["url"]
+    if not (isinstance(url, str) and url.startswith("https://") and url.count("{name}") == 1 and not re.search(r"[\s\\]", url)
+            and "@" not in url.split("/", 3)[2]):
+        raise ValueError("url is an https address with one {name} and no credentials")
+    limit = spec.get("limit", SOURCE_LIMIT)
+    if type(limit) is not int or not 1 <= limit <= SOURCE_LIMIT:
+        raise ValueError("limit is 1 to 2 MiB")
+    tables = spec["tables"]
+    if not (isinstance(tables, list) and 1 <= len(tables) <= 8):
+        raise ValueError("tables are one to eight")
+    for table in tables:
+        if not isinstance(table, dict) or not (isinstance(table.get("headers"), list) and 1 <= len(table["headers"]) <= 12
+                                               and all(isinstance(h, str) for h in table["headers"])):
+            raise ValueError("a table has one to twelve text headers")
+        each = "each" in table
+        if each == ("rows" in table) or set(table) - ({"headers", "each", "sort", "cells"} if each else {"headers", "rows"}):
+            raise ValueError("a table is {headers, rows} or {headers, each, sort?, cells}")
+        if each and not (isinstance(table["each"], str) and table["each"] and isinstance(table["cells"], list)):
+            raise ValueError("each is a path and cells a list")
+        rows = [table["cells"]] if each else table["rows"]
+        if not (isinstance(rows, list) and len(rows) <= 64 and all(isinstance(r, list) and len(r) == len(table["headers"]) for r in rows)):
+            raise ValueError("every row has one cell per header")
+        for row in rows:
+            for cell in row:
+                if not (isinstance(cell, dict) and isinstance(cell.get("key"), str) and cell["key"] and set(cell) <= {"key", "pick", "sort", "sep", "div", "yes"}):
+                    raise ValueError("a cell is {key, pick?, sort?, sep?, div?, yes?}")
+                if "div" in cell and (type(cell["div"]) not in (int, float) or cell["div"] == 0):
+                    raise ValueError("div is a nonzero number")
+    return spec
+
+
+def source_name(spec: Any, text: Any) -> str:
+    """The name to ask for: ASCII-blank-trimmed, lower-cased, and the whole of it must match ``spec["name"]`` (a pattern both Python and JavaScript read the same); else empty."""
+    value = str(text if text is not None else "").strip(" \t\n\r\f\v").lower()  # ASCII blanks only: JavaScript's trim() would differ
+    return value if re.fullmatch(source_spec(spec)["name"], value, re.ASCII) else ""
+
+
+def source_url(spec: Any, name: Any) -> str:
+    """The one address a name is read from, the name percent-encoded as encodeURIComponent does (empty for an invalid name)."""
+    clean = source_name(spec, name)
+    return source_spec(spec)["url"].replace("{name}", quote(clean, safe="!'()*")) if clean else ""  # as encodeURIComponent
+
+
+def _source_get(data: Any, path: str) -> Any:
+    for part in path.split("."):
+        if not (isinstance(data, dict) and part in data):
+            raise ValueError("missing " + path)
+        data = data[part]
+    return data
+
+
+def _source_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):  # a whole 1.0 reads as the integer 1, as JavaScript reads it
+        return str(int(value)) if value.is_integer() else str(value)
+    raise ValueError("not a scalar")
+
+
+def _source_number(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("not a number")
+    return value
+
+
+def _source_cell(cell: dict[str, Any], context: Any) -> str:
+    value = _source_get(context, cell["key"])
+    if isinstance(value, list):
+        if "sort" in cell:
+            value = sorted(value, key=lambda row: _source_number(_source_get(row, cell["sort"])))
+        return cell.get("sep", ", ").join(_source_scalar(_source_get(row, cell["pick"]) if "pick" in cell else row) for row in value)
+    if "yes" in cell:
+        if not isinstance(value, bool):
+            raise ValueError("not a boolean")
+        return cell["yes"] if value else ""
+    if "div" in cell:
+        result = _source_number(value) / cell["div"]
+        return f"{result:.1f}" if result == int(result) else str(result)
+    return _source_scalar(value)
+
+
+def source_extract(spec: Any, source: Any) -> dict[str, Any]:
+    """``{title, tables: [{headers, rows}]}`` from JSON text (or an object) through ``spec``; ValueError says what was wrong."""
+    spec = source_spec(spec)
+    data = source
+    if isinstance(source, str):
+        limit = spec.get("limit", SOURCE_LIMIT)
+        if len(source.encode("utf-8")) > limit:
+            raise ValueError(f"source exceeds {limit} bytes")
+        try:
+            data = json.loads(source)
+        except (ValueError, RecursionError):  # a pathologically deep document is refused like any non-JSON
+            raise ValueError("source is not JSON") from None
+    try:
+        title = _SOURCE_PLACEHOLDER.sub(lambda m: _source_scalar(_source_get(data, m.group(1))), spec["title"])
+        tables = []
+        for table in spec["tables"]:
+            if "each" in table:
+                items = _source_get(data, table["each"])
+                if not isinstance(items, list):
+                    raise ValueError("not a list")
+                if "sort" in table:
+                    items = sorted(items, key=lambda row: _source_number(_source_get(row, table["sort"])))
+                rows = [[_source_cell(cell, item) for cell in table["cells"]] for item in items]
+            else:
+                rows = [[_source_cell(cell, data) for cell in row] for row in table["rows"]]
+            tables.append({"headers": list(table["headers"]), "rows": rows})
+    except (ValueError, TypeError, RecursionError):
+        raise ValueError(spec.get("error") or "not the expected response") from None
+    return {"title": title, "tables": tables}
+
+
+def source_markdown(extract: dict[str, Any]) -> str:
+    """The Markdown of an extract: a ``#`` title, then one pipe table per table (``|`` escaped, line breaks flattened)."""
+    cell = lambda value: str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")  # noqa: E731
+    tables = ["| " + " | ".join(cell(h) for h in t["headers"]) + " |\n| " + " | ".join("---" for _ in t["headers"]) + " |\n"
+              + "".join("| " + " | ".join(cell(c) for c in row) + " |\n" for row in t["rows"]) for t in extract["tables"]]
+    return "# " + str(extract["title"]).replace("\r", " ").replace("\n", " ") + "\n\n" + "\n".join(tables)
+
+
+def source_panel_html(spec: Any, *, heading_level: int = 2) -> str:
+    """The panel ``source.js`` binds: Fetch asks one address once, Open shows it, and pasted JSON is read with no network. The spec rides in an attribute."""
+    spec = source_spec(spec)
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 2
+    pid = spec["id"]
+    data = escape(json.dumps(spec, ensure_ascii=False, separators=(",", ":")), quote=True)
+    return (f'<section class="ui-panel ui-source" id="source-{pid}" data-ui-source data-source-spec="{data}">'
+            f'<h{level}>{escape(spec.get("heading") or spec["label"])}</h{level}>'
+            + (f'<p class="ui-muted">{escape(spec["note"])}</p>' if spec.get("note") else "")
+            + f'<label for="{pid}-name">{escape(spec["label"])}</label><div class="ui-source-row">'
+            f'<input class="ui-input" id="{pid}-name" data-source-name placeholder="{escape(spec.get("placeholder", ""), quote=True)}" autocomplete="off"> '
+            '<button class="ui-button" type="button" data-source-fetch>Fetch</button> '
+            '<button class="ui-button" type="button" data-source-open>Open JSON</button></div>'
+            f'<label for="{pid}-text">Pasted JSON</label><textarea class="ui-input" id="{pid}-text" data-source-text rows="8"></textarea>'
+            '<button class="ui-button" type="button" data-source-extract>Extract</button>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-source-status></p>'
+            '<p class="ui-source-error" role="alert" data-source-error hidden></p><pre class="ui-output" data-source-output hidden></pre></section>')
+
+
+_CSS["source.css"] = ("@layer components{.ui-source label{display:block;margin:8px 0 4px}.ui-source-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}"
+                      ".ui-source-row .ui-input{flex:1 1 192px;min-width:0}.ui-source>textarea.ui-input{width:100%;box-sizing:border-box;margin-bottom:8px}"
+                      ".ui-source-error{margin:8px 0;color:var(--ui-danger);font-weight:600;overflow-wrap:anywhere}.ui-source-error[hidden],.ui-source .ui-output[hidden]{display:none}}")
+
+_JS["source.js"] = r"""/** web-ui source: read a name (one GET per press, never retried) or JSON you pasted, through a consumer's declarative spec, in the page. Nothing is stored. Python (web_ui.source_*) is the reference; this must agree. */
+(function(root,factory){
+  const api=factory();
+  if(typeof module==='object' && module.exports) module.exports=api;
+  else {root.webUiSource=api; if(root.document){const start=()=>api.bindSources(root);if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});else start();}}
+})(typeof globalThis==='undefined'?this:globalThis,function(){
+  'use strict';
+  const LIMIT=2*1024*1024,fail=m=>{throw Error(m);};
+  const bytes=t=>typeof TextEncoder==='function'?new TextEncoder().encode(t).length:t.length;
+  function sourceName(spec,text){const t=String(text??'').replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g,'').toLowerCase();return new RegExp('^(?:'+spec.name+')$').test(t)?t:'';}
+  function sourceUrl(spec,name){const n=sourceName(spec,name);return n?spec.url.replace('{name}',()=>encodeURIComponent(n)):'';}
+  const get=(data,path)=>{for(const part of path.split('.')){if(data!==null&&typeof data==='object'&&!Array.isArray(data)&&Object.prototype.hasOwnProperty.call(data,part))data=data[part];else fail('missing '+path);}return data;};
+  const scalar=v=>{if(typeof v==='string')return v;if(typeof v==='boolean')return v?'true':'false';if(v===null)return '';if(typeof v==='number')return String(v);return fail('not a scalar');};
+  const number=v=>typeof v==='number'?v:fail('not a number');
+  function cell(c,ctx){
+    let v=get(ctx,c.key);
+    if(Array.isArray(v)){if('sort' in c)v=v.slice().sort((a,b)=>number(get(a,c.sort))-number(get(b,c.sort)));return v.map(r=>scalar('pick' in c?get(r,c.pick):r)).join('sep' in c?c.sep:', ');}
+    if('yes' in c){if(typeof v!=='boolean')fail('not a boolean');return v?c.yes:'';}
+    if('div' in c){const r=number(v)/c.div;return Number.isInteger(r)?r.toFixed(1):String(r);}
+    return scalar(v);
+  }
+  function sourceExtract(spec,input){
+    let data=input;const limit=spec.limit||LIMIT;
+    if(typeof input==='string'){
+      if(bytes(input)>limit)fail('source exceeds '+limit+' bytes');
+      try{data=JSON.parse(input);}catch{fail('source is not JSON');}
+    }
+    try{
+      const title=spec.title.replace(/\{([a-z0-9_.]+)\}/g,(m,k)=>scalar(get(data,k)));
+      const tables=spec.tables.map(t=>{
+        let rows;
+        if(t.each){let items=get(data,t.each);if(!Array.isArray(items))fail('not a list');if('sort' in t)items=items.slice().sort((a,b)=>number(get(a,t.sort))-number(get(b,t.sort)));rows=items.map(i=>t.cells.map(c=>cell(c,i)));}
+        else rows=t.rows.map(r=>r.map(c=>cell(c,data)));
+        return {headers:t.headers.slice(),rows};
+      });
+      return {title,tables};
+    }catch{fail(spec.error||'not the expected response');}
+  }
+  const esc=s=>String(s).replace(/\|/g,'\\|').replace(/[\r\n]/g,' ');
+  function sourceMarkdown(x){
+    return '# '+String(x.title).replace(/[\r\n]/g,' ')+'\n\n'+x.tables.map(t=>'| '+t.headers.map(esc).join(' | ')+' |\n| '+t.headers.map(()=>'---').join(' | ')+' |\n'+t.rows.map(r=>'| '+r.map(esc).join(' | ')+' |\n').join('')).join('\n');
+  }
+  function loadSource(spec,name,fetchImpl){
+    const url=sourceUrl(spec,name);
+    if(!url)return Promise.resolve({ok:false,error:spec.missing||'Enter a valid name.'});
+    return Promise.resolve().then(()=>fetchImpl(url,{headers:{Accept:'application/json'},redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'})).then(r=>{
+      if(r.status===404)return {ok:false,error:'not found: '+sourceName(spec,name)};
+      if(!r.ok)return {ok:false,error:'HTTP '+r.status};
+      return r.text().then(t=>{try{return {ok:true,extract:sourceExtract(spec,t)};}catch(e){return {ok:false,error:e.message};}});
+    }).catch(e=>({ok:false,error:'could not fetch ('+((e&&e.message)||'network error')+'). Open the JSON, copy it and paste it below instead.'}));
+  }
+  const handles=new WeakMap();
+  function bindSource(panel,{window:win=globalThis.window,fetch:fetchImpl}={}){
+    if(handles.has(panel))return handles.get(panel);
+    const spec=JSON.parse(panel.getAttribute('data-source-spec'));
+    const q=n=>panel.querySelector('[data-source-'+n+']');
+    const els={name:q('name'),fetch:q('fetch'),open:q('open'),text:q('text'),extract:q('extract'),status:q('status'),error:q('error'),output:q('output')};
+    const send=fetchImpl||(win&&typeof win.fetch==='function'?win.fetch.bind(win):null);
+    const show=(result,origin)=>{
+      els.error.hidden=result.ok;els.output.hidden=!result.ok;
+      els.error.textContent=result.ok?'':result.error;
+      els.output.textContent=result.ok?sourceMarkdown(result.extract):'';
+      els.status.textContent=result.ok?result.extract.title+' — '+origin:'';
+      return result;
+    };
+    els.open.addEventListener('click',()=>{
+      const url=sourceUrl(spec,els.name.value);
+      if(!url)return show({ok:false,error:spec.missing||'Enter a valid name.'});
+      win.open(url,'_blank','noopener,noreferrer');els.status.textContent='Opened '+url+' — copy its JSON and paste it below.';return null;
+    });
+    els.fetch.addEventListener('click',()=>{
+      if(!send)return show({ok:false,error:'fetch is not available; paste the JSON instead'});
+      if(els.fetch.disabled)return null;
+      els.fetch.disabled=true;els.status.textContent='Fetching\u2026';
+      return loadSource(spec,els.name.value,send).then(r=>{els.fetch.disabled=false;return show(r,'fetched');});
+    });
+    els.extract.addEventListener('click',()=>{
+      const text=String(els.text.value||'').trim();
+      let result;
+      if(!text)result={ok:false,error:'Paste the JSON first.'};
+      else try{result={ok:true,extract:sourceExtract(spec,text)};}catch(e){result={ok:false,error:e.message};}
+      return show(result,'from pasted JSON');
+    });
+    const handle={spec,show};handles.set(panel,handle);return handle;
+  }
+  function bindSources(win){return [...win.document.querySelectorAll('[data-ui-source]')].map(p=>bindSource(p,{window:win}));}
+  return {sourceName,sourceUrl,sourceExtract,sourceMarkdown,loadSource,bindSource,bindSources};
+});
+"""
+
+
 _STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
                  't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
 
@@ -16864,7 +17133,7 @@ def _index_page() -> str:
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, theme.js, shelf.js, door.js, composition.js, coordinates.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, theme.js, shelf.js, door.js, source.js, composition.js, coordinates.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 

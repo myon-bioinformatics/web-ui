@@ -296,6 +296,12 @@ as `***`. It never runs curl or sends anything, and error codes never contain th
 reads it the same way: Chromium checks it against Python on flutter_navigation_basic's 47 golden cases (`tests/fixtures/curl_request_cases.json`,
 copied from its `python/fixtures/` at 39d659e) and 1,500 seeded inputs.
 
+Source panel: `source_panel_html(spec)` is a name box (**Fetch**, **Open JSON**) plus a paste box (**Extract**) that turn one JSON response into Markdown tables, read through a
+declarative `spec` the consumer owns (name pattern, one `https://…{name}` address, a title and table layout; see `docs/source-panel.md`). Python is the reference
+(`source_spec`, `source_name`, `source_url`, `source_extract`, `source_markdown`); `source.js` and `_CSS["source.css"]` are Python data like the other modules, so a consumer
+writes no JavaScript or CSS of its own. Fetch sends one GET per press and never retries; every failure is a message, and pasting needs no network. Chromium checks the page offline
+and over HTTP (`tests/integration/source_browser.py`); `tests/fixtures/source/cases.json` runs through both languages.
+
 `ui.js` (`js_source("ui.js")`) is the shared helper module: `setText`, `prettyJson`, `copyText` (with a fallback where the async
 clipboard is missing), `bindTheme`, `observeLit` (marks on-screen elements with `data-lit`) and `bindLightbox`
 (click-to-enlarge in a `<dialog>`). Import only what a page needs.
