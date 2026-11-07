@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          repository: myon-bioinformatics/browser-test-kit
+          repository: myon-bioinformatics/BrowserTestKit
           ref: b94f801a9c57b1914ff6b732519521a7a42fadfe
           path: .browser-test-kit-dom
           persist-credentials: false
