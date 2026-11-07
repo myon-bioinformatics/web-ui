@@ -548,6 +548,9 @@ CITY_WALK = ("fl => new Promise(done => { const p = document.querySelector(`.ui-
              " const step = () => { const s = p.style, x = parseFloat(s.getPropertyValue('--px')), y = parseFloat(s.getPropertyValue('--py')); seen.push([x, y]);"
              " if ((Math.abs(x - +p.dataset.targetX) < .01 && Math.abs(y - +p.dataset.targetY) < .01) || performance.now() - t0 > 30000) done(seen);"
              " else requestAnimationFrame(step) }; requestAnimationFrame(step) })")      # every frame of the walk, until the player stands at its target
+CITY_STILL = ("() => new Promise(done => { const cam = document.querySelector('.ui-world-cam'); let last = getComputedStyle(cam).transform, same = 0, n = 0;"
+              " const step = () => { const now = getComputedStyle(cam).transform; same = now === last ? same + 1 : 0; last = now;"
+              " if (same >= 3 || ++n > 120) done(same >= 3); else requestAnimationFrame(step) }; requestAnimationFrame(step) })")   # the camera's glide (.24s) has ended
 CITY_TOP = ("sel => { const a = document.querySelector(sel), r = a.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2,"
             " e = document.elementFromPoint(x, y); return {self: !!e && (e === a || a.contains(e)), sheet: !!e?.closest('.ui-sheet'),"
             " what: (e?.closest('.ui-spot,.ui-sheet-item,.ui-world-dpad,.ui-world-side,.ui-player')?.textContent || e?.className || '').trim().slice(0, 24), x, y} }")
@@ -558,7 +561,13 @@ def city_cell(point, tile):
 
 
 def write_city_gallery(out, records, meta):
-    """manifest.json and a one-page index.html (no JavaScript, opens from file://) beside the shots/ written by the sweep."""
+    """manifest.json and a one-page index.html (no JavaScript, opens from file://) beside the shots/ written by the sweep.
+    A run of some tests only (``CitiesTests.test_every_sign_shows_its_faces``) replaces its own records in an existing manifest and keeps the rest."""
+    manifest = out / "manifest.json"
+    if manifest.is_file():
+        fresh = {(r["viewport"], r["floor"], r["kind"], r["id"]) for r in records}
+        kept = [r for r in json.loads(manifest.read_text(encoding="utf-8")).get("records", []) if (r["viewport"], r["floor"], r["kind"], r["id"]) not in fresh]
+        records = sorted(kept + records, key=lambda r: (r["order"], r["file"]))
     ok = sum(1 for r in records if not r["notes"])
     (out / "manifest.json").write_text(json.dumps({"schema": "web-ui-cities-evidence/1", **meta, "shots": len(records), "clean": ok,
                                                    "noted": len(records) - ok, "records": records}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -678,6 +687,10 @@ class CitiesTests(unittest.TestCase):
         type(self).records.append({"order": len(self.records), "file": name, "viewport": page.size, "floor": floor, "kind": kind, "id": ident,
                                    "label": label, "notes": list(notes)})
 
+    def still(self, page):
+        """Wait for the camera: after a walk with the camera following, or a press (focusSpot), it glides for .24 s."""
+        self.assertTrue(page.evaluate(CITY_STILL), "the camera kept moving")
+
     def arrows(self, page, floor):
         return page.eval_on_selector_all(f'.ui-world-spots[data-floor="{floor}"] a', "els => els.map(a => [a.getAttribute('href'), a.querySelector('.ui-world-arrow').textContent])")
 
@@ -712,6 +725,7 @@ class CitiesTests(unittest.TestCase):
                     self.assertAlmostEqual(target[1], goal[1], delta=.01)
                     end = page.evaluate(CITY_POS, fl)
                     self.assertLess(abs(end[0] - target[0]) + abs(end[1] - target[1]), .05)
+                    self.still(page)
                     self.assertEqual(page.evaluate("location.hash"), sheet)
                     self.assertTrue(page.is_visible(sheet))
                     self.assertEqual([page.text_content(f"{sheet} h3"), page.text_content(f"{sheet} p")], [s["label"], s["body"]])
@@ -729,6 +743,7 @@ class CitiesTests(unittest.TestCase):
                         notes = self.press(page, marker)
                         page.wait_for_selector(sheet, state="visible", timeout=3000)
                         page.click(".ui-sheet-close:visible")
+                        self.still(page)
                     self.shot(page, "map", fl, s["id"], s["label"], notes)
         self.assertEqual(self.errors, [])
 
@@ -752,6 +767,7 @@ class CitiesTests(unittest.TestCase):
                         page.click(f'.ui-world-spots a[href="#cities-spot-{s["id"]}"]')                 # the list walks there without turning the board
                         page.evaluate(CITY_WALK, f["id"])
                         page.click(".ui-sheet-close:visible")
+                        self.still(page)
                         faces = ["", "label", "flip", ""] if s.get("flip") else ["", "label", ""]
                         for i, face in enumerate(faces):
                             notes = []
@@ -759,6 +775,7 @@ class CitiesTests(unittest.TestCase):
                                 notes = self.press(page, marker)
                                 page.wait_for_selector(f"#cities-spot-{s['id']}", state="visible", timeout=3000)
                                 page.click(".ui-sheet-close:visible")
+                                self.still(page)
                             state = page.eval_on_selector(marker, "e => { const c = getComputedStyle(e); return [e.textContent, e.dataset.show || '', c.fontSize, c.color,"
                                                           " c.backgroundColor, getComputedStyle(e, '::before').content] }")
                             self.assertEqual(state[:2], [s["flip"] if face == "flip" else s["label"], face])
@@ -806,6 +823,7 @@ class CitiesTests(unittest.TestCase):
                     want = [web_ui.world_direction(here, [e["x"], e["y"]], tokyo["tile"]) for e in exits]
                     page.wait_for_function("([sel, want]) => JSON.stringify([...document.querySelectorAll(sel)].map(a => a.querySelector('.ui-world-arrow').textContent)) === JSON.stringify(want)",
                                            arg=[rows, want], timeout=3000)
+                    self.still(page)
                     self.shot(page, "tool", "tokyo", f"station-{s['id']}", f"🚉 at {s['label']}")
                     page.keyboard.press("Escape")
             self.assertEqual(self.errors, [])
@@ -819,6 +837,7 @@ class CitiesTests(unittest.TestCase):
                 fl, tile = f["id"], f["tile"]
                 blocked = web_ui.world_blocked(f["width"], f["height"], tile, f["props"])
                 self.show(page, fl)
+                page.focus(".ui-world-view")                                                         # the 🚪 pulldown kept the focus: keys go to the map again
                 steps = [((0, -1), "ArrowUp"), ((1, 0), "ArrowRight"), ((0, 1), "ArrowDown"), ((-1, 0), "ArrowLeft")]
                 for (dx, dy), key in steps:
                     with self.subTest(size=size, floor=fl, key=key):
@@ -931,7 +950,7 @@ class CitiesTests(unittest.TestCase):
                 self.menu(page, "settings")
                 page.select_option(".ui-world-head [data-lang]", code)
                 self.assertEqual(page.evaluate("document.querySelector('.ui-world').lang"), code)
-                labels = page.eval_on_selector_all(".ui-world-head .ui-world-home, .ui-world-tools label, .ui-world-head summary", "els => els.map(e => e.getAttribute('aria-label'))")
+                labels = page.eval_on_selector_all(".ui-world-head .ui-world-home, .ui-world-tools > label.ui-world-tool, .ui-world-head summary", "els => els.map(e => e.getAttribute('aria-label'))")
                 self.assertTrue(all(labels), labels)
                 if code == "en":
                     self.assertEqual(labels[1:4], ["Parallel Tokyo", "Reverse London", "Fake Paris"])
@@ -954,6 +973,8 @@ class CitiesTests(unittest.TestCase):
                     page.evaluate(f"location.hash = '#cities-spot-{s['id']}'")                     # a spot link without JS: the sheet is a :target
                     self.assertTrue(page.is_visible(f"#cities-spot-{s['id']}"))
                     self.shot(page, "nojs", f["id"], "static", f"🚫JS {f['label']} · {s['label']}")
+                    page.click(f"#cities-spot-{s['id']} .ui-sheet-close")                         # ✖️ is a link to #cities-map: the sheet leaves the footer free
+                    self.assertFalse(page.is_visible(f"#cities-spot-{s['id']}"))
 
     def test_the_picker_offers_every_avatar(self):
         page = self.open("phone")
@@ -980,6 +1001,7 @@ class CitiesTests(unittest.TestCase):
                 page.click(f'.ui-world-spots a[href="#cities-spot-{s["id"]}"]')
                 page.wait_for_timeout(100)
                 self.assertTrue(page.evaluate(record_demo.SETTLED))                                  # no walk to wait for
+                self.still(page)
                 self.shot(page, "map", f["id"], f"reduced-{s['id']}", f"🐢→⚡ reduced motion: {s['label']}")
                 page.click(".ui-sheet-close:visible")
         self.assertEqual(self.errors, [])
