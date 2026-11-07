@@ -351,12 +351,12 @@ def inventory(root: Path) -> dict:
             'non_catalogue_files': files, 'catalogues': catalogues, 'other_sources': other_sources, 'archive_blockers': blockers}
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('checkout', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--check', action='store_true', help='compare with the file on disk instead of writing it')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     text = json.dumps(inventory(args.checkout), ensure_ascii=False, indent=2) + '\n'
     if args.check:
         if not args.output.is_file() or args.output.read_text(encoding='utf-8') != text:

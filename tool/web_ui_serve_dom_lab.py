@@ -19,12 +19,12 @@ def build_demo(fragment, *, css=''):
     return demo
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('html', type=Path, help='audited local HTML fragment')
     parser.add_argument('--css', type=Path)
     parser.add_argument('--port', type=int, default=7860)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 1024 <= args.port <= 65535:
         parser.error('port must be 1024..65535')
     demo = build_demo(args.html.read_text(encoding='utf-8'),
