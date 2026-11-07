@@ -1,9 +1,5 @@
-import json
-import subprocess
-import sys
-import unittest
-from html.parser import HTMLParser
-from pathlib import Path
+import json, subprocess, sys, unittest
+from html.parser import HTMLParser; from pathlib import Path
 
 import web_ui as ui
 

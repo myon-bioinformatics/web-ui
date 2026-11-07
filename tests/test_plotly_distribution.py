@@ -1,11 +1,6 @@
 """Plotly CDN contract: bounded fetch helper; no network in unit tests."""
-import io
-import http.client
-import os
-from pathlib import Path
-import unittest
-from unittest.mock import patch
-import urllib.error
+import http.client, io, os, unittest, urllib.error
+from pathlib import Path; from unittest.mock import patch
 
 import web_ui as ui
 

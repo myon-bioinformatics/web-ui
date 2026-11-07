@@ -1,7 +1,5 @@
 """Plotly figure spec helpers and opt-in remote script allowlist (stdlib only)."""
-import subprocess
-import sys
-import unittest
+import subprocess, sys, unittest
 from pathlib import Path
 
 from web_ui import (

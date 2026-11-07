@@ -3,14 +3,8 @@
 This does not claim a Dart runtime run. Fixed vectors below are independent
 hashlib/HMAC calculations; cases mirror Dart's response bodies and challenges.
 """
-import base64
-from concurrent.futures import ThreadPoolExecutor
-import http.client
-import json
-from pathlib import Path
-import sys
-import threading
-import unittest
+import base64, http.client, json, sys, threading, unittest
+from concurrent.futures import ThreadPoolExecutor; from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import web_ui as ui

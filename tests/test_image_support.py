@@ -1,8 +1,6 @@
 """Independent decode checks for the stdlib PNG fixture writer."""
-import io
+import io, subprocess, sys
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 from PIL import Image

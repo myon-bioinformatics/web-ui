@@ -1,8 +1,6 @@
 """capture_matrix: representative Flutter pages by emoji, and a viewer for multi-browser captures."""
-import json
+import json, subprocess, sys
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 

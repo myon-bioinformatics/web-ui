@@ -1,7 +1,5 @@
 """Python oracle and emitted browser projection: no browser/Python runtime dependency."""
-import json
-import math
-import subprocess
+import json, math, subprocess
 
 import pytest
 from support import node26

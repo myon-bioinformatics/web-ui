@@ -1,7 +1,5 @@
 """Exercise copied artifacts in isolated stdlib-only interpreters."""
-import shutil
-import subprocess
-import sys
+import shutil, subprocess, sys
 from pathlib import Path
 
 import pytest

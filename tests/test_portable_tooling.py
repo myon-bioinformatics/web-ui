@@ -1,11 +1,6 @@
 """Consumer projection, canonical ownership, and standalone JSON regressions."""
-import json
-import os
-import platform
-from pathlib import Path
-import subprocess
-import sys
-from types import SimpleNamespace
+import json, os, platform, subprocess, sys
+from pathlib import Path; from types import SimpleNamespace
 
 import pytest
 

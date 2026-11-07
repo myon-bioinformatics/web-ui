@@ -5,14 +5,8 @@ invocation. Schema and JSON/JSONL identity path stay the Ironmate v1 contract.
 """
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import re
-import subprocess
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
+import argparse, json, os, re, subprocess, sys
+from datetime import datetime, timezone; from pathlib import Path
 
 REPOSITORY_METADATA_V1_SCHEMA = "1.0"
 _RM_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")

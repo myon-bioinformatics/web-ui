@@ -1,8 +1,4 @@
-import copy
-import json
-import os
-import subprocess
-import sys
+import copy, json, os, subprocess, sys
 from pathlib import Path
 
 import pytest

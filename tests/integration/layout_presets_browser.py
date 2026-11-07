@@ -4,11 +4,8 @@ Choosing a layout preset re-lays the viewer at once (no reload, no JavaScript), 
 sweep clicks every preset at every width: several presets may pass, a broken one is caught.
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error.
 """
-import json
+import json, sys, tempfile, unittest
 from pathlib import Path
-import sys
-import tempfile
-import unittest
 
 from playwright.sync_api import sync_playwright
 

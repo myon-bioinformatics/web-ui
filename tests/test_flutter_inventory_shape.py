@@ -1,7 +1,6 @@
 """Regression cases for the inventory's heuristic, not a Dart equivalence checker."""
-import importlib.util
+import importlib.util, unittest
 from pathlib import Path
-import unittest
 
 _spec = importlib.util.spec_from_file_location(
     'flutter_inventory', Path(__file__).resolve().parents[1] / 'tool/flutter_migration_inventory.py')

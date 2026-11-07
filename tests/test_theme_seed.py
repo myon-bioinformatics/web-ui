@@ -2,10 +2,7 @@
 
 Browser behaviour (dial, 🎲, ✖️, tap on a wall cell, named themes taking over) is in tests/integration/controls_browser.py.
 """
-import json
-import random
-import subprocess
-import tempfile
+import json, random, subprocess, tempfile
 from pathlib import Path
 
 import pytest

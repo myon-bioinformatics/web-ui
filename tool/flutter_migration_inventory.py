@@ -17,13 +17,8 @@ A status says what web-ui did, not that the original was reviewed line by line:
 ``archive_ready`` stays false while anything is ``pending`` or ``unreviewed``, or a retirement is not approved.
 """
 from __future__ import annotations
-import argparse
-import hashlib
-import json
+import argparse, hashlib, json, re, subprocess, sys
 from pathlib import Path
-import re
-import subprocess
-import sys
 
 REPOSITORY = 'myon-bioinformatics/flutter_navigation_basic'
 

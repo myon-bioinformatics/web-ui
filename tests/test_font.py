@@ -1,7 +1,5 @@
 """Typography is shared: --ui-font (Meiryo first) for text, --ui-font-mono for code, the same stack for Plotly."""
-import json
-import re
-import unittest
+import json, re, unittest
 from pathlib import Path
 
 import web_ui

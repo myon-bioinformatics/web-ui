@@ -9,14 +9,8 @@ copy was removed. Probes live here (stdlib only) under the historical
 """
 from __future__ import annotations
 
-import json
-import platform
-import re
-import shutil
-import subprocess
-import sys
-from datetime import datetime, timezone
-from importlib import metadata as importlib_metadata
+import json, platform, re, shutil, subprocess, sys
+from datetime import datetime, timezone; from importlib import metadata as importlib_metadata
 
 
 RUNTIME_KEYS = ("python",)

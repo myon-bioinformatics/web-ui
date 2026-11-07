@@ -3,20 +3,8 @@
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error.
 The ordinary dependency-light unit suite does not discover this module.
 """
-import base64
-import functools
-import http.server
-import json
-import os
-from pathlib import Path
-import random
-import re
-import shutil
-import sys
-import tempfile
-import threading
-import unittest
-from unittest import mock
+import base64, functools, http.server, json, os, random, re, shutil, sys, tempfile, threading, unittest
+from pathlib import Path; from unittest import mock
 
 from playwright.sync_api import expect, sync_playwright
 
