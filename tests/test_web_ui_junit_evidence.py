@@ -1,10 +1,6 @@
 """Keep tooling probe failures red while exporting compact failure identities."""
-import hashlib
-import importlib.util
-import json
-import os
+import hashlib, importlib.util, json, os, subprocess
 from pathlib import Path
-import subprocess
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]

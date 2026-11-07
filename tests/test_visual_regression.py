@@ -1,6 +1,5 @@
+import tempfile, unittest
 from pathlib import Path
-import tempfile
-import unittest
 
 from scripts.check_visual_regression import compare
 

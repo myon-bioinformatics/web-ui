@@ -1,8 +1,5 @@
 """Embedded ES module regression checks (stdlib unittest / pytest compatible)."""
-import base64
-import hashlib
-import re
-import unittest
+import base64, hashlib, re, unittest
 from pathlib import Path
 
 from web_ui import EMBEDDED_UI_JS, module_asset, module_script, module_csp_hash, render_document

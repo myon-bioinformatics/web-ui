@@ -2,13 +2,8 @@
 
 Browser behaviour (picker, keys, pad, taps, collisions) is in tests/integration/school_browser.py.
 """
-import io
-import json
-import math
+import io, json, math, random, subprocess, sys
 from pathlib import Path
-import random
-import subprocess
-import sys
 
 import pytest
 import web_ui as ui

@@ -1,11 +1,5 @@
-from html.parser import HTMLParser
-import json
-from pathlib import Path
-import re
-import sys
-import unittest
-from posixpath import normpath
-from urllib.parse import urlsplit
+import json, re, sys, unittest
+from html.parser import HTMLParser; from pathlib import Path; from posixpath import normpath; from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

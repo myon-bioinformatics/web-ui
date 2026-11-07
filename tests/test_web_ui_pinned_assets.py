@@ -1,12 +1,6 @@
 """Generic pinned-asset verification (SHA-256 hex or SRI) shared by Plotly.js and allowlisted scripts."""
-import base64
-import hashlib
-import io
-import os
-import tempfile
-from pathlib import Path
-import unittest
-from unittest.mock import patch
+import base64, hashlib, io, os, tempfile, unittest
+from pathlib import Path; from unittest.mock import patch
 
 import web_ui as ui
 

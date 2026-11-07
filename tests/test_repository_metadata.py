@@ -1,10 +1,7 @@
 """Local repository-metadata v1 producer regressions (no gh_identity)."""
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
+import json, os, subprocess, sys
 from pathlib import Path
 
 import pytest

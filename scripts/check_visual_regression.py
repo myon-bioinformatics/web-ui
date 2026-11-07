@@ -7,12 +7,8 @@ missing or changed screenshots fail.
 
 from __future__ import annotations
 
-import argparse
-import hashlib
-import json
+import argparse, hashlib, json, struct, sys
 from pathlib import Path
-import struct
-import sys
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_PATTERN = "web-ui-*.png"

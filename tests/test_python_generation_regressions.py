@@ -1,9 +1,6 @@
 """Contracts of the Python-only build, without reintroducing source-file twins."""
-from html.parser import HTMLParser
-from pathlib import Path
-from urllib.parse import urlsplit
-import json
-import tempfile
+import json, tempfile
+from html.parser import HTMLParser; from pathlib import Path; from urllib.parse import urlsplit
 import pytest
 from support import node26
 import web_ui

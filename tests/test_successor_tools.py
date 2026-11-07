@@ -1,12 +1,5 @@
 """Golden behavior and cross-runtime checks for the Flutter successor tools."""
-import datetime as dt
-import json
-import os
-import random
-import shutil
-import subprocess
-import sys
-import tempfile
+import datetime as dt, json, os, random, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 import pytest

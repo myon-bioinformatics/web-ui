@@ -1,14 +1,6 @@
 """Real-browser successor acceptance checks. Audio is generated, not a human listening test."""
-import functools
-import http.server
-import json
-import os
+import functools, http.server, json, os, shutil, sys, tempfile, threading, unittest
 from pathlib import Path
-import shutil
-import sys
-import tempfile
-import threading
-import unittest
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))

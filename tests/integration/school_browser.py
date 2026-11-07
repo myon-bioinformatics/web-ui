@@ -4,10 +4,8 @@ The emoji picker comes first, then the player walks by tap, arrow keys / WASD an
 Solid props (desks, board, shelves) are never entered, whichever way the player moves.
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error. WEB_UI_CHROME may name a local Chrome.
 """
+import sys, tempfile, unittest
 from pathlib import Path
-import sys
-import tempfile
-import unittest
 
 from playwright.sync_api import sync_playwright
 

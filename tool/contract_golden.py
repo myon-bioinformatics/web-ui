@@ -11,15 +11,7 @@ built the same one) and what the original said. ``--check`` rebuilds the fixture
 """
 from __future__ import annotations
 
-import argparse
-import base64
-import copy
-import hashlib
-import io
-import json
-import random
-import subprocess
-import sys
+import argparse, base64, copy, hashlib, io, json, random, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

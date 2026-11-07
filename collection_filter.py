@@ -9,9 +9,7 @@ Sort, ranges, window and grouping come from flutter_navigation_basic python/coll
 """
 from __future__ import annotations
 
-import json
-import math
-import sys
+import json, math, sys
 
 
 def _text(value):

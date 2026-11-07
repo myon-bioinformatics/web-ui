@@ -8,40 +8,8 @@ only as an explicit subprocess helper for pytest/CI one-liners.
 """
 from __future__ import annotations
 
-import argparse
-import bisect
-import colorsys
-import errno
-import functools
-import hashlib
-import heapq
-import hmac
-import http.client
-import http.server
-import importlib.util
-import json
-import math
-import base64
-import os
-from collections import Counter, defaultdict
-from datetime import date
-from decimal import Decimal
-from html import escape
-from pathlib import Path
-import random
-import re
-import shutil
-import struct
-import subprocess
-import sys
-import time
-import unicodedata
-from typing import Any
-import urllib.error
-import urllib.request
-import zlib
-import xml.etree.ElementTree as ET
-from urllib.parse import parse_qsl, quote, urlsplit
+import argparse, base64, bisect, colorsys, errno, functools, hashlib, heapq, hmac, http.client, http.server, importlib.util, json, math, os, random, re, shutil, struct, subprocess, sys, time, unicodedata, urllib.error, urllib.request, xml.etree.ElementTree as ET, zlib
+from collections import Counter, defaultdict; from datetime import date; from decimal import Decimal; from html import escape; from pathlib import Path; from typing import Any; from urllib.parse import parse_qsl, quote, urlsplit
 
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.

@@ -1,8 +1,6 @@
 """Chromium smoke: jsDelivr plotly.js loads and renders a figure spec."""
-import os
+import os, sys, unittest
 from pathlib import Path
-import sys
-import unittest
 
 from playwright.sync_api import sync_playwright
 

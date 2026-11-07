@@ -1,7 +1,6 @@
 """Guard the real workflow's failure/evidence contract, using test-only PyYAML."""
-from copy import deepcopy
 import json
-from pathlib import Path
+from copy import deepcopy; from pathlib import Path
 
 import pytest
 import yaml

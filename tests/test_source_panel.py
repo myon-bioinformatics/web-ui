@@ -2,11 +2,7 @@
 
 Python (``web_ui.source_*``) is the reference; ``source.js`` must agree: ``tests/fixtures/source/cases.json`` is run by both.
 """
-import copy
-import html
-import importlib.util
-import json
-import re
+import copy, html, importlib.util, json, re
 from pathlib import Path
 
 import pytest

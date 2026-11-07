@@ -1,23 +1,7 @@
-import base64
-import os
-import random
-import re
-import shutil
-import struct
-import subprocess
-import sys
-import tempfile
-import zlib
-import unittest
-from pathlib import Path
-from unittest import mock
+import base64, hashlib, json, math, os, random, re, shutil, struct, subprocess, sys, tempfile, unittest, xml.etree.ElementTree as ET, zlib
+from pathlib import Path; from unittest import mock
 from support import flutter_case, node26
 
-import json
-import math
-
-import hashlib
-import xml.etree.ElementTree as ET
 import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 

@@ -1,7 +1,5 @@
 """Opt-in real Gradio/Chromium test, using the shared BTK text extractor."""
-import importlib.util
-import json
-import os
+import importlib.util, json, os
 from pathlib import Path
 
 import pytest

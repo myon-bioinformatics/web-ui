@@ -13,16 +13,8 @@ operation is one ``@scene`` below; ``tests/integration/school_browser.py`` recor
 """
 from __future__ import annotations
 
-import argparse
-import contextlib
-import io
-import os
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
-import time
-from typing import Callable, NamedTuple
+import argparse, contextlib, io, os, subprocess, sys, tempfile, time
+from pathlib import Path; from typing import Callable, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

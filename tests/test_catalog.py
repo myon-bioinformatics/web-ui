@@ -1,14 +1,6 @@
 """Consumer data stays data: catalog generation needs only the standard library."""
-import copy
-from html.parser import HTMLParser
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
-import unittest
-from urllib.parse import urljoin
+import copy, json, os, subprocess, sys, tempfile, unittest
+from html.parser import HTMLParser; from pathlib import Path; from urllib.parse import urljoin
 
 import web_ui as ui
 

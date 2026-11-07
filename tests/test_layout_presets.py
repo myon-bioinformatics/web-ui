@@ -1,8 +1,6 @@
 """layout_presets: switchable presets as data, CSS and radio controls; sweep results become candidates."""
-import json
+import json, re, sys
 from pathlib import Path
-import re
-import sys
 
 import pytest
 

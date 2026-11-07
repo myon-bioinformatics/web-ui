@@ -1,9 +1,7 @@
 """Helpers the test modules share (a test module imports them as ``from support import ...``; pytest puts this directory on the path)."""
 from __future__ import annotations
 
-import re
-import shutil
-import subprocess
+import re, shutil, subprocess
 
 
 def node26() -> str | None:

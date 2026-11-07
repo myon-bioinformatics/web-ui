@@ -3,14 +3,8 @@
 The same generated route table navigates offline (file://) and over HTTP. Invoked
 explicitly by the browser CI job; missing Playwright/browser is an error.
 """
-import functools
-import http.server
+import functools, http.server, shutil, sys, tempfile, threading, unittest
 from pathlib import Path
-import shutil
-import sys
-import tempfile
-import threading
-import unittest
 
 from playwright.sync_api import expect, sync_playwright
 

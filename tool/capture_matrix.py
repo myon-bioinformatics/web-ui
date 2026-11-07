@@ -16,11 +16,8 @@ The page links are a web-ui route table (``#/hub`` style), so the viewer works f
 """
 from __future__ import annotations
 
-import argparse
-from html import escape
-import json
-from pathlib import Path
-import sys
+import argparse, json, sys
+from html import escape; from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

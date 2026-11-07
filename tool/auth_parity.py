@@ -5,14 +5,8 @@ Requires Dart (and pub access for the original crypto ^3.0.7 dependency).
 No Flutter SDK, application bootstrap, external authentication or network requests.
 Only `dart pub get` obtains test dependencies. Sources must match the pinned hashes.
 """
+import argparse, hashlib, json, shutil, subprocess, sys, tempfile
 from pathlib import Path
-import argparse
-import hashlib
-import json
-import shutil
-import subprocess
-import sys
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

@@ -4,15 +4,8 @@ The generic source panel (web_ui.source_panel_html + source.js) with the Pokémo
 request, Fetch asks the spec's one address once (answered here by the browser's own network layer, never the live site), and every failure is a visible
 message. Invoked explicitly by the browser CI job; missing Playwright/browser is an error.
 """
-import functools
-import http.server
-import json
-import os
+import functools, http.server, json, os, sys, tempfile, threading, unittest
 from pathlib import Path
-import sys
-import tempfile
-import threading
-import unittest
 
 from playwright.sync_api import expect, sync_playwright
 

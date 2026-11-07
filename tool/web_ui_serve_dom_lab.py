@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Optional Gradio host for an audited local HTML fragment; no remote acquisition."""
-import argparse
-from html import escape
-from pathlib import Path
-import sys
+import argparse, sys
+from html import escape; from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from web_ui import render_document

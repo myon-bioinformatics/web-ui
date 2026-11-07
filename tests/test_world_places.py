@@ -1,11 +1,6 @@
 """Real places in miniature: the ``place`` floor turns latitude/longitude points into a tile grid (``web_ui.place_floor``), and the ``cities`` example
 (Parallel Tokyo, Reverse London and Fake Paris) is built from it. The coordinates are approximate, so the checks are about relative positions and walking, not metres."""
-import copy
-import importlib.util
-import json
-import math
-import subprocess
-import sys
+import copy, importlib.util, json, math, subprocess, sys
 from pathlib import Path
 
 import pytest

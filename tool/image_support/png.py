@@ -5,8 +5,7 @@ writes non-interlaced, 8-bit RGB PNGs; it does not decode screenshots or GIFs.
 """
 from __future__ import annotations
 
-import struct
-import zlib
+import struct, zlib
 
 
 def _rgb(color):

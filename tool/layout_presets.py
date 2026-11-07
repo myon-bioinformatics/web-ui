@@ -17,12 +17,8 @@ are candidates. Node reaches this tool through vendor/py_launch.cjs (no Node twi
 """
 from __future__ import annotations
 
-import argparse
-from html import escape
-import json
-from pathlib import Path
-import re
-import sys
+import argparse, json, re, sys
+from html import escape; from pathlib import Path
 
 SCHEMA = "web-ui-layout-presets/1"
 CANDIDATES = "web-ui-layout-candidates/1"

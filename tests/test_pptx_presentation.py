@@ -1,8 +1,5 @@
 """PptxGenJS JSON slide specs and the line-plus-triangle arrow helper (stdlib only)."""
-import json
-import subprocess
-import sys
-import unittest
+import json, subprocess, sys, unittest
 from pathlib import Path
 
 from web_ui import (
