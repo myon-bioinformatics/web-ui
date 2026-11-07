@@ -364,19 +364,31 @@ class SchoolTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_the_cities_flip_a_sign_into_a_dragon_and_burn_one_fire_per_block(self):
-        """Reverse London's nogard sign swaps with 🐉 when pressed (and back); Fake Paris draws its scattered fires as tile emoji."""
+        """Signs are a dot until touched (Reverse London's wooden nogard: dot, text, 🐉, dot; Tokyo's electronic boards: dot, text); Tokyo has electronic boards; Fake Paris draws its fires as tile emoji."""
         path = Path(self.tmp.name) / "cities.html"
         path.write_text(web_ui.world_document(web_ui.example_data("cities")), encoding="utf-8")
         page = self.open(path=path)
         self.start(page, "🧳")
         self.assertEqual(page.eval_on_selector_all(".ui-world-goto option", "els => els.map(e => e.value)"), ["tokyo", "london", "paris"])
         page.select_option(".ui-world-goto", "london")
-        sign = '.ui-floor[data-floor="london"] .ui-spot[data-category="mark"]'
-        self.assertEqual(page.inner_text(sign), "nogard")
+        sign = '.ui-floor[data-floor="london"] .ui-spot[data-flip]'
+        face = lambda: page.eval_on_selector(sign, "e => [e.textContent, e.dataset.show || '', getComputedStyle(e).fontSize]")    # noqa: E731
+        self.assertEqual(page.get_attribute(sign, "data-sign"), "wood")
+        style = page.eval_on_selector(sign, "e => { const c = getComputedStyle(e), b = getComputedStyle(e, '::before'); return [c.backgroundColor, b.content] }")
+        self.assertEqual(style, ["rgb(139, 90, 43)", '"●"'])                                          # a wooden board: a bold dot until it is touched
+        self.assertEqual(face(), ["nogard", "", "0px"])
         page.eval_on_selector(sign, "e => e.click()")
-        self.assertEqual(page.inner_text(sign), "🐉")
+        self.assertEqual(face(), ["nogard", "label", "11.2px"])                                      # the board shows its text
         page.eval_on_selector(sign, "e => e.click()")
-        self.assertEqual(page.inner_text(sign), "nogard")                                          # pressed again, it turns back
+        self.assertEqual(face(), ["🐉", "flip", "11.2px"])                                           # then its second face
+        page.eval_on_selector(sign, "e => e.click()")
+        self.assertEqual(face(), ["nogard", "", "0px"])                                              # and the dot again
+        led = '.ui-floor[data-floor="tokyo"] .ui-spot[data-sign=led]'
+        self.assertEqual(page.eval_on_selector(led, "e => [getComputedStyle(e).color, getComputedStyle(e).fontSize]"), ["rgb(255, 176, 0)", "0px"])
+        page.eval_on_selector(led, "e => e.click()")
+        self.assertEqual(page.eval_on_selector(led, "e => getComputedStyle(e).fontSize"), "11.2px")
+        page.eval_on_selector(led, "e => e.click()")
+        self.assertEqual(page.eval_on_selector(led, "e => getComputedStyle(e).fontSize"), "0px")    # two faces only: dot and text
         page.select_option(".ui-world-goto", "paris")
         page.wait_for_function("() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"paris\"]')).display !== 'none'")
         fires = page.eval_on_selector_all('.ui-floor[data-floor="paris"] .ui-prop[data-kind="fire"]', "els => els.map(e => getComputedStyle(e).backgroundImage)")

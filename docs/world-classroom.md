@@ -128,7 +128,7 @@ world uses. A new kind is one line in each.
 
 A `place` floor lays **real positions** (latitude and longitude) on the same grid, so a world can go on from a village to a real city in its other
 form (`EXAMPLES["cities"]`): **Parallel Tokyo**, Tokyo Station with its six exits and the stations around it; **Reverse London**, the main termini, the stations
-beside them, sights and famous places, the Thames and a `nogard` sign (dragon, backwards) that turns into 🐉 when pressed; **Fake Paris**, the main stations,
+beside them, sights and famous places, the Thames and a wooden `nogard` sign (dragon, backwards) that turns into 🐉 when pressed; **Fake Paris**, the main stations,
 the metro beside them and the Seine, with a 🔥 in each block. Nothing is drawn to look like the place: ground, roads, water and bridges are the same kinds as a land.
 
 ```json
@@ -140,7 +140,13 @@ the metro beside them and the Seine, with a 🔥 in each block. Nothing is drawn
 
 * `points`: 1..64, each with `id`, `label`, `category` and `body` (as a spot has) and **either** `lat` and `lon` **or** `maps`, a Google or Apple Maps URL read
   by the page's own coordinate tool (`try_parse_maps_url`). `flip` (a short text or emoji) is a second face: pressing the pill swaps it with the label, and again
-  swaps back (a spot of any floor can have one; without script it stays a plain label). A point is a spot on the tile its position falls on; `meters` (8..2000, default 64) is the ground
+  swaps back (a spot of any floor can have one; without script it stays a plain label).
+* `sign`: `"led"` (amber on black, monospace: an electronic board) or `"wood"` (a wooden board). It is **a bold dot (●) until it is touched**, then the board shows its
+  text; touched again it shows its `flip` face if it has one (nogard → 🐉), and then the dot again. On a spot of any floor it is only
+  the look; on a place point it also puts the spot on the **nearest tile corner** (the four corners of a square are points of the grid too), so a sign takes no
+  tile, sits between the stations, two signs never share a corner, and it must touch a tile that can be walked on (the player walks to the tile beside it).
+  Signs make small notices: a direction board between the exits, a wooden sign with a `flip` (nogard ⇄ 🐉). A place needs at least one point that is not a sign
+  (the player starts on it). A point is a spot on the tile its position falls on; `meters` (8..2000, default 64) is the ground
   one tile covers, and the north is up. The player starts at `start` (a point id, default the first point).
 * The map is the points' box plus two tiles all round, or `area: {"center": [lat, lon], "radius": metres}`: the box `tolerance_area` gives (a point outside it
   is an error). The scale and the radius are the ones of the coordinates tool (`EARTH_RADIUS_M`, `parse_coordinate`); the projection is flat, good for a few kilometres.

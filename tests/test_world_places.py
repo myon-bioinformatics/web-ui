@@ -128,6 +128,10 @@ def test_mistakes_say_what_is_wrong():
         (dict(points=[{"id": "a", "label": "A", "lat": 1}]), "either lat and lon or maps"),
         (dict(points=[pt("a", 1, 1, color="red")]), "a point has"),
         (dict(points=[pt("a", 1, 1, flip="")]), "flip must"),
+        (dict(points=[pt("a", 1, 1, sign="neon")]), "sign is one of led, wood"),
+        (dict(points=[pt("a", 1, 1, sign="led")]), "needs a point that is not a sign"),
+        (dict(points=[NORTH, pt("s", 35.0045, 139.0, sign="led")], start="s"), "start is the id"),
+        (dict(points=[NORTH, pt("s", 35.0045, 139.0, sign="led")], links=[["a", "s"]]), "two different point ids"),
         (dict(points=ok, scatter={"kind": "tree", "every": 4, "seed": 1}), "scatter is"),
         (dict(points=ok, scatter={"kind": "road", "every": 4, "seed": 1}), "scatter is"),
         (dict(points=ok, scatter={"kind": "fire", "every": 1, "seed": 1}), "every must be an integer from 2 to 64"),
@@ -175,6 +179,42 @@ def test_a_flip_is_kept_through_validation_and_written_as_a_second_face():
     assert 'data-flip="🐉"' in html and html.count("data-flip=") == 1
 
 
+def test_a_sign_is_a_small_board_on_the_nearest_tile_corner_and_takes_no_tile():
+    floor = ui.place_floor([NORTH, SOUTH, pt("board", 35.0045, 139.0, category="sign", sign="led", label="◀ A | B ▶")], meters=100, id="p")
+    tile = floor["tile"]
+    board = next(s for s in floor["spots"] if s["id"] == "p-board")
+    assert board["sign"] == "led" and board["x"] % tile == 0 and board["y"] % tile == 0
+    (ax, ay), (bx, by) = cell(floor, "a"), cell(floor, "b")
+    assert ay < board["y"] // tile <= by and abs(board["y"] // tile - (ay + by + 1) / 2) <= 1          # half way between the two stations
+    assert [s["id"] for s in floor["spots"]] == ["p-a", "p-b", "p-board"]                                  # tile points first, then the corners
+    taken = {(s["x"] // tile, s["y"] // tile) for s in floor["spots"] if "sign" not in s}
+    assert len(taken) == 2                                                                                  # a sign does not use up a tile
+    one = ui.place_floor([NORTH, pt("s1", 35.0045, 139.0, sign="led"), pt("s2", 35.0045, 139.0, sign="wood")], meters=100)
+    corners = {(s["x"], s["y"]) for s in one["spots"] if "sign" in s}
+    assert len(corners) == 2                                                                                # two signs never share a corner
+
+
+def test_a_sign_in_the_middle_of_a_river_moves_to_the_bank_and_is_walkable():
+    wide = {"line": [[35.0045, 138.99], [35.0045, 139.01]], "width": 4}
+    floor = ui.place_floor([NORTH, SOUTH, pt("s", 35.0045, 139.0, sign="wood")], meters=100, rivers=[wide], links=[["a", "b"]])
+    tile = floor["tile"]
+    sign = next(s for s in floor["spots"] if "sign" in s)
+    blocked = ui.world_blocked(floor["width"], floor["height"], tile, floor["props"])
+    around = [(sign["x"] // tile + dx, sign["y"] // tile + dy) for dx in (-1, 0) for dy in (-1, 0)]
+    assert any(blocked[y][x] == "0" for x, y in around)                                                     # it touches dry land
+
+
+def test_any_spot_may_be_a_sign_and_the_page_draws_it_as_a_board_on_a_dot():
+    def world(sign):
+        return {"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [{"id": "f", "label": "F", "width": 128, "height": 128,
+                "spots": [{"id": "s", "x": 64, "y": 64, "label": "◀ 出口", "sign": sign}]}]}
+    html = ui.world_html(world("led"))
+    assert 'data-sign="led"' in html and "ui-spot[data-sign=led]" in ui.world_css(world("led")) + ui.bundled_css()
+    assert 'data-sign="wood"' in ui.world_html(world("wood"))
+    with pytest.raises(ValueError, match="sign is one of led, wood"):
+        ui.world_validate(world("neon"))
+
+
 def test_json_alone_asks_for_a_place_and_unknown_keys_are_refused():
     spec = {"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [{"id": "here", "label": "Here", "place": {"points": [NORTH, SOUTH], "meters": 100}}]}
     world = ui.world_validate(spec)
@@ -202,9 +242,15 @@ def test_the_cities_are_three_floors_with_every_spot_walkable(cities):
     for floor in cities.values():
         reach = walkable(floor)
         assert len(floor["props"]) <= 512 and len(floor["spots"]) <= 64
+        tile = floor["tile"]
         for spot in floor["spots"]:
-            assert (spot["x"] // floor["tile"], spot["y"] // floor["tile"]) in reach, spot["id"]
-        assert len({(s["x"], s["y"]) for s in floor["spots"]}) == len(floor["spots"])          # no two spots on one tile
+            if "sign" in spot:                                                                   # a sign sits on a corner: it touches four tiles
+                assert spot["x"] % tile == 0 and spot["y"] % tile == 0, spot["id"]
+                around = [(spot["x"] // tile + dx, spot["y"] // tile + dy) for dx in (-1, 0) for dy in (-1, 0)]
+                assert any(c in reach for c in around), spot["id"]
+            else:
+                assert (spot["x"] // tile, spot["y"] // tile) in reach, spot["id"]
+        assert len({(s["x"], s["y"]) for s in floor["spots"]}) == len(floor["spots"])          # no two spots on one tile or corner
 
 
 def test_tokyo_station_has_six_exits_laid_out_like_the_building(cities):
@@ -220,7 +266,7 @@ def test_tokyo_station_has_six_exits_laid_out_like_the_building(cities):
 
 def test_tokyo_has_no_facility_names_and_the_stations_are_where_they_are(cities):
     spots = by_id(cities["tokyo"])
-    assert {v["category"] for v in spots.values()} == {"exit", "station"}
+    assert {v["category"] for v in spots.values()} == {"exit", "station", "sign"}
     stations = {k: v for k, v in spots.items() if v["category"] == "station"}
     assert len(stations) == 13
     centre = spots["marunouchi-c"]
@@ -239,7 +285,7 @@ def test_london_has_the_main_termini_the_stations_beside_them_and_famous_places(
     kinds = {}
     for key, spot in spots.items():
         kinds.setdefault(spot["category"], []).append(key)
-    assert sorted(kinds) == ["famous", "mark", "sight", "station", "terminus"]
+    assert sorted(kinds) == ["famous", "sight", "sign", "station", "terminus"]
     assert len(kinds["terminus"]) == 13
     for key in ("kings-cross", "paddington", "waterloo", "victoria", "liverpool-street", "london-bridge", "euston", "charing-cross"):
         assert key in kinds["terminus"]
@@ -267,7 +313,7 @@ def test_fake_paris_has_its_stations_a_seine_with_bridges_and_a_fire_in_each_blo
     kinds = {}
     for key, spot in spots.items():
         kinds.setdefault(spot["category"], []).append(key)
-    assert sorted(kinds) == ["famous", "sight", "station", "terminus"] and len(kinds["terminus"]) == 6
+    assert sorted(kinds) == ["famous", "sight", "sign", "station", "terminus"] and len(kinds["terminus"]) == 6
     assert spots["gare-du-nord"]["y"] < spots["gare-de-lyon"]["y"] < spots["montparnasse"]["y"] + 1              # north to south
     assert spots["saint-lazare"]["x"] < spots["gare-du-nord"]["x"] < spots["gare-de-lyon"]["x"]                  # west to east
     assert spots["eiffel"]["x"] < spots["notre-dame"]["x"] < spots["bastille"]["x"]
@@ -281,13 +327,14 @@ def test_fake_paris_has_its_stations_a_seine_with_bridges_and_a_fire_in_each_blo
 def test_the_nogard_sign_stands_by_a_station_and_turns_into_a_dragon(cities):
     floor = cities["london"]
     sign = by_id(floor)["nogard"]
-    assert (sign["label"], sign["flip"], sign["category"]) == ("nogard", "🐉", "mark")
+    assert (sign["label"], sign["flip"], sign["category"], sign["sign"]) == ("nogard", "🐉", "sign", "wood")
     assert sign["label"][::-1] == "dragon"                                                                        # dragon, backwards
-    stations = [s for s in floor["spots"] if s["category"] in ("terminus", "station")]
+    stations = [s for s in floor["spots"] if s["category"] in ("terminus", "station")]            # the stations, not the other signs
     tile = floor["tile"]
     nearest = min(math.hypot(s["x"] - sign["x"], s["y"] - sign["y"]) for s in stations) / tile
     assert nearest <= 3                                                                                           # within three tiles (450 m)
     assert len([s for s in floor["spots"] if "flip" in s]) == 1
+    assert sign["x"] % tile == 0 and sign["y"] % tile == 0                                                        # on a corner of the grid
 
 
 def test_the_front_page_and_the_cli_carry_the_cities():
