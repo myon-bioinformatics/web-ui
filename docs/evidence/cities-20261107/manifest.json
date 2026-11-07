@@ -1,0 +1,5659 @@
+{
+ "schema": "web-ui-cities-evidence/1",
+ "browser": "Chromium 153.0.8010.12 (Playwright 1.63.0)",
+ "commit": "eaaf0d4e1ac3c785fdf09816ced08ea6dfdd02b3",
+ "date": "2026-11-07",
+ "player_speed": "480 (FAST) for the sweeps; 96 for keys, pad and reduced motion",
+ "shots": 562,
+ "clean": 549,
+ "noted": 13,
+ "records": [
+  {
+   "order": 150,
+   "file": "desktop-london-overview-fit.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Reverse London",
+   "notes": []
+  },
+  {
+   "order": 249,
+   "file": "desktop-paris-overview-fit.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 107,
+   "file": "desktop-tokyo-overview-fit.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Parallel Tokyo",
+   "notes": []
+  },
+  {
+   "order": 359,
+   "file": "phone-london-overview-fit.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Reverse London",
+   "notes": []
+  },
+  {
+   "order": 458,
+   "file": "phone-paris-overview-fit.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 316,
+   "file": "phone-tokyo-overview-fit.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "overview",
+   "id": "fit",
+   "label": "Parallel Tokyo",
+   "notes": []
+  },
+  {
+   "order": 151,
+   "file": "desktop-london-sheet-london-kings-cross.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-kings-cross",
+   "label": "キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 153,
+   "file": "desktop-london-sheet-london-st-pancras.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-st-pancras",
+   "label": "セント・パンクラス",
+   "notes": []
+  },
+  {
+   "order": 155,
+   "file": "desktop-london-sheet-london-euston.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-euston",
+   "label": "ユーストン",
+   "notes": []
+  },
+  {
+   "order": 157,
+   "file": "desktop-london-sheet-london-paddington.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-paddington",
+   "label": "パディントン",
+   "notes": []
+  },
+  {
+   "order": 159,
+   "file": "desktop-london-sheet-london-marylebone.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-marylebone",
+   "label": "マリルボーン",
+   "notes": []
+  },
+  {
+   "order": 161,
+   "file": "desktop-london-sheet-london-liverpool-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-liverpool-street",
+   "label": "リバプール・ストリート",
+   "notes": []
+  },
+  {
+   "order": 163,
+   "file": "desktop-london-sheet-london-fenchurch-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-fenchurch-street",
+   "label": "フェンチャーチ・ストリート",
+   "notes": []
+  },
+  {
+   "order": 165,
+   "file": "desktop-london-sheet-london-cannon-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-cannon-street",
+   "label": "キャノン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 167,
+   "file": "desktop-london-sheet-london-london-bridge.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-london-bridge",
+   "label": "ロンドン・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 169,
+   "file": "desktop-london-sheet-london-blackfriars.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-blackfriars",
+   "label": "ブラックフライアーズ",
+   "notes": []
+  },
+  {
+   "order": 171,
+   "file": "desktop-london-sheet-london-waterloo.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-waterloo",
+   "label": "ウォータールー",
+   "notes": []
+  },
+  {
+   "order": 173,
+   "file": "desktop-london-sheet-london-charing-cross.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-charing-cross",
+   "label": "チャリング・クロス",
+   "notes": []
+  },
+  {
+   "order": 175,
+   "file": "desktop-london-sheet-london-victoria.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-victoria",
+   "label": "ヴィクトリア",
+   "notes": []
+  },
+  {
+   "order": 177,
+   "file": "desktop-london-sheet-london-edgware-road.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-edgware-road",
+   "label": "エッジウェア・ロード",
+   "notes": []
+  },
+  {
+   "order": 179,
+   "file": "desktop-london-sheet-london-baker-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-baker-street",
+   "label": "ベイカー・ストリート",
+   "notes": []
+  },
+  {
+   "order": 181,
+   "file": "desktop-london-sheet-london-warren-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-warren-street",
+   "label": "ウォーレン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 183,
+   "file": "desktop-london-sheet-london-angel.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-angel",
+   "label": "エンジェル",
+   "notes": []
+  },
+  {
+   "order": 185,
+   "file": "desktop-london-sheet-london-russell-square.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-russell-square",
+   "label": "ラッセル・スクエア",
+   "notes": []
+  },
+  {
+   "order": 187,
+   "file": "desktop-london-sheet-london-farringdon.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-farringdon",
+   "label": "ファリンドン",
+   "notes": []
+  },
+  {
+   "order": 189,
+   "file": "desktop-london-sheet-london-moorgate.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-moorgate",
+   "label": "ムーアゲート",
+   "notes": []
+  },
+  {
+   "order": 191,
+   "file": "desktop-london-sheet-london-aldgate.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-aldgate",
+   "label": "オールドゲート",
+   "notes": []
+  },
+  {
+   "order": 193,
+   "file": "desktop-london-sheet-london-tower-hill.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-tower-hill",
+   "label": "タワー・ヒル",
+   "notes": []
+  },
+  {
+   "order": 195,
+   "file": "desktop-london-sheet-london-bank.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bank",
+   "label": "バンク",
+   "notes": []
+  },
+  {
+   "order": 197,
+   "file": "desktop-london-sheet-london-monument.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-monument",
+   "label": "モニュメント",
+   "notes": []
+  },
+  {
+   "order": 199,
+   "file": "desktop-london-sheet-london-borough.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-borough",
+   "label": "ボロー",
+   "notes": []
+  },
+  {
+   "order": 201,
+   "file": "desktop-london-sheet-london-st-pauls.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-st-pauls",
+   "label": "セント・ポールズ",
+   "notes": []
+  },
+  {
+   "order": 203,
+   "file": "desktop-london-sheet-london-temple.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-temple",
+   "label": "テンプル",
+   "notes": []
+  },
+  {
+   "order": 205,
+   "file": "desktop-london-sheet-london-southwark.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-southwark",
+   "label": "サザーク",
+   "notes": []
+  },
+  {
+   "order": 207,
+   "file": "desktop-london-sheet-london-lambeth-north.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-lambeth-north",
+   "label": "ランベス・ノース",
+   "notes": []
+  },
+  {
+   "order": 209,
+   "file": "desktop-london-sheet-london-embankment.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-embankment",
+   "label": "エンバンクメント",
+   "notes": []
+  },
+  {
+   "order": 211,
+   "file": "desktop-london-sheet-london-westminster.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-westminster",
+   "label": "ウェストミンスター",
+   "notes": []
+  },
+  {
+   "order": 213,
+   "file": "desktop-london-sheet-london-green-park.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-green-park",
+   "label": "グリーン・パーク",
+   "notes": []
+  },
+  {
+   "order": 215,
+   "file": "desktop-london-sheet-london-pimlico.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-pimlico",
+   "label": "ピムリコ",
+   "notes": [
+    "⚠️ シートが🧳を隠す"
+   ]
+  },
+  {
+   "order": 217,
+   "file": "desktop-london-sheet-london-big-ben.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-big-ben",
+   "label": "ビッグ・ベン",
+   "notes": []
+  },
+  {
+   "order": 219,
+   "file": "desktop-london-sheet-london-london-eye.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-london-eye",
+   "label": "ロンドン・アイ",
+   "notes": []
+  },
+  {
+   "order": 221,
+   "file": "desktop-london-sheet-london-buckingham.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-buckingham",
+   "label": "バッキンガム宮殿",
+   "notes": []
+  },
+  {
+   "order": 223,
+   "file": "desktop-london-sheet-london-trafalgar-square.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-trafalgar-square",
+   "label": "トラファルガー広場",
+   "notes": []
+  },
+  {
+   "order": 225,
+   "file": "desktop-london-sheet-london-piccadilly-circus.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-piccadilly-circus",
+   "label": "ピカデリー・サーカス",
+   "notes": []
+  },
+  {
+   "order": 227,
+   "file": "desktop-london-sheet-london-british-museum.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-british-museum",
+   "label": "大英博物館",
+   "notes": []
+  },
+  {
+   "order": 229,
+   "file": "desktop-london-sheet-london-the-shard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-the-shard",
+   "label": "ザ・シャード",
+   "notes": []
+  },
+  {
+   "order": 231,
+   "file": "desktop-london-sheet-london-tower-bridge.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-tower-bridge",
+   "label": "タワー・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 233,
+   "file": "desktop-london-sheet-london-downing-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-downing-street",
+   "label": "首相官邸",
+   "notes": []
+  },
+  {
+   "order": 235,
+   "file": "desktop-london-sheet-london-scotland-yard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-scotland-yard",
+   "label": "警視庁",
+   "notes": []
+  },
+  {
+   "order": 237,
+   "file": "desktop-london-sheet-london-bank-of-england.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bank-of-england",
+   "label": "イングランド銀行",
+   "notes": []
+  },
+  {
+   "order": 239,
+   "file": "desktop-london-sheet-london-old-bailey.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-old-bailey",
+   "label": "中央刑事裁判所",
+   "notes": []
+  },
+  {
+   "order": 241,
+   "file": "desktop-london-sheet-london-bbc.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bbc",
+   "label": "BBC放送会館",
+   "notes": []
+  },
+  {
+   "order": 243,
+   "file": "desktop-london-sheet-london-nogard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-nogard",
+   "label": "nogard",
+   "notes": []
+  },
+  {
+   "order": 245,
+   "file": "desktop-london-sheet-london-mind-the-gap.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-mind-the-gap",
+   "label": "mind the gap",
+   "notes": []
+  },
+  {
+   "order": 247,
+   "file": "desktop-london-sheet-london-platform.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-platform",
+   "label": "◀ 北 | 南 ▶",
+   "notes": []
+  },
+  {
+   "order": 250,
+   "file": "desktop-paris-sheet-paris-gare-du-nord.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-du-nord",
+   "label": "パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 252,
+   "file": "desktop-paris-sheet-paris-gare-de-lest.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-de-lest",
+   "label": "パリ東駅",
+   "notes": []
+  },
+  {
+   "order": 254,
+   "file": "desktop-paris-sheet-paris-saint-lazare.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-saint-lazare",
+   "label": "サン・ラザール駅",
+   "notes": []
+  },
+  {
+   "order": 256,
+   "file": "desktop-paris-sheet-paris-gare-de-lyon.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-de-lyon",
+   "label": "リヨン駅",
+   "notes": []
+  },
+  {
+   "order": 258,
+   "file": "desktop-paris-sheet-paris-austerlitz.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-austerlitz",
+   "label": "オステルリッツ駅",
+   "notes": []
+  },
+  {
+   "order": 260,
+   "file": "desktop-paris-sheet-paris-montparnasse.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-montparnasse",
+   "label": "モンパルナス駅",
+   "notes": []
+  },
+  {
+   "order": 262,
+   "file": "desktop-paris-sheet-paris-poissonniere.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-poissonniere",
+   "label": "ポワソニエール",
+   "notes": []
+  },
+  {
+   "order": 264,
+   "file": "desktop-paris-sheet-paris-barbes.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-barbes",
+   "label": "バルベス・ロシュシュアール",
+   "notes": []
+  },
+  {
+   "order": 266,
+   "file": "desktop-paris-sheet-paris-chateau-deau.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-chateau-deau",
+   "label": "シャトー・ドー",
+   "notes": []
+  },
+  {
+   "order": 268,
+   "file": "desktop-paris-sheet-paris-louis-blanc.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-louis-blanc",
+   "label": "ルイ・ブラン",
+   "notes": []
+  },
+  {
+   "order": 270,
+   "file": "desktop-paris-sheet-paris-havre-caumartin.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-havre-caumartin",
+   "label": "アーヴル・コーマルタン",
+   "notes": []
+  },
+  {
+   "order": 272,
+   "file": "desktop-paris-sheet-paris-europe.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-europe",
+   "label": "ヨーロッパ",
+   "notes": []
+  },
+  {
+   "order": 274,
+   "file": "desktop-paris-sheet-paris-bastille.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-bastille",
+   "label": "バスティーユ",
+   "notes": []
+  },
+  {
+   "order": 276,
+   "file": "desktop-paris-sheet-paris-quai-de-la-rapee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-quai-de-la-rapee",
+   "label": "ケ・ド・ラ・ラペ",
+   "notes": []
+  },
+  {
+   "order": 278,
+   "file": "desktop-paris-sheet-paris-saint-marcel.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-saint-marcel",
+   "label": "サン・マルセル",
+   "notes": [
+    "⚠️ シートが🧳を隠す"
+   ]
+  },
+  {
+   "order": 280,
+   "file": "desktop-paris-sheet-paris-jussieu.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-jussieu",
+   "label": "ジュシュー",
+   "notes": []
+  },
+  {
+   "order": 282,
+   "file": "desktop-paris-sheet-paris-edgar-quinet.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-edgar-quinet",
+   "label": "エドガー・キネ",
+   "notes": []
+  },
+  {
+   "order": 284,
+   "file": "desktop-paris-sheet-paris-vavin.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-vavin",
+   "label": "ヴァヴァン",
+   "notes": []
+  },
+  {
+   "order": 286,
+   "file": "desktop-paris-sheet-paris-falguiere.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-falguiere",
+   "label": "ファルギエール",
+   "notes": []
+  },
+  {
+   "order": 288,
+   "file": "desktop-paris-sheet-paris-eiffel.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-eiffel",
+   "label": "エッフェル塔",
+   "notes": []
+  },
+  {
+   "order": 290,
+   "file": "desktop-paris-sheet-paris-arc-de-triomphe.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-arc-de-triomphe",
+   "label": "凱旋門",
+   "notes": []
+  },
+  {
+   "order": 292,
+   "file": "desktop-paris-sheet-paris-louvre.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-louvre",
+   "label": "ルーヴル美術館",
+   "notes": []
+  },
+  {
+   "order": 294,
+   "file": "desktop-paris-sheet-paris-pompidou.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-pompidou",
+   "label": "ポンピドゥー・センター",
+   "notes": []
+  },
+  {
+   "order": 296,
+   "file": "desktop-paris-sheet-paris-concorde.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-concorde",
+   "label": "コンコルド広場",
+   "notes": []
+  },
+  {
+   "order": 298,
+   "file": "desktop-paris-sheet-paris-opera-garnier.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-opera-garnier",
+   "label": "オペラ座",
+   "notes": []
+  },
+  {
+   "order": 300,
+   "file": "desktop-paris-sheet-paris-orsay.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-orsay",
+   "label": "オルセー美術館",
+   "notes": []
+  },
+  {
+   "order": 302,
+   "file": "desktop-paris-sheet-paris-elysee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-elysee",
+   "label": "エリゼ宮",
+   "notes": []
+  },
+  {
+   "order": 304,
+   "file": "desktop-paris-sheet-paris-assemblee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-assemblee",
+   "label": "国民議会",
+   "notes": []
+  },
+  {
+   "order": 306,
+   "file": "desktop-paris-sheet-paris-bourse.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-bourse",
+   "label": "ブルス",
+   "notes": []
+  },
+  {
+   "order": 308,
+   "file": "desktop-paris-sheet-paris-banque-de-france.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-banque-de-france",
+   "label": "フランス銀行",
+   "notes": []
+  },
+  {
+   "order": 310,
+   "file": "desktop-paris-sheet-paris-hotel-de-ville.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-hotel-de-ville",
+   "label": "パリ市庁舎",
+   "notes": []
+  },
+  {
+   "order": 312,
+   "file": "desktop-paris-sheet-paris-to-lyon.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-to-lyon",
+   "label": "▶ Lyon",
+   "notes": []
+  },
+  {
+   "order": 314,
+   "file": "desktop-paris-sheet-paris-rive-gauche.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-rive-gauche",
+   "label": "rive gauche ▼",
+   "notes": []
+  },
+  {
+   "order": 108,
+   "file": "desktop-tokyo-sheet-tokyo-marunouchi-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-c",
+   "label": "丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 110,
+   "file": "desktop-tokyo-sheet-tokyo-marunouchi-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-n",
+   "label": "丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 112,
+   "file": "desktop-tokyo-sheet-tokyo-marunouchi-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-s",
+   "label": "丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 114,
+   "file": "desktop-tokyo-sheet-tokyo-yaesu-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-c",
+   "label": "八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 116,
+   "file": "desktop-tokyo-sheet-tokyo-yaesu-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-n",
+   "label": "八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 118,
+   "file": "desktop-tokyo-sheet-tokyo-yaesu-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-s",
+   "label": "八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 120,
+   "file": "desktop-tokyo-sheet-tokyo-otemachi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-otemachi",
+   "label": "大手町",
+   "notes": []
+  },
+  {
+   "order": 122,
+   "file": "desktop-tokyo-sheet-tokyo-nijubashimae.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-nijubashimae",
+   "label": "二重橋前",
+   "notes": []
+  },
+  {
+   "order": 124,
+   "file": "desktop-tokyo-sheet-tokyo-yurakucho.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yurakucho",
+   "label": "有楽町",
+   "notes": []
+  },
+  {
+   "order": 126,
+   "file": "desktop-tokyo-sheet-tokyo-hibiya.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-hibiya",
+   "label": "日比谷",
+   "notes": []
+  },
+  {
+   "order": 128,
+   "file": "desktop-tokyo-sheet-tokyo-ginza.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-ginza",
+   "label": "銀座",
+   "notes": []
+  },
+  {
+   "order": 130,
+   "file": "desktop-tokyo-sheet-tokyo-ginza-itchome.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-ginza-itchome",
+   "label": "銀座一丁目",
+   "notes": []
+  },
+  {
+   "order": 132,
+   "file": "desktop-tokyo-sheet-tokyo-kyobashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-kyobashi",
+   "label": "京橋",
+   "notes": []
+  },
+  {
+   "order": 134,
+   "file": "desktop-tokyo-sheet-tokyo-nihombashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-nihombashi",
+   "label": "日本橋",
+   "notes": []
+  },
+  {
+   "order": 136,
+   "file": "desktop-tokyo-sheet-tokyo-mitsukoshimae.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-mitsukoshimae",
+   "label": "三越前",
+   "notes": []
+  },
+  {
+   "order": 138,
+   "file": "desktop-tokyo-sheet-tokyo-shin-nihombashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-shin-nihombashi",
+   "label": "新日本橋",
+   "notes": []
+  },
+  {
+   "order": 140,
+   "file": "desktop-tokyo-sheet-tokyo-kanda.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-kanda",
+   "label": "神田",
+   "notes": []
+  },
+  {
+   "order": 142,
+   "file": "desktop-tokyo-sheet-tokyo-takebashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-takebashi",
+   "label": "竹橋",
+   "notes": []
+  },
+  {
+   "order": 144,
+   "file": "desktop-tokyo-sheet-tokyo-shimbashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-shimbashi",
+   "label": "新橋",
+   "notes": [
+    "⚠️ シートが🧳を隠す"
+   ]
+  },
+  {
+   "order": 146,
+   "file": "desktop-tokyo-sheet-tokyo-concourse.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-concourse",
+   "label": "◀ 丸の内 | 八重洲 ▶",
+   "notes": []
+  },
+  {
+   "order": 148,
+   "file": "desktop-tokyo-sheet-tokyo-north-south.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-north-south",
+   "label": "▲ 神田 | 有楽町 ▼",
+   "notes": []
+  },
+  {
+   "order": 360,
+   "file": "phone-london-sheet-london-kings-cross.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-kings-cross",
+   "label": "キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 362,
+   "file": "phone-london-sheet-london-st-pancras.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-st-pancras",
+   "label": "セント・パンクラス",
+   "notes": []
+  },
+  {
+   "order": 364,
+   "file": "phone-london-sheet-london-euston.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-euston",
+   "label": "ユーストン",
+   "notes": []
+  },
+  {
+   "order": 366,
+   "file": "phone-london-sheet-london-paddington.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-paddington",
+   "label": "パディントン",
+   "notes": []
+  },
+  {
+   "order": 368,
+   "file": "phone-london-sheet-london-marylebone.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-marylebone",
+   "label": "マリルボーン",
+   "notes": []
+  },
+  {
+   "order": 370,
+   "file": "phone-london-sheet-london-liverpool-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-liverpool-street",
+   "label": "リバプール・ストリート",
+   "notes": []
+  },
+  {
+   "order": 372,
+   "file": "phone-london-sheet-london-fenchurch-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-fenchurch-street",
+   "label": "フェンチャーチ・ストリート",
+   "notes": []
+  },
+  {
+   "order": 374,
+   "file": "phone-london-sheet-london-cannon-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-cannon-street",
+   "label": "キャノン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 376,
+   "file": "phone-london-sheet-london-london-bridge.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-london-bridge",
+   "label": "ロンドン・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 378,
+   "file": "phone-london-sheet-london-blackfriars.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-blackfriars",
+   "label": "ブラックフライアーズ",
+   "notes": []
+  },
+  {
+   "order": 380,
+   "file": "phone-london-sheet-london-waterloo.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-waterloo",
+   "label": "ウォータールー",
+   "notes": []
+  },
+  {
+   "order": 382,
+   "file": "phone-london-sheet-london-charing-cross.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-charing-cross",
+   "label": "チャリング・クロス",
+   "notes": []
+  },
+  {
+   "order": 384,
+   "file": "phone-london-sheet-london-victoria.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-victoria",
+   "label": "ヴィクトリア",
+   "notes": []
+  },
+  {
+   "order": 386,
+   "file": "phone-london-sheet-london-edgware-road.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-edgware-road",
+   "label": "エッジウェア・ロード",
+   "notes": []
+  },
+  {
+   "order": 388,
+   "file": "phone-london-sheet-london-baker-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-baker-street",
+   "label": "ベイカー・ストリート",
+   "notes": []
+  },
+  {
+   "order": 390,
+   "file": "phone-london-sheet-london-warren-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-warren-street",
+   "label": "ウォーレン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 392,
+   "file": "phone-london-sheet-london-angel.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-angel",
+   "label": "エンジェル",
+   "notes": []
+  },
+  {
+   "order": 394,
+   "file": "phone-london-sheet-london-russell-square.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-russell-square",
+   "label": "ラッセル・スクエア",
+   "notes": []
+  },
+  {
+   "order": 396,
+   "file": "phone-london-sheet-london-farringdon.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-farringdon",
+   "label": "ファリンドン",
+   "notes": []
+  },
+  {
+   "order": 398,
+   "file": "phone-london-sheet-london-moorgate.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-moorgate",
+   "label": "ムーアゲート",
+   "notes": []
+  },
+  {
+   "order": 400,
+   "file": "phone-london-sheet-london-aldgate.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-aldgate",
+   "label": "オールドゲート",
+   "notes": []
+  },
+  {
+   "order": 402,
+   "file": "phone-london-sheet-london-tower-hill.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-tower-hill",
+   "label": "タワー・ヒル",
+   "notes": []
+  },
+  {
+   "order": 404,
+   "file": "phone-london-sheet-london-bank.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bank",
+   "label": "バンク",
+   "notes": []
+  },
+  {
+   "order": 406,
+   "file": "phone-london-sheet-london-monument.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-monument",
+   "label": "モニュメント",
+   "notes": []
+  },
+  {
+   "order": 408,
+   "file": "phone-london-sheet-london-borough.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-borough",
+   "label": "ボロー",
+   "notes": []
+  },
+  {
+   "order": 410,
+   "file": "phone-london-sheet-london-st-pauls.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-st-pauls",
+   "label": "セント・ポールズ",
+   "notes": []
+  },
+  {
+   "order": 412,
+   "file": "phone-london-sheet-london-temple.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-temple",
+   "label": "テンプル",
+   "notes": []
+  },
+  {
+   "order": 414,
+   "file": "phone-london-sheet-london-southwark.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-southwark",
+   "label": "サザーク",
+   "notes": []
+  },
+  {
+   "order": 416,
+   "file": "phone-london-sheet-london-lambeth-north.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-lambeth-north",
+   "label": "ランベス・ノース",
+   "notes": []
+  },
+  {
+   "order": 418,
+   "file": "phone-london-sheet-london-embankment.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-embankment",
+   "label": "エンバンクメント",
+   "notes": []
+  },
+  {
+   "order": 420,
+   "file": "phone-london-sheet-london-westminster.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-westminster",
+   "label": "ウェストミンスター",
+   "notes": []
+  },
+  {
+   "order": 422,
+   "file": "phone-london-sheet-london-green-park.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-green-park",
+   "label": "グリーン・パーク",
+   "notes": []
+  },
+  {
+   "order": 424,
+   "file": "phone-london-sheet-london-pimlico.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-pimlico",
+   "label": "ピムリコ",
+   "notes": [
+    "⚠️ シートが行き先の目印を隠す",
+    "⚠️ シートが🧳を隠す"
+   ]
+  },
+  {
+   "order": 426,
+   "file": "phone-london-sheet-london-big-ben.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-big-ben",
+   "label": "ビッグ・ベン",
+   "notes": []
+  },
+  {
+   "order": 428,
+   "file": "phone-london-sheet-london-london-eye.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-london-eye",
+   "label": "ロンドン・アイ",
+   "notes": []
+  },
+  {
+   "order": 430,
+   "file": "phone-london-sheet-london-buckingham.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-buckingham",
+   "label": "バッキンガム宮殿",
+   "notes": []
+  },
+  {
+   "order": 432,
+   "file": "phone-london-sheet-london-trafalgar-square.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-trafalgar-square",
+   "label": "トラファルガー広場",
+   "notes": []
+  },
+  {
+   "order": 434,
+   "file": "phone-london-sheet-london-piccadilly-circus.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-piccadilly-circus",
+   "label": "ピカデリー・サーカス",
+   "notes": []
+  },
+  {
+   "order": 436,
+   "file": "phone-london-sheet-london-british-museum.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-british-museum",
+   "label": "大英博物館",
+   "notes": []
+  },
+  {
+   "order": 438,
+   "file": "phone-london-sheet-london-the-shard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-the-shard",
+   "label": "ザ・シャード",
+   "notes": []
+  },
+  {
+   "order": 440,
+   "file": "phone-london-sheet-london-tower-bridge.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-tower-bridge",
+   "label": "タワー・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 442,
+   "file": "phone-london-sheet-london-downing-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-downing-street",
+   "label": "首相官邸",
+   "notes": []
+  },
+  {
+   "order": 444,
+   "file": "phone-london-sheet-london-scotland-yard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-scotland-yard",
+   "label": "警視庁",
+   "notes": []
+  },
+  {
+   "order": 446,
+   "file": "phone-london-sheet-london-bank-of-england.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bank-of-england",
+   "label": "イングランド銀行",
+   "notes": []
+  },
+  {
+   "order": 448,
+   "file": "phone-london-sheet-london-old-bailey.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-old-bailey",
+   "label": "中央刑事裁判所",
+   "notes": []
+  },
+  {
+   "order": 450,
+   "file": "phone-london-sheet-london-bbc.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-bbc",
+   "label": "BBC放送会館",
+   "notes": []
+  },
+  {
+   "order": 452,
+   "file": "phone-london-sheet-london-nogard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-nogard",
+   "label": "nogard",
+   "notes": []
+  },
+  {
+   "order": 454,
+   "file": "phone-london-sheet-london-mind-the-gap.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-mind-the-gap",
+   "label": "mind the gap",
+   "notes": []
+  },
+  {
+   "order": 456,
+   "file": "phone-london-sheet-london-platform.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sheet",
+   "id": "london-platform",
+   "label": "◀ 北 | 南 ▶",
+   "notes": []
+  },
+  {
+   "order": 459,
+   "file": "phone-paris-sheet-paris-gare-du-nord.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-du-nord",
+   "label": "パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 461,
+   "file": "phone-paris-sheet-paris-gare-de-lest.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-de-lest",
+   "label": "パリ東駅",
+   "notes": []
+  },
+  {
+   "order": 463,
+   "file": "phone-paris-sheet-paris-saint-lazare.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-saint-lazare",
+   "label": "サン・ラザール駅",
+   "notes": []
+  },
+  {
+   "order": 465,
+   "file": "phone-paris-sheet-paris-gare-de-lyon.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-gare-de-lyon",
+   "label": "リヨン駅",
+   "notes": []
+  },
+  {
+   "order": 467,
+   "file": "phone-paris-sheet-paris-austerlitz.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-austerlitz",
+   "label": "オステルリッツ駅",
+   "notes": []
+  },
+  {
+   "order": 469,
+   "file": "phone-paris-sheet-paris-montparnasse.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-montparnasse",
+   "label": "モンパルナス駅",
+   "notes": []
+  },
+  {
+   "order": 471,
+   "file": "phone-paris-sheet-paris-poissonniere.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-poissonniere",
+   "label": "ポワソニエール",
+   "notes": []
+  },
+  {
+   "order": 473,
+   "file": "phone-paris-sheet-paris-barbes.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-barbes",
+   "label": "バルベス・ロシュシュアール",
+   "notes": []
+  },
+  {
+   "order": 475,
+   "file": "phone-paris-sheet-paris-chateau-deau.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-chateau-deau",
+   "label": "シャトー・ドー",
+   "notes": []
+  },
+  {
+   "order": 477,
+   "file": "phone-paris-sheet-paris-louis-blanc.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-louis-blanc",
+   "label": "ルイ・ブラン",
+   "notes": []
+  },
+  {
+   "order": 479,
+   "file": "phone-paris-sheet-paris-havre-caumartin.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-havre-caumartin",
+   "label": "アーヴル・コーマルタン",
+   "notes": []
+  },
+  {
+   "order": 481,
+   "file": "phone-paris-sheet-paris-europe.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-europe",
+   "label": "ヨーロッパ",
+   "notes": []
+  },
+  {
+   "order": 483,
+   "file": "phone-paris-sheet-paris-bastille.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-bastille",
+   "label": "バスティーユ",
+   "notes": []
+  },
+  {
+   "order": 485,
+   "file": "phone-paris-sheet-paris-quai-de-la-rapee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-quai-de-la-rapee",
+   "label": "ケ・ド・ラ・ラペ",
+   "notes": []
+  },
+  {
+   "order": 487,
+   "file": "phone-paris-sheet-paris-saint-marcel.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-saint-marcel",
+   "label": "サン・マルセル",
+   "notes": []
+  },
+  {
+   "order": 489,
+   "file": "phone-paris-sheet-paris-jussieu.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-jussieu",
+   "label": "ジュシュー",
+   "notes": []
+  },
+  {
+   "order": 491,
+   "file": "phone-paris-sheet-paris-edgar-quinet.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-edgar-quinet",
+   "label": "エドガー・キネ",
+   "notes": []
+  },
+  {
+   "order": 493,
+   "file": "phone-paris-sheet-paris-vavin.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-vavin",
+   "label": "ヴァヴァン",
+   "notes": []
+  },
+  {
+   "order": 495,
+   "file": "phone-paris-sheet-paris-falguiere.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-falguiere",
+   "label": "ファルギエール",
+   "notes": []
+  },
+  {
+   "order": 497,
+   "file": "phone-paris-sheet-paris-eiffel.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-eiffel",
+   "label": "エッフェル塔",
+   "notes": []
+  },
+  {
+   "order": 499,
+   "file": "phone-paris-sheet-paris-arc-de-triomphe.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-arc-de-triomphe",
+   "label": "凱旋門",
+   "notes": []
+  },
+  {
+   "order": 501,
+   "file": "phone-paris-sheet-paris-louvre.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-louvre",
+   "label": "ルーヴル美術館",
+   "notes": []
+  },
+  {
+   "order": 503,
+   "file": "phone-paris-sheet-paris-pompidou.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-pompidou",
+   "label": "ポンピドゥー・センター",
+   "notes": []
+  },
+  {
+   "order": 505,
+   "file": "phone-paris-sheet-paris-concorde.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-concorde",
+   "label": "コンコルド広場",
+   "notes": []
+  },
+  {
+   "order": 507,
+   "file": "phone-paris-sheet-paris-opera-garnier.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-opera-garnier",
+   "label": "オペラ座",
+   "notes": []
+  },
+  {
+   "order": 509,
+   "file": "phone-paris-sheet-paris-orsay.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-orsay",
+   "label": "オルセー美術館",
+   "notes": []
+  },
+  {
+   "order": 511,
+   "file": "phone-paris-sheet-paris-elysee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-elysee",
+   "label": "エリゼ宮",
+   "notes": []
+  },
+  {
+   "order": 513,
+   "file": "phone-paris-sheet-paris-assemblee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-assemblee",
+   "label": "国民議会",
+   "notes": []
+  },
+  {
+   "order": 515,
+   "file": "phone-paris-sheet-paris-bourse.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-bourse",
+   "label": "ブルス",
+   "notes": []
+  },
+  {
+   "order": 517,
+   "file": "phone-paris-sheet-paris-banque-de-france.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-banque-de-france",
+   "label": "フランス銀行",
+   "notes": []
+  },
+  {
+   "order": 519,
+   "file": "phone-paris-sheet-paris-hotel-de-ville.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-hotel-de-ville",
+   "label": "パリ市庁舎",
+   "notes": []
+  },
+  {
+   "order": 521,
+   "file": "phone-paris-sheet-paris-to-lyon.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-to-lyon",
+   "label": "▶ Lyon",
+   "notes": []
+  },
+  {
+   "order": 523,
+   "file": "phone-paris-sheet-paris-rive-gauche.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sheet",
+   "id": "paris-rive-gauche",
+   "label": "rive gauche ▼",
+   "notes": []
+  },
+  {
+   "order": 317,
+   "file": "phone-tokyo-sheet-tokyo-marunouchi-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-c",
+   "label": "丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 319,
+   "file": "phone-tokyo-sheet-tokyo-marunouchi-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-n",
+   "label": "丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 321,
+   "file": "phone-tokyo-sheet-tokyo-marunouchi-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-marunouchi-s",
+   "label": "丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 323,
+   "file": "phone-tokyo-sheet-tokyo-yaesu-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-c",
+   "label": "八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 325,
+   "file": "phone-tokyo-sheet-tokyo-yaesu-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-n",
+   "label": "八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 327,
+   "file": "phone-tokyo-sheet-tokyo-yaesu-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yaesu-s",
+   "label": "八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 329,
+   "file": "phone-tokyo-sheet-tokyo-otemachi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-otemachi",
+   "label": "大手町",
+   "notes": []
+  },
+  {
+   "order": 331,
+   "file": "phone-tokyo-sheet-tokyo-nijubashimae.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-nijubashimae",
+   "label": "二重橋前",
+   "notes": []
+  },
+  {
+   "order": 333,
+   "file": "phone-tokyo-sheet-tokyo-yurakucho.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-yurakucho",
+   "label": "有楽町",
+   "notes": []
+  },
+  {
+   "order": 335,
+   "file": "phone-tokyo-sheet-tokyo-hibiya.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-hibiya",
+   "label": "日比谷",
+   "notes": []
+  },
+  {
+   "order": 337,
+   "file": "phone-tokyo-sheet-tokyo-ginza.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-ginza",
+   "label": "銀座",
+   "notes": []
+  },
+  {
+   "order": 339,
+   "file": "phone-tokyo-sheet-tokyo-ginza-itchome.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-ginza-itchome",
+   "label": "銀座一丁目",
+   "notes": []
+  },
+  {
+   "order": 341,
+   "file": "phone-tokyo-sheet-tokyo-kyobashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-kyobashi",
+   "label": "京橋",
+   "notes": []
+  },
+  {
+   "order": 343,
+   "file": "phone-tokyo-sheet-tokyo-nihombashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-nihombashi",
+   "label": "日本橋",
+   "notes": []
+  },
+  {
+   "order": 345,
+   "file": "phone-tokyo-sheet-tokyo-mitsukoshimae.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-mitsukoshimae",
+   "label": "三越前",
+   "notes": []
+  },
+  {
+   "order": 347,
+   "file": "phone-tokyo-sheet-tokyo-shin-nihombashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-shin-nihombashi",
+   "label": "新日本橋",
+   "notes": []
+  },
+  {
+   "order": 349,
+   "file": "phone-tokyo-sheet-tokyo-kanda.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-kanda",
+   "label": "神田",
+   "notes": []
+  },
+  {
+   "order": 351,
+   "file": "phone-tokyo-sheet-tokyo-takebashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-takebashi",
+   "label": "竹橋",
+   "notes": []
+  },
+  {
+   "order": 353,
+   "file": "phone-tokyo-sheet-tokyo-shimbashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-shimbashi",
+   "label": "新橋",
+   "notes": [
+    "⚠️ シートが🧳を隠す"
+   ]
+  },
+  {
+   "order": 355,
+   "file": "phone-tokyo-sheet-tokyo-concourse.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-concourse",
+   "label": "◀ 丸の内 | 八重洲 ▶",
+   "notes": []
+  },
+  {
+   "order": 357,
+   "file": "phone-tokyo-sheet-tokyo-north-south.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sheet",
+   "id": "tokyo-north-south",
+   "label": "▲ 神田 | 有楽町 ▼",
+   "notes": []
+  },
+  {
+   "order": 152,
+   "file": "desktop-london-map-london-kings-cross.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-kings-cross",
+   "label": "キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 154,
+   "file": "desktop-london-map-london-st-pancras.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-st-pancras",
+   "label": "セント・パンクラス",
+   "notes": []
+  },
+  {
+   "order": 156,
+   "file": "desktop-london-map-london-euston.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-euston",
+   "label": "ユーストン",
+   "notes": []
+  },
+  {
+   "order": 158,
+   "file": "desktop-london-map-london-paddington.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-paddington",
+   "label": "パディントン",
+   "notes": []
+  },
+  {
+   "order": 160,
+   "file": "desktop-london-map-london-marylebone.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-marylebone",
+   "label": "マリルボーン",
+   "notes": []
+  },
+  {
+   "order": 162,
+   "file": "desktop-london-map-london-liverpool-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-liverpool-street",
+   "label": "リバプール・ストリート",
+   "notes": []
+  },
+  {
+   "order": 164,
+   "file": "desktop-london-map-london-fenchurch-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-fenchurch-street",
+   "label": "フェンチャーチ・ストリート",
+   "notes": []
+  },
+  {
+   "order": 166,
+   "file": "desktop-london-map-london-cannon-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-cannon-street",
+   "label": "キャノン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 168,
+   "file": "desktop-london-map-london-london-bridge.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-london-bridge",
+   "label": "ロンドン・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 170,
+   "file": "desktop-london-map-london-blackfriars.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-blackfriars",
+   "label": "ブラックフライアーズ",
+   "notes": []
+  },
+  {
+   "order": 172,
+   "file": "desktop-london-map-london-waterloo.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-waterloo",
+   "label": "ウォータールー",
+   "notes": []
+  },
+  {
+   "order": 174,
+   "file": "desktop-london-map-london-charing-cross.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-charing-cross",
+   "label": "チャリング・クロス",
+   "notes": [
+    "⚠️ 目印の上に「エンバンクメント」が重なり押せない（スクリプトで代用）"
+   ]
+  },
+  {
+   "order": 176,
+   "file": "desktop-london-map-london-victoria.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-victoria",
+   "label": "ヴィクトリア",
+   "notes": []
+  },
+  {
+   "order": 178,
+   "file": "desktop-london-map-london-edgware-road.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-edgware-road",
+   "label": "エッジウェア・ロード",
+   "notes": []
+  },
+  {
+   "order": 180,
+   "file": "desktop-london-map-london-baker-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-baker-street",
+   "label": "ベイカー・ストリート",
+   "notes": []
+  },
+  {
+   "order": 182,
+   "file": "desktop-london-map-london-warren-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-warren-street",
+   "label": "ウォーレン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 184,
+   "file": "desktop-london-map-london-angel.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-angel",
+   "label": "エンジェル",
+   "notes": []
+  },
+  {
+   "order": 186,
+   "file": "desktop-london-map-london-russell-square.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-russell-square",
+   "label": "ラッセル・スクエア",
+   "notes": []
+  },
+  {
+   "order": 188,
+   "file": "desktop-london-map-london-farringdon.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-farringdon",
+   "label": "ファリンドン",
+   "notes": []
+  },
+  {
+   "order": 190,
+   "file": "desktop-london-map-london-moorgate.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-moorgate",
+   "label": "ムーアゲート",
+   "notes": []
+  },
+  {
+   "order": 192,
+   "file": "desktop-london-map-london-aldgate.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-aldgate",
+   "label": "オールドゲート",
+   "notes": []
+  },
+  {
+   "order": 194,
+   "file": "desktop-london-map-london-tower-hill.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-tower-hill",
+   "label": "タワー・ヒル",
+   "notes": []
+  },
+  {
+   "order": 196,
+   "file": "desktop-london-map-london-bank.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bank",
+   "label": "バンク",
+   "notes": []
+  },
+  {
+   "order": 198,
+   "file": "desktop-london-map-london-monument.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-monument",
+   "label": "モニュメント",
+   "notes": []
+  },
+  {
+   "order": 200,
+   "file": "desktop-london-map-london-borough.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-borough",
+   "label": "ボロー",
+   "notes": []
+  },
+  {
+   "order": 202,
+   "file": "desktop-london-map-london-st-pauls.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-st-pauls",
+   "label": "セント・ポールズ",
+   "notes": []
+  },
+  {
+   "order": 204,
+   "file": "desktop-london-map-london-temple.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-temple",
+   "label": "テンプル",
+   "notes": []
+  },
+  {
+   "order": 206,
+   "file": "desktop-london-map-london-southwark.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-southwark",
+   "label": "サザーク",
+   "notes": []
+  },
+  {
+   "order": 208,
+   "file": "desktop-london-map-london-lambeth-north.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-lambeth-north",
+   "label": "ランベス・ノース",
+   "notes": []
+  },
+  {
+   "order": 210,
+   "file": "desktop-london-map-london-embankment.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-embankment",
+   "label": "エンバンクメント",
+   "notes": []
+  },
+  {
+   "order": 212,
+   "file": "desktop-london-map-london-westminster.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-westminster",
+   "label": "ウェストミンスター",
+   "notes": []
+  },
+  {
+   "order": 214,
+   "file": "desktop-london-map-london-green-park.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-green-park",
+   "label": "グリーン・パーク",
+   "notes": []
+  },
+  {
+   "order": 216,
+   "file": "desktop-london-map-london-pimlico.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-pimlico",
+   "label": "ピムリコ",
+   "notes": []
+  },
+  {
+   "order": 218,
+   "file": "desktop-london-map-london-big-ben.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-big-ben",
+   "label": "ビッグ・ベン",
+   "notes": []
+  },
+  {
+   "order": 220,
+   "file": "desktop-london-map-london-london-eye.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-london-eye",
+   "label": "ロンドン・アイ",
+   "notes": []
+  },
+  {
+   "order": 222,
+   "file": "desktop-london-map-london-buckingham.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-buckingham",
+   "label": "バッキンガム宮殿",
+   "notes": []
+  },
+  {
+   "order": 224,
+   "file": "desktop-london-map-london-trafalgar-square.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-trafalgar-square",
+   "label": "トラファルガー広場",
+   "notes": []
+  },
+  {
+   "order": 226,
+   "file": "desktop-london-map-london-piccadilly-circus.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-piccadilly-circus",
+   "label": "ピカデリー・サーカス",
+   "notes": []
+  },
+  {
+   "order": 228,
+   "file": "desktop-london-map-london-british-museum.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-british-museum",
+   "label": "大英博物館",
+   "notes": []
+  },
+  {
+   "order": 230,
+   "file": "desktop-london-map-london-the-shard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-the-shard",
+   "label": "ザ・シャード",
+   "notes": []
+  },
+  {
+   "order": 232,
+   "file": "desktop-london-map-london-tower-bridge.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-tower-bridge",
+   "label": "タワー・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 234,
+   "file": "desktop-london-map-london-downing-street.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-downing-street",
+   "label": "首相官邸",
+   "notes": []
+  },
+  {
+   "order": 236,
+   "file": "desktop-london-map-london-scotland-yard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-scotland-yard",
+   "label": "警視庁",
+   "notes": []
+  },
+  {
+   "order": 238,
+   "file": "desktop-london-map-london-bank-of-england.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bank-of-england",
+   "label": "イングランド銀行",
+   "notes": []
+  },
+  {
+   "order": 240,
+   "file": "desktop-london-map-london-old-bailey.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-old-bailey",
+   "label": "中央刑事裁判所",
+   "notes": []
+  },
+  {
+   "order": 242,
+   "file": "desktop-london-map-london-bbc.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bbc",
+   "label": "BBC放送会館",
+   "notes": []
+  },
+  {
+   "order": 244,
+   "file": "desktop-london-map-london-nogard.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-nogard",
+   "label": "nogard",
+   "notes": []
+  },
+  {
+   "order": 246,
+   "file": "desktop-london-map-london-mind-the-gap.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-mind-the-gap",
+   "label": "mind the gap",
+   "notes": []
+  },
+  {
+   "order": 248,
+   "file": "desktop-london-map-london-platform.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-platform",
+   "label": "◀ 北 | 南 ▶",
+   "notes": []
+  },
+  {
+   "order": 549,
+   "file": "desktop-london-map-reduced-london-tower-bridge.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "map",
+   "id": "reduced-london-tower-bridge",
+   "label": "🐢→⚡ reduced motion: タワー・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 251,
+   "file": "desktop-paris-map-paris-gare-du-nord.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-du-nord",
+   "label": "パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 253,
+   "file": "desktop-paris-map-paris-gare-de-lest.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-de-lest",
+   "label": "パリ東駅",
+   "notes": []
+  },
+  {
+   "order": 255,
+   "file": "desktop-paris-map-paris-saint-lazare.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-saint-lazare",
+   "label": "サン・ラザール駅",
+   "notes": []
+  },
+  {
+   "order": 257,
+   "file": "desktop-paris-map-paris-gare-de-lyon.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-de-lyon",
+   "label": "リヨン駅",
+   "notes": []
+  },
+  {
+   "order": 259,
+   "file": "desktop-paris-map-paris-austerlitz.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-austerlitz",
+   "label": "オステルリッツ駅",
+   "notes": []
+  },
+  {
+   "order": 261,
+   "file": "desktop-paris-map-paris-montparnasse.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-montparnasse",
+   "label": "モンパルナス駅",
+   "notes": []
+  },
+  {
+   "order": 263,
+   "file": "desktop-paris-map-paris-poissonniere.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-poissonniere",
+   "label": "ポワソニエール",
+   "notes": []
+  },
+  {
+   "order": 265,
+   "file": "desktop-paris-map-paris-barbes.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-barbes",
+   "label": "バルベス・ロシュシュアール",
+   "notes": []
+  },
+  {
+   "order": 267,
+   "file": "desktop-paris-map-paris-chateau-deau.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-chateau-deau",
+   "label": "シャトー・ドー",
+   "notes": []
+  },
+  {
+   "order": 269,
+   "file": "desktop-paris-map-paris-louis-blanc.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-louis-blanc",
+   "label": "ルイ・ブラン",
+   "notes": []
+  },
+  {
+   "order": 271,
+   "file": "desktop-paris-map-paris-havre-caumartin.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-havre-caumartin",
+   "label": "アーヴル・コーマルタン",
+   "notes": []
+  },
+  {
+   "order": 273,
+   "file": "desktop-paris-map-paris-europe.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-europe",
+   "label": "ヨーロッパ",
+   "notes": []
+  },
+  {
+   "order": 275,
+   "file": "desktop-paris-map-paris-bastille.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-bastille",
+   "label": "バスティーユ",
+   "notes": []
+  },
+  {
+   "order": 277,
+   "file": "desktop-paris-map-paris-quai-de-la-rapee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-quai-de-la-rapee",
+   "label": "ケ・ド・ラ・ラペ",
+   "notes": []
+  },
+  {
+   "order": 279,
+   "file": "desktop-paris-map-paris-saint-marcel.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-saint-marcel",
+   "label": "サン・マルセル",
+   "notes": []
+  },
+  {
+   "order": 281,
+   "file": "desktop-paris-map-paris-jussieu.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-jussieu",
+   "label": "ジュシュー",
+   "notes": []
+  },
+  {
+   "order": 283,
+   "file": "desktop-paris-map-paris-edgar-quinet.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-edgar-quinet",
+   "label": "エドガー・キネ",
+   "notes": []
+  },
+  {
+   "order": 285,
+   "file": "desktop-paris-map-paris-vavin.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-vavin",
+   "label": "ヴァヴァン",
+   "notes": []
+  },
+  {
+   "order": 287,
+   "file": "desktop-paris-map-paris-falguiere.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-falguiere",
+   "label": "ファルギエール",
+   "notes": []
+  },
+  {
+   "order": 289,
+   "file": "desktop-paris-map-paris-eiffel.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-eiffel",
+   "label": "エッフェル塔",
+   "notes": []
+  },
+  {
+   "order": 291,
+   "file": "desktop-paris-map-paris-arc-de-triomphe.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-arc-de-triomphe",
+   "label": "凱旋門",
+   "notes": []
+  },
+  {
+   "order": 293,
+   "file": "desktop-paris-map-paris-louvre.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-louvre",
+   "label": "ルーヴル美術館",
+   "notes": []
+  },
+  {
+   "order": 295,
+   "file": "desktop-paris-map-paris-pompidou.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-pompidou",
+   "label": "ポンピドゥー・センター",
+   "notes": []
+  },
+  {
+   "order": 297,
+   "file": "desktop-paris-map-paris-concorde.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-concorde",
+   "label": "コンコルド広場",
+   "notes": []
+  },
+  {
+   "order": 299,
+   "file": "desktop-paris-map-paris-opera-garnier.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-opera-garnier",
+   "label": "オペラ座",
+   "notes": []
+  },
+  {
+   "order": 301,
+   "file": "desktop-paris-map-paris-orsay.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-orsay",
+   "label": "オルセー美術館",
+   "notes": []
+  },
+  {
+   "order": 303,
+   "file": "desktop-paris-map-paris-elysee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-elysee",
+   "label": "エリゼ宮",
+   "notes": []
+  },
+  {
+   "order": 305,
+   "file": "desktop-paris-map-paris-assemblee.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-assemblee",
+   "label": "国民議会",
+   "notes": []
+  },
+  {
+   "order": 307,
+   "file": "desktop-paris-map-paris-bourse.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-bourse",
+   "label": "ブルス",
+   "notes": []
+  },
+  {
+   "order": 309,
+   "file": "desktop-paris-map-paris-banque-de-france.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-banque-de-france",
+   "label": "フランス銀行",
+   "notes": []
+  },
+  {
+   "order": 311,
+   "file": "desktop-paris-map-paris-hotel-de-ville.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-hotel-de-ville",
+   "label": "パリ市庁舎",
+   "notes": []
+  },
+  {
+   "order": 313,
+   "file": "desktop-paris-map-paris-to-lyon.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-to-lyon",
+   "label": "▶ Lyon",
+   "notes": []
+  },
+  {
+   "order": 315,
+   "file": "desktop-paris-map-paris-rive-gauche.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-rive-gauche",
+   "label": "rive gauche ▼",
+   "notes": []
+  },
+  {
+   "order": 550,
+   "file": "desktop-paris-map-reduced-paris-falguiere.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "map",
+   "id": "reduced-paris-falguiere",
+   "label": "🐢→⚡ reduced motion: ファルギエール",
+   "notes": []
+  },
+  {
+   "order": 109,
+   "file": "desktop-tokyo-map-tokyo-marunouchi-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-c",
+   "label": "丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 111,
+   "file": "desktop-tokyo-map-tokyo-marunouchi-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-n",
+   "label": "丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 113,
+   "file": "desktop-tokyo-map-tokyo-marunouchi-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-s",
+   "label": "丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 115,
+   "file": "desktop-tokyo-map-tokyo-yaesu-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-c",
+   "label": "八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 117,
+   "file": "desktop-tokyo-map-tokyo-yaesu-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-n",
+   "label": "八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 119,
+   "file": "desktop-tokyo-map-tokyo-yaesu-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-s",
+   "label": "八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 121,
+   "file": "desktop-tokyo-map-tokyo-otemachi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-otemachi",
+   "label": "大手町",
+   "notes": []
+  },
+  {
+   "order": 123,
+   "file": "desktop-tokyo-map-tokyo-nijubashimae.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-nijubashimae",
+   "label": "二重橋前",
+   "notes": []
+  },
+  {
+   "order": 125,
+   "file": "desktop-tokyo-map-tokyo-yurakucho.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yurakucho",
+   "label": "有楽町",
+   "notes": []
+  },
+  {
+   "order": 127,
+   "file": "desktop-tokyo-map-tokyo-hibiya.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-hibiya",
+   "label": "日比谷",
+   "notes": []
+  },
+  {
+   "order": 129,
+   "file": "desktop-tokyo-map-tokyo-ginza.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-ginza",
+   "label": "銀座",
+   "notes": []
+  },
+  {
+   "order": 131,
+   "file": "desktop-tokyo-map-tokyo-ginza-itchome.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-ginza-itchome",
+   "label": "銀座一丁目",
+   "notes": []
+  },
+  {
+   "order": 133,
+   "file": "desktop-tokyo-map-tokyo-kyobashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-kyobashi",
+   "label": "京橋",
+   "notes": []
+  },
+  {
+   "order": 135,
+   "file": "desktop-tokyo-map-tokyo-nihombashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-nihombashi",
+   "label": "日本橋",
+   "notes": []
+  },
+  {
+   "order": 137,
+   "file": "desktop-tokyo-map-tokyo-mitsukoshimae.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-mitsukoshimae",
+   "label": "三越前",
+   "notes": []
+  },
+  {
+   "order": 139,
+   "file": "desktop-tokyo-map-tokyo-shin-nihombashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-shin-nihombashi",
+   "label": "新日本橋",
+   "notes": []
+  },
+  {
+   "order": 141,
+   "file": "desktop-tokyo-map-tokyo-kanda.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-kanda",
+   "label": "神田",
+   "notes": []
+  },
+  {
+   "order": 143,
+   "file": "desktop-tokyo-map-tokyo-takebashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-takebashi",
+   "label": "竹橋",
+   "notes": []
+  },
+  {
+   "order": 145,
+   "file": "desktop-tokyo-map-tokyo-shimbashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-shimbashi",
+   "label": "新橋",
+   "notes": []
+  },
+  {
+   "order": 147,
+   "file": "desktop-tokyo-map-tokyo-concourse.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-concourse",
+   "label": "◀ 丸の内 | 八重洲 ▶",
+   "notes": []
+  },
+  {
+   "order": 149,
+   "file": "desktop-tokyo-map-tokyo-north-south.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-north-south",
+   "label": "▲ 神田 | 有楽町 ▼",
+   "notes": []
+  },
+  {
+   "order": 548,
+   "file": "desktop-tokyo-map-reduced-tokyo-shimbashi.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "reduced-tokyo-shimbashi",
+   "label": "🐢→⚡ reduced motion: 新橋",
+   "notes": []
+  },
+  {
+   "order": 361,
+   "file": "phone-london-map-london-kings-cross.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-kings-cross",
+   "label": "キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 363,
+   "file": "phone-london-map-london-st-pancras.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-st-pancras",
+   "label": "セント・パンクラス",
+   "notes": []
+  },
+  {
+   "order": 365,
+   "file": "phone-london-map-london-euston.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-euston",
+   "label": "ユーストン",
+   "notes": []
+  },
+  {
+   "order": 367,
+   "file": "phone-london-map-london-paddington.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-paddington",
+   "label": "パディントン",
+   "notes": []
+  },
+  {
+   "order": 369,
+   "file": "phone-london-map-london-marylebone.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-marylebone",
+   "label": "マリルボーン",
+   "notes": []
+  },
+  {
+   "order": 371,
+   "file": "phone-london-map-london-liverpool-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-liverpool-street",
+   "label": "リバプール・ストリート",
+   "notes": []
+  },
+  {
+   "order": 373,
+   "file": "phone-london-map-london-fenchurch-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-fenchurch-street",
+   "label": "フェンチャーチ・ストリート",
+   "notes": []
+  },
+  {
+   "order": 375,
+   "file": "phone-london-map-london-cannon-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-cannon-street",
+   "label": "キャノン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 377,
+   "file": "phone-london-map-london-london-bridge.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-london-bridge",
+   "label": "ロンドン・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 379,
+   "file": "phone-london-map-london-blackfriars.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-blackfriars",
+   "label": "ブラックフライアーズ",
+   "notes": []
+  },
+  {
+   "order": 381,
+   "file": "phone-london-map-london-waterloo.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-waterloo",
+   "label": "ウォータールー",
+   "notes": []
+  },
+  {
+   "order": 383,
+   "file": "phone-london-map-london-charing-cross.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-charing-cross",
+   "label": "チャリング・クロス",
+   "notes": [
+    "⚠️ 目印の上に「エンバンクメント」が重なり押せない（スクリプトで代用）"
+   ]
+  },
+  {
+   "order": 385,
+   "file": "phone-london-map-london-victoria.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-victoria",
+   "label": "ヴィクトリア",
+   "notes": []
+  },
+  {
+   "order": 387,
+   "file": "phone-london-map-london-edgware-road.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-edgware-road",
+   "label": "エッジウェア・ロード",
+   "notes": []
+  },
+  {
+   "order": 389,
+   "file": "phone-london-map-london-baker-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-baker-street",
+   "label": "ベイカー・ストリート",
+   "notes": []
+  },
+  {
+   "order": 391,
+   "file": "phone-london-map-london-warren-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-warren-street",
+   "label": "ウォーレン・ストリート",
+   "notes": []
+  },
+  {
+   "order": 393,
+   "file": "phone-london-map-london-angel.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-angel",
+   "label": "エンジェル",
+   "notes": []
+  },
+  {
+   "order": 395,
+   "file": "phone-london-map-london-russell-square.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-russell-square",
+   "label": "ラッセル・スクエア",
+   "notes": []
+  },
+  {
+   "order": 397,
+   "file": "phone-london-map-london-farringdon.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-farringdon",
+   "label": "ファリンドン",
+   "notes": []
+  },
+  {
+   "order": 399,
+   "file": "phone-london-map-london-moorgate.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-moorgate",
+   "label": "ムーアゲート",
+   "notes": []
+  },
+  {
+   "order": 401,
+   "file": "phone-london-map-london-aldgate.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-aldgate",
+   "label": "オールドゲート",
+   "notes": []
+  },
+  {
+   "order": 403,
+   "file": "phone-london-map-london-tower-hill.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-tower-hill",
+   "label": "タワー・ヒル",
+   "notes": []
+  },
+  {
+   "order": 405,
+   "file": "phone-london-map-london-bank.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bank",
+   "label": "バンク",
+   "notes": []
+  },
+  {
+   "order": 407,
+   "file": "phone-london-map-london-monument.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-monument",
+   "label": "モニュメント",
+   "notes": []
+  },
+  {
+   "order": 409,
+   "file": "phone-london-map-london-borough.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-borough",
+   "label": "ボロー",
+   "notes": []
+  },
+  {
+   "order": 411,
+   "file": "phone-london-map-london-st-pauls.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-st-pauls",
+   "label": "セント・ポールズ",
+   "notes": []
+  },
+  {
+   "order": 413,
+   "file": "phone-london-map-london-temple.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-temple",
+   "label": "テンプル",
+   "notes": []
+  },
+  {
+   "order": 415,
+   "file": "phone-london-map-london-southwark.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-southwark",
+   "label": "サザーク",
+   "notes": []
+  },
+  {
+   "order": 417,
+   "file": "phone-london-map-london-lambeth-north.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-lambeth-north",
+   "label": "ランベス・ノース",
+   "notes": []
+  },
+  {
+   "order": 419,
+   "file": "phone-london-map-london-embankment.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-embankment",
+   "label": "エンバンクメント",
+   "notes": []
+  },
+  {
+   "order": 421,
+   "file": "phone-london-map-london-westminster.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-westminster",
+   "label": "ウェストミンスター",
+   "notes": []
+  },
+  {
+   "order": 423,
+   "file": "phone-london-map-london-green-park.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-green-park",
+   "label": "グリーン・パーク",
+   "notes": []
+  },
+  {
+   "order": 425,
+   "file": "phone-london-map-london-pimlico.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-pimlico",
+   "label": "ピムリコ",
+   "notes": []
+  },
+  {
+   "order": 427,
+   "file": "phone-london-map-london-big-ben.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-big-ben",
+   "label": "ビッグ・ベン",
+   "notes": []
+  },
+  {
+   "order": 429,
+   "file": "phone-london-map-london-london-eye.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-london-eye",
+   "label": "ロンドン・アイ",
+   "notes": []
+  },
+  {
+   "order": 431,
+   "file": "phone-london-map-london-buckingham.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-buckingham",
+   "label": "バッキンガム宮殿",
+   "notes": []
+  },
+  {
+   "order": 433,
+   "file": "phone-london-map-london-trafalgar-square.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-trafalgar-square",
+   "label": "トラファルガー広場",
+   "notes": []
+  },
+  {
+   "order": 435,
+   "file": "phone-london-map-london-piccadilly-circus.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-piccadilly-circus",
+   "label": "ピカデリー・サーカス",
+   "notes": []
+  },
+  {
+   "order": 437,
+   "file": "phone-london-map-london-british-museum.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-british-museum",
+   "label": "大英博物館",
+   "notes": []
+  },
+  {
+   "order": 439,
+   "file": "phone-london-map-london-the-shard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-the-shard",
+   "label": "ザ・シャード",
+   "notes": []
+  },
+  {
+   "order": 441,
+   "file": "phone-london-map-london-tower-bridge.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-tower-bridge",
+   "label": "タワー・ブリッジ",
+   "notes": []
+  },
+  {
+   "order": 443,
+   "file": "phone-london-map-london-downing-street.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-downing-street",
+   "label": "首相官邸",
+   "notes": []
+  },
+  {
+   "order": 445,
+   "file": "phone-london-map-london-scotland-yard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-scotland-yard",
+   "label": "警視庁",
+   "notes": []
+  },
+  {
+   "order": 447,
+   "file": "phone-london-map-london-bank-of-england.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bank-of-england",
+   "label": "イングランド銀行",
+   "notes": []
+  },
+  {
+   "order": 449,
+   "file": "phone-london-map-london-old-bailey.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-old-bailey",
+   "label": "中央刑事裁判所",
+   "notes": []
+  },
+  {
+   "order": 451,
+   "file": "phone-london-map-london-bbc.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-bbc",
+   "label": "BBC放送会館",
+   "notes": []
+  },
+  {
+   "order": 453,
+   "file": "phone-london-map-london-nogard.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-nogard",
+   "label": "nogard",
+   "notes": []
+  },
+  {
+   "order": 455,
+   "file": "phone-london-map-london-mind-the-gap.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-mind-the-gap",
+   "label": "mind the gap",
+   "notes": []
+  },
+  {
+   "order": 457,
+   "file": "phone-london-map-london-platform.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "map",
+   "id": "london-platform",
+   "label": "◀ 北 | 南 ▶",
+   "notes": []
+  },
+  {
+   "order": 460,
+   "file": "phone-paris-map-paris-gare-du-nord.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-du-nord",
+   "label": "パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 462,
+   "file": "phone-paris-map-paris-gare-de-lest.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-de-lest",
+   "label": "パリ東駅",
+   "notes": []
+  },
+  {
+   "order": 464,
+   "file": "phone-paris-map-paris-saint-lazare.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-saint-lazare",
+   "label": "サン・ラザール駅",
+   "notes": []
+  },
+  {
+   "order": 466,
+   "file": "phone-paris-map-paris-gare-de-lyon.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-gare-de-lyon",
+   "label": "リヨン駅",
+   "notes": []
+  },
+  {
+   "order": 468,
+   "file": "phone-paris-map-paris-austerlitz.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-austerlitz",
+   "label": "オステルリッツ駅",
+   "notes": []
+  },
+  {
+   "order": 470,
+   "file": "phone-paris-map-paris-montparnasse.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-montparnasse",
+   "label": "モンパルナス駅",
+   "notes": []
+  },
+  {
+   "order": 472,
+   "file": "phone-paris-map-paris-poissonniere.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-poissonniere",
+   "label": "ポワソニエール",
+   "notes": []
+  },
+  {
+   "order": 474,
+   "file": "phone-paris-map-paris-barbes.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-barbes",
+   "label": "バルベス・ロシュシュアール",
+   "notes": []
+  },
+  {
+   "order": 476,
+   "file": "phone-paris-map-paris-chateau-deau.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-chateau-deau",
+   "label": "シャトー・ドー",
+   "notes": []
+  },
+  {
+   "order": 478,
+   "file": "phone-paris-map-paris-louis-blanc.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-louis-blanc",
+   "label": "ルイ・ブラン",
+   "notes": []
+  },
+  {
+   "order": 480,
+   "file": "phone-paris-map-paris-havre-caumartin.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-havre-caumartin",
+   "label": "アーヴル・コーマルタン",
+   "notes": []
+  },
+  {
+   "order": 482,
+   "file": "phone-paris-map-paris-europe.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-europe",
+   "label": "ヨーロッパ",
+   "notes": []
+  },
+  {
+   "order": 484,
+   "file": "phone-paris-map-paris-bastille.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-bastille",
+   "label": "バスティーユ",
+   "notes": []
+  },
+  {
+   "order": 486,
+   "file": "phone-paris-map-paris-quai-de-la-rapee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-quai-de-la-rapee",
+   "label": "ケ・ド・ラ・ラペ",
+   "notes": []
+  },
+  {
+   "order": 488,
+   "file": "phone-paris-map-paris-saint-marcel.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-saint-marcel",
+   "label": "サン・マルセル",
+   "notes": []
+  },
+  {
+   "order": 490,
+   "file": "phone-paris-map-paris-jussieu.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-jussieu",
+   "label": "ジュシュー",
+   "notes": []
+  },
+  {
+   "order": 492,
+   "file": "phone-paris-map-paris-edgar-quinet.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-edgar-quinet",
+   "label": "エドガー・キネ",
+   "notes": []
+  },
+  {
+   "order": 494,
+   "file": "phone-paris-map-paris-vavin.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-vavin",
+   "label": "ヴァヴァン",
+   "notes": []
+  },
+  {
+   "order": 496,
+   "file": "phone-paris-map-paris-falguiere.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-falguiere",
+   "label": "ファルギエール",
+   "notes": []
+  },
+  {
+   "order": 498,
+   "file": "phone-paris-map-paris-eiffel.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-eiffel",
+   "label": "エッフェル塔",
+   "notes": []
+  },
+  {
+   "order": 500,
+   "file": "phone-paris-map-paris-arc-de-triomphe.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-arc-de-triomphe",
+   "label": "凱旋門",
+   "notes": []
+  },
+  {
+   "order": 502,
+   "file": "phone-paris-map-paris-louvre.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-louvre",
+   "label": "ルーヴル美術館",
+   "notes": []
+  },
+  {
+   "order": 504,
+   "file": "phone-paris-map-paris-pompidou.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-pompidou",
+   "label": "ポンピドゥー・センター",
+   "notes": []
+  },
+  {
+   "order": 506,
+   "file": "phone-paris-map-paris-concorde.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-concorde",
+   "label": "コンコルド広場",
+   "notes": []
+  },
+  {
+   "order": 508,
+   "file": "phone-paris-map-paris-opera-garnier.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-opera-garnier",
+   "label": "オペラ座",
+   "notes": []
+  },
+  {
+   "order": 510,
+   "file": "phone-paris-map-paris-orsay.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-orsay",
+   "label": "オルセー美術館",
+   "notes": []
+  },
+  {
+   "order": 512,
+   "file": "phone-paris-map-paris-elysee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-elysee",
+   "label": "エリゼ宮",
+   "notes": []
+  },
+  {
+   "order": 514,
+   "file": "phone-paris-map-paris-assemblee.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-assemblee",
+   "label": "国民議会",
+   "notes": []
+  },
+  {
+   "order": 516,
+   "file": "phone-paris-map-paris-bourse.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-bourse",
+   "label": "ブルス",
+   "notes": []
+  },
+  {
+   "order": 518,
+   "file": "phone-paris-map-paris-banque-de-france.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-banque-de-france",
+   "label": "フランス銀行",
+   "notes": []
+  },
+  {
+   "order": 520,
+   "file": "phone-paris-map-paris-hotel-de-ville.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-hotel-de-ville",
+   "label": "パリ市庁舎",
+   "notes": []
+  },
+  {
+   "order": 522,
+   "file": "phone-paris-map-paris-to-lyon.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-to-lyon",
+   "label": "▶ Lyon",
+   "notes": []
+  },
+  {
+   "order": 524,
+   "file": "phone-paris-map-paris-rive-gauche.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "map",
+   "id": "paris-rive-gauche",
+   "label": "rive gauche ▼",
+   "notes": []
+  },
+  {
+   "order": 318,
+   "file": "phone-tokyo-map-tokyo-marunouchi-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-c",
+   "label": "丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 320,
+   "file": "phone-tokyo-map-tokyo-marunouchi-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-n",
+   "label": "丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 322,
+   "file": "phone-tokyo-map-tokyo-marunouchi-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-marunouchi-s",
+   "label": "丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 324,
+   "file": "phone-tokyo-map-tokyo-yaesu-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-c",
+   "label": "八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 326,
+   "file": "phone-tokyo-map-tokyo-yaesu-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-n",
+   "label": "八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 328,
+   "file": "phone-tokyo-map-tokyo-yaesu-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yaesu-s",
+   "label": "八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 330,
+   "file": "phone-tokyo-map-tokyo-otemachi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-otemachi",
+   "label": "大手町",
+   "notes": []
+  },
+  {
+   "order": 332,
+   "file": "phone-tokyo-map-tokyo-nijubashimae.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-nijubashimae",
+   "label": "二重橋前",
+   "notes": []
+  },
+  {
+   "order": 334,
+   "file": "phone-tokyo-map-tokyo-yurakucho.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-yurakucho",
+   "label": "有楽町",
+   "notes": []
+  },
+  {
+   "order": 336,
+   "file": "phone-tokyo-map-tokyo-hibiya.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-hibiya",
+   "label": "日比谷",
+   "notes": []
+  },
+  {
+   "order": 338,
+   "file": "phone-tokyo-map-tokyo-ginza.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-ginza",
+   "label": "銀座",
+   "notes": []
+  },
+  {
+   "order": 340,
+   "file": "phone-tokyo-map-tokyo-ginza-itchome.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-ginza-itchome",
+   "label": "銀座一丁目",
+   "notes": []
+  },
+  {
+   "order": 342,
+   "file": "phone-tokyo-map-tokyo-kyobashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-kyobashi",
+   "label": "京橋",
+   "notes": []
+  },
+  {
+   "order": 344,
+   "file": "phone-tokyo-map-tokyo-nihombashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-nihombashi",
+   "label": "日本橋",
+   "notes": []
+  },
+  {
+   "order": 346,
+   "file": "phone-tokyo-map-tokyo-mitsukoshimae.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-mitsukoshimae",
+   "label": "三越前",
+   "notes": []
+  },
+  {
+   "order": 348,
+   "file": "phone-tokyo-map-tokyo-shin-nihombashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-shin-nihombashi",
+   "label": "新日本橋",
+   "notes": []
+  },
+  {
+   "order": 350,
+   "file": "phone-tokyo-map-tokyo-kanda.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-kanda",
+   "label": "神田",
+   "notes": []
+  },
+  {
+   "order": 352,
+   "file": "phone-tokyo-map-tokyo-takebashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-takebashi",
+   "label": "竹橋",
+   "notes": []
+  },
+  {
+   "order": 354,
+   "file": "phone-tokyo-map-tokyo-shimbashi.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-shimbashi",
+   "label": "新橋",
+   "notes": []
+  },
+  {
+   "order": 356,
+   "file": "phone-tokyo-map-tokyo-concourse.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-concourse",
+   "label": "◀ 丸の内 | 八重洲 ▶",
+   "notes": []
+  },
+  {
+   "order": 358,
+   "file": "phone-tokyo-map-tokyo-north-south.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "map",
+   "id": "tokyo-north-south",
+   "label": "▲ 神田 | 有楽町 ▼",
+   "notes": []
+  },
+  {
+   "order": 91,
+   "file": "desktop-london-sign-london-nogard-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-0-dot",
+   "label": "nogard · dot",
+   "notes": []
+  },
+  {
+   "order": 92,
+   "file": "desktop-london-sign-london-nogard-1-label.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-1-label",
+   "label": "nogard · label",
+   "notes": []
+  },
+  {
+   "order": 93,
+   "file": "desktop-london-sign-london-nogard-2-flip.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-2-flip",
+   "label": "nogard · flip",
+   "notes": []
+  },
+  {
+   "order": 94,
+   "file": "desktop-london-sign-london-nogard-3-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-3-dot",
+   "label": "nogard · dot",
+   "notes": []
+  },
+  {
+   "order": 95,
+   "file": "desktop-london-sign-london-mind-the-gap-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-0-dot",
+   "label": "mind the gap · dot",
+   "notes": []
+  },
+  {
+   "order": 96,
+   "file": "desktop-london-sign-london-mind-the-gap-1-label.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-1-label",
+   "label": "mind the gap · label",
+   "notes": []
+  },
+  {
+   "order": 97,
+   "file": "desktop-london-sign-london-mind-the-gap-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-2-dot",
+   "label": "mind the gap · dot",
+   "notes": []
+  },
+  {
+   "order": 98,
+   "file": "desktop-london-sign-london-platform-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-0-dot",
+   "label": "◀ 北 | 南 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 99,
+   "file": "desktop-london-sign-london-platform-1-label.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-1-label",
+   "label": "◀ 北 | 南 ▶ · label",
+   "notes": []
+  },
+  {
+   "order": 100,
+   "file": "desktop-london-sign-london-platform-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-2-dot",
+   "label": "◀ 北 | 南 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 101,
+   "file": "desktop-paris-sign-paris-to-lyon-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-0-dot",
+   "label": "▶ Lyon · dot",
+   "notes": []
+  },
+  {
+   "order": 102,
+   "file": "desktop-paris-sign-paris-to-lyon-1-label.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-1-label",
+   "label": "▶ Lyon · label",
+   "notes": []
+  },
+  {
+   "order": 103,
+   "file": "desktop-paris-sign-paris-to-lyon-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-2-dot",
+   "label": "▶ Lyon · dot",
+   "notes": []
+  },
+  {
+   "order": 104,
+   "file": "desktop-paris-sign-paris-rive-gauche-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-0-dot",
+   "label": "rive gauche ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 105,
+   "file": "desktop-paris-sign-paris-rive-gauche-1-label.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-1-label",
+   "label": "rive gauche ▼ · label",
+   "notes": []
+  },
+  {
+   "order": 106,
+   "file": "desktop-paris-sign-paris-rive-gauche-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-2-dot",
+   "label": "rive gauche ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 85,
+   "file": "desktop-tokyo-sign-tokyo-concourse-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-0-dot",
+   "label": "◀ 丸の内 | 八重洲 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 86,
+   "file": "desktop-tokyo-sign-tokyo-concourse-1-label.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-1-label",
+   "label": "◀ 丸の内 | 八重洲 ▶ · label",
+   "notes": []
+  },
+  {
+   "order": 87,
+   "file": "desktop-tokyo-sign-tokyo-concourse-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-2-dot",
+   "label": "◀ 丸の内 | 八重洲 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 88,
+   "file": "desktop-tokyo-sign-tokyo-north-south-0-dot.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-0-dot",
+   "label": "▲ 神田 | 有楽町 ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 89,
+   "file": "desktop-tokyo-sign-tokyo-north-south-1-label.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-1-label",
+   "label": "▲ 神田 | 有楽町 ▼ · label",
+   "notes": []
+  },
+  {
+   "order": 90,
+   "file": "desktop-tokyo-sign-tokyo-north-south-2-dot.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-2-dot",
+   "label": "▲ 神田 | 有楽町 ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 69,
+   "file": "phone-london-sign-london-nogard-0-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-0-dot",
+   "label": "nogard · dot",
+   "notes": []
+  },
+  {
+   "order": 70,
+   "file": "phone-london-sign-london-nogard-1-label.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-1-label",
+   "label": "nogard · label",
+   "notes": []
+  },
+  {
+   "order": 71,
+   "file": "phone-london-sign-london-nogard-2-flip.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-2-flip",
+   "label": "nogard · flip",
+   "notes": []
+  },
+  {
+   "order": 72,
+   "file": "phone-london-sign-london-nogard-3-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-nogard-3-dot",
+   "label": "nogard · dot",
+   "notes": []
+  },
+  {
+   "order": 73,
+   "file": "phone-london-sign-london-mind-the-gap-0-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-0-dot",
+   "label": "mind the gap · dot",
+   "notes": []
+  },
+  {
+   "order": 74,
+   "file": "phone-london-sign-london-mind-the-gap-1-label.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-1-label",
+   "label": "mind the gap · label",
+   "notes": []
+  },
+  {
+   "order": 75,
+   "file": "phone-london-sign-london-mind-the-gap-2-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-mind-the-gap-2-dot",
+   "label": "mind the gap · dot",
+   "notes": []
+  },
+  {
+   "order": 76,
+   "file": "phone-london-sign-london-platform-0-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-0-dot",
+   "label": "◀ 北 | 南 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 77,
+   "file": "phone-london-sign-london-platform-1-label.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-1-label",
+   "label": "◀ 北 | 南 ▶ · label",
+   "notes": []
+  },
+  {
+   "order": 78,
+   "file": "phone-london-sign-london-platform-2-dot.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "sign",
+   "id": "london-platform-2-dot",
+   "label": "◀ 北 | 南 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 79,
+   "file": "phone-paris-sign-paris-to-lyon-0-dot.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-0-dot",
+   "label": "▶ Lyon · dot",
+   "notes": []
+  },
+  {
+   "order": 80,
+   "file": "phone-paris-sign-paris-to-lyon-1-label.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-1-label",
+   "label": "▶ Lyon · label",
+   "notes": []
+  },
+  {
+   "order": 81,
+   "file": "phone-paris-sign-paris-to-lyon-2-dot.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-to-lyon-2-dot",
+   "label": "▶ Lyon · dot",
+   "notes": []
+  },
+  {
+   "order": 82,
+   "file": "phone-paris-sign-paris-rive-gauche-0-dot.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-0-dot",
+   "label": "rive gauche ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 83,
+   "file": "phone-paris-sign-paris-rive-gauche-1-label.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-1-label",
+   "label": "rive gauche ▼ · label",
+   "notes": []
+  },
+  {
+   "order": 84,
+   "file": "phone-paris-sign-paris-rive-gauche-2-dot.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "sign",
+   "id": "paris-rive-gauche-2-dot",
+   "label": "rive gauche ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 63,
+   "file": "phone-tokyo-sign-tokyo-concourse-0-dot.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-0-dot",
+   "label": "◀ 丸の内 | 八重洲 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 64,
+   "file": "phone-tokyo-sign-tokyo-concourse-1-label.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-1-label",
+   "label": "◀ 丸の内 | 八重洲 ▶ · label",
+   "notes": []
+  },
+  {
+   "order": 65,
+   "file": "phone-tokyo-sign-tokyo-concourse-2-dot.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-concourse-2-dot",
+   "label": "◀ 丸の内 | 八重洲 ▶ · dot",
+   "notes": []
+  },
+  {
+   "order": 66,
+   "file": "phone-tokyo-sign-tokyo-north-south-0-dot.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-0-dot",
+   "label": "▲ 神田 | 有楽町 ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 67,
+   "file": "phone-tokyo-sign-tokyo-north-south-1-label.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-1-label",
+   "label": "▲ 神田 | 有楽町 ▼ · label",
+   "notes": []
+  },
+  {
+   "order": 68,
+   "file": "phone-tokyo-sign-tokyo-north-south-2-dot.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "sign",
+   "id": "tokyo-north-south-2-dot",
+   "label": "▲ 神田 | 有楽町 ▼ · dot",
+   "notes": []
+  },
+  {
+   "order": 42,
+   "file": "desktop-london-tool-🎡.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "tool",
+   "id": "🎡",
+   "label": "🎡 Reverse London",
+   "notes": []
+  },
+  {
+   "order": 45,
+   "file": "desktop-london-tool-station-door.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "tool",
+   "id": "station-door",
+   "label": "🚉 from London: 🚪 ×6",
+   "notes": []
+  },
+  {
+   "order": 43,
+   "file": "desktop-paris-tool-🥖.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "tool",
+   "id": "🥖",
+   "label": "🥖 Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 44,
+   "file": "desktop-tokyo-tool-🗼.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "🗼",
+   "label": "🗼 Parallel Tokyo",
+   "notes": []
+  },
+  {
+   "order": 46,
+   "file": "desktop-tokyo-tool-station-tokyo-marunouchi-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-n",
+   "label": "🚉 at 丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 47,
+   "file": "desktop-tokyo-tool-station-tokyo-marunouchi-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-c",
+   "label": "🚉 at 丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 48,
+   "file": "desktop-tokyo-tool-station-tokyo-marunouchi-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-s",
+   "label": "🚉 at 丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 49,
+   "file": "desktop-tokyo-tool-station-tokyo-yaesu-n.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-n",
+   "label": "🚉 at 八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 50,
+   "file": "desktop-tokyo-tool-station-tokyo-yaesu-c.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-c",
+   "label": "🚉 at 八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 51,
+   "file": "desktop-tokyo-tool-station-tokyo-yaesu-s.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-s",
+   "label": "🚉 at 八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 32,
+   "file": "phone-london-tool-🎡.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "tool",
+   "id": "🎡",
+   "label": "🎡 Reverse London",
+   "notes": []
+  },
+  {
+   "order": 35,
+   "file": "phone-london-tool-station-door.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "tool",
+   "id": "station-door",
+   "label": "🚉 from London: 🚪 ×6",
+   "notes": []
+  },
+  {
+   "order": 33,
+   "file": "phone-paris-tool-🥖.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "tool",
+   "id": "🥖",
+   "label": "🥖 Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 34,
+   "file": "phone-tokyo-tool-🗼.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "🗼",
+   "label": "🗼 Parallel Tokyo",
+   "notes": []
+  },
+  {
+   "order": 36,
+   "file": "phone-tokyo-tool-station-tokyo-marunouchi-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-n",
+   "label": "🚉 at 丸の内北口",
+   "notes": []
+  },
+  {
+   "order": 37,
+   "file": "phone-tokyo-tool-station-tokyo-marunouchi-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-c",
+   "label": "🚉 at 丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 38,
+   "file": "phone-tokyo-tool-station-tokyo-marunouchi-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-marunouchi-s",
+   "label": "🚉 at 丸の内南口",
+   "notes": []
+  },
+  {
+   "order": 39,
+   "file": "phone-tokyo-tool-station-tokyo-yaesu-n.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-n",
+   "label": "🚉 at 八重洲北口",
+   "notes": []
+  },
+  {
+   "order": 40,
+   "file": "phone-tokyo-tool-station-tokyo-yaesu-c.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-c",
+   "label": "🚉 at 八重洲中央口",
+   "notes": []
+  },
+  {
+   "order": 41,
+   "file": "phone-tokyo-tool-station-tokyo-yaesu-s.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "tool",
+   "id": "station-tokyo-yaesu-s",
+   "label": "🚉 at 八重洲南口",
+   "notes": []
+  },
+  {
+   "order": 20,
+   "file": "desktop-london-category-all.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (49)",
+   "notes": []
+  },
+  {
+   "order": 21,
+   "file": "desktop-london-category-famous.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "famous",
+   "label": "🏷️ famous (5)",
+   "notes": []
+  },
+  {
+   "order": 22,
+   "file": "desktop-london-category-sight.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "sight",
+   "label": "🏷️ sight (8)",
+   "notes": []
+  },
+  {
+   "order": 23,
+   "file": "desktop-london-category-sign.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (3)",
+   "notes": []
+  },
+  {
+   "order": 24,
+   "file": "desktop-london-category-station.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (20)",
+   "notes": []
+  },
+  {
+   "order": 25,
+   "file": "desktop-london-category-terminus.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "category",
+   "id": "terminus",
+   "label": "🏷️ terminus (13)",
+   "notes": []
+  },
+  {
+   "order": 26,
+   "file": "desktop-paris-category-all.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (33)",
+   "notes": []
+  },
+  {
+   "order": 27,
+   "file": "desktop-paris-category-famous.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "famous",
+   "label": "🏷️ famous (5)",
+   "notes": []
+  },
+  {
+   "order": 28,
+   "file": "desktop-paris-category-sight.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "sight",
+   "label": "🏷️ sight (7)",
+   "notes": []
+  },
+  {
+   "order": 29,
+   "file": "desktop-paris-category-sign.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (2)",
+   "notes": []
+  },
+  {
+   "order": 30,
+   "file": "desktop-paris-category-station.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (13)",
+   "notes": []
+  },
+  {
+   "order": 31,
+   "file": "desktop-paris-category-terminus.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "category",
+   "id": "terminus",
+   "label": "🏷️ terminus (6)",
+   "notes": []
+  },
+  {
+   "order": 16,
+   "file": "desktop-tokyo-category-all.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (21)",
+   "notes": []
+  },
+  {
+   "order": 17,
+   "file": "desktop-tokyo-category-exit.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "exit",
+   "label": "🏷️ exit (6)",
+   "notes": []
+  },
+  {
+   "order": 18,
+   "file": "desktop-tokyo-category-sign.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (2)",
+   "notes": []
+  },
+  {
+   "order": 19,
+   "file": "desktop-tokyo-category-station.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (13)",
+   "notes": []
+  },
+  {
+   "order": 4,
+   "file": "phone-london-category-all.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (49)",
+   "notes": []
+  },
+  {
+   "order": 5,
+   "file": "phone-london-category-famous.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "famous",
+   "label": "🏷️ famous (5)",
+   "notes": []
+  },
+  {
+   "order": 6,
+   "file": "phone-london-category-sight.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "sight",
+   "label": "🏷️ sight (8)",
+   "notes": []
+  },
+  {
+   "order": 7,
+   "file": "phone-london-category-sign.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (3)",
+   "notes": []
+  },
+  {
+   "order": 8,
+   "file": "phone-london-category-station.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (20)",
+   "notes": []
+  },
+  {
+   "order": 9,
+   "file": "phone-london-category-terminus.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "category",
+   "id": "terminus",
+   "label": "🏷️ terminus (13)",
+   "notes": []
+  },
+  {
+   "order": 10,
+   "file": "phone-paris-category-all.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (33)",
+   "notes": []
+  },
+  {
+   "order": 11,
+   "file": "phone-paris-category-famous.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "famous",
+   "label": "🏷️ famous (5)",
+   "notes": []
+  },
+  {
+   "order": 12,
+   "file": "phone-paris-category-sight.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "sight",
+   "label": "🏷️ sight (7)",
+   "notes": []
+  },
+  {
+   "order": 13,
+   "file": "phone-paris-category-sign.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (2)",
+   "notes": []
+  },
+  {
+   "order": 14,
+   "file": "phone-paris-category-station.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (13)",
+   "notes": []
+  },
+  {
+   "order": 15,
+   "file": "phone-paris-category-terminus.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "category",
+   "id": "terminus",
+   "label": "🏷️ terminus (6)",
+   "notes": []
+  },
+  {
+   "order": 0,
+   "file": "phone-tokyo-category-all.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "all",
+   "label": "🏷️ all (21)",
+   "notes": []
+  },
+  {
+   "order": 1,
+   "file": "phone-tokyo-category-exit.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "exit",
+   "label": "🏷️ exit (6)",
+   "notes": []
+  },
+  {
+   "order": 2,
+   "file": "phone-tokyo-category-sign.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "sign",
+   "label": "🏷️ sign (2)",
+   "notes": []
+  },
+  {
+   "order": 3,
+   "file": "phone-tokyo-category-station.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "category",
+   "id": "station",
+   "label": "🏷️ station (13)",
+   "notes": []
+  },
+  {
+   "order": 540,
+   "file": "phone-paris-favorite-panel.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "favorite",
+   "id": "panel",
+   "label": "⭐ ×3",
+   "notes": []
+  },
+  {
+   "order": 541,
+   "file": "phone-tokyo-favorite-home.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "favorite",
+   "id": "home",
+   "label": "🏠 → Parallel Tokyo",
+   "notes": []
+  },
+  {
+   "order": 546,
+   "file": "desktop-london-key-shore.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "key",
+   "id": "shore",
+   "label": "Reverse London: 🌊 refused at (21, 33)",
+   "notes": []
+  },
+  {
+   "order": 547,
+   "file": "desktop-paris-key-shore.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "key",
+   "id": "shore",
+   "label": "Fake Paris: 🌊 refused at (31, 4)",
+   "notes": []
+  },
+  {
+   "order": 544,
+   "file": "phone-london-key-shore.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "key",
+   "id": "shore",
+   "label": "Reverse London: 🌊 refused at (26, 2)",
+   "notes": []
+  },
+  {
+   "order": 545,
+   "file": "phone-paris-key-shore.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "key",
+   "id": "shore",
+   "label": "Fake Paris: 🌊 refused at (36, 29)",
+   "notes": []
+  },
+  {
+   "order": 542,
+   "file": "desktop-london-fire-fit.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "fire",
+   "id": "fit",
+   "label": "Reverse London: 🔥0 🌊15 🌉4",
+   "notes": []
+  },
+  {
+   "order": 543,
+   "file": "desktop-paris-fire-fit.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "fire",
+   "id": "fit",
+   "label": "Fake Paris: 🔥30 🌊20 🌉1",
+   "notes": []
+  },
+  {
+   "order": 13,
+   "file": "desktop-london-width-1280x800.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "width",
+   "id": "1280x800",
+   "label": "Reverse London 1280×800",
+   "notes": []
+  },
+  {
+   "order": 14,
+   "file": "desktop-paris-width-1280x800.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "width",
+   "id": "1280x800",
+   "label": "Fake Paris 1280×800",
+   "notes": []
+  },
+  {
+   "order": 12,
+   "file": "desktop-tokyo-width-1280x800.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "1280x800",
+   "label": "Parallel Tokyo 1280×800",
+   "notes": []
+  },
+  {
+   "order": 4,
+   "file": "phone-london-width-390x844.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "width",
+   "id": "390x844",
+   "label": "Reverse London 390×844",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 5,
+   "file": "phone-paris-width-390x844.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "width",
+   "id": "390x844",
+   "label": "Fake Paris 390×844",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 3,
+   "file": "phone-tokyo-width-390x844.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "390x844",
+   "label": "Parallel Tokyo 390×844",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 1,
+   "file": "phone-320-london-width-320x640.webp",
+   "viewport": "phone-320",
+   "floor": "london",
+   "kind": "width",
+   "id": "320x640",
+   "label": "Reverse London 320×640",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 2,
+   "file": "phone-320-paris-width-320x640.webp",
+   "viewport": "phone-320",
+   "floor": "paris",
+   "kind": "width",
+   "id": "320x640",
+   "label": "Fake Paris 320×640",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 0,
+   "file": "phone-320-tokyo-width-320x640.webp",
+   "viewport": "phone-320",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "320x640",
+   "label": "Parallel Tokyo 320×640",
+   "notes": [
+    "⚠️ ヘッダーで切れる: PARALLEL / 23:47"
+   ]
+  },
+  {
+   "order": 7,
+   "file": "phone-landscape-london-width-844x390.webp",
+   "viewport": "phone-landscape",
+   "floor": "london",
+   "kind": "width",
+   "id": "844x390",
+   "label": "Reverse London 844×390",
+   "notes": []
+  },
+  {
+   "order": 8,
+   "file": "phone-landscape-paris-width-844x390.webp",
+   "viewport": "phone-landscape",
+   "floor": "paris",
+   "kind": "width",
+   "id": "844x390",
+   "label": "Fake Paris 844×390",
+   "notes": []
+  },
+  {
+   "order": 6,
+   "file": "phone-landscape-tokyo-width-844x390.webp",
+   "viewport": "phone-landscape",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "844x390",
+   "label": "Parallel Tokyo 844×390",
+   "notes": []
+  },
+  {
+   "order": 10,
+   "file": "tablet-london-width-768x1024.webp",
+   "viewport": "tablet",
+   "floor": "london",
+   "kind": "width",
+   "id": "768x1024",
+   "label": "Reverse London 768×1024",
+   "notes": []
+  },
+  {
+   "order": 11,
+   "file": "tablet-paris-width-768x1024.webp",
+   "viewport": "tablet",
+   "floor": "paris",
+   "kind": "width",
+   "id": "768x1024",
+   "label": "Fake Paris 768×1024",
+   "notes": []
+  },
+  {
+   "order": 9,
+   "file": "tablet-tokyo-width-768x1024.webp",
+   "viewport": "tablet",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "768x1024",
+   "label": "Parallel Tokyo 768×1024",
+   "notes": []
+  },
+  {
+   "order": 16,
+   "file": "wide-london-width-1920x1080.webp",
+   "viewport": "wide",
+   "floor": "london",
+   "kind": "width",
+   "id": "1920x1080",
+   "label": "Reverse London 1920×1080",
+   "notes": []
+  },
+  {
+   "order": 17,
+   "file": "wide-paris-width-1920x1080.webp",
+   "viewport": "wide",
+   "floor": "paris",
+   "kind": "width",
+   "id": "1920x1080",
+   "label": "Fake Paris 1920×1080",
+   "notes": []
+  },
+  {
+   "order": 15,
+   "file": "wide-tokyo-width-1920x1080.webp",
+   "viewport": "wide",
+   "floor": "tokyo",
+   "kind": "width",
+   "id": "1920x1080",
+   "label": "Parallel Tokyo 1920×1080",
+   "notes": []
+  },
+  {
+   "order": 52,
+   "file": "phone-tokyo-lang-ja.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "ja",
+   "label": "🌐 ja: ホーム · パラレル東京 · リバースロンドン · フェイクパリ",
+   "notes": []
+  },
+  {
+   "order": 53,
+   "file": "phone-tokyo-lang-en.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "en",
+   "label": "🌐 en: Home · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 54,
+   "file": "phone-tokyo-lang-fr.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "fr",
+   "label": "🌐 fr: Accueil · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 55,
+   "file": "phone-tokyo-lang-es.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "es",
+   "label": "🌐 es: Inicio · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 56,
+   "file": "phone-tokyo-lang-pt.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "pt",
+   "label": "🌐 pt: Início · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 57,
+   "file": "phone-tokyo-lang-ar.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "ar",
+   "label": "🌐 ar: الرئيسية · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 58,
+   "file": "phone-tokyo-lang-zh.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "zh",
+   "label": "🌐 zh: 首页 · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 59,
+   "file": "phone-tokyo-lang-ru.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "ru",
+   "label": "🌐 ru: Главная · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 60,
+   "file": "phone-tokyo-lang-id.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "id",
+   "label": "🌐 id: Beranda · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 61,
+   "file": "phone-tokyo-lang-de.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "de",
+   "label": "🌐 de: Startseite · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 62,
+   "file": "phone-tokyo-lang-sw.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "lang",
+   "id": "sw",
+   "label": "🌐 sw: Mwanzo · Parallel Tokyo · Reverse London · Fake Paris",
+   "notes": []
+  },
+  {
+   "order": 557,
+   "file": "desktop-london-nojs-static.webp",
+   "viewport": "desktop",
+   "floor": "london",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Reverse London · キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 558,
+   "file": "desktop-paris-nojs-static.webp",
+   "viewport": "desktop",
+   "floor": "paris",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Fake Paris · パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 556,
+   "file": "desktop-tokyo-nojs-static.webp",
+   "viewport": "desktop",
+   "floor": "tokyo",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Parallel Tokyo · 丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 554,
+   "file": "phone-london-nojs-static.webp",
+   "viewport": "phone",
+   "floor": "london",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Reverse London · キングス・クロス",
+   "notes": []
+  },
+  {
+   "order": 555,
+   "file": "phone-paris-nojs-static.webp",
+   "viewport": "phone",
+   "floor": "paris",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Fake Paris · パリ北駅",
+   "notes": []
+  },
+  {
+   "order": 553,
+   "file": "phone-tokyo-nojs-static.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "nojs",
+   "id": "static",
+   "label": "🚫JS Parallel Tokyo · 丸の内中央口",
+   "notes": []
+  },
+  {
+   "order": 551,
+   "file": "phone-tokyo-pick-picker.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "pick",
+   "id": "picker",
+   "label": "🙂 picker",
+   "notes": []
+  },
+  {
+   "order": 552,
+   "file": "phone-tokyo-pick-last.webp",
+   "viewport": "phone",
+   "floor": "tokyo",
+   "kind": "pick",
+   "id": "last",
+   "label": "🙂 → 🗼",
+   "notes": []
+  }
+ ]
+}
