@@ -7,3 +7,7 @@ The root README previews the project icon and links to both PNG assets. A README
 ## GitHub Pages wiring
 
 The repository-owned `icon.png` is used for the visible page identity and Apple touch icon, and `favicon.png` for the browser tab. Both come from this directory. Like Ironmate, the published HTML references same-origin assets shipped with the site, rather than README image links. Generated report sites copy both PNGs to their output directory; web-ui serves these canonical files directly. Generic library-generated consumer documents remain unbranded.
+
+## Ecosystem concept sheet
+
+`ecosystem.png` is the complete user-supplied PySaiyanWeBoo artwork sheet added on 2026-11-08, preserved without cropping or modification. The root README displays it and links to the full-size image. Project names and descriptions inside the sheet are illustrative artwork.
