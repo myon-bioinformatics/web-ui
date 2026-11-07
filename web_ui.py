@@ -350,7 +350,39 @@ export function bindStub({input="#query",run="#run",output="#output",form="#stub
       '</dl></section>';
   }
 
-  var api = {validate: validate, formatBytes: bytes, commitLine: commitLine, render: render};
+  function observationCard(item) {
+    var status = item && item.http_status != null ? "HTTP: " + esc(item.http_status) : "HTTP: not observed";
+    var url = item && typeof item.url === "string" ? item.url : "";
+    return '<article class="ui-card"><h3>' + esc(item && item.kind || "resource") + '</h3>' +
+      '<p class="ui-tag">' + esc(item && item.status || "unknown") + '</p>' +
+      '<p class="ui-muted">' + status + '</p>' +
+      (url ? '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>' : '') + '</article>';
+  }
+  function summaryLine(resolver) {
+    return "Auth: " + (resolver && resolver.auth || "unknown") + " \u00b7 Status: " + (resolver && resolver.status || "unknown");
+  }
+  function renderObservations(resolver) {
+    var items = resolver && Array.isArray(resolver.observations) ? resolver.observations : [];
+    return items.map(observationCard).join("");
+  }
+  function mount(doc, url) {
+    // The diagnostics page: metadata, summary line and observation cards from one JSON next to the page.
+    var root = doc.getElementById("metadata"), summary = doc.getElementById("summary"), list = doc.getElementById("observations");
+    return fetch(url, {cache: "no-store"}).then(function (response) {
+      if (!response.ok) throw new Error("fetch failed");
+      return response.json();
+    }).then(function (payload) {
+      root.innerHTML = render(payload.metadata);
+      summary.textContent = summaryLine(payload.resolver);
+      list.innerHTML = renderObservations(payload.resolver);
+    }).catch(function () {
+      summary.textContent = "Diagnostics could not be loaded.";
+      list.innerHTML = "";
+    });
+  }
+
+  var api = {validate: validate, formatBytes: bytes, commitLine: commitLine, render: render,
+             observationCard: observationCard, summaryLine: summaryLine, renderObservations: renderObservations, mount: mount};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   global.RepositoryDiagnostics = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
@@ -832,6 +864,48 @@ def render_document(
         f'<title>{escape(title)}</title>{"".join(links)}{style}{"".join(head_remote_scripts)}</head>'
         f'<body data-ui-theme="{theme}">{body}{"".join(script_tags)}</body></html>\n'
     )
+
+
+def repository_diagnostics_page(
+    repository: str,
+    *,
+    theme: str = "modern",
+    json_name: str = "repository-diagnostics.json",
+    jsonl_name: str = "repository-diagnostics.jsonl",
+    icon: str | None = "./icon.png",
+    favicon: str | None = "./favicon.png",
+    description: str = "Canonical metadata plus anonymous public GitHub observations.",
+) -> str:
+    """The single-file repository-diagnostics page every repository publishes on Pages.
+
+    The page is self-contained: ``bundled_css()`` and ``repository-diagnostics.js`` are embedded, so
+    nothing is fetched from a CDN and the page looks the same wherever it is served. In the browser,
+    ``RepositoryDiagnostics.mount`` reads ``json_name`` (the ``{"metadata", "resolver"}`` payload the
+    repository writes next to the page) and fills ``#metadata``, ``#summary`` and ``#observations``;
+    ``jsonl_name`` is linked as the raw metadata record. Consumers produce the JSON with their own
+    gh_identity / resolver data and call this for the HTML, so one renderer serves every repository.
+    """
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be owner/name")
+    for name, label in ((json_name, "json_name"), (jsonl_name, "jsonl_name")):
+        _require_local_script_path(name, label=label)
+    if icon is not None:
+        _require_local_or_https(icon, label="icon", allow_query=False)
+    title = f"{repository} repository diagnostics"
+    picture = f'<img src="{escape(icon, quote=True)}" width="80" height="80" alt="{escape(repository, quote=True)} icon">' if icon else ""
+    body = (
+        '<main class="ui-page">' + picture
+        + f'<h1 class="ui-title">{escape(title)}</h1><p class="ui-muted">{escape(description)}</p>'
+        + '<div id="metadata"></div>'
+        + '<section class="ui-panel"><h2>Public URL observations</h2>'
+        + '<p id="summary" class="ui-muted">Loading\u2026</p><div id="observations" class="ui-grid"></div></section>'
+        + f'<p><a href="./{escape(json_name, quote=True)}">JSON</a> \u00b7 <a href="./{escape(jsonl_name, quote=True)}">JSONL</a></p>'
+        + "</main>"
+        + classic_script(js_source("repository-diagnostics.js"))
+        + classic_script(f'RepositoryDiagnostics.mount(document, "./{json_name}");')
+    )
+    return render_document(trusted_html=body, title=title, theme=theme, css=bundled_css(),
+                           favicon=favicon, touch_icon=icon)
 
 
 def _element_id(value: str) -> str:

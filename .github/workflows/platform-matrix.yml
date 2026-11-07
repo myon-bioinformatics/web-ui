@@ -50,7 +50,7 @@ jobs:
       - name: Check out pinned browser-test-kit (the platform probe)
         uses: actions/checkout@v7
         with:
-          repository: myon-bioinformatics/browser-test-kit
+          repository: myon-bioinformatics/BrowserTestKit
           ref: cc7322bc2e0a7c8c28f43380f6417c9e00a819f0
           path: .browser-test-kit
           persist-credentials: false
@@ -128,7 +128,7 @@ jobs:
       - name: Check out pinned browser-test-kit (merge and render)
         uses: actions/checkout@v7
         with:
-          repository: myon-bioinformatics/browser-test-kit
+          repository: myon-bioinformatics/BrowserTestKit
           ref: cc7322bc2e0a7c8c28f43380f6417c9e00a819f0
           path: .browser-test-kit
           persist-credentials: false

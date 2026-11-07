@@ -426,6 +426,33 @@ Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale
 
 The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
 
+## 🎞️ Browser evidence
+
+![All 20 built pages at 1280×800 plus four at 392×848 in Chromium](docs/evidence/browser.gif)
+
+🗓️ 2026-11-07 · 🧭 Chromium 153 · 🐧 Linux · receipt [`docs/evidence/browser.json`](docs/evidence/browser.json) · tested commit is in the receipt
+
+| 🧪 Suite | ✅ | 📝 |
+| --- | ---: | --- |
+| `tests/integration/school_browser.py` | 18 | |
+| `controls_browser.py` | 162 | |
+| `layout_presets_browser.py` · `route_table_browser.py` · `source_browser.py` | 5 · 1 · 1 | |
+| `plotly_browser.py` | 3 | Plotly.js from npm `plotly.js-dist-min` (CDN unreachable here) |
+| `successor_browser.py` | 3 | audio built; PulseAudio null sink |
+| `tests/integration/test_gradio_dom.py` | 1 | BrowserTestKit main instead of the pinned commit |
+| `tests/world_shared.browser.cjs` | desktop + mobile | |
+| BrowserTestKit `platform_probe` × 17 adapters | 34 | Chromium desktop + Pixel |
+| 🎞️ evidence GIF shots | 24 | |
+
+🚫 Firefox / WebKit not installed here, so only the Chromium lanes ran.
+
+🔁 Re-record:
+
+```sh
+python3 -S web_ui.py --site build/site
+python ../BrowserTestKit/tools/evidence_gif.py docs/evidence/browser.gif --serve build/site --plan docs/evidence/browser.json
+```
+
 ## Visual regression
 
 The deterministic Chromium screenshot lane now also runs
@@ -549,6 +576,12 @@ assert run_node("tests/repository_diagnostics.node.js").returncode == 0
 
 Existing `ui.js` text/clipboard helpers, `stub.js` form binding, and
 `repository-diagnostics.js` rendering remain in use by examples or consumers.
+
+🩺 The repository-diagnostics page itself is one function: `web_ui.repository_diagnostics_page("owner/repo")`
+returns the self-contained HTML (bundled CSS and `repository-diagnostics.js` embedded, nothing from a CDN) that
+reads `./repository-diagnostics.json` next to it via `RepositoryDiagnostics.mount`. Consumers (markdown,
+ascii_artist, mcp-toolcall-lab) write their own JSON/JSONL with gh_identity and call this for the page, pinning
+this repository as a git dependency (`uv lock --upgrade-package pysaiyanweboo` to move the pin).
 They remain optional browser utilities under the lightweight JS bar in
 [docs/lightweight-js.md](docs/lightweight-js.md). Python cannot replace
 browser-side interaction merely by generating HTML. Live DOM checks of published

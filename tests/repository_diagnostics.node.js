@@ -51,3 +51,17 @@ if (process.argv[2]) {
   assert(!rendered.includes("<script>"));
   assert(rendered.includes("&lt;script&gt;fixture&lt;/script&gt;"));
 }
+
+// Observation cards and the summary line are rendered by the same module, escaped the same way.
+const resolver = {auth: "anonymous", status: "observed", observations: [
+  {kind: "pages", status: "#reachable", http_status: 200, url: "https://example.test/<x>"},
+  {kind: "api", status: "#unverified", http_status: null, url: "https://example.test/api"},
+]};
+assert.strictEqual(renderer.summaryLine(resolver), "Auth: anonymous \u00b7 Status: observed");
+assert.strictEqual(renderer.summaryLine(null), "Auth: unknown \u00b7 Status: unknown");
+const cards = renderer.renderObservations(resolver);
+assert.strictEqual((cards.match(/<article class="ui-card">/g) || []).length, 2);
+assert(cards.includes("HTTP: 200") && cards.includes("HTTP: not observed"));
+assert(cards.includes("https://example.test/&lt;x&gt;") && !cards.includes("<x>"));
+assert.strictEqual(renderer.renderObservations({}), "");
+assert.strictEqual(typeof renderer.mount, "function");
