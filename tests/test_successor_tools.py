@@ -197,3 +197,33 @@ def test_catalogue_only_inventory_never_authorizes_archiving(tmp_path, monkeypat
     assert data['dart_files'] == data['catalogues']['example_patterns']['files'] == 1
     assert data['archive_ready'] is False
     assert 'Merge and publish successor pages, then obtain archive approval' in data['archive_blockers']
+
+
+@pytest.mark.parametrize('names', [('dart.yml', 'flutter-pages.yml'), ('ci.yml', 'pages.yml'),
+                                   ('dart.yml', 'flutter-pages.yml', 'ci.yml', 'pages.yml')])
+def test_workflow_rename_keeps_disposition_and_actual_identity(tmp_path, names):
+    from tool import flutter_migration_inventory as migration
+    import hashlib
+
+    folder = tmp_path / '.github' / 'workflows'
+    folder.mkdir(parents=True)
+    contents = {name: f'name: {name}\non: workflow_dispatch\n' for name in (*names, 'unknown.yml')}
+    for name, content in contents.items():
+        (folder / name).write_text(content, encoding='utf-8')
+    for args in (['init'], ['add', '.github'],
+                 ['-c', 'user.name=Inventory test', '-c', 'user.email=inventory@example.invalid',
+                  'commit', '-m', 'Workflow fixture']):
+        subprocess.run(['git', '-C', str(tmp_path), *args], check=True, capture_output=True)
+    data = migration.inventory(tmp_path)
+    rows = {Path(row['path']).name: row for row in data['other_sources']['workflows']}
+    assert set(rows) == set(contents)
+    for name in names:
+        row = rows[name]
+        assert row['path'] == f'.github/workflows/{name}'
+        assert row['sha256'] == hashlib.sha256(contents[name].encode()).hexdigest()
+        assert row['status'] == 'proposed_retirement' and row['target'] is None
+        assert row['remaining'] == ('Flutter analyze and test' if name in ('dart.yml', 'ci.yml')
+                                    else 'Publishes the Flutter web build')
+    assert rows['unknown.yml']['status'] == 'unreviewed'
+    assert data['status_counts_outside_catalogues'] == {'proposed_retirement': len(names), 'unreviewed': 1}
+    assert data['archive_ready'] is False
