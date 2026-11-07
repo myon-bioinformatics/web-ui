@@ -426,6 +426,33 @@ Screenshot filenames follow `web-ui-<viewport-name>.png`. New viewport or locale
 
 The first phase intentionally treats screenshots as observable test evidence rather than a pixel-perfect blocking regression test.
 
+## 🎞️ Browser evidence
+
+![All 20 built pages at 1280×800 plus four at 392×848 in Chromium](docs/evidence/browser.gif)
+
+🗓️ 2026-11-07 · 🧭 Chromium 153 · 🐧 Linux · receipt [`docs/evidence/browser.json`](docs/evidence/browser.json) · tested commit is in the receipt
+
+| 🧪 Suite | ✅ | 📝 |
+| --- | ---: | --- |
+| `tests/integration/school_browser.py` | 18 | |
+| `controls_browser.py` | 162 | |
+| `layout_presets_browser.py` · `route_table_browser.py` · `source_browser.py` | 5 · 1 · 1 | |
+| `plotly_browser.py` | 3 | Plotly.js from npm `plotly.js-dist-min` (CDN unreachable here) |
+| `successor_browser.py` | 3 | audio built; PulseAudio null sink |
+| `tests/integration/test_gradio_dom.py` | 1 | BrowserTestKit main instead of the pinned commit |
+| `tests/world_shared.browser.cjs` | desktop + mobile | |
+| BrowserTestKit `platform_probe` × 17 adapters | 34 | Chromium desktop + Pixel |
+| 🎞️ evidence GIF shots | 24 | |
+
+🚫 Firefox / WebKit not installed here, so only the Chromium lanes ran.
+
+🔁 Re-record:
+
+```sh
+python3 -S web_ui.py --site build/site
+python ../BrowserTestKit/tools/evidence_gif.py docs/evidence/browser.gif --serve build/site --plan docs/evidence/browser.json
+```
+
 ## Visual regression
 
 The deterministic Chromium screenshot lane now also runs
