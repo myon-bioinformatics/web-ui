@@ -39,7 +39,7 @@ PICKED = "() => !document.querySelector('.ui-world').hasAttribute('data-pick')"
 SETTLED = ("() => { const f = [...document.querySelectorAll('.ui-floor')].find(f => getComputedStyle(f).display !== 'none'), p = f.querySelector('.ui-player'), s = p.style;"
            "return Math.abs(parseFloat(s.getPropertyValue('--px')) - +p.dataset.targetX) < .01 && Math.abs(parseFloat(s.getPropertyValue('--py')) - +p.dataset.targetY) < .01 }")   # the shown floor's player has arrived
 PLAYER = (0.48, 0.69)                           # where a character standing at the door is on screen: a zoom target
-WORLDS = {"school": SPEC, "overworld": web_ui.example_data("overworld")}       # the specs a scene can open; a GIF is <world>-<scene>.gif
+WORLDS = {"school": SPEC, "overworld": web_ui.example_data("overworld"), "cities": web_ui.example_data("cities")}   # the specs a scene can open; a GIF is <world>-<scene>.gif
 
 
 class Scene(NamedTuple):
@@ -375,6 +375,68 @@ def _real(page, cam, tmp):
 
 TERMINAL = ('<meta charset="utf-8"><body style="margin:0;background:#0d1117;color:#d1f7c4;font:20px/1.6 Meiryo,メイリオ,monospace">'
             '<pre style="margin:0;padding:24px;white-space:pre-wrap;word-break:break-all"></pre>')
+
+
+def spot(page, cam, floor, spot_id, hold_ms=700):
+    """Walk to a spot of a city from its ☰ row: its sheet opens at once (read it, close it), then the walk is watched to the end."""
+    more(page, cam, "spots", 600)
+    page.click(f'.ui-world-spots[data-floor="{floor}"] a[href="#cities-spot-{spot_id}"]')
+    cam.hold(hold_ms)
+    page.click(".ui-sheet-close:visible")
+    cam.until(SETTLED, 40000)
+    cam.hold(500)
+
+
+def sign(page, cam, floor, spot_id, faces):
+    """Touch a sign board: the dot, its text, a second face if it has one, the dot again."""
+    marker = f'.ui-floor[data-floor="{floor}"] .ui-spot[href="#cities-spot-{spot_id}"]'
+    for _ in range(faces):
+        page.eval_on_selector(marker, "e => e.click()")
+        cam.hold(700)
+        page.click(".ui-sheet-close:visible")
+        cam.hold(500)
+
+
+@scene("tokyo", world="cities", width=560, height=720)
+def _tokyo(page, cam, tmp):
+    """Parallel Tokyo: 🚉 lists the six exits of Tokyo Station; walk from Marunouchi to Yaesu through the concourse, then on to Kanda by ☰; the electronic board lights up when touched."""
+    choose(page, "🧳")
+    cam.hold(800)
+    page.click('.ui-world-head .ui-world-menu[data-menu="tool"] > summary')
+    cam.hold(1200)
+    page.click('.ui-world-head .ui-world-menu[data-menu="tool"] a[href="#cities-spot-tokyo-yaesu-c"]')
+    cam.until(SETTLED, 40000)
+    cam.hold(700)
+    page.click(".ui-sheet-close:visible")
+    cam.hold(300)
+    sign(page, cam, "tokyo", "tokyo-concourse", 2)
+    spot(page, cam, "tokyo", "tokyo-kanda")
+    cam.zoom(PLAYER, factor=1.6, hold_ms=1200)
+
+
+@scene("london", world="cities", width=560, height=720)
+def _london(page, cam, tmp):
+    """Reverse London: 🎡 opens it; walk from King's Cross to Waterloo over the Thames bridge, then the wooden nogard board: dot, text, 🐉, dot."""
+    choose(page, "🧳")
+    cam.hold(600)
+    page.click('.ui-world-tools label[for="cities-floor-london"]')
+    cam.hold(1000)
+    spot(page, cam, "london", "london-waterloo")
+    sign(page, cam, "london", "london-nogard", 3)
+    cam.zoom(PLAYER, factor=1.8, hold_ms=1200)
+
+
+@scene("paris", world="cities", width=560, height=720)
+def _paris(page, cam, tmp):
+    """Fake Paris: 🥖 opens it; a fire burns in each block; walk from Gare du Nord to the wooden rive gauche sign by the Seine (dot, text, dot), then to the Eiffel Tower."""
+    choose(page, "🧳")
+    cam.hold(600)
+    page.click('.ui-world-tools label[for="cities-floor-paris"]')
+    cam.hold(1000)
+    spot(page, cam, "paris", "paris-rive-gauche", 400)
+    sign(page, cam, "paris", "paris-rive-gauche", 2)
+    spot(page, cam, "paris", "paris-eiffel")
+    cam.zoom(PLAYER, factor=1.6, hold_ms=1200)
 
 
 @scene("oneliner", crop=None)

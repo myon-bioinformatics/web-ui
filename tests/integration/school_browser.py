@@ -3,13 +3,21 @@
 The emoji picker comes first, then the player walks by tap, arrow keys / WASD and the on-screen pad.
 Solid props (desks, board, shelves) are never entered, whichever way the player moves.
 Invoked explicitly by the browser CI job; missing Playwright/browser is an error. WEB_UI_CHROME may name a local Chrome.
+``CitiesTests`` sweeps the three cities (every spot, sign, tool, width and language); with WEB_UI_SHOTS=DIR it also keeps a
+screenshot of each check, a manifest.json and one index.html in DIR (Pillow writes them as WebP).
 """
+import copy
+from datetime import datetime, timezone
+from html import escape
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -522,6 +530,478 @@ class SchoolTests(unittest.TestCase):
             box = page.evaluate(f"() => {{ const r = document.querySelector('{CLASSROOM} .ui-player').getBoundingClientRect(); return [r.left, r.right]; }}")
             self.assertGreaterEqual(box[0], 0)
             self.assertLessEqual(box[1], width)
+
+
+# --- The three cities: every spot, sign, tool, width and language, with an optional screenshot per check ---
+CITIES = web_ui.world_validate(web_ui.example_data("cities"))
+FAST = copy.deepcopy(CITIES)                     # the same floors, grid and routes; the player walks at the top speed so a sweep takes minutes
+for _floor in FAST["floors"]:
+    _floor["player"]["speed"] = 480
+SIZES = {"phone": (390, 844, True), "desktop": (1280, 800, False)}
+WIDTHS = {"phone-320": (320, 640, True), "phone": (390, 844, True), "phone-landscape": (844, 390, True),
+          "tablet": (768, 1024, False), "desktop": (1280, 800, False), "wide": (1920, 1080, False)}
+SHOTS = os.environ.get("WEB_UI_SHOTS")           # a folder: each check also keeps a screenshot, listed in manifest.json and index.html
+CITY_FLOOR = '.ui-floor[data-floor="{}"]'
+CITY_POS = "fl => { const s = document.querySelector(`.ui-floor[data-floor=\"${fl}\"] .ui-player`).style; return [parseFloat(s.getPropertyValue('--px')), parseFloat(s.getPropertyValue('--py'))]; }"
+CITY_TARGET = "fl => { const p = document.querySelector(`.ui-floor[data-floor=\"${fl}\"] .ui-player`); return [+p.dataset.targetX, +p.dataset.targetY]; }"
+CITY_WALK = ("fl => new Promise(done => { const p = document.querySelector(`.ui-floor[data-floor=\"${fl}\"] .ui-player`), seen = [], t0 = performance.now();"
+             " const step = () => { const s = p.style, x = parseFloat(s.getPropertyValue('--px')), y = parseFloat(s.getPropertyValue('--py')); seen.push([x, y]);"
+             " if ((Math.abs(x - +p.dataset.targetX) < .01 && Math.abs(y - +p.dataset.targetY) < .01) || performance.now() - t0 > 30000) done(seen);"
+             " else requestAnimationFrame(step) }; requestAnimationFrame(step) })")      # every frame of the walk, until the player stands at its target
+CITY_TOP = ("sel => { const a = document.querySelector(sel), r = a.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2,"
+            " e = document.elementFromPoint(x, y); return {self: !!e && (e === a || a.contains(e)), sheet: !!e?.closest('.ui-sheet'),"
+            " what: (e?.closest('.ui-spot,.ui-sheet-item,.ui-world-dpad,.ui-world-side,.ui-player')?.textContent || e?.className || '').trim().slice(0, 24), x, y} }")
+
+
+def city_cell(point, tile):
+    return int(point[0] // tile), int(point[1] // tile)
+
+
+def write_city_gallery(out, records, meta):
+    """manifest.json and a one-page index.html (no JavaScript, opens from file://) beside the shots/ written by the sweep."""
+    ok = sum(1 for r in records if not r["notes"])
+    (out / "manifest.json").write_text(json.dumps({"schema": "web-ui-cities-evidence/1", **meta, "shots": len(records), "clean": ok,
+                                                   "noted": len(records) - ok, "records": records}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    sections = {}
+    for r in records:
+        sections.setdefault((r["kind"], r["viewport"], r["floor"]), []).append(r)
+    css = ("body{font-family:Meiryo,'Hiragino Sans','Noto Sans JP',sans-serif;margin:16px;background:#0c1018;color:#e6edf3}"
+           "a{color:#8fd694}h2{margin:32px 0 8px;font-size:16px}nav a{margin-right:8px;white-space:nowrap}"
+           ".g{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(var(--w),1fr))}.phone{--w:192px}.desktop,.wide,.tablet{--w:320px}"
+           "figure{margin:0;padding:8px;border:1px solid #30363d;border-radius:8px}figure.n{border-color:#d29922}img{width:100%;height:auto;display:block}"
+           "figcaption{font-size:12px;line-height:16px;margin-top:8px}.note{color:#d29922}")
+    names = {"overview": "🗺️", "sheet": "📄", "map": "📍", "sign": "🪧", "tool": "🧰", "width": "📐", "lang": "🌐", "nojs": "🚫", "pick": "🙂", "favorite": "⭐", "fire": "🔥", "key": "⌨️", "category": "🏷️"}
+    parts = [f"<!doctype html><html lang=ja><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+             f"<title>🗼🎡🥖 cities evidence</title><style>{css}</style><h1>🗼🎡🥖 cities evidence</h1>"
+             f"<p>✅ {ok} · ⚠️ {len(records) - ok} · 📸 {len(records)} · {escape(meta['browser'])} · {escape(meta['date'])} · {escape(meta['commit'][:12])}</p><nav>"]
+    keys = list(sections)
+    parts += [f"<a href='#s{i}'>{names.get(k[0], k[0])} {escape(k[1])} {escape(k[2])} ({len(sections[k])})</a>" for i, k in enumerate(keys)]
+    parts.append("</nav>")
+    for i, key in enumerate(keys):
+        kind, viewport, floor = key
+        parts.append(f"<h2 id='s{i}'>{names.get(kind, kind)} {escape(kind)} · {escape(viewport)} · {escape(floor)}</h2><div class='g {escape(viewport.split('-')[0])}'>")
+        for r in sections[key]:
+            notes = "".join(f"<br><span class=note>{escape(n)}</span>" for n in r["notes"])
+            parts.append(f"<figure class='{'n' if r['notes'] else ''}'><a href='shots/{escape(r['file'])}'><img src='shots/{escape(r['file'])}' loading=lazy "
+                         f"alt='{escape(r['label'], quote=True)}'></a><figcaption>{'⚠️' if r['notes'] else '✅'} {escape(r['label'])}{notes}</figcaption></figure>")
+        parts.append("</div>")
+    (out / "index.html").write_text("".join(parts) + "\n", encoding="utf-8")
+
+
+class CitiesTests(unittest.TestCase):
+    """Parallel Tokyo, Reverse London and Fake Paris end to end: every spot from the ☰ list (walked to, never through water, the sheet tells its text,
+    the arrows agree with Python's world_direction and the target with world_route_points), every sign's faces, the tools, keys, categories,
+    favourites, widths, languages and the page without JavaScript. What works but looks wrong (a sheet over the destination, a label over a label)
+    is kept as a note next to the screenshot instead of failing."""
+    records = []
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.page_path, cls.fast_path = Path(cls.tmp.name) / "cities.html", Path(cls.tmp.name) / "fast.html"
+        cls.page_path.write_text(web_ui.world_document(CITIES), encoding="utf-8")
+        cls.fast_path.write_text(web_ui.world_document(FAST), encoding="utf-8")
+        cls.pw = sync_playwright().start()
+        cls.browser = record_demo.launch(cls.pw)
+        cls.out = Path(SHOTS) if SHOTS else None
+        if cls.out:
+            (cls.out / "shots").mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        version = cls.browser.version
+        cls.browser.close()
+        cls.pw.stop()
+        cls.tmp.cleanup()
+        if cls.out and cls.records:
+            from importlib.metadata import version as package_version
+            commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() or "unknown"
+            write_city_gallery(cls.out, sorted(cls.records, key=lambda r: r["order"]), {
+                "browser": f"Chromium {version} (Playwright {package_version('playwright')})", "commit": commit,
+                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "player_speed": "480 (FAST) for the sweeps; 96 for keys, pad and reduced motion"})
+
+    def open(self, size, path=None, js=True, reduced=False):
+        width, height, touch = WIDTHS[size]
+        context = self.browser.new_context(viewport={"width": width, "height": height}, has_touch=touch, is_mobile=touch, java_script_enabled=js,
+                                           reduced_motion="reduce" if reduced else "no-preference")
+        self.addCleanup(context.close)
+        page = context.new_page()
+        self.errors = []
+        page.on("pageerror", lambda e: self.errors.append(str(e)))
+        page.on("console", lambda m: m.type == "error" and self.errors.append(m.text))
+        page.goto((path or self.fast_path).as_uri())
+        page.size, page.touch = size, touch
+        return page
+
+    def start(self, page, emoji="🧳"):
+        page.click(f'[data-emoji="{emoji}"]')
+        page.wait_for_function(record_demo.PICKED)
+        page.wait_for_timeout(300)
+
+    def show(self, page, floor):
+        page.select_option(".ui-world-goto", floor)
+        page.wait_for_function(f"() => getComputedStyle(document.querySelector('{CITY_FLOOR.format(floor)}')).display !== 'none'")
+        page.wait_for_timeout(150)
+
+    def menu(self, page, name):
+        page.click(f'.ui-world-menu[data-menu="{name}"] > summary')
+
+    def tap(self, page, x, y):
+        """A finger (phone) or the mouse (desktop) on a point of the map."""
+        if page.touch:
+            page.touchscreen.tap(x, y)
+        else:
+            page.mouse.click(x, y)
+
+    def press(self, page, selector):
+        """A finger or the mouse on an element (Playwright's own tap/click: it scrolls the element into view and refuses one that is covered).
+        Returns the notes: empty when the real press worked, one line when it was covered and a script click stood in."""
+        target = page.locator(selector)
+        try:
+            (target.tap if page.touch else target.click)(timeout=3000)
+            return []
+        except PlaywrightTimeoutError:
+            top = page.evaluate(CITY_TOP, selector)
+            target.evaluate("e => e.click()")
+            return [f"⚠️ 目印の上に「{top['what']}」が重なり押せない（スクリプトで代用）"]
+
+    def shot(self, page, kind, floor, ident, label, notes=()):
+        """One screenshot of the world (the page around it is cut off), kept only with WEB_UI_SHOTS."""
+        if not self.out:
+            return
+        from PIL import Image
+        import io
+        box = page.eval_on_selector(".ui-world", "e => { const r = e.getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width, height: Math.min(r.height, innerHeight - r.y)} }")
+        png = page.screenshot(type="png", clip={k: round(v) for k, v in box.items()})
+        name = f"{page.size}-{floor}-{kind}-{ident}".replace("/", "_") + ".webp"
+        Image.open(io.BytesIO(png)).convert("RGB").save(self.out / "shots" / name, "WEBP", quality=80, method=6)
+        type(self).records.append({"order": len(self.records), "file": name, "viewport": page.size, "floor": floor, "kind": kind, "id": ident,
+                                   "label": label, "notes": list(notes)})
+
+    def arrows(self, page, floor):
+        return page.eval_on_selector_all(f'.ui-world-spots[data-floor="{floor}"] a', "els => els.map(a => [a.getAttribute('href'), a.querySelector('.ui-world-arrow').textContent])")
+
+    def sweep(self, size):
+        """Every spot of every city, one after another, from the ☰ list; then a real tap on its marker."""
+        page = self.open(size)
+        self.start(page)
+        for f in CITIES["floors"]:
+            fl, tile = f["id"], f["tile"]
+            blocked = web_ui.world_blocked(f["width"], f["height"], tile, f["props"])
+            self.show(page, fl)
+            self.shot(page, "overview", fl, "fit", f["label"])
+            for s in f["spots"]:
+                with self.subTest(size=size, spot=s["id"]):
+                    href, sheet = f"#cities-spot-{s['id']}", f"#cities-spot-{s['id']}"
+                    marker = f'{CITY_FLOOR.format(fl)} .ui-spot[href="{href}"]'
+                    here = page.evaluate(CITY_POS, fl)
+                    self.menu(page, "spots")
+                    want = [[f"#cities-spot-{t['id']}", web_ui.world_direction(here, [t["x"], t["y"]], tile)] for t in f["spots"]]
+                    try:
+                        page.wait_for_function("([fl, want]) => JSON.stringify([...document.querySelectorAll(`.ui-world-spots[data-floor=\"${fl}\"] a`)].map(a => "
+                                               "[a.getAttribute('href'), a.querySelector('.ui-world-arrow').textContent])) === JSON.stringify(want)", arg=[fl, want], timeout=3000)
+                    except Exception:
+                        pass
+                    self.assertEqual(self.arrows(page, fl), want)                                   # the ☰ arrows from where the player stands
+                    goal = web_ui.world_route_points(blocked, tile, here, [s["x"], s["y"]])[-1]
+                    page.click(f'.ui-world-spots[data-floor="{fl}"] a[href="{href}"]')
+                    seen = page.evaluate(CITY_WALK, fl)
+                    self.assertEqual([p for p in seen if blocked[city_cell(p, tile)[1]][city_cell(p, tile)[0]] == "1"], [], "walked into water")
+                    target = page.evaluate(CITY_TARGET, fl)
+                    self.assertAlmostEqual(target[0], goal[0], delta=.01)
+                    self.assertAlmostEqual(target[1], goal[1], delta=.01)
+                    end = page.evaluate(CITY_POS, fl)
+                    self.assertLess(abs(end[0] - target[0]) + abs(end[1] - target[1]), .05)
+                    self.assertEqual(page.evaluate("location.hash"), sheet)
+                    self.assertTrue(page.is_visible(sheet))
+                    self.assertEqual([page.text_content(f"{sheet} h3"), page.text_content(f"{sheet} p")], [s["label"], s["body"]])
+                    self.assertEqual(page.input_value(".ui-world-goto"), fl)
+                    self.assertGreaterEqual(float(page.evaluate("document.querySelector('.ui-world-cam').style.getPropertyValue('--z')")), 2 - 1e-9)
+                    notes = []
+                    if page.evaluate(CITY_TOP, marker)["sheet"]:
+                        notes.append("⚠️ シートが行き先の目印を隠す")
+                    if page.evaluate(CITY_TOP, f"{CITY_FLOOR.format(fl)} .ui-player")["sheet"]:
+                        notes.append("⚠️ シートが🧳を隠す")
+                    self.shot(page, "sheet", fl, s["id"], s["label"], notes)
+                    page.click(".ui-sheet-close:visible")
+                    notes = []
+                    if not s.get("sign"):                                                           # signs are pressed by test_every_sign_shows_its_faces
+                        notes = self.press(page, marker)
+                        page.wait_for_selector(sheet, state="visible", timeout=3000)
+                        page.click(".ui-sheet-close:visible")
+                    self.shot(page, "map", fl, s["id"], s["label"], notes)
+        self.assertEqual(self.errors, [])
+
+    def test_every_spot_on_a_phone(self):
+        self.sweep("phone")
+
+    def test_every_spot_on_a_desktop(self):
+        self.sweep("desktop")
+
+    def test_every_sign_shows_its_faces(self):
+        """A sign is a dot until touched; then its text; then its second face if it has one (nogard 🐉); then the dot again."""
+        for size in SIZES:
+            page = self.open(size)
+            self.start(page)
+            for f in CITIES["floors"]:
+                self.show(page, f["id"])
+                for s in (s for s in f["spots"] if s.get("sign")):
+                    with self.subTest(size=size, sign=s["id"]):
+                        marker = f'{CITY_FLOOR.format(f["id"])} .ui-spot[href="#cities-spot-{s["id"]}"]'
+                        self.menu(page, "spots")
+                        page.click(f'.ui-world-spots a[href="#cities-spot-{s["id"]}"]')                 # the list walks there without turning the board
+                        page.evaluate(CITY_WALK, f["id"])
+                        page.click(".ui-sheet-close:visible")
+                        faces = ["", "label", "flip", ""] if s.get("flip") else ["", "label", ""]
+                        for i, face in enumerate(faces):
+                            notes = []
+                            if i:
+                                notes = self.press(page, marker)
+                                page.wait_for_selector(f"#cities-spot-{s['id']}", state="visible", timeout=3000)
+                                page.click(".ui-sheet-close:visible")
+                            state = page.eval_on_selector(marker, "e => { const c = getComputedStyle(e); return [e.textContent, e.dataset.show || '', c.fontSize, c.color,"
+                                                          " c.backgroundColor, getComputedStyle(e, '::before').content] }")
+                            self.assertEqual(state[:2], [s["flip"] if face == "flip" else s["label"], face])
+                            self.assertEqual(state[2] == "0px", face == "")                              # the dot hides the text
+                            self.assertIn("●", state[5])
+                            self.assertEqual(state[4], {"led": "rgb(17, 17, 17)", "wood": "rgb(139, 90, 43)"}[s["sign"]])
+                            if s["sign"] == "led":
+                                self.assertEqual(state[3], "rgb(255, 176, 0)")
+                            self.shot(page, "sign", f["id"], f"{s['id']}-{i}-{face or 'dot'}", f"{s['label']} · {face or 'dot'}", notes)
+            self.assertEqual(self.errors, [])
+
+    def test_city_tools_and_tokyo_station(self):
+        """🗼🎡🥖 open their city; 🚉 lists Tokyo Station's six exits (🚪 from another city), walks to each, and its arrows agree with Python."""
+        tool = CITIES["tools"]["🚉"]
+        tokyo = next(f for f in CITIES["floors"] if f["id"] == "tokyo")
+        exits = [next(s for s in tokyo["spots"] if s["id"] == i) for i in tool["spots"]]
+        panel = '.ui-world-head .ui-world-menu[data-menu="tool"] .ui-world-rows'        # 🚉 is the only tool menu of the cities (🗼🎡🥖 are floor labels)
+        rows = panel + ' a'
+        for size in SIZES:
+            page = self.open(size)
+            self.start(page)
+            for emoji, fl in (("🎡", "london"), ("🥖", "paris"), ("🗼", "tokyo")):
+                page.click(f'.ui-world-tools label[for="cities-floor-{fl}"]')
+                page.wait_for_function(f"() => getComputedStyle(document.querySelector('{CITY_FLOOR.format(fl)}')).display !== 'none'")
+                page.wait_for_function(f"() => document.querySelector('.ui-world-goto').value === '{fl}'")      # the pulldown follows within a frame
+                self.assertEqual(page.text_content(f'.ui-world-tools label[for="cities-floor-{fl}"]'), emoji)
+                page.wait_for_timeout(150)
+                self.shot(page, "tool", fl, emoji, f"{emoji} {next(f['label'] for f in CITIES['floors'] if f['id'] == fl)}")
+            self.show(page, "london")
+            page.click('.ui-world-head .ui-world-menu[data-menu="tool"] > summary')
+            self.assertEqual(page.eval_on_selector_all(rows, "els => els.map(a => a.querySelector('.ui-world-arrow').textContent)"), ["🚪"] * 6)
+            self.shot(page, "tool", "london", "station-door", "🚉 from London: 🚪 ×6")
+            page.keyboard.press("Escape")
+            for s in exits:
+                with self.subTest(size=size, exit=s["id"]):
+                    page.click('.ui-world-head .ui-world-menu[data-menu="tool"] > summary')
+                    page.click(f'{panel} a[href="#cities-spot-{s["id"]}"]')
+                    page.evaluate(CITY_WALK, "tokyo")
+                    self.assertEqual(page.input_value(".ui-world-goto"), "tokyo")
+                    self.assertEqual(page.text_content(f"#cities-spot-{s['id']} h3"), s["label"])
+                    here = page.evaluate(CITY_POS, "tokyo")
+                    self.assertLess(abs(here[0] - s["x"]) + abs(here[1] - s["y"]), .05)          # Tokyo has no water: every exit is reached exactly
+                    page.click(".ui-sheet-close:visible")
+                    page.click('.ui-world-head .ui-world-menu[data-menu="tool"] > summary')
+                    want = [web_ui.world_direction(here, [e["x"], e["y"]], tokyo["tile"]) for e in exits]
+                    page.wait_for_function("([sel, want]) => JSON.stringify([...document.querySelectorAll(sel)].map(a => a.querySelector('.ui-world-arrow').textContent)) === JSON.stringify(want)",
+                                           arg=[rows, want], timeout=3000)
+                    self.shot(page, "tool", "tokyo", f"station-{s['id']}", f"🚉 at {s['label']}")
+                    page.keyboard.press("Escape")
+            self.assertEqual(self.errors, [])
+
+    def test_keys_pad_and_water_at_the_real_speed(self):
+        """Arrow keys (desktop) and the pad (phone) step one tile; a step into the Thames or the Seine is refused. Normal speed, no FAST."""
+        for size in SIZES:
+            page = self.open(size, path=self.page_path)
+            self.start(page)
+            for f in CITIES["floors"]:
+                fl, tile = f["id"], f["tile"]
+                blocked = web_ui.world_blocked(f["width"], f["height"], tile, f["props"])
+                self.show(page, fl)
+                steps = [((0, -1), "ArrowUp"), ((1, 0), "ArrowRight"), ((0, 1), "ArrowDown"), ((-1, 0), "ArrowLeft")]
+                for (dx, dy), key in steps:
+                    with self.subTest(size=size, floor=fl, key=key):
+                        cx, cy = city_cell(page.evaluate(CITY_POS, fl), tile)
+                        n = (cx + dx, cy + dy)
+                        free = 0 <= n[0] < len(blocked[0]) and 0 <= n[1] < len(blocked) and blocked[n[1]][n[0]] == "0"
+                        if page.touch:
+                            page.dispatch_event(f'[data-step="{dx},{dy}"]', "pointerdown")
+                            page.dispatch_event(f'[data-step="{dx},{dy}"]', "pointerup")
+                        else:
+                            page.keyboard.press(key)
+                        page.wait_for_timeout(100)
+                        page.evaluate(CITY_WALK, fl)
+                        self.assertEqual(city_cell(page.evaluate(CITY_POS, fl), tile), n if free else (cx, cy))
+                water = [c for c in web_ui.world_reach(blocked, city_cell([f["player"]["x"], f["player"]["y"]], tile))
+                         if c[1] + 1 < len(blocked) and blocked[c[1] + 1][c[0]] == "1"]                  # a free tile with water just below it
+                if not water:
+                    continue                                                                         # Tokyo has no water
+                with self.subTest(size=size, floor=fl, shore=water[0]):
+                    shore = water[len(water) // 2]
+                    box = page.evaluate(f"() => {{ const r = document.querySelector('{CITY_FLOOR.format(fl)}').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }}")
+                    self.tap(page, box[0] + (shore[0] + .5) * tile * box[2] / f["width"], box[1] + (shore[1] + .5) * tile * box[3] / f["height"])
+                    page.wait_for_timeout(100)
+                    seen = page.evaluate(CITY_WALK, fl)
+                    self.assertEqual([p for p in seen if blocked[city_cell(p, tile)[1]][city_cell(p, tile)[0]] == "1"], [])
+                    at = city_cell(page.evaluate(CITY_POS, fl), tile)
+                    if blocked[at[1] + 1][at[0]] == "1":                                             # the tap landed on that shore: step into the river
+                        if page.touch:
+                            page.dispatch_event('[data-step="0,1"]', "pointerdown")
+                            page.dispatch_event('[data-step="0,1"]', "pointerup")
+                        else:
+                            page.keyboard.press("ArrowDown")
+                        page.wait_for_timeout(400)
+                        self.assertEqual(city_cell(page.evaluate(CITY_POS, fl), tile), at)
+                    self.shot(page, "key", fl, "shore", f"{f['label']}: 🌊 refused at {at}")
+            self.assertEqual(self.errors, [])
+
+    def test_categories_filter_the_list_and_the_map(self):
+        for size in SIZES:
+            page = self.open(size)
+            self.start(page)
+            for f in CITIES["floors"]:
+                fl = f["id"]
+                self.show(page, fl)
+                for cat in ["", *sorted({s["category"] for s in f["spots"]})]:
+                    with self.subTest(size=size, floor=fl, category=cat or "all"):
+                        self.menu(page, "spots")
+                        page.click(f'.ui-world-menu[data-menu="spots"] label[data-cat="{cat}"]')
+                        want = sorted(s["id"] for s in f["spots"] if cat in ("", s["category"]))
+                        rows = page.eval_on_selector_all(f'.ui-world-spots[data-floor="{fl}"] li', "els => els.filter(e => e.offsetParent).map(e => e.querySelector('a').getAttribute('href'))")
+                        marks = page.eval_on_selector_all(f"{CITY_FLOOR.format(fl)} .ui-spot", "els => els.filter(e => getComputedStyle(e).display !== 'none').map(e => e.getAttribute('href'))")
+                        self.assertEqual(sorted(h.split("-spot-")[1] for h in rows), want)
+                        self.assertEqual(sorted(h.split("-spot-")[1] for h in marks), want)
+                        self.shot(page, "category", fl, cat or "all", f"🏷️ {cat or 'all'} ({len(want)})")
+                        page.keyboard.press("Escape")
+                self.menu(page, "spots")
+                page.click('.ui-world-menu[data-menu="spots"] label[data-cat=""]')
+                page.keyboard.press("Escape")
+            self.assertEqual(self.errors, [])
+
+    def test_favorites_across_the_cities_and_home(self):
+        page = self.open("phone")
+        self.start(page)
+        first = {f["id"]: f["spots"][0] for f in CITIES["floors"]}
+        for fl, s in first.items():
+            self.show(page, fl)
+            self.menu(page, "spots")
+            page.click(f'.ui-world-spots[data-floor="{fl}"] li:has(a[href="#cities-spot-{s["id"]}"]) .ui-world-star')
+            page.keyboard.press("Escape")
+        self.menu(page, "favorites")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-favs a", "els => els.map(e => e.lastChild.textContent)"), [s["label"] for s in first.values()])
+        self.shot(page, "favorite", "paris", "panel", "⭐ ×3")
+        page.click(f'.ui-world-favs a[href="#cities-spot-{first["london"]["id"]}"]')       # from Paris to London in one tap
+        self.assertEqual(page.input_value(".ui-world-goto"), "london")
+        self.assertTrue(page.is_visible(f"#cities-spot-{first['london']['id']}"))
+        page.click(".ui-world-home")
+        page.click('.ui-world-ask button[data-t="home"]')
+        self.assertEqual(page.input_value(".ui-world-goto"), "tokyo")
+        self.shot(page, "favorite", "tokyo", "home", "🏠 → Parallel Tokyo")
+        self.assertEqual(self.errors, [])
+
+    def test_every_width_fits_each_city(self):
+        for size, (width, height, touch) in WIDTHS.items():
+            page = self.open(size)
+            self.start(page)
+            for f in CITIES["floors"]:
+                with self.subTest(size=size, floor=f["id"]):
+                    self.show(page, f["id"])
+                    self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth - innerWidth"), 0)
+                    self.assertTrue(page.is_visible(f"{CITY_FLOOR.format(f['id'])} .ui-player"))
+                    self.assertTrue(page.is_visible(".ui-world-dpad"))                                # every city is a grid
+                    notes = []
+                    tall = page.evaluate("document.documentElement.scrollHeight - innerHeight")
+                    if tall > 0:
+                        notes.append(f"⚠️ 縦に {tall}px はみ出す")
+                    cut = page.evaluate("() => [...document.querySelectorAll('.ui-world-head .ui-board > strong, .ui-world-head .ui-board-clock')].filter(e => e.scrollWidth > e.clientWidth + 1 || e.getBoundingClientRect().right > e.closest('.ui-board').getBoundingClientRect().right + 1).map(e => e.textContent)")
+                    if cut:
+                        notes.append("⚠️ ヘッダーで切れる: " + " / ".join(cut))
+                    out = page.evaluate("() => [...document.querySelectorAll('.ui-world-head .ui-world-tools > *, .ui-world-side summary, .ui-world-goto')].filter(e => { const r = e.getBoundingClientRect(); return r.width && (r.left < 0 || r.right > innerWidth + .5) }).map(e => e.textContent.trim().slice(0, 4))")
+                    self.assertEqual(out, [], "a control sticks out of the window")
+                    self.shot(page, "width", f["id"], f"{width}x{height}", f"{f['label']} {width}×{height}", notes)
+            self.assertEqual(self.errors, [])
+
+    def test_every_language_labels_the_city_tools(self):
+        page = self.open("phone")
+        self.start(page)
+        codes = [code for code, _ in web_ui.WORLD_LANGS]
+        for code in codes:
+            with self.subTest(lang=code):
+                self.menu(page, "settings")
+                page.select_option(".ui-world-head [data-lang]", code)
+                self.assertEqual(page.evaluate("document.querySelector('.ui-world').lang"), code)
+                labels = page.eval_on_selector_all(".ui-world-head .ui-world-home, .ui-world-tools label, .ui-world-head summary", "els => els.map(e => e.getAttribute('aria-label'))")
+                self.assertTrue(all(labels), labels)
+                if code == "en":
+                    self.assertEqual(labels[1:4], ["Parallel Tokyo", "Reverse London", "Fake Paris"])
+                if code != "ja":
+                    self.assertNotEqual(labels[0], "ホーム")
+                self.shot(page, "lang", "tokyo", code, f"🌐 {code}: {' · '.join(labels[:4])}")
+                page.keyboard.press("Escape")
+        self.assertEqual(self.errors, [])
+
+    def test_without_javascript_each_city_is_a_static_map(self):
+        for size in SIZES:
+            page = self.open(size, js=False)
+            for f in CITIES["floors"]:
+                with self.subTest(size=size, floor=f["id"]):
+                    page.click(f'.ui-world-foot label[for="cities-floor-{f["id"]}"]')
+                    self.assertTrue(page.is_visible(CITY_FLOOR.format(f["id"])))
+                    self.assertEqual(page.eval_on_selector_all(f"{CITY_FLOOR.format(f['id'])} .ui-spot", "els => els.length"), len(f["spots"]))
+                    self.assertFalse(page.is_visible(".ui-world-pick"))
+                    s = f["spots"][0]
+                    page.evaluate(f"location.hash = '#cities-spot-{s['id']}'")                     # a spot link without JS: the sheet is a :target
+                    self.assertTrue(page.is_visible(f"#cities-spot-{s['id']}"))
+                    self.shot(page, "nojs", f["id"], "static", f"🚫JS {f['label']} · {s['label']}")
+
+    def test_the_picker_offers_every_avatar(self):
+        page = self.open("phone")
+        self.shot(page, "pick", "tokyo", "picker", "🙂 picker")
+        self.start(page, CITIES["avatars"][0])
+        for emoji in CITIES["avatars"][1:]:
+            with self.subTest(avatar=emoji):
+                self.menu(page, "settings")
+                page.click("[data-pick-open]")
+                page.click(f'[data-emoji="{emoji}"]')
+                page.wait_for_function(record_demo.PICKED)
+                self.assertEqual(page.eval_on_selector_all(".ui-player span", "els => [...new Set(els.map(e => e.textContent))]"), [emoji])
+        self.shot(page, "pick", "tokyo", "last", f"🙂 → {CITIES['avatars'][-1]}")
+        self.assertEqual(self.errors, [])
+
+    def test_reduced_motion_jumps_to_the_spot(self):
+        page = self.open("desktop", path=self.page_path, reduced=True)
+        self.start(page)
+        for f in CITIES["floors"]:
+            with self.subTest(floor=f["id"]):
+                self.show(page, f["id"])
+                s = max(f["spots"], key=lambda s: abs(s["x"] - f["player"]["x"]) + abs(s["y"] - f["player"]["y"]))   # the farthest spot
+                self.menu(page, "spots")
+                page.click(f'.ui-world-spots a[href="#cities-spot-{s["id"]}"]')
+                page.wait_for_timeout(100)
+                self.assertTrue(page.evaluate(record_demo.SETTLED))                                  # no walk to wait for
+                self.shot(page, "map", f["id"], f"reduced-{s['id']}", f"🐢→⚡ reduced motion: {s['label']}")
+                page.click(".ui-sheet-close:visible")
+        self.assertEqual(self.errors, [])
+
+    def test_fires_rivers_and_bridges_are_drawn(self):
+        page = self.open("desktop")
+        self.start(page)
+        for f in CITIES["floors"]:
+            self.show(page, f["id"])
+            blocked = web_ui.world_blocked(f["width"], f["height"], f["tile"], f["props"])
+            for kind in ("fire", "water", "bridge"):
+                props = [p for p in f["props"] if p["kind"] == kind]
+                with self.subTest(floor=f["id"], kind=kind):
+                    images = page.eval_on_selector_all(f'{CITY_FLOOR.format(f["id"])} .ui-prop[data-kind="{kind}"]', "els => els.map(e => getComputedStyle(e).backgroundImage)")
+                    self.assertEqual(len(images), len(props))
+                    if kind != "bridge":
+                        self.assertTrue(all("data:image/svg+xml" in i for i in images))
+                    if kind == "fire":                                                                # a decoration: it stands on a free tile
+                        self.assertEqual([p for p in props if blocked[p["y"] // f["tile"]][p["x"] // f["tile"]] == "1"], [])
+            if f["id"] != "tokyo":
+                self.shot(page, "fire", f["id"], "fit", f"{f['label']}: 🔥{sum(p['kind'] == 'fire' for p in f['props'])} 🌊{sum(p['kind'] == 'water' for p in f['props'])} 🌉{sum(p['kind'] == 'bridge' for p in f['props'])}")
+        self.assertEqual(self.errors, [])
 
 
 if __name__ == "__main__":

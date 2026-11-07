@@ -17210,13 +17210,11 @@ _LONDON_POINTS = [
     _pt("green-park", "グリーン・パーク", 51.5067, -0.1428, "station", "ヴィクトリアの北のとなりの駅です。"),
     _pt("pimlico", "ピムリコ", 51.4893, -0.1334, "station", "ヴィクトリアの南東のとなりの駅です。"),
     _pt("big-ben", "ビッグ・ベン", 51.5007, -0.1246, "sight", "川のほとりに立つ大きな時計塔です。"),
-    _pt("westminster-abbey", "ウェストミンスター寺院", 51.4994, -0.1273, "sight", "国の儀式が行われてきた大きな教会です。"),
     _pt("london-eye", "ロンドン・アイ", 51.5033, -0.1195, "sight", "川のそばの大きな観覧車です。"),
     _pt("buckingham", "バッキンガム宮殿", 51.5014, -0.1419, "sight", "王室の住まいの宮殿です。"),
     _pt("trafalgar-square", "トラファルガー広場", 51.508, -0.1281, "sight", "噴水と像のある大きな広場です。"),
     _pt("piccadilly-circus", "ピカデリー・サーカス", 51.51, -0.1347, "sight", "光る看板がならぶ交差点です。"),
     _pt("british-museum", "大英博物館", 51.5194, -0.127, "sight", "世界中の品々を集めた博物館です。"),
-    _pt("st-pauls-cathedral", "セント・ポール大聖堂", 51.5138, -0.0984, "sight", "大きなドームをのせた大聖堂です。"),
     _pt("the-shard", "ザ・シャード", 51.5045, -0.0865, "sight", "とがった形の高いビルです。"),
     _pt("tower-bridge", "タワー・ブリッジ", 51.5055, -0.0754, "sight", "川にかかる、二つの塔のある橋です。"),
     _pt("downing-street", "首相官邸", 51.5034, -0.1276, "famous", "首相の仕事場と住まいがある通りです。"),
@@ -17259,11 +17257,8 @@ _PARIS_POINTS = [
     _pt("falguiere", "ファルギエール", 48.8444, 2.3098, "station", "モンパルナス駅の西のとなりの駅です。"),
     _pt("eiffel", "エッフェル塔", 48.8584, 2.2945, "sight", "鉄でできた、パリでいちばん有名な塔です。"),
     _pt("arc-de-triomphe", "凱旋門", 48.8738, 2.295, "sight", "大きな道が集まる円の真ん中の門です。"),
-    _pt("notre-dame", "ノートルダム大聖堂", 48.853, 2.3499, "sight", "川の中の島に立つ大きな教会です。"),
     _pt("louvre", "ルーヴル美術館", 48.8606, 2.3376, "sight", "世界でいちばん人が来る美術館です。"),
-    _pt("sacre-coeur", "サクレ・クール寺院", 48.8867, 2.3431, "sight", "丘の上の白い教会です。"),
     _pt("pompidou", "ポンピドゥー・センター", 48.8606, 2.3522, "sight", "配管が外に出ている、現代美術の建物です。"),
-    _pt("pantheon", "パンテオン", 48.8462, 2.3464, "sight", "ドームをのせた、偉人たちの霊廟です。"),
     _pt("concorde", "コンコルド広場", 48.8656, 2.3212, "sight", "オベリスクが立つ大きな広場です。"),
     _pt("opera-garnier", "オペラ座", 48.872, 2.3316, "sight", "金色の飾りが目立つ歌劇場です。"),
     _pt("orsay", "オルセー美術館", 48.86, 2.3266, "sight", "古い駅舎を使った美術館です。"),
@@ -17278,7 +17273,7 @@ _PARIS_POINTS = [
 _PARIS_LINKS = [["gare-du-nord", "poissonniere"], ["gare-du-nord", "barbes"], ["gare-de-lest", "chateau-deau"], ["gare-de-lest", "louis-blanc"], ["gare-du-nord",
     "gare-de-lest"], ["saint-lazare", "havre-caumartin"], ["saint-lazare", "europe"], ["gare-de-lyon", "bastille"], ["gare-de-lyon",
     "quai-de-la-rapee"], ["quai-de-la-rapee", "austerlitz"], ["austerlitz", "saint-marcel"], ["austerlitz", "jussieu"], ["montparnasse",
-    "edgar-quinet"], ["montparnasse", "vavin"], ["montparnasse", "falguiere"], ["jussieu", "pantheon"]]
+    "edgar-quinet"], ["montparnasse", "vavin"], ["montparnasse", "falguiere"]]
 _SEINE = {"line": [[48.833, 2.38], [48.8372, 2.3737], [48.845, 2.3668], [48.8506, 2.3622], [48.8545, 2.354], [48.856, 2.349], [48.8573, 2.3413], [48.8585, 2.3377], [48.8609, 2.3306], [48.8637, 2.3203], [48.864, 2.3135], [48.8638, 2.3012], [48.8613, 2.2935], [48.855, 2.2877], [48.848, 2.276]], "width": 1}
 
 

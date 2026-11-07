@@ -316,12 +316,17 @@ def test_fake_paris_has_its_stations_a_seine_with_bridges_and_a_fire_in_each_blo
     assert sorted(kinds) == ["famous", "sight", "sign", "station", "terminus"] and len(kinds["terminus"]) == 6
     assert spots["gare-du-nord"]["y"] < spots["gare-de-lyon"]["y"] < spots["montparnasse"]["y"] + 1              # north to south
     assert spots["saint-lazare"]["x"] < spots["gare-du-nord"]["x"] < spots["gare-de-lyon"]["x"]                  # west to east
-    assert spots["eiffel"]["x"] < spots["notre-dame"]["x"] < spots["bastille"]["x"]
+    assert spots["eiffel"]["x"] < spots["hotel-de-ville"]["x"] < spots["bastille"]["x"]
     assert {"water", "bridge", "fire"} <= {p["kind"] for p in floor["props"]}
     fires = [p for p in floor["props"] if p["kind"] == "fire"]
     assert 20 <= len(fires) <= 40
     tile = floor["tile"]
     assert len({(p["x"] // tile // 8, p["y"] // tile // 8) for p in fires}) == len(fires)                         # one per block of eight tiles
+
+
+def test_no_city_lists_a_religious_building(cities):
+    words = ("大聖堂", "寺院", "教会", "聖堂", "神社", "寺", "モスク", "霊廟")
+    assert not [s["id"] for floor in cities.values() for s in floor["spots"] if any(w in s["label"] + s["body"] for w in words)]
 
 
 def test_the_nogard_sign_stands_by_a_station_and_turns_into_a_dragon(cities):
