@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 import json
 import tempfile
 import pytest
+from support import node26
 import web_ui
 
 
@@ -46,12 +47,7 @@ def test_generated_site_local_assets_and_links_exist(tmp_path):
                                       (['--trusted-html'], '<b>trusted</b>'), (['--css', 'missing-regression.css'], '')])
 def test_minimal_node_adapter_preserves_cli_behavior(args, stdin):
     import os, shutil, subprocess, sys
-    node = shutil.which('node')
-    if not node:
-        pytest.skip('Node not installed')
-    version = subprocess.run([node, '--version'], text=True, capture_output=True, check=True).stdout
-    if int(version.strip().lstrip('v').split('.')[0]) < 26:
-        pytest.skip('Node 26+ required')
+    node = node26() or pytest.skip('Node 26+ required')
     root = Path(web_ui.__file__).parent
     env = {**os.environ, 'PYTHON': sys.executable}
     run = lambda cmd: subprocess.run(cmd, cwd=root, env=env, input=stdin, capture_output=True, text=True, timeout=30)

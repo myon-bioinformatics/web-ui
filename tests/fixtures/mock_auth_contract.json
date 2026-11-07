@@ -1,0 +1,865 @@
+{
+  "source_commit": "ce66ae7198dbe74ed62f70180fbff260e4acd14d",
+  "clock": 1789387200,
+  "sessions": [
+    {
+      "name": "bearer",
+      "requests": [
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": ""
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Token nope"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer demo-expired-token"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer demo-wrong-aud-token"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer nope"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer demo-bearer-token"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "bearer demo-bearer-token"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": " Bearer demo-bearer-token"
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer demo-bearer-token "
+          }
+        },
+        {
+          "path": "/auth/bearer",
+          "headers": {
+            "authorization": "Bearer\tdemo-bearer-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "api-key",
+      "requests": [
+        {
+          "path": "/auth/api-key",
+          "headers": {}
+        },
+        {
+          "path": "/auth/api-key",
+          "headers": {
+            "x-api-key": "bad"
+          }
+        },
+        {
+          "path": "/auth/api-key",
+          "headers": {
+            "X-API-KEY": "demo-api-key"
+          }
+        },
+        {
+          "path": "/auth/api-key",
+          "headers": {},
+          "query": {
+            "api_key": "demo-api-key"
+          }
+        },
+        {
+          "path": "/auth/api-key",
+          "headers": {
+            "x-api-key": "wrong"
+          },
+          "query": {
+            "api_key": "demo-api-key"
+          }
+        },
+        {
+          "path": "/auth/api-key",
+          "headers": {
+            "x-api-key": ""
+          },
+          "query": {
+            "api_key": "demo-api-key"
+          }
+        }
+      ]
+    },
+    {
+      "name": "basic",
+      "requests": [
+        {
+          "path": "/auth/basic",
+          "headers": {}
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbzpzM2NyZXQ="
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbzpzM2NyZXQ"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbzpzM2NyZXQ%3D"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbzp3cm9uZw=="
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbw=="
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic OnBhc3N3b3Jk"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic /w=="
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic %%%"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic a"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic !!!!"
+          }
+        },
+        {
+          "path": "/auth/basic",
+          "headers": {
+            "authorization": "Basic ZGVtbzpzM2NyZXQ==="
+          }
+        }
+      ]
+    },
+    {
+      "name": "digest-rejections",
+      "requests": [
+        {
+          "path": "/auth/digest",
+          "headers": {}
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "authorization": "Basic xx"
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", cnonce=\"demo-cnonce\", response=\"771d491b54285e636ed76d4e7de168d2\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"\", response=\"7f3520154948320da134c3a64e489331\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/other\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"6d482f7c2148dfc715318d7df1e3b90e\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\", algorithm=\"SHA-256\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"wrong\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"bad\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000000\", cnonce=\"demo-cnonce\", response=\"0d7b49aedc5df1b462cca9e3fe96ea28\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"10\", cnonce=\"demo-cnonce\", response=\"1d2bddc1c6bc2543840075d97955caa3\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"0000000g\", cnonce=\"demo-cnonce\", response=\"4547a979f73ca126016533ac5ed75536\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"000000001\", cnonce=\"demo-cnonce\", response=\"63c70118942babe01d528c08100ab633\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\n\", cnonce=\"demo-cnonce\", response=\"3f9587f454369062edfdb8fddfb2e35a\", opaque=\"demo-digest-opaque\""
+          }
+        }
+      ]
+    },
+    {
+      "name": "digest-replay",
+      "requests": [
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"0000000a\", cnonce=\"demo-cnonce\", response=\"3e8d1ec086580178c4c7c6b21050ebb2\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000009\", cnonce=\"demo-cnonce\", response=\"29e19c097a834eaf11cb2a51dcc5cd31\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"0000000A\", cnonce=\"demo-cnonce\", response=\"92bad7c06a1c86184f699bd6d02f4ebd\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"0000000b\", cnonce=\"demo-cnonce\", response=\"89e20e46c82a701bbedeb20195462aa8\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"ffffffff\", cnonce=\"demo-cnonce\", response=\"f4567c025dd38db2b086cda3a9bebf9f\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"fresh\", response=\"bad\", opaque=\"demo-digest-opaque\""
+          }
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"fresh\", response=\"242c6e49334f8071bd9c7eac1bd6c772\", opaque=\"demo-digest-opaque\""
+          }
+        }
+      ]
+    },
+    {
+      "name": "digest-target",
+      "requests": [
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest?x=a+b&x=%E6%97%A5%E6%9C%AC%E8%AA%9E&punct=%21~%2A%27%28%29\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"981e70b28b7874928c8a721fb50cd8a2\", opaque=\"demo-digest-opaque\""
+          },
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ]
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest?x=a+b&x=%E6%97%A5%E6%9C%AC%E8%AA%9E&punct=%21~%2A%27%28%29\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"981e70b28b7874928c8a721fb50cd8a2\", opaque=\"demo-digest-opaque\""
+          },
+          "query_pairs": [
+            [
+              "punct",
+              "!~*'()"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "x",
+              "a b"
+            ]
+          ]
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest?x=a%20b\", qop=\"auth\", nc=\"00000001\", cnonce=\"raw\", response=\"02b88829e242270822cb5ee959d2212a\", opaque=\"demo-digest-opaque\""
+          },
+          "request_target": "/auth/digest?x=a%20b"
+        },
+        {
+          "path": "/auth/digest",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest\", qop=\"auth\", nc=\"00000001\", cnonce=\"demo-cnonce\", response=\"cfdbbedfad6274737a7a33b04745d965\", opaque=\"demo-digest-opaque\""
+          },
+          "query": {
+            "x": "1"
+          }
+        },
+        {
+          "path": "/auth/digest/",
+          "headers": {
+            "Authorization": "Digest username=\"demo\", realm=\"mock\", nonce=\"demo-digest-nonce\", uri=\"/auth/digest/\", qop=\"auth\", nc=\"00000001\", cnonce=\"slash\", response=\"27c8f657dc8150936fafe41136f47589\", opaque=\"demo-digest-opaque\""
+          }
+        }
+      ]
+    },
+    {
+      "name": "hmac-errors-replay-skew",
+      "requests": [
+        {
+          "path": "/auth/hmac",
+          "headers": {}
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "unknown",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "ed54e44e31d804998f236640b2c8b1a03d955ed306cb6e3163713dd4b9a7fc94"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "bad",
+            "X-Nonce": "n1",
+            "X-Signature": "ed54e44e31d804998f236640b2c8b1a03d955ed306cb6e3163713dd4b9a7fc94"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1",
+            "X-Nonce": "n1",
+            "X-Signature": "ed54e44e31d804998f236640b2c8b1a03d955ed306cb6e3163713dd4b9a7fc94"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "bad"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "日本語"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "ed54e44e31d804998f236640b2c8b1a03d955ed306cb6e3163713dd4b9a7fc94"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "ed54e44e31d804998f236640b2c8b1a03d955ed306cb6e3163713dd4b9a7fc94"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "bad"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789386899",
+            "X-Nonce": "-301",
+            "X-Signature": "ad9a5610d4cecf7d1d958415a0989baba31c8ffe5d87b61dab76680fdf262c15"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789386900",
+            "X-Nonce": "-300",
+            "X-Signature": "59203d8434e7ab9c61c52d3118ac4e8d946fa72ed30602c6a341713e476a309f"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387500",
+            "X-Nonce": "300",
+            "X-Signature": "afc0bffe95be9e07af59f5e36a96192a572a8ef15b88af604781ccefa83d2e88"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387501",
+            "X-Nonce": "301",
+            "X-Signature": "f6524f5c6915d21cfa588937c47996e6c0666a4b01de3ddeb7823e14e1986fb5"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": " 1789387200 ",
+            "X-Nonce": "ts0",
+            "X-Signature": "3b47104800ddbe7036f4badb023819668afc172b44cd02f212a318f3659858d2"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "+1789387200",
+            "X-Nonce": "ts1",
+            "X-Signature": "707b534b45debdc9d86162cf6240c1d45e77f26450742fd8510e24e98dcebe07"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/auth/hmac",
+          "query_pairs": [],
+          "body": "",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "0x6aa7e1c0",
+            "X-Nonce": "ts2",
+            "X-Signature": "5536a30cd29f24a30b2eac333cef2c813c196d34dc2ffb4617b3e2e9a7af5044"
+          }
+        }
+      ]
+    },
+    {
+      "name": "hmac-binding",
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/auth/hmac/",
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ],
+          "body": "日本語\nbody",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        },
+        {
+          "method": "post",
+          "path": "/auth/hmac",
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ],
+          "body": "日本語\nbody",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        },
+        {
+          "method": "post",
+          "path": "/auth/hmac/",
+          "query_pairs": [
+            [
+              "punct",
+              "!~*'()"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "x",
+              "a b"
+            ]
+          ],
+          "body": "日本語\nbody",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        },
+        {
+          "method": "post",
+          "path": "/auth/hmac/",
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ],
+          "body": "changed",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        },
+        {
+          "method": "post",
+          "path": "/auth/hmac/",
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ],
+          "body": "日本語\nbody",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        },
+        {
+          "method": "post",
+          "path": "/auth/hmac/",
+          "query_pairs": [
+            [
+              "x",
+              "a b"
+            ],
+            [
+              "x",
+              "日本語"
+            ],
+            [
+              "punct",
+              "!~*'()"
+            ]
+          ],
+          "body": "日本語\nbody",
+          "headers": {
+            "X-Key-Id": "demo-key",
+            "X-Timestamp": "1789387200",
+            "X-Nonce": "n1",
+            "X-Signature": "a8cd75566b8aea74ec7c4e7d11300f8ecee66e87cedb2728b443b990af234290"
+          }
+        }
+      ]
+    },
+    {
+      "name": "routing",
+      "requests": [
+        {
+          "path": "/auth/rate-limited",
+          "headers": {}
+        },
+        {
+          "path": "/auth/rate-limited/",
+          "headers": {}
+        },
+        {
+          "path": "/auth/other",
+          "headers": {}
+        },
+        {
+          "path": "/health"
+        }
+      ]
+    }
+  ],
+  "nc": [
+    "00000000",
+    "00000001",
+    "0000000a",
+    "0000000A",
+    "ffffffff",
+    "10",
+    "0000000g",
+    "000000001",
+    "00000001\n",
+    "０００００００１"
+  ],
+  "format": [
+    1,
+    10,
+    4294967295
+  ],
+  "hmac": [
+    {
+      "method": "get",
+      "path": "/auth/hmac",
+      "query_string": "",
+      "body": "",
+      "timestamp": "1789387200",
+      "nonce": "n3"
+    },
+    {
+      "method": "post",
+      "path": "/auth/hmac/",
+      "query_string": "x=a+b&x=%E6%97%A5%E6%9C%AC%E8%AA%9E&punct=%21~%2A%27%28%29",
+      "body": "日本語\nbody",
+      "timestamp": "1789387200",
+      "nonce": "signed"
+    }
+  ],
+  "digest": [
+    {
+      "method": "GET",
+      "uri": "/auth/digest",
+      "nc": "00000001",
+      "cnonce": "demo-cnonce"
+    },
+    {
+      "method": "GET",
+      "uri": "/auth/digest?x=a+b&x=%E6%97%A5%E6%9C%AC%E8%AA%9E&punct=%21~%2A%27%28%29",
+      "nc": "0000000a",
+      "cnonce": "query"
+    }
+  ],
+  "query": [
+    [
+      [
+        "x",
+        "a b"
+      ],
+      [
+        "x",
+        "日本語"
+      ],
+      [
+        "punct",
+        "!~*'()"
+      ]
+    ],
+    [],
+    [
+      [
+        "",
+        ""
+      ],
+      [
+        "space",
+        "a b"
+      ],
+      [
+        "plus",
+        "+"
+      ],
+      [
+        "emoji",
+        "😀"
+      ]
+    ]
+  ]
+}

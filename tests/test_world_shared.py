@@ -1,8 +1,8 @@
 """Opt-in shared board contract; no network calls or public writes."""
-import shutil
 import subprocess
 from pathlib import Path
 import pytest
+from support import node26
 import web_ui as ui
 
 
@@ -33,9 +33,7 @@ def test_invalid_target(bad):
 
 
 def test_shared_node(tmp_path):
-    node = shutil.which('node')
-    if not node or int(subprocess.check_output([node, '--version'], text=True).lstrip('v').split('.')[0]) < 26:
-        pytest.skip('Node 26+ required')
+    node = node26() or pytest.skip('Node 26+ required')
     module = tmp_path / 'shared.mjs'
     module.write_text(ui.WORLD_JS.removesuffix('bindWorlds();\n') + (Path(__file__).parent / 'fixtures/world_shared_harness.js').read_text())
     subprocess.run([node, str(module)], check=True)
