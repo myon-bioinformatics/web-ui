@@ -14,7 +14,7 @@ entry carries `repository`, full 40-hex `ref`/`commit`, `source`, `destination`,
 
 The `resolve-vendor` job materializes locked files once per run and publishes a
 verified vendor snapshot artifact. The primary `tooling` job downloads that
-snapshot before pytest. A separate `test-locked` job exercises the checked-in
+snapshot before pytest. A separate `vendor-locked` job exercises the checked-in
 baseline without downloading the snapshot.
 
 Canonical evidence staging uses the parent's `vendor_stage.py` at the same pin.

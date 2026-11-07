@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ".github/workflows/tooling-smoke.yml"
+WORKFLOW = ".github/workflows/ci.yml"
 TEST_JOB = "tooling"
 PIN = "9e3da7ae1846e9604ebc24bb5178f7de094a4e77"
 
@@ -131,7 +131,7 @@ def test_public_vendor_ci_updates_without_repository_writes():
 
 def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     ci = _workflow()
-    job = ci["jobs"]["test-locked"]
+    job = ci["jobs"]["vendor-locked"]
     assert job["permissions"] == {"contents": "read"}
     assert "continue-on-error" not in job
     assert job.get("needs") == ci["jobs"]["resolve-vendor"].get("needs")
@@ -166,12 +166,12 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     assert lock["with"]["path"] == "build/vendor-evidence-locked"
 
 
-@pytest.mark.parametrize("job_name", ["resolve-vendor", "tooling", "test-locked"])
+@pytest.mark.parametrize("job_name", ["resolve-vendor", "tooling", "vendor-locked"])
 def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name):
     """Execute the workflow staging command against real lock bytes."""
     parent_tool = ROOT / ".vendor-sync-tools/vendor_stage.py"
     if not parent_tool.is_file():
-        pytest.skip("pinned parent checkout is supplied by Tooling smoke")
+        pytest.skip("pinned parent checkout is supplied by CI (ci.yml)")
     assert not (ROOT / "tool/stage_vendor_evidence.py").exists()
     _copy_snapshot(tmp_path)
     steps = _workflow()["jobs"][job_name]["steps"]

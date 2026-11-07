@@ -1,4 +1,4 @@
-name: Tooling smoke
+name: CI
 on:
   push:
     branches: [main]
@@ -164,7 +164,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  test-locked:
+  vendor-locked:
     if: needs.changes.outputs.product_changed == 'true'
     needs: changes
     permissions:
@@ -249,11 +249,11 @@ jobs:
         path: build/vendor-evidence-locked
         if-no-files-found: error
         retention-days: 14
-    name: Locked baseline
+    name: Vendor locked baseline
     timeout-minutes: 20
 
 
-  junit-identity:
+  failure-identity:
     needs: [changes, tooling]
     if: (always()) && needs.changes.outputs.product_changed == 'true'
     permissions:

@@ -40,7 +40,7 @@ pytest is a dev dependency with a lower bound only (`pytest>=8`).
 Stagehand is not installed by default. It is the opt-in `stagehand` dependency
 group (`stagehand>=4`), so `uv sync` and `uv run pytest` do not pull browser
 tooling. Tests that need it use `pytest.importorskip` and skip without the group;
-the tooling-smoke lane runs them with `--group stagehand`, so the coverage is unchanged.
+the CI lane (`ci.yml`, job `tooling`) runs them with `--group stagehand`, so the coverage is unchanged.
 
 `pyproject.toml` sets `[tool.uv] override-dependencies` to lift transitive
 ceilings until upstream metadata catches up: Gradio 6.30.0 caps `pillow<13`,
