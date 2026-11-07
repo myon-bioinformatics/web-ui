@@ -363,6 +363,27 @@ class SchoolTests(unittest.TestCase):
         self.assertAlmostEqual(y, spot["y"], delta=1)
         self.assertEqual(self.errors, [])
 
+    def test_the_cities_flip_a_sign_into_a_dragon_and_burn_one_fire_per_block(self):
+        """Reverse London's nogard sign swaps with 🐉 when pressed (and back); Fake Paris draws its scattered fires as tile emoji."""
+        path = Path(self.tmp.name) / "cities.html"
+        path.write_text(web_ui.world_document(web_ui.example_data("cities")), encoding="utf-8")
+        page = self.open(path=path)
+        self.start(page, "🧳")
+        self.assertEqual(page.eval_on_selector_all(".ui-world-goto option", "els => els.map(e => e.value)"), ["tokyo", "london", "paris"])
+        page.select_option(".ui-world-goto", "london")
+        sign = '.ui-floor[data-floor="london"] .ui-spot[data-category="mark"]'
+        self.assertEqual(page.inner_text(sign), "nogard")
+        page.eval_on_selector(sign, "e => e.click()")
+        self.assertEqual(page.inner_text(sign), "🐉")
+        page.eval_on_selector(sign, "e => e.click()")
+        self.assertEqual(page.inner_text(sign), "nogard")                                          # pressed again, it turns back
+        page.select_option(".ui-world-goto", "paris")
+        page.wait_for_function("() => getComputedStyle(document.querySelector('.ui-floor[data-floor=\"paris\"]')).display !== 'none'")
+        fires = page.eval_on_selector_all('.ui-floor[data-floor="paris"] .ui-prop[data-kind="fire"]', "els => els.map(e => getComputedStyle(e).backgroundImage)")
+        self.assertGreaterEqual(len(fires), 20)
+        self.assertTrue(all("data:image/svg+xml" in image for image in fires))
+        self.assertEqual(self.errors, [])
+
     def test_real_floor_shows_a_chosen_photo_or_the_camera_only_in_the_page(self):
         """🖼️📷 on the real floor: ask() offers camera or photo; the picture sits behind the props, is released by 🧹 or by leaving (camera), and is never stored or sent."""
         from tool.image_support.png import rgb_png

@@ -118,6 +118,7 @@ The representation changes by swapping objects, not code: the prop kinds of any 
 |---|---|---|
 | `grass` `sand` `road` `bridge` (ground) | yes, and they **open** the tiles under them (a road through trees, a bridge over water) | a colour |
 | `water` `tree` `cactus` `mountain` `house` `castle` | blocked | 🌊 🌲 🌵 ⛰️ 🏠 🏰, one per tile (the castle once across its prop) |
+| `fire` | free (decoration) | 🔥, one per tile |
 | `desk` `board` `wall` `shelf` / `chair` `rug` | blocked / free, as before | the classroom's theme-coloured shapes |
 
 `WORLD_PROPS` (blocks walking), `WORLD_GROUND` (opens) and `WORLD_LOOK` (colour, emoji, once) are the whole table; the CSS is written only for the kinds a
@@ -125,9 +126,10 @@ world uses. A new kind is one line in each.
 
 ## Places: real space in miniature
 
-A `place` floor lays **real positions** (latitude and longitude) on the same grid, so a world can go on from a village to Tokyo or London
-(`EXAMPLES["cities"]`: **TOKYO**, Tokyo Station with its six exits and the stations around it, and **リバースロンドン**, the main termini, the stations
-beside them and a few famous places, with the Thames). Nothing is drawn to look like the place: ground, roads, water and bridges are the same kinds as a land.
+A `place` floor lays **real positions** (latitude and longitude) on the same grid, so a world can go on from a village to a real city in its other
+form (`EXAMPLES["cities"]`): **Parallel Tokyo**, Tokyo Station with its six exits and the stations around it; **Reverse London**, the main termini, the stations
+beside them, sights and famous places, the Thames and a `nogard` sign (dragon, backwards) that turns into 🐉 when pressed; **Fake Paris**, the main stations,
+the metro beside them and the Seine, with a 🔥 in each block. Nothing is drawn to look like the place: ground, roads, water and bridges are the same kinds as a land.
 
 ```json
 {"schema": "web-ui-world/1", "id": "trip", "floors": [{"id": "tokyo", "label": "TOKYO", "place": {"meters": 32, "points": [
@@ -137,12 +139,15 @@ beside them and a few famous places, with the Thames). Nothing is drawn to look 
 ```
 
 * `points`: 1..64, each with `id`, `label`, `category` and `body` (as a spot has) and **either** `lat` and `lon` **or** `maps`, a Google or Apple Maps URL read
-  by the page's own coordinate tool (`try_parse_maps_url`). A point is a spot on the tile its position falls on; `meters` (8..2000, default 64) is the ground
+  by the page's own coordinate tool (`try_parse_maps_url`). `flip` (a short text or emoji) is a second face: pressing the pill swaps it with the label, and again
+  swaps back (a spot of any floor can have one; without script it stays a plain label). A point is a spot on the tile its position falls on; `meters` (8..2000, default 64) is the ground
   one tile covers, and the north is up. The player starts at `start` (a point id, default the first point).
 * The map is the points' box plus two tiles all round, or `area: {"center": [lat, lon], "radius": metres}`: the box `tolerance_area` gives (a point outside it
   is an error). The scale and the radius are the ones of the coordinates tool (`EARTH_RADIUS_M`, `parse_coordinate`); the projection is flat, good for a few kilometres.
 * `links`: pairs of point ids joined by an L-shaped road. `rivers`: `{"line": [[lat, lon], ...], "width": tiles}` bands of water; **a road that crosses one is a
   bridge**, and a point that water cuts off from the start is an error naming it (add a link), so every spot can be walked to.
+* `scatter`: `{"kind": "fire", "every": 8, "seed": 5}` cuts the map into blocks of `every` tiles and puts one `fire` (a decoration you walk over: `WORLD_PROPS`
+  false, `WORLD_LOOK` 🔥) on a free tile of each, never on a road, the river or a spot; the same arguments give the same fires.
 * Two points on one tile: the earlier keeps it and the other goes to the nearest free tile (never into water). Roads and water are merged into rectangles, so a
   place stays far below the 512-prop limit.
 * The coordinates in `EXAMPLES["cities"]` are approximate (about 100 m, read off public maps): a miniature shows where things stand relative to each other, not exact positions.
@@ -240,6 +245,6 @@ deliberately does not have. The shared GitHub board (`docs/world-shared-board.md
 
 ```
 PYTHONPATH=. python -m pytest -q tests/test_world_classroom.py          # oracle, validation, generator, HTML, Node 26 parity
-PYTHONPATH=. python -m pytest -q tests/test_world_places.py             # projection, bridges, nudging, TOKYO and Reverse London
+PYTHONPATH=. python -m pytest -q tests/test_world_places.py             # projection, bridges, nudging, scatter, flip, the three cities
 WEB_UI_CHROME=/path/to/chrome python tests/integration/school_browser.py -v   # real browser: picker, keys, pad, taps, no desk crossing, 320..1280px
 ```

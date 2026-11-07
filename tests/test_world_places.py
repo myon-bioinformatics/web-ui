@@ -1,5 +1,5 @@
 """Real places in miniature: the ``place`` floor turns latitude/longitude points into a tile grid (``web_ui.place_floor``), and the ``cities`` example
-(TOKYO and Reverse London) is built from it. The coordinates are approximate, so the checks are about relative positions and walking, not metres."""
+(Parallel Tokyo, Reverse London and Fake Paris) is built from it. The coordinates are approximate, so the checks are about relative positions and walking, not metres."""
 import copy
 import importlib.util
 import json
@@ -127,6 +127,11 @@ def test_mistakes_say_what_is_wrong():
         (dict(points=[pt("a", 91, 0)]), "between -90 and 90"),
         (dict(points=[{"id": "a", "label": "A", "lat": 1}]), "either lat and lon or maps"),
         (dict(points=[pt("a", 1, 1, color="red")]), "a point has"),
+        (dict(points=[pt("a", 1, 1, flip="")]), "flip must"),
+        (dict(points=ok, scatter={"kind": "tree", "every": 4, "seed": 1}), "scatter is"),
+        (dict(points=ok, scatter={"kind": "road", "every": 4, "seed": 1}), "scatter is"),
+        (dict(points=ok, scatter={"kind": "fire", "every": 1, "seed": 1}), "every must be an integer from 2 to 64"),
+        (dict(points=ok, scatter={"kind": "fire", "every": 4}), "scatter is"),
         (dict(points=[pt("a", 1, 1, category="Big")]), "lowercase token"),
         (dict(points=ok, links=[["a", "zzz"]]), "two different point ids"),
         (dict(points=ok, links=[["a", "a"]]), "two different point ids"),
@@ -139,6 +144,35 @@ def test_mistakes_say_what_is_wrong():
     ]:
         with pytest.raises(ValueError, match=message):
             ui.place_floor(**bad)
+
+
+def test_scatter_puts_one_decoration_in_each_block_on_a_free_tile_and_is_repeatable():
+    pts = [pt("a", 35.0090, 139.0), pt("b", 35.0, 139.0)]
+    scatter = {"kind": "fire", "every": 4, "seed": 7}
+    floor = ui.place_floor(pts, meters=100, rivers=[RIVER], links=[["a", "b"]], scatter=scatter)
+    assert floor == ui.place_floor(pts, meters=100, rivers=[RIVER], links=[["a", "b"]], scatter=scatter)
+    assert floor != ui.place_floor(pts, meters=100, rivers=[RIVER], links=[["a", "b"]], scatter={**scatter, "seed": 8})
+    tile = floor["tile"]
+    fires = [(p["x"] // tile, p["y"] // tile) for p in floor["props"] if p["kind"] == "fire"]
+    assert all(p["w"] == p["h"] == tile for p in floor["props"] if p["kind"] == "fire")
+    cols, rows = floor["width"] // tile, floor["height"] // tile
+    blocks = {(x // 4, y // 4) for x, y in fires}
+    assert len(blocks) == len(fires)                                              # at most one in a block ...
+    assert len(fires) >= (cols // 4) * (rows // 4) - 2                           # ... and nearly every block has one (a block may be all water)
+    others = {(p["x"] // tile + i, p["y"] // tile + j) for p in floor["props"] if p["kind"] in ("water", "road", "bridge")
+              for i in range(p["w"] // tile) for j in range(p["h"] // tile)}
+    spots = {(s["x"] // tile, s["y"] // tile) for s in floor["spots"]}
+    assert not set(fires) & (others | spots)                                      # never on a road, the river or a spot
+    assert cell(floor, "b") in walkable(floor)                                    # and a fire is only a decoration
+
+
+def test_a_flip_is_kept_through_validation_and_written_as_a_second_face():
+    floor = ui.place_floor([pt("a", 35.0, 139.0, flip="🐉"), pt("b", 35.1, 139.0)], meters=500, id="p")
+    assert [s.get("flip") for s in floor["spots"]] == ["🐉", None]
+    world = ui.world_validate({"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [floor]})
+    assert world["floors"][0]["spots"][0]["flip"] == "🐉" and "flip" not in world["floors"][0]["spots"][1]
+    html = ui.world_html({"schema": ui.WORLD_SCHEMA, "id": "w", "floors": [floor]})
+    assert 'data-flip="🐉"' in html and html.count("data-flip=") == 1
 
 
 def test_json_alone_asks_for_a_place_and_unknown_keys_are_refused():
@@ -163,8 +197,8 @@ def by_id(floor):
     return {s["id"].split("-", 1)[1]: s for s in floor["spots"]}
 
 
-def test_the_cities_are_two_floors_with_every_spot_walkable(cities):
-    assert list(cities) == ["tokyo", "london"]
+def test_the_cities_are_three_floors_with_every_spot_walkable(cities):
+    assert list(cities) == ["tokyo", "london", "paris"]
     for floor in cities.values():
         reach = walkable(floor)
         assert len(floor["props"]) <= 512 and len(floor["spots"]) <= 64
@@ -205,7 +239,7 @@ def test_london_has_the_main_termini_the_stations_beside_them_and_famous_places(
     kinds = {}
     for key, spot in spots.items():
         kinds.setdefault(spot["category"], []).append(key)
-    assert sorted(kinds) == ["famous", "sight", "station", "terminus"]
+    assert sorted(kinds) == ["famous", "mark", "sight", "station", "terminus"]
     assert len(kinds["terminus"]) == 13
     for key in ("kings-cross", "paddington", "waterloo", "victoria", "liverpool-street", "london-bridge", "euston", "charing-cross"):
         assert key in kinds["terminus"]
@@ -227,11 +261,41 @@ def test_the_thames_is_between_waterloo_and_charing_cross_with_a_bridge(cities):
     assert cell(floor, "charing-cross") in walkable(floor) and cell(floor, "waterloo") in walkable(floor)    # and a bridge joins them
 
 
+def test_fake_paris_has_its_stations_a_seine_with_bridges_and_a_fire_in_each_block(cities):
+    floor = cities["paris"]
+    spots = by_id(floor)
+    kinds = {}
+    for key, spot in spots.items():
+        kinds.setdefault(spot["category"], []).append(key)
+    assert sorted(kinds) == ["famous", "sight", "station", "terminus"] and len(kinds["terminus"]) == 6
+    assert spots["gare-du-nord"]["y"] < spots["gare-de-lyon"]["y"] < spots["montparnasse"]["y"] + 1              # north to south
+    assert spots["saint-lazare"]["x"] < spots["gare-du-nord"]["x"] < spots["gare-de-lyon"]["x"]                  # west to east
+    assert spots["eiffel"]["x"] < spots["notre-dame"]["x"] < spots["bastille"]["x"]
+    assert {"water", "bridge", "fire"} <= {p["kind"] for p in floor["props"]}
+    fires = [p for p in floor["props"] if p["kind"] == "fire"]
+    assert 20 <= len(fires) <= 40
+    tile = floor["tile"]
+    assert len({(p["x"] // tile // 8, p["y"] // tile // 8) for p in fires}) == len(fires)                         # one per block of eight tiles
+
+
+def test_the_nogard_sign_stands_by_a_station_and_turns_into_a_dragon(cities):
+    floor = cities["london"]
+    sign = by_id(floor)["nogard"]
+    assert (sign["label"], sign["flip"], sign["category"]) == ("nogard", "🐉", "mark")
+    assert sign["label"][::-1] == "dragon"                                                                        # dragon, backwards
+    stations = [s for s in floor["spots"] if s["category"] in ("terminus", "station")]
+    tile = floor["tile"]
+    nearest = min(math.hypot(s["x"] - sign["x"], s["y"] - sign["y"]) for s in stations) / tile
+    assert nearest <= 3                                                                                           # within three tiles (450 m)
+    assert len([s for s in floor["spots"] if "flip" in s]) == 1
+
+
 def test_the_front_page_and_the_cli_carry_the_cities():
     page = ui.example_pages()["index.html"]
-    for text in ('id="cities"', "丸の内中央口", "リバースロンドン", 'data-category="exit"', 'data-category="terminus"'):
+    for text in ('id="cities"', "丸の内中央口", "リバースロンドン", "Fake Paris", "Parallel Tokyo", 'data-category="exit"', 'data-category="terminus"',
+                 'data-flip="🐉"'):
         assert text in page
     spec = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--example", "cities"], capture_output=True, text=True, check=True, encoding="utf-8").stdout
     assert json.loads(spec)["floors"][0]["place"]["points"][0]["id"] == "marunouchi-c"
     html = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--world", "-"], input=spec, capture_output=True, text=True, check=True, encoding="utf-8").stdout
-    assert "八重洲北口" in html and "タワー・ブリッジ" in html
+    assert "八重洲北口" in html and "タワー・ブリッジ" in html and "エッフェル塔" in html

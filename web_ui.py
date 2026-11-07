@@ -2087,7 +2087,7 @@ def world_motion_sample(segment: dict[str, Any], elapsed: float) -> list[float]:
 # A floor may carry a tile grid and props (desks, chairs, a blackboard ...). Solid props block walking; the walk
 # is planned on the grid (breadth first, fixed neighbour order, so Python and the browser pick the same path) and
 # played as a chain of the same constant-speed segments as above.
-WORLD_PROPS = {"desk": True, "board": True, "wall": True, "shelf": True, "chair": False, "rug": False,
+WORLD_PROPS = {"desk": True, "board": True, "wall": True, "shelf": True, "chair": False, "rug": False, "fire": False,
                "grass": False, "sand": False, "road": False, "bridge": False,
                "water": True, "tree": True, "cactus": True, "mountain": True, "house": True, "castle": True}   # kind -> blocks walking
 # Ground kinds are laid first and open the tiles they cover (a road through trees, a bridge over water); the other kinds only block.
@@ -2097,7 +2097,7 @@ WORLD_GROUND = frozenset({"grass", "sand", "road", "bridge"})
 # all the grid needs.
 WORLD_LOOK = {"grass": ("#8fd694", "", False), "sand": ("#efd9a0", "", False), "road": ("#d2b48c", "", False), "bridge": ("#a9784a", "", False),
               "water": ("#5aaae0", "🌊", False), "mountain": ("#b8a58f", "⛰️", False), "tree": ("", "🌲", False), "cactus": ("", "🌵", False),
-              "house": ("", "🏠", False), "castle": ("", "🏰", True)}
+              "house": ("", "🏠", False), "castle": ("", "🏰", True), "fire": ("", "🔥", False)}
 _WORLD_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
@@ -2512,14 +2512,15 @@ def world_validate(spec: Any) -> dict[str, Any]:
             raise ValueError("a floor lists 1..64 spots")
         spots = []
         for spot in spots_in:
-            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body"}:
-                raise ValueError("a spot has id, x, y, label, category and body")
+            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body", "flip"}:
+                raise ValueError("a spot has id, x, y, label, category, body and flip")
             category = spot.get("category", "")
             if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
                 raise ValueError("category must be a lowercase token")
             spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _bounded_int(spot.get("x"), "x", 0, width),
                           "y": _bounded_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
-                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
+                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False),
+                          **({"flip": _world_text(spot["flip"], "flip", 16)} if "flip" in spot else {})})
         actors = []
         actors_in = floor.get("actors", [])
         if not isinstance(actors_in, list) or len(actors_in) > 16:
@@ -2778,14 +2779,14 @@ def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: i
 # A real place in miniature: points with a latitude and longitude laid on the tile grid (``meters`` of ground per tile), roads between linked
 # points, and rivers as bands of water that roads cross as bridges. The projection and the box come from the coordinate tools below (the same
 # Earth radius and ``tolerance_area``), so a place is only data: a list of points, nothing drawn by hand.
-_PLACE_KEYS = {"points", "meters", "tile", "links", "rivers", "area", "start"}
-_PLACE_POINT_KEYS = {"id", "label", "lat", "lon", "maps", "category", "body"}
+_PLACE_KEYS = {"points", "meters", "tile", "links", "rivers", "area", "start", "scatter"}
+_PLACE_POINT_KEYS = {"id", "label", "lat", "lon", "maps", "category", "body", "flip"}
 
 
 def _place_point(point: Any, seen: set[str]) -> dict[str, Any]:
     if not isinstance(point, dict) or set(point) - _PLACE_POINT_KEYS or ("maps" in point) == ("lat" in point or "lon" in point) \
             or ("lat" in point) != ("lon" in point):
-        raise ValueError("a point has id, label, category, body and either lat and lon or maps (a Maps URL)")
+        raise ValueError("a point has id, label, category, body, flip and either lat and lon or maps (a Maps URL)")
     if "maps" in point:
         found = try_parse_maps_url(point["maps"]) if isinstance(point["maps"], str) else None
         if found is None:
@@ -2797,7 +2798,8 @@ def _place_point(point: Any, seen: set[str]) -> dict[str, Any]:
     if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
         raise ValueError("category must be a lowercase token")
     return {"id": _world_id(point.get("id"), "point id", seen), "label": _world_text(point.get("label"), "label", 40), "lat": lat, "lon": lon,
-            "category": category, "body": _world_text(point.get("body", ""), "body", 400, required=False)}
+            "category": category, "body": _world_text(point.get("body", ""), "body", 400, required=False),
+            **({"flip": _world_text(point["flip"], "flip", 16)} if "flip" in point else {})}
 
 
 def _place_meters(lat: float, lon: float, north: float, west: float, mid: float) -> tuple[float, float]:
@@ -2831,7 +2833,7 @@ def _place_rects(cells: set[tuple[int, int]]) -> list[tuple[int, int, int, int]]
 
 
 def place_floor(points: list[dict[str, Any]], *, meters: int = 64, tile: int = 32, links: Any = (), rivers: Any = (), area: Any = None,
-                start: str | None = None, id: str = "place", label: str = "場所") -> dict[str, Any]:
+                start: str | None = None, scatter: Any = None, id: str = "place", label: str = "場所") -> dict[str, Any]:
     """A real place as a floor: each point (``id``, ``label``, ``lat`` and ``lon``, or ``maps`` with a Maps URL; optional ``category`` and ``body``) becomes a
     spot on the tile its position falls on, ``meters`` of ground per tile.
 
@@ -2839,7 +2841,10 @@ def place_floor(points: list[dict[str, Any]], *, meters: int = 64, tile: int = 3
     that crosses one becomes a bridge. ``area`` is ``{"center": [lat, lon], "radius": metres}``, the box ``tolerance_area`` gives (without it the map is the
     points' box and a margin of two tiles). Two points on one tile are moved to the nearest free tile (the earlier point keeps its tile), and a
     point that is cut off from the player's start by water is an error, so every spot can be walked to. The player starts at ``start`` (a point id,
-    default the first point).
+    default the first point). A point's ``flip`` is a second face that its pill swaps with the label when it is pressed.
+
+    ``scatter`` is ``{"kind": "fire", "every": 8, "seed": 1}``: the map is cut into blocks of ``every`` tiles and one free tile in each gets the kind
+    (a decoration such as ``fire``: not ground, not solid), chosen by a small seeded generator, so the same arguments give the same places.
     """
     tile, meters = _world_tile(tile), _bounded_int(meters, "meters", 8, 2000)
     if not isinstance(points, list) or not 1 <= len(points) <= 64:
@@ -2915,15 +2920,27 @@ def place_floor(points: list[dict[str, Any]], *, meters: int = 64, tile: int = 3
     props = [prop("grass", 0, 0, cols, rows)]
     for kind, cells in (("water", water), ("road", road - water), ("bridge", bridge)):               # roads after water: a bridge opens its tiles
         props += [prop(kind, *rect) for rect in _place_rects(cells)]
+    if scatter is not None:
+        if not isinstance(scatter, dict) or set(scatter) != {"kind", "every", "seed"} or scatter["kind"] not in WORLD_PROPS \
+                or scatter["kind"] in WORLD_GROUND or WORLD_PROPS[scatter["kind"]]:
+            raise ValueError("scatter is {kind: a decoration (not ground, not solid), every: tiles per block, seed}")
+        every, state = _bounded_int(scatter["every"], "every", 2, 64), _bounded_int(scatter["seed"], "seed", 0, 2**31 - 1) % 2147483646 + 1
+        used = water | road | {p["cell"] for p in pts}
+        for by in range(0, rows, every):
+            for bx in range(0, cols, every):
+                free = [(x, y) for y in range(by, min(by + every, rows)) for x in range(bx, min(bx + every, cols)) if (x, y) not in used]
+                state = state * 48271 % 2147483647                                              # Park-Miller, as land_floor
+                if free:
+                    props.append(prop(scatter["kind"], *free[int(state / 2147483647 * len(free))], 1, 1))
     if len(props) > 512:
-        raise ValueError("the place has too many tiles of road and water: raise meters")
+        raise ValueError("the place has too many tiles of road, water and scatter: raise meters")
     first = by_id[start or pts[0]["id"]]
     reach = world_reach(world_blocked(cols * tile, rows * tile, tile, props), first["cell"])
     lost = [p["id"] for p in pts if p["cell"] not in reach]
     if lost:
         raise ValueError(f"cut off by water from {first['id']}: {', '.join(lost)} (add a link across the river)")
     spots = [{"id": f"{id}-{p['id']}", "x": int((p["cell"][0] + .5) * tile), "y": int((p["cell"][1] + .5) * tile), "label": p["label"],
-              "category": p["category"], "body": p["body"]} for p in pts]
+              "category": p["category"], "body": p["body"], **({"flip": p["flip"]} if "flip" in p else {})} for p in pts]
     return {"id": id, "label": label, "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [], "spots": spots,
             "player": {"emoji": "🙂", "x": int((first["cell"][0] + .5) * tile), "y": int((first["cell"][1] + .5) * tile), "speed": 96}}
 
@@ -3061,9 +3078,10 @@ def _world_playable(world: dict[str, Any]) -> bool:
 
 def _floor_html(wid: str, f: dict[str, Any], close: str) -> tuple[str, list[str]]:
     """One floor's stage (props, spots, actors, player) and the info sheet articles of its spots and actors (``close`` is their closing link)."""
+    flip = lambda s: f' data-flip="{escape(s["flip"], quote=True)}"' if s.get("flip") else ""                    # noqa: E731  (a second face, swapped when pressed)
     spots = "".join(
         f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
-        f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
+        f'style="left:{s["x"]}px;top:{s["y"]}px"{flip(s)}>{escape(s["label"])}</a>' for s in f["spots"])
     actors = "".join(
         f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
         f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
@@ -3537,7 +3555,7 @@ view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)retur
 const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
 addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-rows a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-rows a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-rows a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-rows a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);if(!l&&a.dataset.flip!==undefined){const face=a.textContent;a.textContent=a.dataset.flip;a.dataset.flip=face}open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
 const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0]};
 el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&!el.hasAttribute("data-ask")&&walk.step(...k))e.preventDefault()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
@@ -17086,8 +17104,8 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
 # repository metadata. Consumers adapt their existing source of truth to this.
 # Real places in miniature (the `place` floor): latitude and longitude in, tiles out. The coordinates are approximate (about 100 m, read off public
 # maps), which is all a miniature needs; the point is where things stand relative to each other, so nothing here is a facility's exact position.
-def _pt(id: str, label: str, lat: float, lon: float, category: str, body: str = "") -> dict[str, Any]:
-    return {"id": id, "label": label, "lat": lat, "lon": lon, "category": category, "body": body}
+def _pt(id: str, label: str, lat: float, lon: float, category: str, body: str = "", flip: str = "") -> dict[str, Any]:
+    return {"id": id, "label": label, "lat": lat, "lon": lon, "category": category, "body": body, **({"flip": flip} if flip else {})}
 
 
 _TOKYO_POINTS = [
@@ -17164,6 +17182,7 @@ _LONDON_POINTS = [
     _pt("bank-of-england", "イングランド銀行", 51.5142, -0.0885, "famous", "国の中央銀行です。"),
     _pt("old-bailey", "中央刑事裁判所", 51.5156, -0.1021, "famous", "大きな裁判が開かれる裁判所です。"),
     _pt("bbc", "BBC放送会館", 51.5185, -0.1439, "famous", "放送局の本拠地です。"),
+    _pt("nogard", "nogard", 51.5024, -0.1118, "mark", "うしろから読んでみて。", "🐉"),
 ]
 _LONDON_LINKS = [["paddington", "edgware-road"], ["marylebone", "edgware-road"], ["marylebone", "baker-street"], ["euston", "warren-street"], ["kings-cross",
     "euston"], ["kings-cross", "st-pancras"], ["kings-cross", "russell-square"], ["kings-cross", "angel"], ["farringdon", "kings-cross"],
@@ -17173,6 +17192,48 @@ _LONDON_LINKS = [["paddington", "edgware-road"], ["marylebone", "edgware-road"],
     "charing-cross"], ["charing-cross", "embankment"], ["charing-cross", "westminster"], ["victoria", "green-park"], ["victoria", "pimlico"],
     ["moorgate", "bank"]]
 _THAMES = {"line": [[51.4852, -0.1495], [51.4875, -0.127], [51.4945, -0.123], [51.5008, -0.1219], [51.5062, -0.1198], [51.5086, -0.1169], [51.5099, -0.1043], [51.5095, -0.0985], [51.5088, -0.0937], [51.5079, -0.0877], [51.5055, -0.0754], [51.504, -0.06]], "width": 2}
+
+_PARIS_POINTS = [
+    _pt("gare-du-nord", "パリ北駅", 48.8809, 2.3553, "terminus", "北へ向かう列車の大きな駅です。"),
+    _pt("gare-de-lest", "パリ東駅", 48.8768, 2.3592, "terminus", "東へ向かう列車の駅です。"),
+    _pt("saint-lazare", "サン・ラザール駅", 48.8763, 2.3258, "terminus", "西へ向かう列車の駅です。"),
+    _pt("gare-de-lyon", "リヨン駅", 48.8443, 2.3736, "terminus", "南東へ向かう列車の駅です。"),
+    _pt("austerlitz", "オステルリッツ駅", 48.8421, 2.3652, "terminus", "川の南岸にある、南西へ向かう駅です。"),
+    _pt("montparnasse", "モンパルナス駅", 48.8412, 2.3203, "terminus", "川の南にある、西へ向かう駅です。"),
+    _pt("poissonniere", "ポワソニエール", 48.8772, 2.3492, "station", "北駅の西のとなりの駅です。"),
+    _pt("barbes", "バルベス・ロシュシュアール", 48.8838, 2.3498, "station", "北駅の北西のとなりの駅です。"),
+    _pt("chateau-deau", "シャトー・ドー", 48.8737, 2.3552, "station", "東駅の南のとなりの駅です。"),
+    _pt("louis-blanc", "ルイ・ブラン", 48.8812, 2.3649, "station", "東駅の北東のとなりの駅です。"),
+    _pt("havre-caumartin", "アーヴル・コーマルタン", 48.8737, 2.3282, "station", "サン・ラザール駅の南のとなりの駅です。"),
+    _pt("europe", "ヨーロッパ", 48.8788, 2.3225, "station", "サン・ラザール駅の北西のとなりの駅です。"),
+    _pt("bastille", "バスティーユ", 48.8531, 2.3692, "station", "リヨン駅の北西のとなりの駅です。"),
+    _pt("quai-de-la-rapee", "ケ・ド・ラ・ラペ", 48.8465, 2.366, "station", "リヨン駅とオステルリッツ駅のあいだの駅です。"),
+    _pt("saint-marcel", "サン・マルセル", 48.8383, 2.3603, "station", "オステルリッツ駅の南のとなりの駅です。"),
+    _pt("jussieu", "ジュシュー", 48.8463, 2.3548, "station", "オステルリッツ駅の北西のとなりの駅です。"),
+    _pt("edgar-quinet", "エドガー・キネ", 48.8409, 2.3252, "station", "モンパルナス駅の東のとなりの駅です。"),
+    _pt("vavin", "ヴァヴァン", 48.8421, 2.3282, "station", "モンパルナス駅の北東のとなりの駅です。"),
+    _pt("falguiere", "ファルギエール", 48.8444, 2.3098, "station", "モンパルナス駅の西のとなりの駅です。"),
+    _pt("eiffel", "エッフェル塔", 48.8584, 2.2945, "sight", "鉄でできた、パリでいちばん有名な塔です。"),
+    _pt("arc-de-triomphe", "凱旋門", 48.8738, 2.295, "sight", "大きな道が集まる円の真ん中の門です。"),
+    _pt("notre-dame", "ノートルダム大聖堂", 48.853, 2.3499, "sight", "川の中の島に立つ大きな教会です。"),
+    _pt("louvre", "ルーヴル美術館", 48.8606, 2.3376, "sight", "世界でいちばん人が来る美術館です。"),
+    _pt("sacre-coeur", "サクレ・クール寺院", 48.8867, 2.3431, "sight", "丘の上の白い教会です。"),
+    _pt("pompidou", "ポンピドゥー・センター", 48.8606, 2.3522, "sight", "配管が外に出ている、現代美術の建物です。"),
+    _pt("pantheon", "パンテオン", 48.8462, 2.3464, "sight", "ドームをのせた、偉人たちの霊廟です。"),
+    _pt("concorde", "コンコルド広場", 48.8656, 2.3212, "sight", "オベリスクが立つ大きな広場です。"),
+    _pt("opera-garnier", "オペラ座", 48.872, 2.3316, "sight", "金色の飾りが目立つ歌劇場です。"),
+    _pt("orsay", "オルセー美術館", 48.86, 2.3266, "sight", "古い駅舎を使った美術館です。"),
+    _pt("elysee", "エリゼ宮", 48.8704, 2.3167, "famous", "大統領の仕事場です。"),
+    _pt("assemblee", "国民議会", 48.8606, 2.3189, "famous", "国の法律を決める議会の建物です。"),
+    _pt("bourse", "ブルス", 48.8693, 2.3411, "famous", "むかし証券取引所だった建物です。"),
+    _pt("banque-de-france", "フランス銀行", 48.8614, 2.3416, "famous", "国の中央銀行です。"),
+    _pt("hotel-de-ville", "パリ市庁舎", 48.8566, 2.3522, "famous", "パリの市役所です。"),
+]
+_PARIS_LINKS = [["gare-du-nord", "poissonniere"], ["gare-du-nord", "barbes"], ["gare-de-lest", "chateau-deau"], ["gare-de-lest", "louis-blanc"], ["gare-du-nord",
+    "gare-de-lest"], ["saint-lazare", "havre-caumartin"], ["saint-lazare", "europe"], ["gare-de-lyon", "bastille"], ["gare-de-lyon",
+    "quai-de-la-rapee"], ["quai-de-la-rapee", "austerlitz"], ["austerlitz", "saint-marcel"], ["austerlitz", "jussieu"], ["montparnasse",
+    "edgar-quinet"], ["montparnasse", "vavin"], ["montparnasse", "falguiere"], ["jussieu", "pantheon"]]
+_SEINE = {"line": [[48.833, 2.38], [48.8372, 2.3737], [48.845, 2.3668], [48.8506, 2.3622], [48.8545, 2.354], [48.856, 2.349], [48.8573, 2.3413], [48.8585, 2.3377], [48.8609, 2.3306], [48.8637, 2.3203], [48.864, 2.3135], [48.8638, 2.3012], [48.8613, 2.2935], [48.855, 2.2877], [48.848, 2.276]], "width": 1}
 
 
 EXAMPLES.update({
@@ -17213,19 +17274,24 @@ EXAMPLES.update({
                     "spots": [{"id": "real-gate", "label": "入口", "x": 192, "y": 96, "body": "⋯ の 🖼️📷 で、写真かカメラをうしろに映せます（ページの中だけ。保存も送信もしません）。"}],
                     "player": {"emoji": "🙂", "x": 192, "y": 288, "speed": 96}}],
     },
-    # The overworld's sequel in real space: TOKYO (Tokyo Station with its six exits and the stations around it, on foot) and Reverse London (the main
-    # termini, the stations beside them, and famous places, with the Thames and its bridges). `place` turns latitude/longitude into tiles.
+    # The overworld's sequel in real space, as its other sides: Parallel Tokyo (Tokyo Station with its six exits and the stations around it, on foot),
+    # Reverse London (the main termini, the stations beside them and famous places, the Thames and its bridges; a sign, nogard, that turns into a dragon)
+    # and Fake Paris (the main stations, the metro beside them, the Seine; a fire in each block). `place` turns latitude/longitude into tiles.
     "cities": {
-        "schema": WORLD_SCHEMA, "id": "cities", "title": "Real space (miniature)", "zoom_max": 4,
+        "schema": WORLD_SCHEMA, "id": "cities", "title": "Parallel cities", "zoom_max": 4,
         "avatars": ["🙂", "🧳", "🚶", "🎒", "🐱", "🐶", "🦊", "🐼", "🚃", "☂️", "🎩", "🗼"],
-        "tools": {"🗼": {"label": "TOKYO", "label_en": "Tokyo", "floor": "tokyo"},
+        "tools": {"🗼": {"label": "パラレル東京", "label_en": "Parallel Tokyo", "floor": "tokyo"},
                   "🎡": {"label": "リバースロンドン", "label_en": "Reverse London", "floor": "london"},
+                  "🥖": {"label": "フェイクパリ", "label_en": "Fake Paris", "floor": "paris"},
                   "🚉": {"label": "東京駅", "label_en": "Tokyo Station",
                          "spots": ["tokyo-marunouchi-n", "tokyo-marunouchi-c", "tokyo-marunouchi-s", "tokyo-yaesu-n", "tokyo-yaesu-c", "tokyo-yaesu-s"]}},
-        "board": {"title": "REAL", "items": [{"text": "実在の場所をちいさく再現"}, {"text": "🚪で TOKYO とロンドンを行き来"}, {"text": "歩いて駅から駅へ"}]},
-        "floors": [{"id": "tokyo", "label": "TOKYO", "place": {"points": _TOKYO_POINTS, "meters": 32, "links": _TOKYO_LINKS}},
-                   {"id": "london", "label": "リバースロンドン",
-                    "place": {"points": _LONDON_POINTS, "meters": 150, "links": _LONDON_LINKS, "rivers": [_THAMES]}}],
+        "board": {"title": "PARALLEL", "items": [{"text": "実在の街の、もうひとつの姿"}, {"text": "🚪で3つの街を行き来"}, {"text": "歩いて駅から駅へ"}]},
+        "floors": [{"id": "tokyo", "label": "Parallel Tokyo", "place": {"points": _TOKYO_POINTS, "meters": 32, "links": _TOKYO_LINKS}},
+                   {"id": "london", "label": "Reverse London",
+                    "place": {"points": _LONDON_POINTS, "meters": 150, "links": _LONDON_LINKS, "rivers": [_THAMES]}},
+                   {"id": "paris", "label": "Fake Paris",
+                    "place": {"points": _PARIS_POINTS, "meters": 150, "links": _PARIS_LINKS, "rivers": [_SEINE],
+                              "scatter": {"kind": "fire", "every": 8, "seed": 5}}}],
     },
     "catalog-report": {
         "schema": "web-ui-catalog/1", "title": "Analysis report",
@@ -17380,11 +17446,12 @@ def _index_page() -> str:
          "html": '<section class="ui-panel" id="school"><h2>🏫 School (prototype)</h2><p class="ui-muted">The same world with a tile grid and props: pick an emoji, '
                  'then walk by tap, arrow keys / WASD or the on-screen pad. Desks, the board and shelves are solid; chairs are not. '
                  f'From <code>EXAMPLES["school"]</code>; Python plans the walk, the page only plays it.</p>{world_html(school)}</section>'},
-        {"id": "cities", "emoji": "🗼", "title": "Real space (miniature)", "text": "TOKYO and Reverse London from latitude and longitude: walk from station to station.",
+        {"id": "cities", "emoji": "🗼", "title": "Parallel cities", "text": "Parallel Tokyo, Reverse London and Fake Paris from latitude and longitude: walk from station to station.",
          "link": "Open the cities",
-         "html": '<section class="ui-panel" id="cities"><h2>🗼 Real space (miniature)</h2><p class="ui-muted">The overworld\'s sequel: places that exist, as tiles. '
-                 'TOKYO is Tokyo Station (six exits) and the stations within walking distance; Reverse London is the main termini, the stations beside them and '
-                 'a few famous places, with the Thames and its bridges. Use 🚪 to travel between them. '
+         "html": '<section class="ui-panel" id="cities"><h2>🗼 Parallel cities</h2><p class="ui-muted">The overworld\'s sequel: real places as tiles, each the other side of '
+                 'its city. Parallel Tokyo is Tokyo Station (six exits) and the stations within walking distance; Reverse London is the main termini, the stations '
+                 'beside them and famous places, with the Thames, its bridges and a sign that turns into a dragon; Fake Paris is the main stations, the metro beside '
+                 'them and the Seine, with a fire in each block. Use 🚪 to travel between them. '
                  f'From <code>EXAMPLES["cities"]</code>: each floor is a list of latitude/longitude points (<code>place</code>).</p>{world_html(cities)}</section>'},
         {"id": "wall", "emoji": "🎲", "title": "Random themes", "text": "Seeded palettes side by side; tap one to wear it. Every text pair meets WCAG AA.",
          "link": "Open the wall",
