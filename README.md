@@ -14,6 +14,12 @@ Shared CSS themes, semantic UI components, and small JavaScript utilities for st
 
 PySaiyanWeBoo combines Py (Python), Saiyan, Web, and Boo. Like Majin Buu in Dragon Ball Z, it absorbs work from many other repositories and makes it its own. And like a Saiyan, who grows stronger through every battle and every round of training, it keeps getting better with each change and test. It serves all of this together as web pages. It was formerly named web-ui.
 
+## Ecosystem concept
+
+[![PySaiyanWeBoo ecosystem concept: Python, web, tools, and related projects](docs/brand/ecosystem.png)](docs/brand/ecosystem.png)
+
+つくる、つながる、広がっていく。小さなツールの積み重ねで、より良い未来の開発体験を。
+
 ## v1 foundation
 
 ```text
