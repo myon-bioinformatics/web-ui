@@ -1,10 +1,10 @@
 """Python oracle and emitted browser projection: no browser/Python runtime dependency."""
 import json
 import math
-import shutil
 import subprocess
 
 import pytest
+from support import node26
 import web_ui as ui
 
 
@@ -89,9 +89,7 @@ def test_html_safe_accessible_and_offset_opt_in():
 
 
 def test_node26_projection_matches_python_oracle(tmp_path):
-    node = shutil.which('node')
-    if not node or int(subprocess.check_output([node, '--version'], text=True).lstrip('v').split('.')[0]) < 26:
-        pytest.skip('existing Node 26+ required; no installation')
+    node = node26() or pytest.skip('existing Node 26+ required; no installation')
     segments = [ui.world_walk([i, i*2], [100-i, 70-i], at=i/3, speed=10+i) for i in range(20)]
     segments += [ui.world_walk([0, 0], [0, 0], at=2)]
     cases = [[s, t] for s in segments for t in (0, s['at'], s['at'] + s['duration']/2, s['at']+s['duration'], 1e9)]
@@ -112,9 +110,7 @@ def test_node26_projection_matches_python_oracle(tmp_path):
 
 def test_node26_interaction_harness(tmp_path):
     from pathlib import Path
-    node = shutil.which('node')
-    if not node or int(subprocess.check_output([node, '--version'], text=True).lstrip('v').split('.')[0]) < 26:
-        pytest.skip('existing Node 26+ required; no installation')
+    node = node26() or pytest.skip('existing Node 26+ required; no installation')
     module = tmp_path / 'interaction.mjs'
     source = ui.WORLD_JS.removesuffix('bindWorlds();\n')
     module.write_text(source + (Path(__file__).parent / 'fixtures/world_motion_harness.js').read_text())

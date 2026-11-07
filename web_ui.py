@@ -41,7 +41,7 @@ import urllib.error
 import urllib.request
 import zlib
 import xml.etree.ElementTree as ET
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 THEMES = ("modern", "github-like")
 # Token-only candidates: their values live in the Python tokens.css source; not in contract v1 yet.
@@ -780,8 +780,12 @@ def render_document(
     module_mode: str = "inline",
     module_nonce: str | None = None,
     trusted_html: str | None = None,
+    favicon: str | None = None,
+    touch_icon: str | None = None,
 ) -> str:
     """Wrap escaped text or trusted HTML with CSS; scripts are opt-in links only.
+
+    ``favicon`` and ``touch_icon`` are optional PNG links (a local path or an HTTPS URL) for the tab and the home screen.
 
     CSS is caller-authored. Reject an HTML raw-text terminator rather than allow
     it to escape the style element. Stylesheets allow local or HTTPS paths;
@@ -804,6 +808,12 @@ def render_document(
     for href in stylesheets:
         _require_local_or_https(href, label="stylesheet")
         links.append(f'<link rel="stylesheet" href="{escape(href, quote=True)}">')
+    for href, tag in ((favicon, '<link rel="icon" type="image/png" href="{}">'), (touch_icon, '<link rel="apple-touch-icon" href="{}">')):
+        if href is not None:
+            if not isinstance(href, str) or not href:
+                raise ValueError("an icon is a path or an HTTPS URL")
+            _require_local_or_https(href, label="icon", allow_query=False)
+            links.append(tag.format(escape(href, quote=True)))
     style = f"<style>{css}</style>" if css else ""
     head_remote_scripts = [remote_script_tag(src) for src in remote_scripts]
     body = text_panel(text, heading=title) if trusted_html is None else trusted_html
@@ -2074,6 +2084,98 @@ def world_motion_sample(segment: dict[str, Any], elapsed: float) -> list[float]:
     return [a[i] + (b[i] - a[i]) * fraction for i in (0, 1)]
 
 
+# A floor may carry a tile grid and props (desks, chairs, a blackboard ...). Solid props block walking; the walk
+# is planned on the grid (breadth first, fixed neighbour order, so Python and the browser pick the same path) and
+# played as a chain of the same constant-speed segments as above.
+WORLD_PROPS = {"desk": True, "board": True, "wall": True, "shelf": True, "chair": False, "rug": False, "fire": False,
+               "grass": False, "sand": False, "road": False, "bridge": False,
+               "water": True, "tree": True, "cactus": True, "mountain": True, "house": True, "castle": True}   # kind -> blocks walking
+# Ground kinds are laid first and open the tiles they cover (a road through trees, a bridge over water); the other kinds only block.
+WORLD_GROUND = frozenset({"grass", "sand", "road", "bridge"})
+# How the terrain kinds look: a colour (none: the ground shows through) and, for some, an emoji repeated once per tile, or drawn once across
+# the prop (CSS only, written for the kinds a world uses). A floor becomes another place by swapping its kinds; the walking rules above are
+# all the grid needs.
+WORLD_LOOK = {"grass": ("#8fd694", "", False), "sand": ("#efd9a0", "", False), "road": ("#d2b48c", "", False), "bridge": ("#a9784a", "", False),
+              "water": ("#5aaae0", "🌊", False), "mountain": ("#b8a58f", "⛰️", False), "tree": ("", "🌲", False), "cactus": ("", "🌵", False),
+              "house": ("", "🏠", False), "castle": ("", "🏰", True), "fire": ("", "🔥", False)}
+_WORLD_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+WORLD_SIGNS = ("led", "wood")      # a spot drawn as a small board on a bold dot: an electronic one (amber on black) or a wooden one
+
+
+def world_blocked(width: int, height: int, tile: int, props: list[dict[str, Any]]) -> list[str]:
+    """The walking grid: one string per tile row, ``"1"`` for a tile covered by a solid prop and ``"0"`` otherwise."""
+    cells = [["0"] * (width // tile) for _ in range(height // tile)]
+    for prop in props:
+        if prop["kind"] in WORLD_GROUND or WORLD_PROPS[prop["kind"]]:
+            mark = "0" if prop["kind"] in WORLD_GROUND else "1"
+            for cy in range(prop["y"] // tile, (prop["y"] + prop["h"]) // tile):
+                for cx in range(prop["x"] // tile, (prop["x"] + prop["w"]) // tile):
+                    cells[cy][cx] = mark
+    return ["".join(row) for row in cells]
+
+
+def world_reach(blocked: list[str], start: tuple[int, int]) -> dict[tuple[int, int], tuple[int, int] | None]:
+    """Every cell that can be walked to from ``start`` (always allowed), each with the cell it was reached from (``None`` for ``start``).
+
+    Breadth first in a fixed neighbour order, so the dict's order is the search order and the paths are the same in Python and the browser.
+    """
+    cols, rows = len(blocked[0]), len(blocked)
+    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    order = [start]
+    for cx, cy in order:
+        for dx, dy in _WORLD_STEPS:
+            n = (cx + dx, cy + dy)
+            if 0 <= n[0] < cols and 0 <= n[1] < rows and blocked[n[1]][n[0]] == "0" and n not in parent:
+                parent[n] = (cx, cy)
+                order.append(n)
+    return parent
+
+
+def world_path(blocked: list[str], start: list[int], goal: list[int]) -> list[list[int]]:
+    """Shortest 4-neighbour cell path from ``start`` (always allowed) to ``goal``.
+
+    A goal that is solid, outside or cut off ends the path at the reachable cell nearest to it (the first such
+    cell in search order). Cells clamp into the grid.
+    """
+    cols, rows = len(blocked[0]), len(blocked)
+    def clamp(c: list[int]) -> tuple[int, int]:
+        return min(cols - 1, max(0, int(c[0]))), min(rows - 1, max(0, int(c[1])))
+    start, goal = clamp(start), clamp(goal)
+    parent = world_reach(blocked, start)
+    end = goal if goal in parent else min(parent, key=lambda c: (c[0] - goal[0]) ** 2 + (c[1] - goal[1]) ** 2)
+    path = [end]
+    while parent[path[-1]] is not None:
+        path.append(parent[path[-1]])
+    return [list(c) for c in reversed(path)]
+
+
+def world_route_points(blocked: list[str], tile: int, start: list[float], target: list[float]) -> list[list[float]]:
+    """Points to walk from ``start`` toward ``target`` on the grid: tile centres, ending at ``target`` itself when its tile is reachable."""
+    def cell(p: list[float]) -> list[int]:
+        return [min(n - 1, max(0, math.floor(v / tile))) for v, n in zip(p, (len(blocked[0]), len(blocked)))]
+    path = world_path(blocked, cell(start), cell(target))
+    centres = [[(c[0] + .5) * tile, (c[1] + .5) * tile] for c in path[1:]]
+    return [list(start), *(centres[:-1] + [list(target)] if path[-1] == cell(target) else centres)]
+
+
+def world_route(points: list[list[float]], *, at: float = 0, speed: float = 40,
+                width: float = 1024, height: float = 768) -> list[dict[str, Any]]:
+    """Constant-speed segments one after another through ``points`` (a single still segment when there is nowhere to go)."""
+    route, t = [], _motion_number(at, "at", 0, 1e9)
+    for a, b in zip(points, points[1:]):
+        route.append(world_walk(a, b, at=t, speed=speed, width=width, height=height))
+        t += route[-1]["duration"]
+    return route or [world_walk(points[0], points[0], at=t, speed=speed, width=width, height=height)]
+
+
+def world_route_sample(route: list[dict[str, Any]], elapsed: float) -> list[float]:
+    """Position along a ``world_route`` at absolute elapsed seconds; the end holds."""
+    for segment in route:
+        if elapsed < segment["at"] + segment["duration"]:
+            return world_motion_sample(segment, elapsed)
+    return world_motion_sample(route[-1], elapsed)
+
+
 def travel_seconds(x0: float, y0: float, x1: float, y1: float, speed: float) -> float:
     """Seconds to walk in a straight line at constant ``speed`` (map units per second)."""
     x0, y0, x1, y1 = [_motion_number(v, "coordinate", -1e6, 1e6) for v in (x0, y0, x1, y1)]
@@ -2088,14 +2190,14 @@ def minutes_until(now: float, at: int) -> int:
     Immediately after the target, the next occurrence is tomorrow (up to 1440).
     """
     now = _motion_number(now, "now (minutes since midnight)", 0, 1440)
-    at = _world_int(at, "at (minutes since midnight)", 0, 1439)
+    at = _bounded_int(at, "at (minutes since midnight)", 0, 1439)
     return math.ceil((at - now) % 1440)
 
 
 def board_clock(now: float, offset_minutes: int) -> dict[str, Any]:
     """Injected Unix seconds + fixed UTC-offset minutes, independent of host TZ."""
     now = _motion_number(now, "now (Unix seconds)", 0, 253402214400)
-    offset_minutes = _world_int(offset_minutes, "offset_minutes", -840, 840)
+    offset_minutes = _bounded_int(offset_minutes, "offset_minutes", -840, 840)
     seconds = (now + offset_minutes * 60) % 86400
     whole = math.floor(seconds)
     return {"clock": f"{whole // 3600:02d}:{whole // 60 % 60:02d}", "minutes": seconds / 60}
@@ -2201,11 +2303,11 @@ def villager_path(seed: int, width: int, height: int, *, speed: float = 48.0, ma
     """A seeded loop for one villager: straight walks at constant ``speed`` to random points, a random pause at each (1..4 s),
     then a walk back to the start so the loop is seamless. Returns ``{"duration": seconds, "keys": [(percent, x, y), ...]}``;
     between keys the motion is linear, a pause is two keys at the same point."""
-    seed = _world_int(seed, "seed", 0, 2**32 - 1)
-    width = _world_int(width, "width", 64, 4096)
-    height = _world_int(height, "height", 64, 4096)
-    margin = _world_int(margin, "margin", 0, min(width, height) // 2)
-    stops = _world_int(stops, "stops", 1, 64)
+    seed = _bounded_int(seed, "seed", 0, 2**32 - 1)
+    width = _bounded_int(width, "width", 64, 4096)
+    height = _bounded_int(height, "height", 64, 4096)
+    margin = _bounded_int(margin, "margin", 0, min(width, height) // 2)
+    stops = _bounded_int(stops, "stops", 1, 64)
     speed = _motion_number(speed, "speed", 1, 480)
     rng = random.Random(seed)
     point = lambda: (round(margin + rng.random() * max(0, width - 2 * margin), 1), round(margin + rng.random() * max(0, height - 2 * margin), 1))
@@ -2237,10 +2339,65 @@ def _world_id(value: Any, label: str, seen: set[str]) -> str:
     return value
 
 
+# Direction from two positions. A point is the centre of an object or the middle of one of its edges; the arrow says which way to go
+# from the first point to reach the second (screen y grows downward, so a target below is ⬇️ and a target above and to the right is ↗️).
+# The page repeats this arithmetic (``direction`` in WORLD_JS); integers only meet an integer slope test, so both always agree.
+WORLD_ANCHORS = {"center": (.5, .5), "left": (0, .5), "right": (1, .5), "top": (.5, 0), "bottom": (.5, 1),
+                 "top-left": (0, 0), "top-right": (1, 0), "bottom-left": (0, 1), "bottom-right": (1, 1)}
+WORLD_HERE = "📍"
+_WORLD_ARROWS = {(1, 0): "➡️", (1, 1): "↘️", (0, 1): "⬇️", (-1, 1): "↙️", (-1, 0): "⬅️", (-1, -1): "↖️", (0, -1): "⬆️", (1, -1): "↗️"}
+# Plain, text and emoji forms of an arrow name the same anchor, as in Ironmate's focus arrows; 🎯 and 📍 mean the centre.
+_WORLD_ARROW_ANCHORS = {"←": "left", "⬅": "left", "→": "right", "➡": "right", "↑": "top", "⬆": "top", "↓": "bottom", "⬇": "bottom",
+                        "↖": "top-left", "↗": "top-right", "↙": "bottom-left", "↘": "bottom-right", "🎯": "center", "📍": "center"}
+
+
+def world_point(rect: Any, at: str = "center") -> tuple[float, float]:
+    """The point of ``rect`` (``(x, y, w, h)``, or a dict with those keys) named by ``at``: ``center``, an edge (``left``, ``right``,
+    ``top``, ``bottom``) or a corner (``top-left`` ...). A spot or a person is a rect with no size."""
+    if at not in WORLD_ANCHORS:
+        raise ValueError(f"at is one of {', '.join(WORLD_ANCHORS)}: {at!r}")
+    x, y, w, h = (rect[k] for k in "xywh") if isinstance(rect, dict) else rect
+    return x + w * WORLD_ANCHORS[at][0], y + h * WORLD_ANCHORS[at][1]
+
+
+def world_direction(a: Any, b: Any, eps: float = 8) -> str:
+    """The arrow pointing from point ``a`` to point ``b``: eight sectors of 45 degrees, or 📍 when both axes are within ``eps``.
+
+    The sectors are tested with an integer slope (5/12, about 22.6 degrees), so no trigonometry and no rounding can differ in the browser."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    if abs(dx) <= eps and abs(dy) <= eps:
+        return WORLD_HERE
+    ax, ay = abs(dx), abs(dy)
+    if ay * 12 <= ax * 5:
+        key = (1 if dx > 0 else -1, 0)
+    elif ax * 12 <= ay * 5:
+        key = (0, 1 if dy > 0 else -1)
+    else:
+        key = (1 if dx > 0 else -1, 1 if dy > 0 else -1)
+    return _WORLD_ARROWS[key]
+
+
+def world_arrow_anchor(arrow: str) -> str:
+    """The anchor an arrow emoji names (``↘️`` is ``bottom-right``, ``⬅`` is ``left``, ``🎯`` is ``center``); variation selectors are ignored."""
+    name = arrow.replace("︎", "").replace("️", "")
+    if name not in _WORLD_ARROW_ANCHORS:
+        raise ValueError(f"not an arrow: {arrow!r}")
+    return _WORLD_ARROW_ANCHORS[name]
+
+
 def _world_emoji(value: Any) -> str:
     """An emoji (or any short non-ASCII symbol string); plain ASCII is refused so text cannot pose as a character."""
     if not isinstance(value, str) or not 1 <= len(value) <= 16 or any(c.isascii() for c in value):
         raise ValueError("emoji must be 1..16 non-ASCII characters")
+    return value
+
+
+def _world_avatar(value: Any) -> str:
+    """A visitor's character: an emoji, a short text (an initial, a name), or both, 1..16 characters. One label, never markup (the page sets
+    it as text): control and line-separator characters, bidirectional overrides and spaces at either end are refused."""
+    if (not isinstance(value, str) or not 1 <= len(value) <= 16 or "Zs" in (unicodedata.category(value[0]), unicodedata.category(value[-1]))
+            or any(unicodedata.category(c) in ("Cc", "Cs", "Zl", "Zp") or c in "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069" for c in value)):
+        raise ValueError("an avatar is 1..16 characters of emoji or text, without control characters or edge spaces")
     return value
 
 
@@ -2276,11 +2433,19 @@ def _world_gauge(gauge: Any) -> dict[str, Any]:
         glyphs = GAUGE_GLYPHS[glyphs]
     elif not isinstance(glyphs, (list, tuple)) or len(glyphs) != 2:
         raise ValueError("glyphs is a preset name or [elapsed, remaining]")
-    return {"from": gauge["from"], "to": gauge["to"], "cells": _world_int(gauge.get("cells", 10), "cells", 3, 20),
+    return {"from": gauge["from"], "to": gauge["to"], "cells": _bounded_int(gauge.get("cells", 10), "cells", 3, 20),
             "glyphs": [_gauge_glyph(g) for g in glyphs]}
 
 
-def _world_int(value: Any, label: str, low: int, high: int) -> int:
+def _world_tile(value: Any) -> int:
+    """A tile size: 16..128 and a multiple of 8."""
+    tile = _bounded_int(value, "tile", 16, 128)
+    if tile % 8:
+        raise ValueError("tile is a multiple of 8")
+    return tile
+
+
+def _bounded_int(value: Any, label: str, low: int, high: int) -> int:
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f"{label} must be an integer from {low} to {high}")
     return value
@@ -2290,8 +2455,15 @@ def world_validate(spec: Any) -> dict[str, Any]:
     """Checked copy of a ``web-ui-world/1`` spec: optional ``shots`` (scroll scenes) and ``floors`` (maps with spots)."""
     if not isinstance(spec, dict) or spec.get("schema") != WORLD_SCHEMA:
         raise ValueError(f"expected schema {WORLD_SCHEMA}")
-    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board"}:
-        raise ValueError("a world has schema, id, title, shots, floors, zoom_max and board")
+    if set(spec) - {"schema", "id", "title", "shots", "floors", "zoom_max", "board", "avatars", "shell", "tools"}:
+        raise ValueError("a world has schema, id, title, shots, floors, zoom_max, board, avatars, shell and tools")
+    shell = spec.get("shell", False)
+    if not isinstance(shell, bool):
+        raise ValueError("shell is true or false")
+    avatars = spec.get("avatars", [])
+    if not isinstance(avatars, list) or len(avatars) > 24 or len(set(map(str, avatars))) != len(avatars):
+        raise ValueError("avatars is a list of up to 24 different emoji or short texts")
+    avatars = [_world_avatar(a) for a in avatars]
     world_id = spec.get("id", "world")
     if not isinstance(world_id, str) or not _WORLD_ID.fullmatch(world_id):
         raise ValueError("id must be a lowercase token")
@@ -2315,23 +2487,44 @@ def world_validate(spec: Any) -> dict[str, Any]:
                       "title": _world_text(shot.get("title"), "title", 80),
                       "body": _world_text(shot.get("body", ""), "body", 400, required=False), "bg": bg})
     floors, spot_ids = [], set()
-    for floor in floors_in:
-        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player"}:
-            raise ValueError("a floor has id, label, width, height, spots, actors and player")
-        width, height = _world_int(floor.get("width"), "width", 64, 4096), _world_int(floor.get("height"), "height", 64, 4096)
+    for floor in map(_expand_floor, floors_in):
+        if not isinstance(floor, dict) or set(floor) - {"id", "label", "width", "height", "spots", "actors", "player", "tile", "props", "real"}:
+            raise ValueError("a floor has id, label, width, height, spots, actors, player, tile, props and real")
+        if not isinstance(floor.get("real", False), bool):
+            raise ValueError("real is true or false")
+        width, height = _bounded_int(floor.get("width"), "width", 64, 4096), _bounded_int(floor.get("height"), "height", 64, 4096)
+        tile, props_in, props = floor.get("tile"), floor.get("props", []), []
+        if tile is not None:
+            tile = _world_tile(tile)
+            if width % tile or height % tile:
+                raise ValueError("tile divides the floor width and height")
+        if not isinstance(props_in, list) or len(props_in) > 512 or (props_in and tile is None):
+            raise ValueError("props (at most 512) need a tile grid")
+        for prop in props_in:
+            if not isinstance(prop, dict) or set(prop) != {"kind", "x", "y", "w", "h"} or prop["kind"] not in tuple(WORLD_PROPS):
+                raise ValueError(f"a prop has kind ({', '.join(WORLD_PROPS)}), x, y, w and h")
+            x, y = _bounded_int(prop["x"], "x", 0, width), _bounded_int(prop["y"], "y", 0, height)
+            w, h = _bounded_int(prop["w"], "w", tile, width), _bounded_int(prop["h"], "h", tile, height)
+            if any(v % tile for v in (x, y, w, h)) or x + w > width or y + h > height:
+                raise ValueError("a prop lies on tiles, inside the floor")
+            props.append({"kind": prop["kind"], "x": x, "y": y, "w": w, "h": h})
         spots_in = floor.get("spots")
         if not isinstance(spots_in, list) or not 1 <= len(spots_in) <= 64:
             raise ValueError("a floor lists 1..64 spots")
         spots = []
         for spot in spots_in:
-            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body"}:
-                raise ValueError("a spot has id, x, y, label, category and body")
+            if not isinstance(spot, dict) or set(spot) - {"id", "x", "y", "label", "category", "body", "flip", "sign"}:
+                raise ValueError("a spot has id, x, y, label, category, body, flip and sign")
+            if "sign" in spot and spot["sign"] not in WORLD_SIGNS:
+                raise ValueError(f"sign is one of {', '.join(WORLD_SIGNS)}")
             category = spot.get("category", "")
             if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
                 raise ValueError("category must be a lowercase token")
-            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _world_int(spot.get("x"), "x", 0, width),
-                          "y": _world_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
-                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False)})
+            spots.append({"id": _world_id(spot.get("id"), "spot id", spot_ids), "x": _bounded_int(spot.get("x"), "x", 0, width),
+                          "y": _bounded_int(spot.get("y"), "y", 0, height), "label": _world_text(spot.get("label"), "label", 40),
+                          "category": category, "body": _world_text(spot.get("body", ""), "body", 400, required=False),
+                          **({"flip": _world_text(spot["flip"], "flip", 16)} if "flip" in spot else {}),
+                          **({"sign": spot["sign"]} if "sign" in spot else {})})
         actors = []
         actors_in = floor.get("actors", [])
         if not isinstance(actors_in, list) or len(actors_in) > 16:
@@ -2341,7 +2534,7 @@ def world_validate(spec: Any) -> dict[str, Any]:
                 raise ValueError("an actor has id, emoji, label, body, seed and speed")
             seed = actor.get("seed")
             if seed is not None:
-                _world_int(seed, "seed", 0, 2**31 - 1)
+                _bounded_int(seed, "seed", 0, 2**31 - 1)
             speed = actor.get("speed", 48)
             if type(speed) not in (int, float) or not 8 <= speed <= 240:
                 raise ValueError("speed must be from 8 to 240 (map units per second)")
@@ -2355,10 +2548,13 @@ def world_validate(spec: Any) -> dict[str, Any]:
             speed = player.get("speed", 96)
             if type(speed) not in (int, float) or not 8 <= speed <= 480:
                 raise ValueError("speed must be from 8 to 480 (map units per second)")
-            player = {"emoji": _world_emoji(player.get("emoji")), "x": _world_int(player.get("x"), "x", 0, width),
-                      "y": _world_int(player.get("y"), "y", 0, height), "speed": speed}
+            player = {"emoji": _world_avatar(player.get("emoji")), "x": _bounded_int(player.get("x"), "x", 0, width),
+                      "y": _bounded_int(player.get("y"), "y", 0, height), "speed": speed}
+            if tile and world_blocked(width, height, tile, props)[min(player["y"], height - 1) // tile][min(player["x"], width - 1) // tile] == "1":
+                raise ValueError("the player starts on a free tile")
         floors.append({"id": _world_id(floor.get("id"), "floor id", ids), "label": _world_text(floor.get("label"), "label", 40),
-                       "width": width, "height": height, "spots": spots, "actors": actors, "player": player})
+                       "width": width, "height": height, "spots": spots, "actors": actors, "player": player,
+                       **({"tile": tile, "props": props} if tile else {}), **({"real": True} if floor.get("real") else {})})
     board = spec.get("board")
     if board is not None:
         if not isinstance(board, dict) or set(board) - {"title", "items", "post", "offset_label", "offset_minutes", "zones", "shared_issue"} or not isinstance(board.get("items"), list) \
@@ -2395,10 +2591,393 @@ def world_validate(spec: Any) -> dict[str, Any]:
                           "gauge": None if gauge is None else _world_gauge(gauge), "zone": where})
         board = {"title": _world_text(board.get("title", "INFO"), "title", 24), "items": items, "post": board.get("post", False),
                  "offset_label": board.get("offset_label", False), "zones": zones, "shared_issue": shared_issue,
-                 "offset_minutes": (_world_int(board["offset_minutes"], "offset_minutes", -840, 840)
+                 "offset_minutes": (_bounded_int(board["offset_minutes"], "offset_minutes", -840, 840)
                                     if board.get("offset_minutes") is not None else None)}
+    tools: dict[str, dict[str, Any]] = {}
+    tools_in = spec.get("tools", {})
+    if not isinstance(tools_in, dict) or len(tools_in) > 8 or (tools_in and not floors):
+        raise ValueError("tools maps up to 8 emoji to a feature, on a world with floors")
+    floor_ids = {f["id"] for f in floors}
+    spot_ids_all = {s["id"] for f in floors for s in f["spots"]}
+    for key, tool in tools_in.items():
+        emoji = _world_emoji(key)
+        if _plain_emoji(emoji) in WORLD_BUILTIN_TOOLS or emoji in tools:
+            raise ValueError(f"{emoji} is already used by the page itself; tools take other emoji")
+        if not isinstance(tool, dict) or set(tool) - _WORLD_TOOL_KEYS or sum(k in tool for k in ("floor", "spots", "body")) != 1:
+            raise ValueError("a tool has label, label_en, labels, slot and exactly one of floor, spots or body")
+        slot = tool.get("slot", "head")
+        if slot not in ("head", "side"):
+            raise ValueError("slot is head or side")
+        label = _world_text(tool.get("label", emoji), "label", 24)
+        built = {"label": label, "label_en": _world_text(tool.get("label_en", label), "label_en", 24), "slot": slot}
+        more_labels = tool.get("labels", {})                                      # the other languages: {"fr": "Carte", "de": "Karte"}
+        if not isinstance(more_labels, dict) or set(more_labels) - set(_WORLD_LANG_CODES[2:]):
+            raise ValueError(f"labels maps language codes ({', '.join(_WORLD_LANG_CODES[2:])}) to words; ja and en are label and label_en")
+        if more_labels:
+            built["labels"] = {code: _world_text(text, "labels", 24) for code, text in more_labels.items()}
+        if "floor" in tool:
+            if tool["floor"] not in floor_ids:
+                raise ValueError(f"tool floor must be one of {sorted(floor_ids)}")
+            built["floor"] = tool["floor"]
+        elif "spots" in tool:
+            picked = tool["spots"]
+            if not isinstance(picked, list) or not 1 <= len(picked) <= 16 or any(p not in spot_ids_all for p in picked):
+                raise ValueError("tool spots lists 1..16 spot ids of the world")
+            built["spots"] = list(picked)
+        else:
+            built["body"] = _world_text(tool["body"], "body", 400)
+        tools[emoji] = built
     return {"schema": WORLD_SCHEMA, "id": world_id, "title": _world_text(spec.get("title", "World"), "title", 80),
-            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board}
+            "shots": shots, "floors": floors, "zoom_max": zoom_max, "board": board, **({"avatars": avatars} if avatars else {}),
+            **({"shell": True} if shell else {}), **({"tools": tools} if tools else {})}
+
+
+def _floor_kit(tile: int, id: str) -> tuple[Any, Any]:
+    """Makers a generated floor shares, in tile units: ``prop(kind, x, y, w=1, h=1)`` and ``spot(name, label, x, y, body)`` (a spot may sit between tiles)."""
+    prop = lambda kind, x, y, w=1, h=1: {"kind": kind, "x": x * tile, "y": y * tile, "w": w * tile, "h": h * tile}  # noqa: E731
+    spot = lambda name, text, x, y, body: {"id": f"{id}-{name}", "x": int(x * tile), "y": int(y * tile), "label": text, "body": body}  # noqa: E731
+    return prop, spot
+
+
+def _expand_floor(floor: Any) -> Any:
+    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)``, ``{"land": {theme, cols, rows, seed,
+    tile}}`` for ``land_floor(...)`` and ``{"place": {points, meters, ...}}`` for ``place_floor(...)``, so JSON alone (no Python in the calling
+    repository) can ask for a classroom, a land or a real place; ``spots``,
+    ``actors`` and ``player`` given beside it replace the generated ones, and ``real`` marks it as a floor with a photo or camera behind it."""
+    if not isinstance(floor, dict):
+        return floor
+    makers = {"classroom": (classroom_floor, {"rows", "groups", "per_group", "tile"}), "land": (land_floor, {"theme", "cols", "rows", "seed", "tile"}),
+              "place": (place_floor, _PLACE_KEYS)}
+    kind = next((k for k in makers if k in floor), None)
+    if kind is None:
+        return floor
+    build, allowed = makers[kind]
+    params, own = floor[kind], {"id", "label", kind, "spots", "actors", "player", "real"}
+    if (not isinstance(params, dict) or set(params) - allowed or set(floor) - own
+            or not all(isinstance(floor[k], str) for k in ("id", "label") if k in floor)):
+        raise ValueError(f"a {kind} floor has id, label, {kind} ({', '.join(sorted(allowed))}) and optionally spots, actors, player and real")
+    built = build(**params, **{k: floor[k] for k in ("id", "label") if k in floor})
+    return {**built, **{k: floor[k] for k in ("spots", "actors", "player", "real") if k in floor}}
+
+
+def classroom_floor(rows: int = 4, groups: int = 3, *, per_group: int = 2, tile: int = 32,
+                    id: str = "classroom", label: str = "教室") -> dict[str, Any]:
+    """A classroom floor: ``rows`` rows of desks, each with a chair below it, in ``groups`` blocks of ``per_group`` desks
+    with an aisle between blocks; a blackboard and teacher's desk at the front, shelves and a door at the back.
+    Every size is a multiple of ``tile`` (a multiple of 8). The player starts at the door.
+    """
+    rows, groups, per_group = (_bounded_int(rows, "rows", 1, 8), _bounded_int(groups, "groups", 1, 6),
+                               _bounded_int(per_group, "per_group", 1, 4))
+    tile = _world_tile(tile)
+    side, front, back = 2, 5, 3                                           # tiles: side walkway, board area, door area
+    cols, depth = 2 * side + groups * per_group + groups - 1, front + 2 * rows + back
+    prop, spot = _floor_kit(tile, id)
+    desk_w = min(3, cols - 2 * side)
+    props = [prop("board", side, 0, cols - 2 * side), prop("desk", (cols - desk_w) // 2, 2, desk_w)]
+    for r in range(rows):
+        for g in range(groups):
+            for k in range(per_group):
+                x, y = side + g * (per_group + 1) + k, front + 2 * r
+                props += [prop("desk", x, y), prop("chair", x, y + 1)]
+    door = cols // 2 - 1                                                  # a two-tile gap in the back shelves
+    props += [prop("shelf", 0, depth - 1, door), prop("shelf", door + 2, depth - 1, cols - door - 2)]
+    return {"id": id, "label": label, "width": cols * tile, "height": depth * tile, "tile": tile, "props": props, "actors": [],
+            "spots": [spot("board", "黒板", cols / 2, .5, "今日の連絡や課題を書く場所です。"),
+                      spot("teacher", "先生の机", cols / 2, 3.5, "先生の席です。"),
+                      spot("door", "出入口", cols / 2, depth - 1.5 - 1, "廊下や校庭へ出られます。")],
+            "player": {"emoji": "🙂", "x": int((door + .5) * tile), "y": int((depth - .5) * tile), "speed": 96}}
+
+
+# The lands of an overworld, like the countries of a Dragon Quest map: each theme swaps the objects (ground, edge, scatter, pond, houses) and
+# nothing else. ``houses`` is how many of the village's eight plots are built; ``pond`` is (w, h) tiles, or "sea" for a strip along the north.
+LAND_THEMES = {
+    "meadow": {"label": "🌱 草原", "ground": "grass", "edge": "water", "fill": "tree", "density": .07, "pond": (4, 3), "houses": 6, "castle": False,
+               "town": ("🏘️ はじまりの村", "家がならぶ、のどかな村です。"), "landmark": ("🌼 ひろば", "見晴らしのよい広場です。")},
+    "forest": {"label": "🌲 森", "ground": "grass", "edge": "tree", "fill": "tree", "density": .28, "pond": None, "houses": 2, "castle": False,
+               "town": ("🏡 森の家", "木々にかこまれた小さな家です。"), "landmark": ("⛩️ ほこら", "森の奥にある古いほこらです。")},
+    "mountain": {"label": "⛰️ 山", "ground": "grass", "edge": "mountain", "fill": "mountain", "density": .16, "pond": None, "houses": 2, "castle": False,
+                 "town": ("⛺ 山のふもと", "旅人が休むキャンプ地です。"), "landmark": ("🕳️ ほら穴", "山の奥へ続くほら穴です。")},
+    "desert": {"label": "🏜️ 砂漠", "ground": "sand", "edge": "mountain", "fill": "cactus", "density": .05, "pond": (3, 2), "houses": 4, "castle": False,
+               "town": ("🏜️ 砂の町", "日よけの屋根がならぶ町です。"), "landmark": ("🌴 オアシス", "水と木陰のある休み場です。")},
+    "coast": {"label": "🌊 海辺", "ground": "sand", "edge": "water", "fill": "tree", "density": .04, "pond": "sea", "houses": 6, "castle": False,
+              "town": ("⚓ みなと町", "船がとまる小さな港町です。"), "landmark": ("🐚 砂浜", "貝がらが落ちている浜辺です。")},
+    "castle": {"label": "🏰 城下町", "ground": "grass", "edge": "mountain", "fill": "tree", "density": .06, "pond": None, "houses": 4, "castle": True,
+               "town": ("🏰 お城", "町を見まもる大きなお城です。"), "landmark": ("🎪 広場", "市が立つにぎやかな広場です。")},
+}
+_LAND_PLOTS = ((-2, -1), (2, -1), (-2, 1), (2, 1), (-4, -1), (4, -1), (-4, 1), (4, 1))        # village plots beside the crossroads (tiles)
+
+
+def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: int = 1, tile: int = 32,
+               id: str = "land", label: str | None = None) -> dict[str, Any]:
+    """One land of an overworld: ground, an edge, scattered trees or rocks, perhaps a pond, a village on a crossroads and a road to it.
+
+    The same arguments always give the same land (a small seeded generator, not ``random``). The player starts at the foot of the road; two
+    spots, the town and a landmark (the nearest bank of the water, else the farthest reachable tile), sit on tiles that can be walked to.
+    """
+    look = LAND_THEMES.get(theme)
+    if look is None:
+        raise ValueError(f"theme is one of {', '.join(LAND_THEMES)}")
+    cols, rows, seed = _bounded_int(cols, "cols", 12, 48), _bounded_int(rows, "rows", 12, 32), _bounded_int(seed, "seed", 0, 2**31 - 1)
+    tile = _world_tile(tile)
+    if cols * tile > 4096 or rows * tile > 4096:
+        raise ValueError("the land fits in 4096 units")
+    state = seed % 2147483646 + 1
+    def rand() -> float:                                                                   # Park-Miller: the same numbers in every Python
+        nonlocal state
+        state = state * 48271 % 2147483647
+        return state / 2147483647
+    cx, cy = cols // 2, rows // 2
+    prop, spot = _floor_kit(tile, id)
+    props: list[dict[str, Any]] = []
+    put = lambda *args: props.append(prop(*args))                                            # noqa: E731  (laid in order: later kinds paint over earlier ones)
+    taken: set[tuple[int, int]] = set()                                                    # tiles with something solid on them
+    reserved: set[tuple[int, int]] = {(cx, y) for y in range(cy - 1 if look["castle"] else cy, rows - 1)}
+    reserved |= {(x, cy) for x in range(max(1, cx - 4), min(cols - 1, cx + 5))} | {(x, rows - 2) for x in range(cx - 1, cx + 2)}
+    put(look["ground"], 0, 0, cols, rows)
+    for kind_args in ((0, 0, cols, 1), (0, rows - 1, cols, 1), (0, 1, 1, rows - 2), (cols - 1, 1, 1, rows - 2)):
+        put(look["edge"], *kind_args)
+    water: set[tuple[int, int]] = set()
+    if look["pond"] == "sea":
+        put("water", 1, 1, cols - 2, 3)
+        water = {(x, y) for x in range(1, cols - 1) for y in range(1, 4)}
+    elif look["pond"]:
+        pw, ph = look["pond"]
+        for _ in range(40):                                                                # away from the crossroads, or no pond at all
+            x, y = 2 + int(rand() * (cols - pw - 3)), 2 + int(rand() * (rows - ph - 3))
+            if not any(abs(x + i - cx) <= 6 and y + j >= cy - 4 for i in range(pw) for j in range(ph)):
+                put("water", x, y, pw, ph)
+                water = {(x + i, y + j) for i in range(pw) for j in range(ph)}
+                break
+    taken |= water
+    plots = [(cx + dx, cy + dy) for dx, dy in _LAND_PLOTS[:look["houses"]]]
+    for x, y in plots:
+        put("house", x, y)
+    if look["castle"]:
+        put("castle", cx - 1, cy - 3, 3, 2)
+        taken |= {(cx + i, cy - 3 + j) for i in range(-1, 2) for j in range(2)}
+    taken |= set(plots)
+    for y in range(1, rows - 1):                                                           # scattered trees or rocks, a row of them in one prop
+        run = 0
+        for x in range(1, cols):
+            here = x < cols - 1 and (x, y) not in taken and (x, y) not in reserved and rand() < look["density"]
+            if here:
+                run += 1
+            elif run:
+                put(look["fill"], x - run, y, run, 1)
+                run = 0
+    put("road", cx, cy - (1 if look["castle"] else 0), 1, rows - 1 - cy + (1 if look["castle"] else 0))
+    put("road", max(1, cx - 4), cy, min(cols - 1, cx + 5) - max(1, cx - 4), 1)
+    blocked = world_blocked(cols * tile, rows * tile, tile, props)
+    dist: dict[tuple[int, int], int] = {}                                                  # steps from the start, in search order
+    for cell, came_from in world_reach(blocked, (cx, rows - 2)).items():
+        dist[cell] = 0 if came_from is None else dist[came_from] + 1
+    shore = [c for c in dist if c != (cx, cy) and any((c[0] + dx, c[1] + dy) in water for dx, dy in _WORLD_STEPS)]
+    far = (min(shore, key=lambda c: (dist[c], c[1], c[0])) if shore                       # with water: the nearest bank; without: the farthest tile
+           else min((c for c in dist if c != (cx, cy)), key=lambda c: (-dist[c], c[1], c[0])))
+    place = lambda name, text, at: spot(name, text[0], at[0] + .5, at[1] + .5, text[1])      # noqa: E731  (a spot stands in the middle of its tile)
+    return {"id": id, "label": label or look["label"], "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [],
+            "spots": [place("town", look["town"], (cx, cy)), place("landmark", look["landmark"], far)],
+            "player": {"emoji": "🙂", "x": int((cx + .5) * tile), "y": int((rows - 1.5) * tile), "speed": 96}}
+
+
+# A real place in miniature: points with a latitude and longitude laid on the tile grid (``meters`` of ground per tile), roads between linked
+# points, and rivers as bands of water that roads cross as bridges. The projection and the box come from the coordinate tools below (the same
+# Earth radius and ``tolerance_area``), so a place is only data: a list of points, nothing drawn by hand.
+_PLACE_KEYS = {"points", "meters", "tile", "links", "rivers", "area", "start", "scatter"}
+_PLACE_POINT_KEYS = {"id", "label", "lat", "lon", "maps", "category", "body", "flip", "sign"}
+
+
+def _place_point(point: Any, seen: set[str]) -> dict[str, Any]:
+    if not isinstance(point, dict) or set(point) - _PLACE_POINT_KEYS or ("maps" in point) == ("lat" in point or "lon" in point) \
+            or ("lat" in point) != ("lon" in point):
+        raise ValueError("a point has id, label, category, body, flip, sign and either lat and lon or maps (a Maps URL)")
+    if "maps" in point:
+        found = try_parse_maps_url(point["maps"]) if isinstance(point["maps"], str) else None
+        if found is None:
+            raise ValueError("maps has no coordinates in it")
+        lat, lon = found
+    else:
+        lat, lon = parse_coordinate(point["lat"], point["lon"])
+    category = point.get("category", "")
+    if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
+        raise ValueError("category must be a lowercase token")
+    if "sign" in point and point["sign"] not in WORLD_SIGNS:
+        raise ValueError(f"sign is one of {', '.join(WORLD_SIGNS)}")
+    return {"id": _world_id(point.get("id"), "point id", seen), "label": _world_text(point.get("label"), "label", 40), "lat": lat, "lon": lon,
+            "category": category, "body": _world_text(point.get("body", ""), "body", 400, required=False),
+            **({"flip": _world_text(point["flip"], "flip", 16)} if "flip" in point else {}),
+            **({"sign": point["sign"]} if "sign" in point else {})}
+
+
+def _place_meters(lat: float, lon: float, north: float, west: float, mid: float) -> tuple[float, float]:
+    """Metres east of ``west`` and south of ``north`` on a flat map whose scale is that of latitude ``mid`` (good for a few kilometres)."""
+    return ((lon - west) * math.cos(mid * math.pi / 180) * math.pi / 180 * EARTH_RADIUS_M, (north - lat) * math.pi / 180 * EARTH_RADIUS_M)
+
+
+def _place_rects(cells: set[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
+    """Tiles as rectangles ``(x, y, w, h)``: horizontal runs, then equal runs on the rows below stacked into one, so a road is a few props, not one per tile."""
+    open_rects: dict[tuple[int, int], list[int]] = {}                                       # (x, w) -> [y, h] of the rectangle still growing
+    done: list[tuple[int, int, int, int]] = []
+    for y in range(min((c[1] for c in cells), default=0), max((c[1] for c in cells), default=-1) + 1):
+        xs = sorted(x for x, cy in cells if cy == y)
+        runs, start = [], None
+        for i, x in enumerate(xs):
+            if start is None:
+                start = x
+            if i + 1 == len(xs) or xs[i + 1] != x + 1:
+                runs.append((start, x - start + 1))
+                start = None
+        for key in [k for k in open_rects if k not in runs]:
+            top, height = open_rects.pop(key)
+            done.append((key[0], top, key[1], height))
+        for run in runs:
+            if run in open_rects:
+                open_rects[run][1] += 1
+            else:
+                open_rects[run] = [y, 1]
+    done += [(key[0], top, key[1], height) for key, (top, height) in open_rects.items()]
+    return sorted(done, key=lambda r: (r[1], r[0]))
+
+
+def place_floor(points: list[dict[str, Any]], *, meters: int = 64, tile: int = 32, links: Any = (), rivers: Any = (), area: Any = None,
+                start: str | None = None, scatter: Any = None, id: str = "place", label: str = "場所") -> dict[str, Any]:
+    """A real place as a floor: each point (``id``, ``label``, ``lat`` and ``lon``, or ``maps`` with a Maps URL; optional ``category`` and ``body``) becomes a
+    spot on the tile its position falls on, ``meters`` of ground per tile.
+
+    ``links`` are pairs of point ids joined by an L-shaped road; ``rivers`` are ``{"line": [[lat, lon], ...], "width": tiles}`` bands of water, and a road
+    that crosses one becomes a bridge. ``area`` is ``{"center": [lat, lon], "radius": metres}``, the box ``tolerance_area`` gives (without it the map is the
+    points' box and a margin of two tiles). Two points on one tile are moved to the nearest free tile (the earlier point keeps its tile), and a
+    point that is cut off from the player's start by water is an error, so every spot can be walked to. The player starts at ``start`` (a point id,
+    default the first point that is not a sign). A point's ``flip`` is a second face that its pill swaps with the label when it is pressed.
+
+    A point with a ``sign`` (``led`` or ``wood``) is a small board on a bold dot at the nearest **tile corner** instead of the middle of a tile, so
+    it takes no tile and sits between the stations; two signs on one corner go to the nearest free corner, and it must touch a tile that can be walked on.
+
+    ``scatter`` is ``{"kind": "fire", "every": 8, "seed": 1}``: the map is cut into blocks of ``every`` tiles and one free tile in each gets the kind
+    (a decoration such as ``fire``: not ground, not solid), chosen by a small seeded generator, so the same arguments give the same places.
+    """
+    tile, meters = _world_tile(tile), _bounded_int(meters, "meters", 8, 2000)
+    if not isinstance(points, list) or not 1 <= len(points) <= 64:
+        raise ValueError("a place lists 1..64 points")
+    seen: set[str] = set()
+    pts = [_place_point(p, seen) for p in points]
+    if area is not None:
+        if not isinstance(area, dict) or set(area) != {"center", "radius"} or not isinstance(area["center"], list) or len(area["center"]) != 2 \
+                or type(area["radius"]) not in (int, float):
+            raise ValueError("area is {center: [lat, lon], radius: metres}")
+        clat, clon = parse_coordinate(area["center"][0], area["center"][1])
+        box = tolerance_area(clat, clon, area["radius"])
+        if box["wraps"] or box["full_longitude"]:
+            raise ValueError("the area must not cross the date line or reach a pole")
+        north, west, south, east = box["north"], box["west"], box["south"], box["east"]
+        margin = 0
+    else:
+        lats, lons = [p["lat"] for p in pts], [p["lon"] for p in pts]
+        north, west, south, east, margin = max(lats), min(lons), min(lats), max(lons), 2
+    mid = (north + south) / 2
+    extent_x, extent_y = _place_meters(south, east, north, west, mid)
+    cols, rows = int(extent_x // meters) + 1 + 2 * margin, int(extent_y // meters) + 1 + 2 * margin
+    cols, rows = max(cols, 12), max(rows, 12)
+    if cols * tile > 4096 or rows * tile > 4096:
+        raise ValueError("the place fits in 4096 units: raise meters or lower tile")
+    ox, oy = (cols - int(extent_x // meters) - 1) // 2, (rows - int(extent_y // meters) - 1) // 2    # centre the box on the grid
+    def cell(lat: float, lon: float) -> tuple[int, int]:
+        x, y = _place_meters(lat, lon, north, west, mid)
+        return int(x // meters) + ox, int(y // meters) + oy
+    def corner(lat: float, lon: float) -> tuple[int, int]:
+        x, y = _place_meters(lat, lon, north, west, mid)
+        return math.floor(x / meters + .5) + ox, math.floor(y / meters + .5) + oy
+    signs = [p for p in pts if "sign" in p]
+    pts = [p for p in pts if "sign" not in p]
+    if not pts:
+        raise ValueError("a place needs a point that is not a sign")
+    for p in pts:
+        p["cell"] = cell(p["lat"], p["lon"])
+        if not (0 <= p["cell"][0] < cols and 0 <= p["cell"][1] < rows):
+            raise ValueError(f"{p['id']} lies outside the area")
+    for p in signs:
+        p["corner"] = corner(p["lat"], p["lon"])
+        if not (0 <= p["corner"][0] <= cols and 0 <= p["corner"][1] <= rows):
+            raise ValueError(f"{p['id']} lies outside the area")
+    water: set[tuple[int, int]] = set()
+    rivers = list(rivers or ())
+    for river in rivers:
+        if not isinstance(river, dict) or set(river) != {"line", "width"} or not isinstance(river["line"], list) or not 2 <= len(river["line"]) <= 32:
+            raise ValueError("a river is {line: [[lat, lon], ...] (2..32 points), width: tiles}")
+        width_tiles = _bounded_int(river["width"], "width", 1, 8)
+        line = [cell(*parse_coordinate(a, b)) for a, b in river["line"]]
+        for (x0, y0), (x1, y1) in zip(line, line[1:]):
+            steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+            for i in range(steps + 1):
+                x, y = x0 + round((x1 - x0) * i / steps), y0 + round((y1 - y0) * i / steps)
+                for dx in range(-(width_tiles // 2), width_tiles - width_tiles // 2):
+                    for dy in range(-(width_tiles // 2), width_tiles - width_tiles // 2):
+                        if 0 <= x + dx < cols and 0 <= y + dy < rows:
+                            water.add((x + dx, y + dy))
+    taken: set[tuple[int, int]] = set()
+    for p in pts:                                                                        # one spot per tile, none in the water
+        cx, cy = p["cell"]
+        for ring in range(max(cols, rows)):
+            near = sorted(((cx + dx, cy + dy) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1) if max(abs(dx), abs(dy)) == ring),
+                          key=lambda c: ((c[0] - cx) ** 2 + (c[1] - cy) ** 2, c[1], c[0]))
+            free = [c for c in near if 0 <= c[0] < cols and 0 <= c[1] < rows and c not in taken and c not in water]
+            if free:
+                p["cell"] = free[0]
+                break
+        taken.add(p["cell"])
+    touching = lambda c: [(x, y) for x, y in ((c[0] - 1, c[1] - 1), (c[0], c[1] - 1), (c[0] - 1, c[1]), c) if 0 <= x < cols and 0 <= y < rows]   # noqa: E731
+    corners: set[tuple[int, int]] = set()
+    for p in signs:                                                                      # one sign per corner, on dry land
+        cx, cy = p["corner"]
+        for ring in range(max(cols, rows) + 1):
+            near = sorted(((cx + dx, cy + dy) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1) if max(abs(dx), abs(dy)) == ring),
+                          key=lambda c: ((c[0] - cx) ** 2 + (c[1] - cy) ** 2, c[1], c[0]))
+            free = [c for c in near if 0 <= c[0] <= cols and 0 <= c[1] <= rows and c not in corners and any(t not in water for t in touching(c))]
+            if free:
+                p["corner"] = free[0]
+                break
+        corners.add(p["corner"])
+    by_id = {p["id"]: p for p in pts}
+    if start is not None and start not in by_id:
+        raise ValueError("start is the id of one of the points that is not a sign")
+    road: set[tuple[int, int]] = set()
+    if not isinstance(links, (list, tuple)) or len(links) > 128:
+        raise ValueError("links is a list of up to 128 pairs of point ids")
+    for pair in links:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2 or any(k not in by_id for k in pair) or pair[0] == pair[1]:
+            raise ValueError("a link joins two different point ids of the place")
+        (x0, y0), (x1, y1) = by_id[pair[0]]["cell"], by_id[pair[1]]["cell"]
+        road |= {(x, y0) for x in range(min(x0, x1), max(x0, x1) + 1)} | {(x1, y) for y in range(min(y0, y1), max(y0, y1) + 1)}
+    bridge = road & water
+    prop, spot = _floor_kit(tile, id)
+    props = [prop("grass", 0, 0, cols, rows)]
+    for kind, cells in (("water", water), ("road", road - water), ("bridge", bridge)):               # roads after water: a bridge opens its tiles
+        props += [prop(kind, *rect) for rect in _place_rects(cells)]
+    if scatter is not None:
+        if not isinstance(scatter, dict) or set(scatter) != {"kind", "every", "seed"} or scatter["kind"] not in WORLD_PROPS \
+                or scatter["kind"] in WORLD_GROUND or WORLD_PROPS[scatter["kind"]]:
+            raise ValueError("scatter is {kind: a decoration (not ground, not solid), every: tiles per block, seed}")
+        every, state = _bounded_int(scatter["every"], "every", 2, 64), _bounded_int(scatter["seed"], "seed", 0, 2**31 - 1) % 2147483646 + 1
+        used = water | road | {p["cell"] for p in pts}
+        for by in range(0, rows, every):
+            for bx in range(0, cols, every):
+                free = [(x, y) for y in range(by, min(by + every, rows)) for x in range(bx, min(bx + every, cols)) if (x, y) not in used]
+                state = state * 48271 % 2147483647                                              # Park-Miller, as land_floor
+                if free:
+                    props.append(prop(scatter["kind"], *free[int(state / 2147483647 * len(free))], 1, 1))
+    if len(props) > 512:
+        raise ValueError("the place has too many tiles of road, water and scatter: raise meters")
+    first = by_id[start or pts[0]["id"]]
+    reach = world_reach(world_blocked(cols * tile, rows * tile, tile, props), first["cell"])
+    lost = [p["id"] for p in pts if p["cell"] not in reach] + [p["id"] for p in signs if not any(t in reach for t in touching(p["corner"]))]
+    if lost:
+        raise ValueError(f"cut off by water from {first['id']}: {', '.join(lost)} (add a link across the river)")
+    spots = [{"id": f"{id}-{p['id']}", "x": int((p["cell"][0] + .5) * tile), "y": int((p["cell"][1] + .5) * tile), "label": p["label"],
+              "category": p["category"], "body": p["body"], **({"flip": p["flip"]} if "flip" in p else {})} for p in pts]
+    spots += [{"id": f"{id}-{p['id']}", "x": p["corner"][0] * tile, "y": p["corner"][1] * tile, "label": p["label"], "category": p["category"],
+               "body": p["body"], "sign": p["sign"], **({"flip": p["flip"]} if "flip" in p else {})} for p in signs]
+    return {"id": id, "label": label, "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [], "spots": spots,
+            "player": {"emoji": "🙂", "x": int((first["cell"][0] + .5) * tile), "y": int((first["cell"][1] + .5) * tile), "speed": 96}}
 
 
 def _shots_html(world: dict[str, Any]) -> str:
@@ -2463,43 +3042,201 @@ def _board_html(board: dict[str, Any] | None) -> str:
             f'<div class="ui-board-track"><div class="ui-board-run" style="animation-duration:{board_seconds(chars)}s">{run}</div></div>{form}{shared}</div>')
 
 
+# The words of a shell world's chrome. The page shows icons; these are the aria-label and tooltip. 🌐 picks the language, the same
+# eleven as flutter_navigation_basic (ja is the page's own, so it is what the markup carries until JS switches it).
+WORLD_LANGS = (("ja", "日本語"), ("en", "English"), ("fr", "Français"), ("es", "Español"), ("pt", "Português"), ("ar", "العربية"),
+               ("zh", "中文"), ("ru", "Русский"), ("id", "Bahasa Indonesia"), ("de", "Deutsch"), ("sw", "Kiswahili"))
+WORLD_TEXT = {
+    #            ja  en  fr  es  pt  ar  zh  ru  id  de  sw
+    "home": ("ホーム", "Home", "Accueil", "Inicio", "Início", "الرئيسية", "首页", "Главная", "Beranda", "Startseite", "Mwanzo"),
+    "favorites": ("お気に入り", "Favorites", "Favoris", "Favoritos", "Favoritos", "المفضلة", "收藏", "Избранное", "Favorit", "Favoriten", "Vipendwa"),
+    "settings": ("全体設定", "Settings", "Réglages", "Ajustes", "Configurações", "الإعدادات", "设置", "Настройки", "Pengaturan", "Einstellungen", "Mipangilio"),
+    "places": ("行き先の一覧", "Places", "Lieux", "Lugares", "Lugares", "الأماكن", "地点", "Места", "Tempat", "Orte", "Maeneo"),
+    "screen": ("この画面の操作", "This screen", "Cet écran", "Esta pantalla", "Esta tela", "هذه الشاشة", "本屏幕", "Этот экран", "Layar ini", "Dieser Bildschirm", "Skrini hii"),
+    "pause": ("動きを止める", "Pause motion", "Arrêter le mouvement", "Pausar el movimiento", "Pausar o movimento", "إيقاف الحركة", "暂停动态", "Остановить движение", "Jeda gerakan", "Bewegung anhalten", "Simamisha mwendo"),
+    "avatar": ("絵文字を変える", "Change emoji", "Changer d'emoji", "Cambiar emoji", "Mudar emoji", "تغيير الرمز التعبيري", "更换表情", "Сменить эмодзи", "Ganti emoji", "Emoji ändern", "Badilisha emoji"),
+    "language": ("言語", "Language", "Langue", "Idioma", "Idioma", "اللغة", "语言", "Язык", "Bahasa", "Sprache", "Lugha"),
+    "me": ("自分の場所", "Find me", "Où suis-je", "Mi ubicación", "Minha posição", "موقعي", "我的位置", "Где я", "Posisi saya", "Mein Standort", "Nilipo"),
+    "walk": ("ここへ歩く", "Walk here", "Aller ici", "Caminar aquí", "Caminhar até aqui", "امشِ إلى هنا", "走到这里", "Идти сюда", "Jalan ke sini", "Hierhin gehen", "Tembea hapa"),
+    "close": ("閉じる", "Close", "Fermer", "Cerrar", "Fechar", "إغلاق", "关闭", "Закрыть", "Tutup", "Schließen", "Funga"),
+    "star": ("お気に入り", "Favorite", "Favori", "Favorito", "Favorito", "مفضلة", "收藏", "В избранное", "Favorit", "Favorit", "Pendwa"),
+    "floor": ("フロアを移動", "Go to floor", "Aller à l'étage", "Ir a la planta", "Ir para o andar", "الانتقال إلى طابق", "前往楼层", "Перейти на этаж", "Pindah lantai", "Zur Etage", "Nenda ghorofa"),
+    "move": ("移動", "Move", "Déplacer", "Mover", "Mover", "تحرك", "移动", "Движение", "Gerak", "Bewegen", "Sogea"),
+    "up": ("上へ", "Up", "Haut", "Arriba", "Cima", "أعلى", "上", "Вверх", "Atas", "Hoch", "Juu"),
+    "left": ("左へ", "Left", "Gauche", "Izquierda", "Esquerda", "يسار", "左", "Влево", "Kiri", "Links", "Kushoto"),
+    "right": ("右へ", "Right", "Droite", "Derecha", "Direita", "يمين", "右", "Вправо", "Kanan", "Rechts", "Kulia"),
+    "down": ("下へ", "Down", "Bas", "Abajo", "Baixo", "أسفل", "下", "Вниз", "Bawah", "Runter", "Chini"),
+    "pick": ("あなたの絵文字をえらんでください", "Pick your emoji", "Choisissez votre emoji", "Elige tu emoji", "Escolha seu emoji", "اختر رمزك التعبيري", "选择你的表情", "Выберите свой эмодзи", "Pilih emojimu", "Wähle dein Emoji", "Chagua emoji yako"),
+    "other": ("ほかの絵文字・文字（16文字まで）", "Another emoji or text (up to 16)", "Autre emoji ou texte (16 max)", "Otro emoji o texto (hasta 16)", "Outro emoji ou texto (até 16)", "رمز أو نص آخر (حتى 16)", "其他表情或文字（最多16个）", "Другой эмодзи или текст (до 16)", "Emoji atau teks lain (maks. 16)", "Anderes Emoji oder Text (bis 16)", "Emoji au maandishi mengine (hadi 16)"),
+    "ok": ("これにする", "Use this", "Choisir", "Usar este", "Usar este", "استخدم هذا", "就用这个", "Выбрать", "Pakai ini", "Nehmen", "Tumia hii"),
+    "invalid": ("1〜16文字の絵文字か文字を入力してください", "Enter 1 to 16 emoji or characters", "Saisissez 1 à 16 emoji ou caractères", "Escribe de 1 a 16 emoji o caracteres", "Digite de 1 a 16 emoji ou caracteres", "أدخل من 1 إلى 16 رمزًا أو حرفًا", "请输入1到16个表情或文字", "Введите от 1 до 16 эмодзи или символов", "Masukkan 1 sampai 16 emoji atau karakter", "Gib 1 bis 16 Emoji oder Zeichen ein", "Weka emoji au herufi 1 hadi 16"),
+    "backdrop": ("写真かカメラをうしろに映す", "Show a photo or the camera behind", "Afficher une photo ou la caméra derrière", "Mostrar una foto o la cámara detrás", "Mostrar uma foto ou a câmera atrás", "عرض صورة أو الكاميرا في الخلفية", "在背后显示照片或相机", "Показать фото или камеру на фоне", "Tampilkan foto atau kamera di belakang", "Foto oder Kamera dahinter zeigen", "Onyesha picha au kamera nyuma"),
+    "camera": ("カメラ", "Camera", "Caméra", "Cámara", "Câmera", "الكاميرا", "相机", "Камера", "Kamera", "Kamera", "Kamera"),
+    "photo": ("写真をえらぶ", "Choose a photo", "Choisir une photo", "Elegir una foto", "Escolher uma foto", "اختر صورة", "选择照片", "Выбрать фото", "Pilih foto", "Foto wählen", "Chagua picha"),
+    "clear": ("もとにもどす", "Clear it", "Effacer", "Quitar", "Remover", "مسح", "清除", "Убрать", "Hapus", "Entfernen", "Ondoa"),
+    "unavailable": ("つかえません（許可かカメラを確認）", "Not available (check permission or camera)", "Indisponible (vérifiez l'autorisation ou la caméra)", "No disponible (revisa el permiso o la cámara)", "Indisponível (verifique a permissão ou a câmera)", "غير متاح (تحقق من الإذن أو الكاميرا)", "无法使用（请检查权限或相机）", "Недоступно (проверьте разрешение или камеру)", "Tidak tersedia (periksa izin atau kamera)", "Nicht verfügbar (Berechtigung oder Kamera prüfen)", "Haipatikani (angalia ruhusa au kamera)"),
+}
+WORLD_BUILTIN_TOOLS = ("🏠", "⭐", "⚙", "🌐", "☰", "⋯", "🚪", "🖼", "📷", "🧹")       # emoji the page itself uses; a tool of your own takes another
+_WORLD_TOOL_KEYS = {"label", "label_en", "labels", "slot", "floor", "spots", "body"}
+_WORLD_LANG_CODES = tuple(code for code, _ in WORLD_LANGS)
+# What the page's script needs: the language codes and the words by index (one list per key), written once ahead of the script.
+WORLD_TEXT_JS = ("const WORLD_LANGS=" + json.dumps(list(_WORLD_LANG_CODES)) + ",WORLD_TEXT=" +
+                 json.dumps({k: list(v) for k, v in WORLD_TEXT.items()}, ensure_ascii=False, separators=(",", ":")) + ";\n")
+
+
+def _plain_emoji(value: str) -> str:
+    return value.replace("\ufe0e", "").replace("\ufe0f", "")
+
+
+def _wt(key: str, labels: dict[str, str] | None = None) -> str:
+    """aria-label and title of one word of the chrome in the page's own language (ja); ``data-t`` names the catalogue entry that 🌐 swaps in,
+    or ``labels`` (language code → words) carries the words of a tool of your own."""
+    ja = labels["ja"] if labels else WORLD_TEXT[key][0]
+    swap = f'data-labels="{escape(json.dumps(labels, ensure_ascii=False, separators=(",", ":")), quote=True)}"' if labels else f'data-t="{key}"'
+    return f'aria-label="{escape(ja, quote=True)}" title="{escape(ja, quote=True)}" {swap}'
+
+
+def _world_shell(world: dict[str, Any]) -> bool:
+    """Header, side and footer instead of chips on top and controls below: every grid world, or any world with ``"shell": true``."""
+    return bool(world.get("shell") or world.get("tools") or any(f.get("tile") or f.get("real") for f in world["floors"]))
+
+
+def _world_categories(floors: list[dict[str, Any]]) -> list[str]:
+    """The category tokens the spots use, sorted (the filter chips and the radios behind them)."""
+    return sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
+
+
+def _world_playable(world: dict[str, Any]) -> bool:
+    """Something moves (a board, a player or an actor), so the page gets its motion controls."""
+    return bool(world["board"] or any(f["player"] or f["actors"] for f in world["floors"]))
+
+
+def _floor_html(wid: str, f: dict[str, Any], close: str) -> tuple[str, list[str]]:
+    """One floor's stage (props, spots, actors, player) and the info sheet articles of its spots and actors (``close`` is their closing link)."""
+    flip = lambda s: (f' data-flip="{escape(s["flip"], quote=True)}"' if s.get("flip") else "") + (f' data-sign="{s["sign"]}"' if s.get("sign") else "")   # noqa: E731
+    spots = "".join(
+        f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
+        f'style="left:{s["x"]}px;top:{s["y"]}px"{flip(s)}>{escape(s["label"])}</a>' for s in f["spots"])
+    actors = "".join(
+        f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
+        f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
+    pl = f["player"]
+    player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
+              f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
+    tile = f.get("tile")
+    props = "".join(f'<div class="ui-prop" data-kind="{q["kind"]}" aria-hidden="true" '
+                    f'style="left:{q["x"]}px;top:{q["y"]}px;width:{q["w"]}px;height:{q["h"]}px"></div>' for q in f.get("props", []))
+    grid = (f' data-tile="{tile}" data-blocked="{",".join(world_blocked(f["width"], f["height"], tile, f["props"]))}"') if tile else ""
+    stage = (f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}"{grid}{" data-real" if f.get("real") else ""} '
+             f'style="width:{f["width"]}px;height:{f["height"]}px{f";--tile:{tile}px" if tile else ""}">{props}{spots}{actors}{player}</div>')
+    sheet = [f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>{close}</article>'
+             for s in [*f["spots"], *f["actors"]]]
+    return stage, sheet
+
+
+def _pick_html(wid: str, avatars: list[str], shell: bool) -> str:
+    """The emoji picker (a plain ``div`` in the map, shown by the script): words for a classic world, icons and aria-labels for a shell world."""
+    if not avatars:
+        return ""
+    grid = '<div class="ui-world-pick-grid">' + "".join(f'<button type="button" data-emoji="{escape(e, quote=True)}">{escape(e)}</button>' for e in avatars) + '</div>'
+    if shell:
+        return (f'<div class="ui-world-pick" role="group" {_wt("pick")} hidden><div><h3 aria-hidden="true">🙂👇</h3>{grid}'
+                '<form class="ui-world-pick-form"><label><span aria-hidden="true">✏️</span> <input name="emoji" maxlength="32" size="8" autocomplete="off" '
+                f'placeholder="🙂 A" {_wt("other")}></label><button {_wt("ok")}>✅</button></form></div></div>')
+    return (f'<div class="ui-world-pick" role="group" aria-labelledby="{wid}-pick" hidden><div><h3 id="{wid}-pick">あなたの絵文字をえらんでください</h3>{grid}'
+            '<form class="ui-world-pick-form"><label>ほかの絵文字・文字 <input name="emoji" maxlength="32" size="8" autocomplete="off" placeholder="16文字まで"></label>'
+            '<button>これにする</button></form></div></div>')
+
+
+def _classic_html(world: dict[str, Any], *, head: str, radios: str, labels: str, view: str, tail: str) -> str:
+    """A world without a grid, tools or ``shell``: chips on top, the map, the controls below (the markup older worlds keep)."""
+    extra = '<button type="button" data-pick-open>絵文字を変える</button>' if world.get("avatars") else ""
+    controls = ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
+                '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form>{extra}</div>'
+                if _world_playable(world) else "")
+    return f'{head}{radios}<nav class="ui-world-bar">{labels}</nav>{_board_html(world["board"])}{view}{controls}{tail}'
+
+
+def _shell_html(world: dict[str, Any], *, head: str, radios: str, view: str, tail: str, floor_labels: str) -> str:
+    """A shell world keeps the page short and says it with icons (the words are the aria-label and title, in 11 languages):
+
+    header  the board and the tools of the whole world: 🏠 home, ⭐ favourites, ⚙️ settings, and any emoji of your own (``tools``)
+    side    ☰ the places of this floor, ⋯ the controls of this screen; 48px buttons whose panel opens over the map
+    footer  🚪 the pulldown that moves between floors (plain floor labels stand in for it until JS runs)
+    """
+    wid, floors, avatars, tools = world["id"], world["floors"], world.get("avatars", []), world.get("tools", {})
+    categories, playable, tiled = _world_categories(floors), _world_playable(world), any(f.get("tile") for f in floors)
+    def icon(kind: str, glyph: str, attrs: str, panel: str, hidden: bool = False) -> str:
+        return (f'<details class="ui-world-menu" data-menu="{kind}"{" hidden" if hidden else ""}><summary {attrs}>{glyph}</summary>'
+                f'<div class="ui-world-panel">{panel}</div></details>')
+    on_floor = {sp["id"]: f["id"] for f in floors for sp in f["spots"]}
+    def rows(ul_class: str, spots: list[dict[str, Any]], star: bool = False, data: str = "") -> str:
+        return f'<ul class="ui-world-rows {ul_class}"{data}>' + "".join(
+            f'<li data-category="{sp["category"]}"><a href="#{wid}-spot-{sp["id"]}" data-x="{sp["x"]}" data-y="{sp["y"]}" data-floor="{on_floor[sp["id"]]}">'
+            f'<span class="ui-world-arrow" aria-hidden="true">{WORLD_HERE}</span>{escape(sp["label"])}</a>'
+            + (f'<button type="button" class="ui-world-star" aria-pressed="false" {_wt("star")}>☆</button>' if star else "") + '</li>' for sp in spots) + '</ul>'
+    by_id = {sp["id"]: sp for f in floors for sp in f["spots"]}
+    def custom(emoji: str, tool: dict[str, Any]) -> str:
+        attrs = _wt("", {"ja": tool["label"], "en": tool["label_en"], **tool.get("labels", {})})
+        if "floor" in tool:                                                       # a floor shortcut: its radio, so it works without JS too
+            return f'<label class="ui-world-tool" for="{wid}-floor-{tool["floor"]}" {attrs}>{escape(emoji)}</label>'
+        panel = rows("", [by_id[i] for i in tool["spots"]]) if "spots" in tool else f'<p>{escape(tool["body"])}</p>'
+        return icon("tool", escape(emoji), attrs, panel)
+    chips = ("".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in ["", *categories])
+             if categories else "")
+    side = icon("spots", "☰", _wt("places"), (f'<nav class="ui-world-chips">{chips}</nav>' if chips else "") +
+                "".join(rows("ui-world-spots", f["spots"], star=True, data=f' data-floor="{f["id"]}"') for f in floors))
+    side += "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "side")
+    real = any(f.get("real") for f in floors)
+    if playable or real:
+        me = f'<button type="button" class="ui-world-grid-only" data-me hidden {_wt("me")}>🎯</button>' if tiled else ""
+        walk = ('<div class="ui-world-motion-controls" hidden><form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
+                f'<label>Y <input name="y" type="number" min="0" step="any" required></label><button {_wt("walk")}>🚶</button></form>{me}</div>') if playable else ""
+        backdrop = f'<button type="button" class="ui-world-real" data-real hidden {_wt("backdrop")}>🖼️📷</button>' if real else ""
+        side += icon("more", "⋯", _wt("screen"), walk + backdrop, hidden=True)
+    settings = ((f'<button type="button" class="ui-world-pause" aria-pressed="false" data-pause="⏸️" data-resume="▶️" {_wt("pause")}>⏸️</button>' if playable else "") +
+                (f'<button type="button" data-pick-open {_wt("avatar")}>🙂✏️</button>' if avatars else "") +
+                f'<label class="ui-world-lang">🌐 <select data-lang {_wt("language")}>' +
+                "".join(f'<option value="{code}" lang="{code}"{" selected" if i == 0 else ""}>{name}</option>' for i, (code, name) in enumerate(WORLD_LANGS)) +
+                '</select></label>')
+    header_tools = (f'<a class="ui-world-home" href="#{wid}-map" data-home {_wt("home")}>🏠</a>' +
+                    "".join(custom(e, t) for e, t in tools.items() if t["slot"] == "head") +
+                    icon("favorites", "⭐", _wt("favorites"), '<p class="ui-world-empty" aria-hidden="true">☆</p><ul class="ui-world-rows ui-world-favs"></ul>', hidden=True) +
+                    icon("settings", "⚙️", _wt("settings"), settings, hidden=True))
+    steps = "".join(f'<button type="button" data-step="{d}" {_wt(k)}>{g}</button>'
+                    for d, k, g in (("0,-1", "up", "▲"), ("-1,0", "left", "◀"), ("1,0", "right", "▶"), ("0,1", "down", "▼")))
+    dpad = f'<div class="ui-world-dpad ui-world-grid-only" role="group" {_wt("move")} hidden>{steps}</div>' if tiled and playable else ""
+    foot = (f'<footer class="ui-world-foot"><nav class="ui-world-bar">{floor_labels}</nav>'
+            f'<label class="ui-world-goto-wrap">🚪 <select class="ui-world-goto" {_wt("floor")}>' +
+            "".join(f'<option value="{f["id"]}"{" selected" if i == 0 else ""}>{escape(f["label"])}</option>' for i, f in enumerate(floors)) +
+            '</select></label></footer>') if len(floors) > 1 else ""
+    return (f'{head}{radios}<header class="ui-world-head">{_board_html(world["board"])}<nav class="ui-world-tools">{header_tools}</nav></header>'
+            f'<div class="ui-world-body">{view}{dpad}<div class="ui-world-side">{side}</div></div>{foot}{tail}')
+
+
 def _map_html(world: dict[str, Any]) -> str:
-    wid, floors = world["id"], world["floors"]
+    wid, floors, shell = world["id"], world["floors"], _world_shell(world)
+    categories = _world_categories(floors)
+    cat_ids = [""] + categories
     radios = "".join(
         f'<input class="ui-world-radio" type="radio" name="{wid}-floor" id="{wid}-floor-{f["id"]}" value="{f["id"]}"'
         f'{" checked" if i == 0 else ""}>' for i, f in enumerate(floors))
-    categories = sorted({s["category"] for f in floors for s in f["spots"] if s["category"]})
-    cat_ids = [""] + categories
     radios += "".join(
         f'<input class="ui-world-radio" type="radio" name="{wid}-cat" id="{wid}-cat-{"value-" + c if c else "all"}" value="{c}"'
         f'{" checked" if not c else ""}>' for c in cat_ids)
-    labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
+    floor_labels = labels = "".join(f'<label for="{wid}-floor-{f["id"]}">{escape(f["label"])}</label>' for f in floors)
     if categories:
         labels += "".join(f'<label for="{wid}-cat-{"value-" + c if c else "all"}" data-cat="{c}">{escape(c or "all")}</label>' for c in cat_ids)
-    stages, sheet = [], []
-    for f in floors:
-        spots = "".join(
-            f'<a class="ui-spot" href="#{wid}-spot-{s["id"]}" data-x="{s["x"]}" data-y="{s["y"]}" data-category="{s["category"]}" '
-            f'style="left:{s["x"]}px;top:{s["y"]}px">{escape(s["label"])}</a>' for s in f["spots"])
-        actors = "".join(
-            f'<a class="ui-actor" id="{wid}-actor-{a["id"]}" href="#{wid}-spot-{a["id"]}" aria-label="{escape(a["label"], quote=True)}">'
-            f'<span>{escape(a["emoji"])}</span></a>' for a in f["actors"])
-        pl = f["player"]
-        player = (f'<span class="ui-player" data-x="{pl["x"]}" data-y="{pl["y"]}" data-speed="{pl["speed"]}" '
-                  f'style="--px:{pl["x"]};--py:{pl["y"]}" role="img" aria-label="自分"><span>{escape(pl["emoji"])}</span></span>') if pl else ""
-        stages.append(f'<div class="ui-floor" data-floor="{f["id"]}" data-w="{f["width"]}" data-h="{f["height"]}" '
-                      f'style="width:{f["width"]}px;height:{f["height"]}px">{spots}{actors}{player}</div>')
-        sheet.extend(
-            f'<article class="ui-sheet-item" id="{wid}-spot-{s["id"]}"><h3>{escape(s["label"])}</h3><p>{escape(s["body"])}</p>'
-            f'<a class="ui-sheet-close" href="#{wid}-map">Close</a></article>' for s in [*f["spots"], *f["actors"]])
-    return (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}" '
-            f'aria-label="{escape(world["title"], quote=True)}">{radios}<nav class="ui-world-bar">{labels}</nav>'
-            f'{_board_html(world["board"])}<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stages)}</div></div>' +
-            ('<div class="ui-world-motion-controls" hidden><button type="button" class="ui-world-pause" aria-pressed="false">動きを停止</button>'
-             '<form class="ui-world-walk"><label>X <input name="x" type="number" min="0" step="any" required></label>'
-             '<label>Y <input name="y" type="number" min="0" step="any" required></label><button>ここへ歩く</button></form></div>'
-             if world["board"] or any(f["player"] or f["actors"] for f in floors) else "") +
-            f'<aside class="ui-sheet" aria-live="polite">{"".join(sheet)}</aside></section>')
+    close = f'<a class="ui-sheet-close" href="#{wid}-map"' + (f' {_wt("close")}>✖️</a>' if shell else ">Close</a>")          # an icon in a shell world
+    built = [_floor_html(wid, f, close) for f in floors]
+    head = (f'<section class="ui-world ui-world-map" id="{wid}-map" data-ui-world="map" data-zoom-max="{world["zoom_max"]}"'
+            f'{" data-grid" if any(f.get("tile") for f in floors) else ""}{" data-shell" if shell else ""} aria-label="{escape(world["title"], quote=True)}">')
+    view = f'<div class="ui-world-view" tabindex="0"><div class="ui-world-cam" style="--fx:0;--fy:0;--z:1">{"".join(stage for stage, _ in built)}</div></div>'
+    tail = f'<aside class="ui-sheet" aria-live="polite">{"".join(a for _, articles in built for a in articles)}</aside>{_pick_html(wid, world.get("avatars", []), shell)}</section>'
+    if shell:
+        return _shell_html(world, head=head, radios=radios, view=view, tail=tail, floor_labels=floor_labels)
+    return _classic_html(world, head=head, radios=radios, labels=labels, view=view, tail=tail)
 
 
 def world_html(spec: Any) -> str:
@@ -2526,6 +3263,10 @@ _WORLD_CSS = (
     "linear-gradient(90deg,var(--ui-border) 1px,transparent 1px);background-size:64px 64px}"
     ".ui-spot{position:absolute;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)));white-space:nowrap;border:1px solid var(--ui-accent);"
     "background:var(--ui-bg);color:var(--ui-fg);padding:.2rem .6rem;border-radius:999px;text-decoration:none;font-size:.85rem}"
+    ".ui-spot[data-sign]{padding:.3rem .5rem;border-radius:4px;font-size:0;line-height:1;letter-spacing:.04em}.ui-spot[data-sign]::before{content:\"●\";font-size:.7rem}"
+    ".ui-spot[data-sign][data-show]{padding:.05rem .4rem;font-size:.7rem}.ui-spot[data-sign][data-show]::before{content:\"● \"}"
+    ".ui-spot[data-sign=led]{background:#111;color:#ffb000;border-color:#ffb000;font-family:monospace;text-shadow:0 0 4px #ffb000}"
+    ".ui-spot[data-sign=wood]{background:#8b5a2b;color:#fff3d6;border:2px solid #5d3a1a}"
     ".ui-sheet{position:absolute;left:8px;right:8px;bottom:8px;max-height:45%;overflow:auto;border:1px solid var(--ui-border);"
     "background:var(--ui-panel);border-radius:var(--ui-radius);padding:1rem}"
     ".ui-world:not([data-js]) .ui-sheet:not(:has(.ui-sheet-item:target)){display:none}"
@@ -2555,6 +3296,73 @@ _WORLD_CSS = (
     ".ui-board-gauge{white-space:nowrap}.ui-board-cells{letter-spacing:.05em}.ui-board-pct{font-variant-numeric:tabular-nums}"
     ".ui-board-post{display:flex;gap:4px;flex:1 1 13rem}.ui-board-post .ui-input{flex:1;min-width:0;width:auto;padding:.2rem .5rem}.ui-board-post .ui-button{padding:.2rem .6rem}"
     "@keyframes ui-board-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
+    ".ui-floor[data-tile]{background-size:var(--tile) var(--tile)}"
+    ".ui-prop{position:absolute;box-sizing:border-box;pointer-events:none;border:2px solid var(--ui-border);border-radius:4px}"
+    ".ui-prop[data-kind=desk]{background:color-mix(in srgb,var(--ui-accent) 24%,var(--ui-panel))}"
+    ".ui-prop[data-kind=board]{background:color-mix(in srgb,var(--ui-accent) 55%,#000)}"
+    ".ui-prop[data-kind=wall]{background:var(--ui-border)}"
+    ".ui-prop[data-kind=shelf]{background:color-mix(in srgb,var(--ui-muted) 35%,var(--ui-panel))}"
+    ".ui-prop[data-kind=chair]{border:0;background:radial-gradient(circle,var(--ui-muted) 0 52%,transparent 54%)}"
+    ".ui-prop[data-kind=rug]{border-style:dashed;background:color-mix(in srgb,var(--ui-accent) 10%,transparent)}"
+    ".ui-world[data-shell]{--ui-world-h:min(56vh,512px);--ui-world-foot:56px}"
+    # Header: the info board. Side: this screen's own controls, as 48px buttons that open a panel over the map (the page never grows taller).
+    # Footer: the door-to-door pulldown.
+    ".ui-world-body{position:relative;display:flex}.ui-world-body>.ui-world-view{flex:1;min-width:0}"
+    ".ui-world-side{display:flex;flex-direction:column;gap:8px;padding:8px;z-index:2;border-left:1px solid var(--ui-border);background:var(--ui-panel)}"
+    ".ui-world-menu[hidden]{display:none}"
+    ".ui-world-menu>summary{display:flex;align-items:center;justify-content:center;width:48px;height:48px;box-sizing:border-box;list-style:none;cursor:pointer;"
+    "user-select:none;-webkit-user-select:none;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);color:var(--ui-fg);border-radius:var(--ui-radius)}"
+    ".ui-world-menu>summary::-webkit-details-marker{display:none}.ui-world-menu[open]>summary{background:var(--ui-accent);color:var(--ui-bg)}"
+    ".ui-world-home,.ui-world-tool{display:flex;align-items:center;justify-content:center;width:48px;height:48px;box-sizing:border-box;text-decoration:none;color:var(--ui-fg);cursor:pointer;"
+    "font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);border-radius:var(--ui-radius)}"
+    ".ui-world-head{position:relative;z-index:3;display:flex;align-items:center;border-bottom:1px solid var(--ui-border);background:var(--ui-panel)}"
+    ".ui-world-head .ui-board{flex:1;min-width:0;border-bottom:0}.ui-world-head .ui-board-track{flex:4 1 4rem}"
+    ".ui-world-tools{display:flex;gap:8px;padding:4px 8px}"
+    ".ui-world-tools .ui-world-home,.ui-world-tools .ui-world-tool,.ui-world-tools .ui-world-menu>summary{width:40px;height:40px}"
+    ".ui-world-panel p{margin:0}.ui-world-panel>button{min-width:48px}.ui-world-panel button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
+    ".ui-world-tools .ui-world-panel{top:100%;right:8px;width:min(320px,calc(100% - 16px));max-height:min(60vh,384px)}"
+    ".ui-world-settings,.ui-world-tools .ui-world-panel{display:flex;flex-wrap:wrap;gap:8px}.ui-world-tools .ui-world-panel[hidden]{display:none}"
+    ".ui-world-star{flex:none;min-width:40px;min-height:40px;border:0;background:none;color:var(--ui-accent);font-size:1.25rem;line-height:1;cursor:pointer;display:none}"
+    ".ui-world[data-js] .ui-world-star{display:inline-flex;align-items:center;justify-content:center}"
+    ".ui-world-rows li{display:flex;align-items:center}.ui-world-rows li>a{flex:1;min-width:0}"
+    ".ui-world-favs{width:100%}.ui-world-favs:empty{display:none}"
+    ".ui-world-empty{margin:0;width:100%;text-align:center;font-size:1.5rem;color:var(--ui-muted)}"
+    ".ui-world-panel:has(.ui-world-favs:not(:empty)) .ui-world-empty{display:none}"
+    ".ui-world-panel{position:absolute;top:8px;right:72px;width:min(320px,calc(100% - 88px));max-height:calc(100% - 16px);overflow:auto;box-sizing:border-box;"
+    "padding:16px;border:1px solid var(--ui-border);background:var(--ui-panel);color:var(--ui-fg);border-radius:var(--ui-radius);box-shadow:0 8px 24px rgb(0 0 0 / .25)}"
+    ".ui-world-panel h3{margin:0 0 8px}.ui-world-panel button{min-height:40px}"
+    ".ui-world[data-shell] .ui-world-motion-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0}"
+    ".ui-world[data-shell] .ui-world-motion-controls[hidden]{display:none}.ui-world-motion-controls .ui-world-walk{align-items:end}"
+    ".ui-world-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}"
+    ".ui-world-chips label{border:1px solid var(--ui-border);padding:.25rem .75rem;cursor:pointer;background:var(--ui-bg);border-radius:var(--ui-radius)}"
+    ".ui-world-rows{list-style:none;margin:0;padding:0}.ui-world-spots{display:none}"
+    ".ui-world-rows a{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 8px;color:inherit;text-decoration:none;border-radius:var(--ui-radius)}"
+    ".ui-world-rows a:hover,.ui-world-rows a:focus-visible{background:var(--ui-bg)}"
+    ".ui-world-arrow{flex:none;width:2em;text-align:center}"
+    ".ui-world-foot{display:flex;align-items:center;gap:8px;box-sizing:border-box;min-height:var(--ui-world-foot);padding:8px;border-top:1px solid var(--ui-border)}"
+    ".ui-world-foot .ui-world-bar{padding:0;border:0}"
+    ".ui-world-goto-wrap{display:none;align-items:center;gap:8px;flex:1}.ui-world[data-js] .ui-world-goto-wrap{display:flex}.ui-world[data-js] .ui-world-foot .ui-world-bar{display:none}"
+    ".ui-world-goto{flex:1;min-width:0;max-width:384px;min-height:40px;font:inherit;color:var(--ui-fg);background:var(--ui-bg);border:1px solid var(--ui-border);border-radius:var(--ui-radius)}"
+    ".ui-world[data-shell] .ui-sheet{z-index:3;right:80px;bottom:calc(var(--ui-world-foot) + 8px)}.ui-world[data-shell]:not(:has(.ui-world-foot)) .ui-sheet{bottom:8px}"
+    ".ui-world-body>.ui-world-dpad{position:absolute;left:8px;bottom:8px;z-index:1;opacity:.9}.ui-world-dpad[hidden]{display:none}"
+    ".ui-world-dpad{display:grid;grid-template-columns:repeat(3,48px);grid-auto-rows:48px;gap:8px}"
+    ".ui-world-dpad button{min-width:48px;min-height:48px;font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-panel);"
+    "color:var(--ui-fg);border-radius:var(--ui-radius);cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}"
+    ".ui-world-dpad [data-step=\"0,-1\"]{grid-column:2}.ui-world-dpad [data-step=\"-1,0\"]{grid-column:1;grid-row:2}"
+    ".ui-world-dpad [data-step=\"1,0\"]{grid-column:3;grid-row:2}.ui-world-dpad [data-step=\"0,1\"]{grid-column:2;grid-row:3}"
+    ".ui-world-pick{position:absolute;inset:0;z-index:3;display:flex;padding:16px;overflow:auto;background:color-mix(in srgb,var(--ui-bg) 90%,transparent)}"
+    ".ui-world-pick[hidden]{display:none}"
+    ".ui-world-pick>div{margin:auto;max-width:384px;width:100%;box-sizing:border-box;text-align:center;border:1px solid var(--ui-border);"
+    "background:var(--ui-panel);border-radius:var(--ui-radius);padding:16px}"
+    ".ui-world-pick h3{margin:0 0 8px}"
+    ".ui-world-pick-grid{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-bottom:8px}"
+    ".ui-world-pick-grid button{min-height:48px;font-size:1.5rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);"
+    "border-radius:var(--ui-radius);cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:48px;max-width:100%;padding:0 8px}"
+    ".ui-world-pick-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center}"
+    ".ui-real{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;user-select:none;-webkit-user-select:none}"
+    ".ui-world[data-js] .ui-floor[data-real]:not([data-backdrop])::after{content:\"🖼️📷\";position:absolute;left:50%;top:50%;font-size:48px;line-height:1;opacity:.5;"
+    "pointer-events:none;transform:translate(-50%,-50%) scale(calc(1 / var(--z,1)))}.ui-world-real{font-size:1.5rem;line-height:1}"
+    ".ui-world[data-pick] .ui-player{visibility:hidden}.ui-player span{white-space:nowrap}"
     "@media(prefers-reduced-motion:reduce){.ui-world *{transition:none!important}.ui-actor,.ui-board-run{animation-play-state:paused!important}}"
 )
 
@@ -2565,15 +3373,30 @@ _WALL_CSS = (
 )
 
 
-def world_css(spec: Any) -> str:
-    """CSS for a world: fixed rules plus one rule per floor, category and shot (radios and data-lit drive them through :has)."""
+def world_css(spec: Any, *, base: bool = True) -> str:
+    """CSS for a world: fixed rules plus one rule per floor, category and shot (radios and data-lit drive them through :has).
+
+    ``base=False`` leaves the fixed rules out, for a second world on a page that already has them.
+    """
     world = world_validate(spec)
-    wid, rules = world["id"], [_WORLD_CSS]
+    wid, rules = world["id"], [_WORLD_CSS] if base else []
     for f in world["floors"]:
         radio = f"#{wid}-floor-{f['id']}"
         rules.append(f'.ui-world:has({radio}:checked) .ui-floor[data-floor="{f["id"]}"]{{display:block}}')
         rules.append(f'.ui-world:has({radio}:checked) label[for="{wid}-floor-{f["id"]}"]{{background:var(--ui-accent);color:var(--ui-bg)}}')
-    categories = sorted({s["category"] for f in world["floors"] for s in f["spots"] if s["category"]})
+    for kind in sorted({q["kind"] for f in world["floors"] for q in f.get("props", [])} & WORLD_LOOK.keys()):
+        colour, glyph, once = WORLD_LOOK[kind]
+        picture = ""
+        if glyph:
+            svg = f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text x='16' y='25' font-size='26' text-anchor='middle'>{glyph}</text></svg>"
+            picture = f'url("data:image/svg+xml,{quote(svg)}") ' + ("center/contain no-repeat," if once else "0 0/var(--tile) var(--tile),")
+        rules.append(f".ui-prop[data-kind={kind}]{{border:0;border-radius:0;background:{picture}{colour or 'transparent'}}}")
+    categories = _world_categories(world["floors"])
+    if _world_shell(world):
+        for f in world["floors"]:
+            rules.append(f'.ui-world:has(#{wid}-floor-{f["id"]}:checked) .ui-world-spots[data-floor="{f["id"]}"]{{display:block}}')
+        for c in categories:
+            rules.append(f'.ui-world:has(#{wid}-cat-value-{c}:checked) .ui-world-spots li:not([data-category="{c}"]){{display:none}}')
     for f in world["floors"]:
         for a in f["actors"]:
             path = villager_path(a["seed"] if a["seed"] is not None else zlib.crc32(f"{wid}:{a['id']}".encode()),
@@ -2601,21 +3424,38 @@ def world_css(spec: Any) -> str:
 WORLD_MOTION_JS = r"""
 export function motionSample(s,t){const f=s.duration===0?(t>=s.at?1:0):Math.min(1,Math.max(0,(t-s.at)/s.duration));return s.from.map((v,i)=>v+(s.to[i]-v)*f)}
 export function motionWalk(a,b,t,speed,w,h){const point=p=>p.map((v,i)=>Math.min(i?h:w,Math.max(0,v)));a=point(a);b=point(b);return{at:t,duration:Math.hypot(b[0]-a[0],b[1]-a[1])/speed,from:a,to:b}}
-function bindPlayer(el,floor){
+export function motionRoute(pts,t,speed,w,h){const out=[];for(let i=0;i<pts.length-1;i++){const s=motionWalk(pts[i],pts[i+1],t,speed,w,h);out.push(s);t+=s.duration}return out.length?out:[motionWalk(pts[0],pts[0],t,speed,w,h)]}
+export function routeSample(r,t){for(const s of r)if(t<s.at+s.duration)return motionSample(s,t);return motionSample(r[r.length-1],t)}
+export function gridPath(rows,s,g){const W=rows[0].length,H=rows.length,fit=c=>[Math.min(W-1,Math.max(0,c[0])),Math.min(H-1,Math.max(0,c[1]))],k=c=>c[1]*W+c[0];s=fit(s);g=fit(g);
+ const parent=new Map([[k(s),null]]),order=[s];
+ for(let i=0;i<order.length;i++){const[x,y]=order[i];for(const[dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){const n=[x+dx,y+dy];if(n[0]>=0&&n[0]<W&&n[1]>=0&&n[1]<H&&rows[n[1]][n[0]]==="0"&&!parent.has(k(n))){parent.set(k(n),order[i]);order.push(n)}}}
+ let end=g;if(!parent.has(k(g))){const d=c=>(c[0]-g[0])**2+(c[1]-g[1])**2;end=order.reduce((a,b)=>d(b)<d(a)?b:a)}
+ const path=[end];for(let p=parent.get(k(end));p;p=parent.get(k(p)))path.push(p);return path.reverse()}
+export function gridRoute(rows,tile,a,b){const cell=p=>[Math.min(rows[0].length-1,Math.max(0,Math.floor(p[0]/tile))),Math.min(rows.length-1,Math.max(0,Math.floor(p[1]/tile)))],t=cell(b),path=gridPath(rows,cell(a),t),mid=path.slice(1).map(c=>[(c[0]+.5)*tile,(c[1]+.5)*tile]),end=path[path.length-1];return end[0]===t[0]&&end[1]===t[1]?[a,...mid.slice(0,-1),b]:[a,...mid]}
+export function direction(a,b,eps=8){const dx=b[0]-a[0],dy=b[1]-a[1];if(Math.abs(dx)<=eps&&Math.abs(dy)<=eps)return"📍";const ax=Math.abs(dx),ay=Math.abs(dy),sx=dx>0?1:-1,sy=dy>0?1:-1;if(ay*12<=ax*5)return sx>0?"➡️":"⬅️";if(ax*12<=ay*5)return sy>0?"⬇️":"⬆️";return sx>0?(sy>0?"↘️":"↗️"):(sy>0?"↙️":"↖️")}
+export function cleanAvatar(text){const t=String(text).trim(),n=[...t].length;return n>=1&&n<=16&&!/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}‪-‮⁦-⁩]|^\p{Zs}|\p{Zs}$/u.test(t)?t:null}
+function bindPlayer(el,floor,onMove){
  const controls=el.querySelector('.ui-world-motion-controls');if(!controls)return ()=>{};
- const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=controls.querySelector('.ui-world-pause'),form=controls.querySelector('form');
+ const reduced=matchMedia('(prefers-reduced-motion: reduce)'),states=new Map(),button=el.querySelector('.ui-world-pause'),form=controls.querySelector('form'),gridOnly=[...el.querySelectorAll('.ui-world-grid-only')];
  let paused=false,base=performance.now(),elapsed=0;
  const time=()=>Math.min(1e9,elapsed+(paused||reduced.matches?0:(performance.now()-base)/1000));
  const freeze=()=>{elapsed=time();base=performance.now()};
- for(const f of el.querySelectorAll('.ui-floor')){const player=f.querySelector('.ui-player');if(!player)continue;const w=+f.dataset.w,h=+f.dataset.h,speed=+player.dataset.speed,point=[+player.dataset.x,+player.dataset.y];states.set(f,{w,h,speed,player,own:motionWalk(point,point,0,speed,w,h)});}
- const place=(s,t)=>{const p=motionSample(s.own,t);s.player.style.setProperty('--px',p[0]);s.player.style.setProperty('--py',p[1]);};
- const walk=(x,y)=>{const s=states.get(floor());if(!s||![x,y].every(Number.isFinite))return;const t=time(),a=motionSample(s.own,t);s.own=motionWalk(a,[x,y],t,s.speed,s.w,s.h);if(reduced.matches)s.own=motionWalk(s.own.to,s.own.to,t,s.speed,s.w,s.h);s.player.style.setProperty('--walk',s.own.duration+'s');s.player.dataset.targetX=s.own.to[0];s.player.dataset.targetY=s.own.to[1];place(s,t);};
- button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?'動きを再開':'動きを停止';});
+ for(const f of el.querySelectorAll('.ui-floor')){const player=f.querySelector('.ui-player');if(!player)continue;const w=+f.dataset.w,h=+f.dataset.h,speed=+player.dataset.speed,point=[+player.dataset.x,+player.dataset.y],grid=f.dataset.blocked?{rows:f.dataset.blocked.split(','),tile:+f.dataset.tile}:null;states.set(f,{w,h,speed,player,grid,own:motionRoute([point,point],0,speed,w,h)});}
+ const place=(s,t)=>{const p=routeSample(s.own,t);s.player.style.setProperty('--px',p[0]);s.player.style.setProperty('--py',p[1]);return p};
+ const walk=(x,y)=>{const s=states.get(floor());if(!s||![x,y].every(Number.isFinite))return;const t=time(),a=routeSample(s.own,t);s.own=motionRoute(s.grid?gridRoute(s.grid.rows,s.grid.tile,a,[x,y]):[a,[x,y]],t,s.speed,s.w,s.h);const end=s.own[s.own.length-1].to;if(reduced.matches)s.own=motionRoute([end,end],t,s.speed,s.w,s.h);s.player.style.setProperty('--walk',s.own.reduce((n,g)=>n+g.duration,0)+'s');s.player.dataset.targetX=end[0];s.player.dataset.targetY=end[1];place(s,t);};
+ // One tile in a direction (arrow keys, WASD, the on-screen pad); false on a floor without a grid, true otherwise (a wall just stops).
+ walk.step=(dx,dy)=>{const s=states.get(floor());if(!s||!s.grid)return false;const{rows,tile}=s.grid,p=routeSample(s.own,time()),cx=Math.floor(p[0]/tile)+dx,cy=Math.floor(p[1]/tile)+dy;if(rows[cy]?.[cx]==="0")walk((cx+.5)*tile,(cy+.5)*tile);return true};
+ walk.where=()=>{const s=states.get(floor());return s&&routeSample(s.own,time())};
+ for(const b of el.querySelectorAll('[data-step]')){const[dx,dy]=b.dataset.step.split(',').map(Number);let timer=0;const stop=()=>{clearInterval(timer);timer=0};
+  b.addEventListener('pointerdown',e=>{e.preventDefault();walk.step(dx,dy);stop();const s=states.get(floor());timer=setInterval(()=>walk.step(dx,dy),s&&s.grid?Math.max(40,500*s.grid.tile/s.speed):160)});
+  for(const n of['pointerup','pointercancel','pointerleave'])b.addEventListener(n,stop);
+  b.addEventListener('click',e=>{if(e.detail===0)walk.step(dx,dy)})}
+ button.addEventListener('click',()=>{freeze();paused=!paused;el.toggleAttribute('data-motion-paused',paused);button.setAttribute('aria-pressed',String(paused));button.textContent=paused?(button.dataset.resume||'動きを再開'):(button.dataset.pause||'動きを停止');});
  let wasReduced=reduced.matches;
  reduced.addEventListener('change',()=>{if(!wasReduced&&!paused)elapsed=Math.min(1e9,elapsed+(performance.now()-base)/1000);base=performance.now();wasReduced=reduced.matches;for(const s of states.values())place(s,time());});
  form.addEventListener('submit',e=>{e.preventDefault();if(form.reportValidity())walk(+form.elements.x.value,+form.elements.y.value)});
- const tick=()=>{if(!el.isConnected)return;controls.hidden=false;const active=states.get(floor()),t=time();form.hidden=!active;
-  if(active){form.elements.x.max=active.w;form.elements.y.max=active.h;place(active,t);}
+ const tick=()=>{if(!el.isConnected)return;controls.hidden=false;const active=states.get(floor()),t=time();form.hidden=!active;for(const n of gridOnly)n.hidden=!(active&&active.grid);
+  if(active){form.elements.x.max=active.w;form.elements.y.max=active.h;const p=place(active,t);if(onMove)onMove(p);}
   requestAnimationFrame(tick);
  };requestAnimationFrame(tick);return walk;
 }
@@ -2658,7 +3498,7 @@ export function bindSharedBoard(board){
 }
 """
 
-WORLD_JS = WORLD_MOTION_JS + WORLD_SHARED_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
+WORLD_JS = WORLD_MOTION_JS + WORLD_SHARED_JS + WORLD_TEXT_JS + r"""/* web-ui world: one page, a camera. Shots: scroll marks light up (data-lit). Map: drag, wheel and pinch move a camera; spots open a sheet. No page changes. */
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 export function fitZoom(w,h,vw,vh){return Math.min(vw/w,vh/h)}
 export function travelSeconds(x0,y0,x1,y1,speed){return Math.hypot(x1-x0,y1-y0)/speed}
@@ -2673,14 +3513,70 @@ export function utcOffsetLabel(offset){if(offset===0)return"UTC";const a=Math.ab
 export function cleanMessage(text,limit=60){if(typeof text!=="string")return null;const kept=[...text].map(c=>/[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/.test(c)?" ":(c!=="\u200d"&&/[\p{Cc}\p{Cf}\p{Cn}\p{Co}\p{Cs}\p{Zs}\p{Zl}\p{Zp}]/u.test(c)?"":c)).join("").split(" ").filter(Boolean).join(" ");const cut=[...kept].slice(0,limit).join("").trimEnd();return cut||null}
 export function clampFocus(fx,fy,z,w,h,vw,vh){const hw=vw/(2*z),hh=vh/(2*z);return[w>2*hw?clamp(fx,hw,w-hw):w/2,h>2*hh?clamp(fy,hh,h-hh):h/2]}
 function bindShots(el){el.dataset.js="";const marks=[...el.querySelectorAll(".ui-shot-mark")];if(typeof IntersectionObserver==="undefined"){marks[0].dataset.lit="";return el}const io=new IntersectionObserver(es=>{for(const e of es){if(e.isIntersecting)e.target.dataset.lit="";else delete e.target.dataset.lit}},{root:el.querySelector(".ui-shots-scroll"),threshold:0.5});for(const m of marks)io.observe(m);return el}
-function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0;
-const floor=()=>{const r=el.querySelector('input[name$="-floor"]:checked');return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
+function bindMap(el){el.dataset.js="";const view=el.querySelector(".ui-world-view"),cam=el.querySelector(".ui-world-cam"),zmax=Number(el.dataset.zoomMax||4),pts=new Map();let fx=0,fy=0,z=1,moved=0,onFloor=()=>{};
+// The floor and the category are radios (they work without JS): read the checked floor, tick a floor, or clear the category filter.
+const shown=()=>el.querySelector('input[name$="-floor"]:checked'),radio=(kind,value)=>el.querySelector(`input[name$="-${kind}"][value="${value}"]`),
+ allCategories=()=>{const all=radio('cat','');if(all)all.checked=true},
+ setFloor=(value,notify)=>{const r=radio('floor',value);if(r){r.checked=true;const select=el.querySelector('.ui-world-goto');if(select)select.value=r.value;if(notify)r.dispatchEvent(new Event('change',{bubbles:true}))}};
+const floor=()=>{const r=shown();return(r&&el.querySelector(`.ui-floor[data-floor="${r.value}"]`))||el.querySelector(".ui-floor")};
 const size=()=>{const f=floor();return[Number(f.dataset.w),Number(f.dataset.h),view.clientWidth,view.clientHeight]};
-const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z)};
+const apply=()=>{const[w,h,vw,vh]=size();if(!vw||!vh)return;z=clamp(z,fitZoom(w,h,vw,vh),zmax);[fx,fy]=clampFocus(fx,fy,z,w,h,vw,vh);cam.style.setProperty("--fx",fx);cam.style.setProperty("--fy",fy);cam.style.setProperty("--z",z);onFloor()};
 const go=(x,y,zoom)=>{fx=x;fy=y;z=zoom;apply()};
 const home=()=>{const[w,h,vw,vh]=size();go(w/2,h/2,vw&&vh?fitZoom(w,h,vw,vh):1)};
 const open=id=>{for(const i of el.querySelectorAll(".ui-sheet-item"))i.toggleAttribute("data-open",i.id===id)};
-const walk=bindPlayer(el,floor);
+// Side menus (☰ ⋯), the footer pulldown (door to door) and the arrows from the player to each listed spot.
+const menus=[...el.querySelectorAll('.ui-world-menu')],shut=()=>{for(const m of menus)m.open=false},goto=el.querySelector('.ui-world-goto'),rows='.ui-world-rows a';
+for(const m of menus)m.hidden=false;
+const aim=p=>{for(const a of el.querySelectorAll(rows)){if(!a.offsetParent)continue;const out=a.querySelector('.ui-world-arrow'),f=floor(),g=a.dataset.floor===f.dataset.floor?direction(p,[Number(a.dataset.x),Number(a.dataset.y)],Number(f.dataset.tile)||16):'🚪';if(out.textContent!==g)out.textContent=g}if(goto){const r=shown();if(r&&goto.value!==r.value)goto.value=r.value}};
+let follow=false,lx,ly;const walk=bindPlayer(el,floor,p=>{if(follow&&(p[0]!==lx||p[1]!==ly)){lx=p[0];ly=p[1];go(p[0],p[1],z)}aim(p)});
+for(const m of menus)m.addEventListener('toggle',()=>{if(m.open)for(const o of menus)if(o!==m)o.open=false});
+view.addEventListener('pointerdown',shut);
+// ⭐ favourites and 🌐 language are all a world keeps, as a small cache in this browser (one key per world, nothing else is written):
+// the emoji you pick and the board messages you post stay in the page.
+const slot='ui-world:'+el.id,load=()=>{try{const v=JSON.parse(localStorage.getItem(slot));return v&&typeof v==='object'?v:{}}catch(e){return{}}},
+ save=part=>{try{localStorage.setItem(slot,JSON.stringify({...load(),...part}))}catch(e){}};
+// 🌐: aria-labels and tooltips in one of eleven languages (data-t names a catalogue word, data-labels carries a tool's own words).
+let lang='ja';const sel=el.querySelector('[data-lang]'),
+ say=root=>{const i=WORLD_LANGS.indexOf(lang);for(const n of root.querySelectorAll('[data-t],[data-labels]')){const m=n.dataset.labels&&JSON.parse(n.dataset.labels),w=m?m[lang]||m.en||m.ja:WORLD_TEXT[n.dataset.t][i];n.setAttribute('aria-label',w);n.setAttribute('title',w)}},
+ setLang=to=>{if(!WORLD_LANGS.includes(to))return;lang=to;el.lang=to;if(sel)sel.value=to;say(el)};
+sel?.addEventListener('change',()=>{setLang(sel.value);save({lang})});
+// ⭐ the ★ of a place lists it in the header's ⭐ panel, on any floor.
+const favs=el.querySelector('.ui-world-favs'),fav=new Set(),spotRows=()=>[...el.querySelectorAll('.ui-world-spots a')],
+ showFavs=()=>{for(const a of spotRows()){const on=fav.has(a.getAttribute('href')),b=a.parentElement.querySelector('.ui-world-star');b.setAttribute('aria-pressed',String(on));b.textContent=on?'★':'☆'}
+  favs.replaceChildren(...spotRows().filter(a=>fav.has(a.getAttribute('href'))).map(a=>{const li=document.createElement('li'),b=document.createElement('button');b.type='button';b.className='ui-world-star';b.setAttribute('aria-pressed','true');b.dataset.t='star';b.textContent='★';li.append(a.cloneNode(true),b);return li}));say(favs)};
+if(favs)el.addEventListener('click',e=>{const b=e.target.closest('.ui-world-star');if(!b)return;const h=b.parentElement.querySelector('a').getAttribute('href');if(fav.has(h))fav.delete(h);else fav.add(h);showFavs();save({fav:[...fav]})});
+const kept=load();
+if(favs){for(const a of spotRows())if(Array.isArray(kept.fav)&&kept.fav.includes(a.getAttribute('href')))fav.add(a.getAttribute('href'));if(fav.size)showFavs()}
+if(typeof kept.lang==='string'&&kept.lang!=='ja')setLang(kept.lang);
+goto?.addEventListener('change',()=>setFloor(goto.value,true));
+// Emoji picker: shown first (JS only); the choice replaces every floor's player emoji. Dragging the map stops the camera following.
+const pick=el.querySelector('.ui-world-pick'),showPick=on=>{pick.hidden=!on;el.toggleAttribute('data-pick',on)},choose=g=>{for(const s of el.querySelectorAll('.ui-player span'))s.textContent=g;showPick(false);follow=true;view.focus({preventScroll:true})};
+if(pick){showPick(true);pick.addEventListener('click',e=>{const b=e.target.closest('[data-emoji]');if(b)choose(b.dataset.emoji)});pick.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const box=e.target.elements.emoji,g=cleanAvatar(box.value);if(g)choose(g);else{box.setCustomValidity(WORLD_TEXT.invalid[WORLD_LANGS.indexOf(lang)]);box.reportValidity()}});pick.querySelector('input').addEventListener('input',e=>e.target.setCustomValidity(''));el.querySelector('[data-pick-open]')?.addEventListener('click',()=>showPick(true))}
+// ask(glyph,choices,t): the world's one dialog for choosing or confirming. Icons in, the picked value out (a promise; null = ✖️, Esc or a tap outside).
+// A choice is {glyph,t,value} with t naming a catalogue word; el.ask lets the page that embeds the world call it too.
+let asking=null;
+const ask=(glyph,choices,t)=>new Promise(done=>{asking?.(null);const box=document.createElement('div'),card=document.createElement('div'),head=document.createElement('h3'),grid=document.createElement('div');
+ box.className='ui-world-pick ui-world-ask';card.setAttribute('role','dialog');card.setAttribute('aria-modal','true');if(t)card.dataset.t=t;
+ head.setAttribute('aria-hidden','true');head.textContent=glyph;grid.className='ui-world-pick-grid';
+ const end=v=>{asking=null;box.remove();el.removeAttribute('data-ask');view.focus({preventScroll:true});done(v)};
+ for(const c of[...choices,{glyph:'✖️',t:'close',value:null}]){const b=document.createElement('button');b.type='button';b.textContent=c.glyph;b.dataset.t=c.t;b.addEventListener('click',()=>end(c.value));grid.append(b)}
+ box.addEventListener('click',e=>{if(e.target===box)end(null)});box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();end(null)}});
+ card.append(head,grid);box.append(card);(pick?pick.parentElement:view.parentElement).append(box);say(box);el.setAttribute('data-ask','');asking=end;grid.querySelector('button').focus()});
+el.ask=ask;
+// 🖼️📷 a floor marked real can show a photo you pick or your camera behind its props. It is only shown (an object URL or a camera stream on an element of this page):
+// never drawn, read back, stored or sent. 🧹, leaving the floor (camera) or closing the page lets it go.
+const realBtn=el.querySelector('[data-real]'),file=realBtn&&document.createElement('input');
+let back=null,lastFloor=null;
+const unback=()=>{if(!back)return;back.stop();back.node.remove();back.floor.removeAttribute('data-backdrop');back=null},
+ backdrop=(node,stop,live)=>{unback();const f=floor();node.className='ui-real';node.setAttribute('aria-hidden','true');f.prepend(node);f.setAttribute('data-backdrop','');back={node,stop,live,floor:f}},
+ syncReal=()=>{const f=floor();if(f===lastFloor)return;lastFloor=f;if(realBtn)realBtn.hidden=!f.hasAttribute('data-real');if(back&&back.live&&back.floor!==f)unback()},
+ camera=async()=>{try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false}),v=document.createElement('video');v.muted=true;v.autoplay=true;v.playsInline=true;v.srcObject=stream;
+  backdrop(v,()=>{for(const t of stream.getTracks())t.stop();v.srcObject=null},true);v.play?.().catch(()=>{})}catch(e){ask('⚠️',[],'unavailable')}};
+if(file){file.type='file';file.accept='image/*';file.hidden=true;el.append(file);
+ file.addEventListener('change',()=>{const f=file.files[0];file.value='';if(!f||!f.type.startsWith('image/'))return;const url=URL.createObjectURL(f),img=new Image();img.alt='';img.draggable=false;img.src=url;backdrop(img,()=>URL.revokeObjectURL(url),false)})}
+realBtn?.addEventListener('click',()=>{shut();ask('🖼️📷',[{glyph:'📷',t:'camera',value:'camera'},{glyph:'🖼️',t:'photo',value:'photo'},...(back?[{glyph:'🧹',t:'clear',value:'clear'}]:[])],'backdrop').then(v=>{if(v==='camera')camera();else if(v==='photo')file.click();else if(v==='clear')unback()})});
+addEventListener('pagehide',unback);onFloor=syncReal;syncReal();
+el.querySelector('[data-me]')?.addEventListener('click',()=>{const p=walk.where?.();if(p){follow=true;lx=ly=undefined;go(p[0],p[1],Math.max(z,2))}});
 const board=el.querySelector(".ui-board"),hm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m},clockNow=()=>{const d=new Date(),off=board.dataset.offset===""?(-Math.round(d.getTimezoneOffset())||0):Number(board.dataset.offset);return{...boardClock(d.getTime()/1000,off),off}},chips=board?[...board.querySelectorAll("[data-zone-id]")].map(z=>({id:z.dataset.zoneId,rows:JSON.parse(z.dataset.rows),out:z.querySelector("[data-zone-clock]")})):[],tick=()=>{const clock=clockNow(),t=new Date().getTime()/1000,zones=new Map(chips.map(z=>{const c=boardClock(t,zoneOffset(z.rows,t));z.out.textContent=c.clock;return[z.id,c]})),at=m=>(m.dataset.zone?zones.get(m.dataset.zone):clock).minutes,c=board.querySelector("[data-clock]");c.textContent=clock.clock+(board.dataset.offsetLabel!==undefined?" "+utcOffsetLabel(clock.off):"");for(const m of board.querySelectorAll("[data-at]")){const left=minutesUntil(at(m),hm(m.dataset.at));m.textContent=left===0?"いま":"あと"+left+"分"}for(const g of board.querySelectorAll(".ui-board-gauge")){const cells=Number(g.dataset.cells),[filled,pct]=gaugeState(Math.floor(at(g)),hm(g.dataset.from),hm(g.dataset.to),cells);g.querySelector(".ui-board-cells").textContent=gaugeCells(filled,cells,g.dataset.done,g.dataset.todo);g.querySelector(".ui-board-pct").textContent=pct+"%"}};
 if(board){bindSharedBoard(board);tick();const timer=setInterval(()=>{if(el.isConnected)tick();else clearInterval(timer)},1000);const form=board.querySelector(".ui-board-post");if(form){
 const run=board.querySelector(".ui-board-run"),items=[...run.querySelectorAll(".ui-board-item")],base=items.slice(0,items.length/2).map(n=>n.cloneNode(true)),baseChars=Number(board.dataset.chars),notes=[];
@@ -2688,22 +3584,26 @@ form.addEventListener("submit",e=>{e.preventDefault();const input=form.elements.
 for(const hidden of [false,true]){for(const note of notes){const span=document.createElement("span");span.className="ui-board-item ui-board-note";if(hidden)span.setAttribute("aria-hidden","true");const stamp=document.createElement("span");stamp.className="ui-board-stamp";stamp.textContent=note.at;span.append(stamp,document.createTextNode(" "+note.text));run.append(span)}for(const item of base){const copy=item.cloneNode(true);if(hidden)copy.setAttribute("aria-hidden","true");run.append(copy)}}
 const chars=baseChars+notes.reduce((n,note)=>n+[...note.text].length+6,0);board.dataset.chars=chars;run.style.animationDuration=boardSeconds(chars)+"s";tick()})}}
 
+// 🏠 asks first (the shared dialog: 🏠 goes, ✖️ stays): home resets the floor, the filter and the sheet.
+const goHome=()=>{shut();close();follow=false;allCategories();setFloor(el.querySelector('input[name$="-floor"]')?.value,true);home()};
+el.querySelector('[data-home]')?.addEventListener('click',e=>{e.preventDefault();shut();ask('🏠❓',[{glyph:'🏠',t:'home',value:true}],'home').then(v=>{if(v)goHome()})});
 const close=()=>{open(null);if([...el.querySelectorAll(".ui-sheet-item")].some(i=>"#"+i.id===location.hash))history.replaceState(null,"",location.pathname+location.search)};
-const focusSpot=a=>{const all=el.querySelector('input[name$="-cat"][value=""]');if(all)all.checked=true;const f=a.closest(".ui-floor"),r=el.querySelector(`input[name$="-floor"][value="${f.dataset.floor}"]`);if(r)r.checked=true;go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
+const focusSpot=a=>{allCategories();setFloor(a.closest(".ui-floor").dataset.floor);go(Number(a.dataset.x),Number(a.dataset.y),Math.max(z,2))};
 view.addEventListener("pointerdown",e=>{if(e.button!==0)return;pts.set(e.pointerId,[e.clientX,e.clientY]);if(pts.size===1)moved=0;else moved=9;el.dataset.drag=""});
-view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8&&!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId);fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
+view.addEventListener("pointermove",e=>{const p=pts.get(e.pointerId);if(!p)return;if(pts.size===1){const dx=e.clientX-p[0],dy=e.clientY-p[1];moved+=Math.abs(dx)+Math.abs(dy);if(moved>8){follow=false;if(!view.hasPointerCapture(e.pointerId))view.setPointerCapture(e.pointerId)}fx-=dx/z;fy-=dy/z;apply()}else if(pts.size===2){const q=[...pts].find(([id])=>id!==e.pointerId)[1],d0=Math.hypot(p[0]-q[0],p[1]-q[1]),d1=Math.hypot(e.clientX-q[0],e.clientY-q[1]);moved+=9;if(d0)z*=d1/d0;apply()}p[0]=e.clientX;p[1]=e.clientY});
 const end=e=>{const tapping=pts.has(e.pointerId)&&pts.size===1&&moved<=8&&e.type==="pointerup"&&view.contains(e.target)&&!e.target.closest("a,button,input");pts.delete(e.pointerId);if(!pts.size)delete el.dataset.drag;if(tapping&&walk){const f=floor(),r=f.getBoundingClientRect();walk((e.clientX-r.left)*Number(f.dataset.w)/r.width,(e.clientY-r.top)*Number(f.dataset.h)/r.height)}};
 addEventListener("pointerup",end);addEventListener("pointercancel",end);view.addEventListener("lostpointercapture",end);
 view.addEventListener("wheel",e=>{e.preventDefault();z*=e.deltaY<0?1.1:1/1.1;apply()},{passive:false});
-el.addEventListener("click",e=>{const a=e.target.closest(".ui-spot,.ui-actor");if(a){e.preventDefault();if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
-el.addEventListener("keydown",e=>{if(e.key==="Escape")close()});
+el.addEventListener("click",e=>{const l=e.target.closest(".ui-world-rows a"),a=l?[...el.querySelectorAll(".ui-spot")].find(s=>s.getAttribute("href")===l.getAttribute("href")):e.target.closest(".ui-spot,.ui-actor");if(e.target.closest(".ui-world-rows a,[data-me],[data-pick-open]"))shut();if(a){e.preventDefault();if(l)moved=0;if(e.detail!==0&&moved>8){moved=0;return}const id=a.getAttribute("href").slice(1);if(!l){const sg=a.dataset.sign!==undefined,two=a.dataset.flip;if(sg||two!==undefined){if(a.dataset.own===undefined)a.dataset.own=a.textContent;const cur=a.dataset.show||(sg?"":"label"),next=sg?(cur===""?"label":cur==="label"&&two?"flip":""):(cur==="label"?"flip":"label");if(next)a.dataset.show=next;else delete a.dataset.show;a.textContent=next==="flip"?two:a.dataset.own}}open(id);history.replaceState(null,"","#"+id);if(a.dataset.x!==undefined){focusSpot(a);walk(Number(a.dataset.x),Number(a.dataset.y))}}else if(e.target.closest(".ui-sheet-close")){e.preventDefault();close()}});
+const KEYS={ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1],ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0]};
+el.addEventListener("keydown",e=>{if(e.key==="Escape"){close();shut()}const k=KEYS[e.key.length>1?e.key:e.key.toLowerCase()];if(k&&walk.step&&!(e.altKey||e.ctrlKey||e.metaKey)&&!e.target.closest("input,textarea,select,button,a")&&!el.hasAttribute("data-pick")&&!el.hasAttribute("data-ask")&&walk.step(...k))e.preventDefault()});
 el.addEventListener("change",e=>{if(e.target.name&&e.target.name.endsWith("-floor"))home()});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(apply).observe(view);
 const fromHash=()=>{const hash=location.hash.slice(1),a=hash&&el.querySelector(`.ui-spot[href="#${CSS.escape(hash)}"],.ui-actor[href="#${CSS.escape(hash)}"]`);if(a){open(hash);if(a.dataset.x!==undefined)focusSpot(a)}else open(null)};
 addEventListener("hashchange",fromHash);home();fromHash();
 return el}
 export function bindWorlds(root=document){return[...root.querySelectorAll("[data-ui-world]")].map(el=>el.hasAttribute("data-js")?el:el.dataset.uiWorld==="shots"?bindShots(el):bindMap(el))}
-globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,bindWorlds};
+globalThis.webUiWorld={fitZoom,clampFocus,travelSeconds,minutesUntil,boardClock,boardSeconds,gaugeState,gaugeCells,clockLabel,utcOffsetLabel,zoneOffset,cleanMessage,motionWalk,motionSample,motionRoute,routeSample,gridPath,gridRoute,direction,cleanAvatar,bindWorlds};
 bindWorlds();
 """
 
@@ -2716,11 +3616,13 @@ def world_document(spec: Any, *, theme: str = "modern") -> str:
 
 
 def catalogue_world(items: Any, *, id: str = "catalogue", title: str = "Catalogue", columns: int = 8,
-                    cell: tuple[int, int] = (160, 64), margin: int = 64) -> dict[str, Any]:
+                    cell: tuple[int, int] = (160, 64), margin: int = 64, shell: bool = False,
+                    tools: dict[str, Any] | None = None) -> dict[str, Any]:
     """A ``web-ui-world/1`` map from a flat catalogue, one floor per ``group`` (more than 64 in a group continue on another floor).
 
     Each item is ``{"id", "label", "group"}`` plus optional ``"emoji"``, ``"category"`` (a filter chip) and ``"body"`` (the info sheet).
-    The page never changes: tap a spot, read its sheet. Spots sit on a grid whose sizes default to multiples of 8. For a list of screens like
+    The page never changes: tap a spot, read its sheet. ``shell=True`` gives it the header / side / footer layout (🏠 ⭐ ⚙️, ☰ the places, a
+    floor pulldown) so a long catalogue needs no scrolling and no page change; ``tools`` adds emoji of your own (see ``web-ui-world/1``). Spots sit on a grid whose sizes default to multiples of 8. For a list of screens like
     flutter_navigation_basic's ``screens.json`` map the fields first, e.g. ``{"id": s["name"], "label": s["title"], "emoji": s["emoji"],
     "group": s["category"], "category": s["domainKey"], "body": s["description"]}``; the data itself stays with its owner."""
     if not isinstance(items, list) or not 1 <= len(items) <= 512:
@@ -2754,7 +3656,7 @@ def catalogue_world(items: Any, *, id: str = "catalogue", title: str = "Catalogu
                                      for i, spot in enumerate(chunk)]})
     if len(floors) > 8:
         raise ValueError("a world has at most 8 floors: fewer groups, or fewer than 64 items in each")
-    spec = {"schema": WORLD_SCHEMA, "id": id, "title": title, "floors": floors}
+    spec = {"schema": WORLD_SCHEMA, "id": id, "title": title, "floors": floors, **({"shell": True} if shell else {}), **({"tools": tools} if tools else {})}
     return world_validate(spec)
 
 
@@ -2980,6 +3882,82 @@ def theme_wall_document(count: int) -> str:
     if type(count) is not int or count < 0:
         raise ValueError("theme wall count must be a nonnegative integer")
     return render_document(trusted_html=theme_wall(range(count)), title="Theme wall", css=bundled_css() + _WALL_CSS)
+
+
+# The seed dial: random_theme() is the reference, theme.js is Python's own generator written out for the page (CPython's Mersenne Twister, seeded the way
+# random.Random(int) seeds it, then the same steps in the same order), so one seed gives the same tokens here and there (checked on thousands of seeds).
+_JS["theme.js"] = r"""/* web-ui theme: a seeded palette in the page. Python (web_ui.random_theme) is the reference: the same Mersenne Twister as random.Random(seed) and the same steps, so a seed gives the same tokens. */
+const N=624;
+function mersenne(seed){if(!Number.isSafeInteger(seed))throw new RangeError("seed must be a safe integer");const s=new Uint32Array(N),key=[];let n=Math.abs(seed),i,j,k;
+ do{key.push(n%4294967296);n=Math.floor(n/4294967296)}while(n>0);
+ s[0]=19650218;for(i=1;i<N;i++)s[i]=Math.imul(1812433253,s[i-1]^s[i-1]>>>30)+i;
+ i=1;j=0;for(k=Math.max(N,key.length);k;k--){s[i]=(s[i]^Math.imul(s[i-1]^s[i-1]>>>30,1664525))+key[j]+j;i++;j++;if(i>=N){s[0]=s[N-1];i=1}if(j>=key.length)j=0}
+ for(k=N-1;k;k--){s[i]=(s[i]^Math.imul(s[i-1]^s[i-1]>>>30,1566083941))-i;i++;if(i>=N){s[0]=s[N-1];i=1}}
+ s[0]=0x80000000;let pos=N;
+ const word=()=>{if(pos>=N){for(let a=0;a<N;a++){const y=s[a]&0x80000000|s[(a+1)%N]&0x7fffffff;s[a]=s[(a+397)%N]^y>>>1^(y&1?0x9908b0df:0)}pos=0}
+  let y=s[pos++];y^=y>>>11;y^=y<<7&0x9d2c5680;y^=y<<15&0xefc60000;y^=y>>>18;return y>>>0};
+ return()=>{const a=word()>>>5,b=word()>>>6;return(a*67108864+b)/9007199254740992}}
+const roundEven=x=>{const f=Math.floor(x),d=x-f;return d<0.5?f:d>0.5?f+1:f%2?f+1:f};
+const mod1=x=>{x%=1;return x<0?x+1:x};
+const wave=(m1,m2,h)=>{h=mod1(h);return h<1/6?m1+(m2-m1)*h*6:h<0.5?m2:h<2/3?m1+(m2-m1)*(2/3-h)*6:m1};
+function hsl(hue,sat,light){const h=mod1(hue),l=Math.min(Math.max(light,0),1),s=Math.min(Math.max(sat,0),1);let rgb;
+ if(s===0)rgb=[l,l,l];else{const m2=l<=0.5?l*(1+s):l+s-l*s,m1=2*l-m2;rgb=[wave(m1,m2,h+1/3),wave(m1,m2,h),wave(m1,m2,h-1/3)]}
+ return"#"+rgb.map(c=>roundEven(c*255).toString(16).padStart(2,"0")).join("")}
+export function luminance(color){const lin=[1,3,5].map(i=>{const c=parseInt(color.slice(i,i+2),16)/255;return c<=0.04045?c/12.92:((c+0.055)/1.055)**2.4});return 0.2126*lin[0]+0.7152*lin[1]+0.0722*lin[2]}
+export function contrast(a,b){const x=luminance(a),y=luminance(b);return(Math.max(x,y)+0.05)/(Math.min(x,y)+0.05)}
+function readable(hue,sat,grounds,minimum){const step=grounds.reduce((t,g)=>t+luminance(g),0)/grounds.length>0.18?-0.02:0.02;let light=0.5;
+ for(let i=0;i<50;i++){const c=hsl(hue,sat,light);if(grounds.every(g=>contrast(c,g)>=minimum))return c;light+=step}return step<0?"#000000":"#ffffff"}
+/** The --ui-* tokens of a seed: the same object, in the same order, as web_ui.random_theme(seed). Every text pair meets WCAG AA by construction. */
+export function randomTheme(seed){const r=mersenne(seed),hue=r(),dark=r()<0.5,sat=0.15+r()*0.35,bgL=dark?0.07+r()*0.07:0.92+r()*0.06;
+ const bg=hsl(hue,sat,bgL),panel=hsl(hue,sat,Math.min(1,bgL+(dark?0.05:0.04))),grounds=[bg,panel];
+ const fg=readable(hue+(r()-0.5)*0.1,0.25,grounds,7),muted=readable(hue,0.12,grounds,4.5),border=hsl(hue,0.2,bgL+(dark?0.16:-0.16));
+ const accent=readable(hue+0.15+r()*0.5,0.55+r()*0.3,grounds,4.5),danger=readable(r()*0.03,0.7,grounds,4.5),radius=["0",".25rem",".5rem","1rem"][Math.floor(r()*4)];
+ return{"--ui-bg":bg,"--ui-panel":panel,"--ui-fg":fg,"--ui-muted":muted,"--ui-border":border,"--ui-accent":accent,"--ui-danger":danger,"--ui-radius":radius}}
+/** Put a seed's tokens on an element (the <body> by default) as inline custom properties; clearSeed() takes them off again. */
+export function applySeed(seed,target=document.body){const tokens=randomTheme(seed);for(const[name,value]of Object.entries(tokens))target.style.setProperty(name,value);
+ target.style.colorScheme=luminance(tokens["--ui-bg"])<0.18?"dark":"light";target.dataset.uiSeeded=String(seed);return tokens}
+export function clearSeed(target=document.body){for(const name of Object.keys(randomTheme(0)))target.style.removeProperty(name);target.style.removeProperty("color-scheme");delete target.dataset.uiSeeded}
+/** The seed dial: [data-ui-seed] inputs (range or number), [data-ui-seed-roll], [data-ui-seed-off], [data-ui-seed-out], and any [data-seed] element to pick by tap.
+    A named theme (bindTheme's controls) takes over again. The seed is remembered in this browser (localStorage, best effort). Returns the seed in effect or null. */
+export function bindSeed(root=document,{key="web-ui-seed",target=document.body}={}){
+ const dials=[...root.querySelectorAll("[data-ui-seed]")],outs=[...root.querySelectorAll("[data-ui-seed-out]")],picks=[...root.querySelectorAll("[data-seed]")];
+ const top=Math.max(1,...dials.map(d=>Number(d.max)||0)),show=seed=>{for(const d of dials)d.value=seed===null?d.min||"0":String(seed);for(const o of outs)o.textContent=seed===null?"–":String(seed);
+  for(const p of picks)p.toggleAttribute("data-picked",seed!==null&&Number(p.dataset.seed)===seed)};
+ const use=seed=>{applySeed(seed,target);show(seed);try{localStorage.setItem(key,String(seed))}catch{}return seed};
+ const off=()=>{clearSeed(target);show(null);try{localStorage.removeItem(key)}catch{}return null};
+ const valid=text=>/^\d{1,10}$/.test(text)&&Number(text)<=2147483647;
+ for(const d of dials)d.addEventListener("input",()=>valid(d.value)&&use(Number(d.value)));
+ for(const b of root.querySelectorAll("[data-ui-seed-roll]"))b.addEventListener("click",()=>use(Math.floor(Math.random()*(top+1))));
+ for(const b of root.querySelectorAll("[data-ui-seed-off]"))b.addEventListener("click",off);
+ for(const p of picks)p.addEventListener("click",()=>use(Number(p.dataset.seed)));
+ for(const c of root.querySelectorAll("[data-ui-theme-switch],input[name=ui-theme]"))c.addEventListener("change",off);
+ let saved=null;try{saved=localStorage.getItem(key)}catch{}
+ return valid(saved)?use(Number(saved)):off()}
+"""
+
+
+def seed_roll_html(css: str = "") -> str:
+    """The 🎲 button ``bindSeed()`` binds: one tap puts a random seed's palette on the page."""
+    klass = f' class="{escape(css, quote=True)}"' if css else ""
+    return f'<button{klass} type="button" data-ui-seed-roll aria-label="Random seed" title="Random seed">🎲</button>'
+
+
+def theme_switch_html(*, legend: str = "Theme") -> str:
+    """The named themes as radios (``bindTheme()`` binds them): modern is checked; the others are THEMES and CANDIDATE_THEMES."""
+    return (f'<fieldset class="ui-layout-switch"><legend>{escape(legend)}</legend>'
+            + "".join(f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
+                      for t in (*THEMES, *CANDIDATE_THEMES)) + "</fieldset>")
+
+
+def seed_dial_html(*, maximum: int = 99) -> str:
+    """The controls ``bindSeed()`` from theme.js binds: a dial (range), the number it shows, 🎲 for a random seed and ✖️ for the named theme again."""
+    if type(maximum) is not int or not 1 <= maximum <= 2**31 - 1:
+        raise ValueError("the dial's maximum is an integer from 1 to 2147483647")
+    return ('<fieldset class="ui-layout-switch ui-seed"><legend>🎲 seed</legend>'
+            f'<input class="ui-seed-dial" type="range" min="0" max="{maximum}" step="1" value="0" data-ui-seed aria-label="seed">'
+            '<output class="ui-seed-out" data-ui-seed-out aria-live="polite">–</output>'
+            + seed_roll_html("ui-button") +
+            '<button class="ui-button" type="button" data-ui-seed-off aria-label="Back to the named theme" title="Back to the named theme">✖️</button></fieldset>')
 
 
 # --- Pages and examples as Python data: specs in, single-file pages out (no HTML files) ---------------
@@ -4650,10 +5628,10 @@ def door_validate(spec: Any) -> dict[str, Any]:
     if current is not None and current not in seen_href:
         raise ValueError("current must be the href of one of the pages")
     discoverable = sum(p["group"] == "discover" for p in pages)
-    k = _world_int(spec.get("k", 3), "k", 0, 8)
+    k = _bounded_int(spec.get("k", 3), "k", 0, 8)
     if k > discoverable:
         raise ValueError(f"k is {k} but only {discoverable} pages can be drawn")
-    return {"schema": DOOR_SCHEMA, "pages": pages, "current": current, "k": k, "seed": _world_int(spec.get("seed", 0), "seed", 0, 2**32 - 1)}
+    return {"schema": DOOR_SCHEMA, "pages": pages, "current": current, "k": k, "seed": _bounded_int(spec.get("seed", 0), "seed", 0, 2**32 - 1)}
 
 
 def emoji_path(notation: str, pages: list[dict[str, Any]]) -> list[str]:
@@ -5025,6 +6003,19 @@ def _is_int(value: Any) -> bool:
 
 def _reject_json_constant(name: str) -> Any:
     raise ValueError("JSON constants (NaN, Infinity) are not allowed")
+
+
+def _json_nonfinite(name: str) -> Any:
+    """``parse_constant`` of the pattern and studio parsers: NaN and Infinity are refused with their name."""
+    raise ValueError(f"non-finite JSON constant: {name}")
+
+
+def _json_finite_float(raw: str) -> float:
+    """``parse_float`` (and the base of ``parse_int``) of the pattern and studio parsers: a number beyond the double range is refused."""
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError("JSON number out of range")
+    return value
 
 
 def _json_line(line: str) -> Any:
@@ -5426,6 +6417,39 @@ def junit_file_summary(path: Path) -> dict[str, Any]:
             "failures": [{k: f[k] for k in ("name", "class", "message_sha256", "kind")} for f in report["failures"]]}
 
 
+# The command line speaks in icons first (like the pages): a glyph leads each option's help and each human line on stderr.
+# Machine output (stdout JSON/HTML, the `listening` line) is untouched, and a stream that cannot show a glyph (an old code page) gets the plain words.
+CLI_ICONS = {
+    "title": "🏷️", "theme": "🎨", "css": "💅", "catalog": "📚", "world": "🌍", "example": "🧪", "btk_adapter": "🔌", "pattern": "🧩", "url": "🔗",
+    "pattern_serve": "🛰️", "port": "🔢", "allow_origin": "🌐", "site": "🏗️", "theme_wall": "🎭", "css_bundle": "📦", "asset_base": "📁",
+    "with_scripts": "📜", "with_remote_scripts": "📡", "embed_ui": "🧱", "module_mode": "⚙️", "trusted_html": "🔓", "sri": "🔐",
+    "junit": "🧾", "previous": "⏮️", "flutter_events": "🐦", "to": "➡️", "run_tests": "▶️", "test_file": "📄", "report": "📋", "history": "🕘",
+    "receipt": "🧷", "ledger": "📒", "retry_failed": "🔁", "name_pattern": "🔎", "timeout": "⏱️", "expect_exit": "🚦", "output_dir": "📂",
+    "studio_render": "🖌️", "studio_heatmap": "🌡️", "studio_base64": "🔡", "format": "📐", "scale": "🔍", "data_uri": "📎", "output": "💾", "force": "♻️",
+}
+
+
+def _cli_glyph(glyph: str, stream: Any = None) -> str:
+    """``glyph`` and a space, or nothing when the stream's encoding cannot write it."""
+    encoding = getattr(stream or sys.stderr, "encoding", None)
+    try:
+        glyph.encode(encoding if isinstance(encoding, str) else "utf-8")
+    except (UnicodeError, LookupError):
+        return ""
+    return glyph + " "
+
+
+def _say(glyph: str, text: str) -> None:
+    """One human line on stderr: ⛔ a refusal, ⚠️ something skipped, ❌ a failed test."""
+    print(_cli_glyph(glyph) + text, file=sys.stderr)
+
+
+class _IconParser(argparse.ArgumentParser):
+    def error(self, message: str) -> Any:                                    # argparse's own line, led by ⛔ (callers that look for "error:" still find it)
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{_cli_glyph('⛔')}{self.prog}: error: {message}\n")
+
+
 def _retry_report(report: Path) -> Path:
     return report.with_name(report.stem + ".retry" + report.suffix)
 
@@ -5437,7 +6461,7 @@ def _ledger_best_effort(ledger: Path | None, runner: str, attempts: list[dict[st
     try:
         failure_ledger_file(ledger, runner, attempts)
     except (OSError, ValueError, TypeError) as exc:
-        print(f"warning: failure ledger update skipped: {exc}", file=sys.stderr)
+        _say("⚠️", f"failure ledger update skipped: {exc}")
 
 
 def run_test_suite(runner: str, *, root: Path, files: list[str], report: Path, history: Path, retry_failed: bool = False, timeout: int = 300,
@@ -5493,7 +6517,7 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
     that selected nothing (only file-level cases) fails closed. Node owns the regex semantics of ``name_pattern``.
     """
     if not files:
-        print("node runner: no test files selected", file=sys.stderr)
+        _say("⛔", "node runner: no test files selected")
         return 2
     report = report.resolve()
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -5507,15 +6531,15 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
     try:
         code = subprocess.run(command, cwd=root, timeout=timeout, check=False).returncode
     except FileNotFoundError:
-        print("node runner: Node executable not found", file=sys.stderr)
+        _say("⛔", "node runner: Node executable not found")
         return 127
     except subprocess.TimeoutExpired:
-        print(f"node runner: timed out after {timeout}s", file=sys.stderr)
+        _say("⛔", f"node runner: timed out after {timeout}s")
         return 124
     try:
         cases = junit_cases(report.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        print(f"node runner: missing or invalid Node JUnit: {report}", file=sys.stderr)
+        _say("⛔", f"node runner: missing or invalid Node JUnit: {report}")
         return code if code != 0 else 1
     summary = {"passed": 0, "failed": 0, "skipped": 0, "total": len(cases), "failures": [], "names": [c["name"] for c in cases]}
     for case in cases:
@@ -5527,11 +6551,11 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
         else:
             summary["passed"] += 1
     if summary["passed"] + summary["failed"] == 0:
-        print("node runner: no executed tests (all skipped)", file=sys.stderr)
+        _say("⛔", "node runner: no executed tests (all skipped)")
         return code if code != 0 else 1
     selected = {(root / name).resolve() for name in files}
     if name_pattern is not None and all((root / name).resolve() in selected for name in summary["names"]):
-        print("node runner: no selected tests (only file-level JUnit cases)", file=sys.stderr)
+        _say("⛔", "node runner: no selected tests (only file-level JUnit cases)")
         return code if code != 0 else 1
     summary.update({"runner": "node", "exit_code": code, "ok": code == 0 and summary["failed"] == 0, "junit": str(report)})
     if receipt is not None:
@@ -5539,7 +6563,7 @@ def node_test_run(*, root: Path, files: list[str], report: Path, receipt: Path |
         receipt.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"node: passed={summary['passed']} failed={summary['failed']} skipped={summary['skipped']} exit={code}")
     for failure in summary["failures"]:
-        print(f"FAIL {failure['name']}: {failure['message']}", file=sys.stderr)
+        _say("❌", f"{failure['name']}: {failure['message']}")
     return code if code != 0 else (1 if summary["failed"] else 0)
 
 
@@ -6413,10 +7437,6 @@ def _pat_need(condition: Any, message: str) -> None:
         raise ValueError(message)
 
 
-def _pat_finite(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(value)
-
-
 def pattern_query(req: Any) -> Any:
     """Pure collection operations (catalogue 011, 012, 014-018): ``stable_sort``, ``custom_sort`` (a named comparator, never code), ``group_by``, ``facet``, ``tag``, ``range`` and ``geo``
     (haversine, in km). Sorting is stable; mixed key types are refused."""
@@ -6465,21 +7485,21 @@ def pattern_query(req: Any) -> Any:
         return [item for item in items if matches(item)]
     if op == "range":
         key, low, high = req.get("key"), req.get("minimum"), req.get("maximum")
-        _pat_need(isinstance(key, str) and _pat_finite(low) and _pat_finite(high) and low <= high, "invalid numeric range")
+        _pat_need(isinstance(key, str) and _js_num(low) and _js_num(high) and low <= high, "invalid numeric range")
         result = []
         for item in items:
             _pat_need(isinstance(item, dict) and key in item, "missing range key")
-            _pat_need(_pat_finite(item[key]), "invalid range value")
+            _pat_need(_js_num(item[key]), "invalid range value")
             if low <= item[key] <= high:
                 result.append(item)
         return result
     if op == "geo":
         lat, lon, radius = (req.get(k) for k in ("latitude", "longitude", "radius_km"))
-        _pat_need(all(_pat_finite(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
+        _pat_need(all(_js_num(v) for v in (lat, lon, radius)) and -90 <= lat <= 90 and -180 <= lon <= 180 and radius >= 0, "invalid geographic search")
         def distance(row: Any) -> float:
             _pat_need(isinstance(row, dict), "invalid point")
             a, b = row.get("latitude"), row.get("longitude")
-            _pat_need(_pat_finite(a) and _pat_finite(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
+            _pat_need(_js_num(a) and _js_num(b) and -90 <= a <= 90 and -180 <= b <= 180, "invalid point coordinates")
             p1, p2 = math.radians(lat), math.radians(a)
             dp, dl = p2 - p1, math.radians(b - lon)
             h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
@@ -6624,7 +7644,7 @@ def pattern_score(payload: Any) -> Any:
     if operation == "minheap":
         _pat_need(not (set(payload) - {"operation", "values", "pops"}), "unexpected heap fields")
         values, pops = payload.get("values"), payload.get("pops", 0)
-        _pat_need(isinstance(values, list) and all(_pat_finite(x) for x in values), "heap values must be finite numbers")
+        _pat_need(isinstance(values, list) and all(_js_num(x) for x in values), "heap values must be finite numbers")
         _pat_need(type(pops) is int and 0 <= pops <= len(values), "invalid pop count")
         heap = values.copy()
         heapq.heapify(heap)
@@ -7386,12 +8406,12 @@ def pattern_structure(mode: str) -> dict[str, Any]:
 _PAT_JS_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
 
 
-def _pat_js_int(value: Any) -> bool:
+def _js_int(value: Any) -> bool:
     """Number.isInteger for a JSON number."""
     return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
-def _pat_js_num(value: Any) -> bool:
+def _js_num(value: Any) -> bool:
     """typeof value === "number" && Number.isFinite(value)."""
     return type(value) in (int, float) and math.isfinite(value)
 
@@ -7432,7 +8452,7 @@ def _pat_future_task(raw: Any, index: int) -> dict[str, Any]:
     _pat_js_fields(task, ("value", "delay_ms", "reject"), ("value",))
     delay = task.get("delay_ms")
     delay = 0 if delay is None else delay
-    _pat_need(_pat_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
+    _pat_need(_js_int(delay) and 0 <= delay <= 1000, "delay_ms must be an integer 0..1000")
     _pat_need("reject" not in task or (isinstance(task["reject"], str) and task["reject"] != ""), "reject must be a nonempty string")
     return {"value": task["value"], "at": max(1, int(delay)), "reject": task.get("reject"), "rejects": "reject" in task, "index": index}
 
@@ -7471,7 +8491,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             step = _pat_js_object(raw, "step")
             _pat_js_fields(step, ("op", "by"), ("op",))
             if step["op"] in ("add", "multiply"):
-                _pat_need(_pat_js_num(step.get("by")), "numeric by required")
+                _pat_need(_js_num(step.get("by")), "numeric by required")
             elif step["op"] == "uppercase":
                 _pat_js_fields(step, ("op",))
             else:
@@ -7485,7 +8505,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             return {"schema": "future-patterns/1", "mode": mode, "value": {"caught": str(error), "fallback": req["fallback"]}}
     if mode == "timeout":
         timeout = req.get("timeout_ms")
-        _pat_need(_pat_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
+        _pat_need(_js_int(timeout) and 1 <= timeout <= 1000, "timeout_ms must be 1..1000")
         _pat_need(job["at"] <= timeout, "timeout")      # a tie goes to the task: its timer was created first
     value = _pat_future_settle(job)
     for step in steps:
@@ -7493,7 +8513,7 @@ def pattern_future(request: Any) -> dict[str, Any]:
             _pat_need(isinstance(value, str), "string input required")
             value = value.upper()
         else:
-            _pat_need(_pat_js_num(value), "numeric input required")
+            _pat_need(_js_num(value), "numeric input required")
             value = value + step["by"] if step["op"] == "add" else value * step["by"]
     return {"schema": "future-patterns/1", "mode": mode, "value": value}
 
@@ -7503,7 +8523,7 @@ def _pat_stream_events(raw: Any) -> list[dict[str, Any]]:
     last = -1
     for event in raw:
         _pat_need(isinstance(event, dict) and sorted(event) == ["at_ms", "value"], "event shape")
-        _pat_need(_pat_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
+        _pat_need(_js_int(event["at_ms"]) and last <= event["at_ms"] <= 60000, "sorted event time")
         last = event["at_ms"]
     return raw
 
@@ -7555,14 +8575,14 @@ def pattern_stream(request: Any) -> dict[str, Any]:
             elif op == "map_add":
                 moved = []
                 for x in xs:
-                    _pat_need(_pat_js_num(x["value"]) and _pat_js_num(step.get("value")), "map_add numbers")
+                    _pat_need(_js_num(x["value"]) and _js_num(step.get("value")), "map_add numbers")
                     moved.append({**x, "value": x["value"] + step["value"]})
                 xs = moved
             else:
                 raise ValueError("step operation")
     if mode in ("debounce", "throttle"):
         ms = request.get("duration_ms")
-        _pat_need(_pat_js_int(ms) and 0 < ms <= 60000, "duration")
+        _pat_need(_js_int(ms) and 0 < ms <= 60000, "duration")
         if mode == "debounce":
             xs = [x for i, x in enumerate(xs) if i + 1 >= len(xs) or xs[i + 1]["at_ms"] - x["at_ms"] > ms]
         else:
@@ -7575,9 +8595,9 @@ def pattern_stream(request: Any) -> dict[str, Any]:
             xs = kept
     if mode in ("buffer", "window"):
         size = request.get("size")
-        _pat_need(_pat_js_int(size) and 0 < size <= 1000, "size")
+        _pat_need(_js_int(size) and 0 < size <= 1000, "size")
         step = size if mode == "buffer" else (1 if request.get("step") is None else request["step"])
-        _pat_need(_pat_js_int(step) and 0 < step <= 1000, "step")
+        _pat_need(_js_int(step) and 0 < step <= 1000, "step")
         size, step = int(size), int(step)
         out = []
         for i in range(0, len(xs), step):
@@ -7588,7 +8608,7 @@ def pattern_stream(request: Any) -> dict[str, Any]:
         xs = out
     if mode == "broadcast":
         count = request.get("subscribers")
-        _pat_need(_pat_js_int(count) and 1 <= count <= 16, "subscribers")
+        _pat_need(_js_int(count) and 1 <= count <= 16, "subscribers")
         return {"schema": "stream-patterns/1", "mode": mode, "subscribers": [[dict(x) for x in xs] for _ in range(int(count))]}
     return {"schema": "stream-patterns/1", "mode": mode, "events": xs}
 
@@ -7601,13 +8621,13 @@ def _pat_concurrency_tasks(raw: Any) -> list[dict[str, Any]]:
         _pat_need(all(k in ("value", "delay_ms") for k in item) and "value" in item, "task keys")
         delay = item.get("delay_ms")
         delay = 0 if delay is None else delay
-        _pat_need(_pat_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
+        _pat_need(_js_int(delay) and 0 <= delay <= 50, "delay_ms must be 0..50")
         jobs.append({"value": item["value"], "delay": int(delay), "index": index})
     return jobs
 
 
 def _pat_safe_int(value: Any) -> bool:
-    return _pat_js_int(value) and abs(value) <= 2 ** 53 - 1
+    return _js_int(value) and abs(value) <= 2 ** 53 - 1
 
 
 def pattern_concurrency(request: Any) -> dict[str, Any]:
@@ -7634,7 +8654,7 @@ def pattern_concurrency(request: Any) -> dict[str, Any]:
     else:
         jobs = _pat_concurrency_tasks(request.get("tasks"))
         limit = 1 if mode in ("work_queue", "progress") else request.get("concurrency")
-        _pat_need(_pat_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
+        _pat_need(_js_int(limit) and 1 <= limit <= 32, "concurrency 1..32")
         metrics = {"values": [j["value"] for j in jobs], "max_active": min(int(limit), len(jobs))}
         result = {"values": metrics["values"], "progress": [{"completed": i + 1, "total": len(jobs)} for i in range(len(jobs))]} if mode == "progress" else metrics
     return {"schema": "concurrency-patterns/1", "mode": mode, "result": result}
@@ -7662,7 +8682,7 @@ def pattern_event_loop(request: Any) -> dict[str, Any]:
         for raw in steps:
             step = _pat_event_fields(raw, ("op", "value"), ("op", "value"))
             if step["op"] == "map_add":
-                _pat_need(_pat_js_num(step["value"]) and all(_pat_js_num(x) for x in out), "numbers required")
+                _pat_need(_js_num(step["value"]) and all(_js_num(x) for x in out), "numbers required")
                 out = [x + step["value"] for x in out]
             elif step["op"] == "where_equals":
                 out = [x for x in out if _pat_js_json(x) == _pat_js_json(step["value"])]
@@ -7678,7 +8698,7 @@ def pattern_event_loop(request: Any) -> dict[str, Any]:
     elif mode == "suspend_resume":
         _pat_event_fields(req, ("mode", "values", "pause_after"), ("mode", "values", "pause_after"))
         pause = req["pause_after"]
-        _pat_need(_pat_js_int(pause) and 0 <= pause <= len(values), "pause_after")
+        _pat_need(_js_int(pause) and 0 <= pause <= len(values), "pause_after")
         result = {"values": list(values), "trace": ["paused", "resumed"]}
     else:
         _pat_event_fields(req, ("mode", "values"))
@@ -7691,7 +8711,7 @@ class PatternDebouncer:
     that ``clear_timeout(handle)`` accepts."""
 
     def __init__(self, callback: Any, delay_ms: Any, set_timeout: Any, clear_timeout: Any) -> None:
-        if not callable(callback) or not _pat_js_num(delay_ms) or delay_ms < 0:
+        if not callable(callback) or not _js_num(delay_ms) or delay_ms < 0:
             raise TypeError("invalid debounce arguments")
         self.callback, self.delay_ms, self.set_timeout, self.clear_timeout = callback, delay_ms, set_timeout, clear_timeout
         self.timer: Any = None
@@ -7718,8 +8738,8 @@ def pattern_virtual_window(params: Any) -> dict[str, Any]:
     count, height, top, viewport = (params.get(k) for k in ("count", "itemHeight", "scrollTop", "viewportHeight"))
     overscan = params["overscan"] if "overscan" in params else 2
     for value in (count, height, top, viewport, overscan):
-        _pat_need(_pat_js_num(value) and value >= 0, "invalid viewport number")
-    _pat_need(_pat_js_int(count) and _pat_js_int(overscan) and height != 0, "invalid viewport configuration")
+        _pat_need(_js_num(value) and value >= 0, "invalid viewport number")
+    _pat_need(_js_int(count) and _js_int(overscan) and height != 0, "invalid viewport configuration")
     count, overscan = int(count), int(overscan)
     start = max(0, min(count, math.floor(top / height) - overscan))
     end = max(start, min(count, math.ceil((top + viewport) / height) + overscan))
@@ -7737,12 +8757,12 @@ def pattern_interaction(request: Any) -> dict[str, Any]:
     _pat_need(op == "debounce", "unsupported operation")
     _pat_need(all(k in ("operation", "delay_ms", "calls") for k in request), "unknown request keys")
     delay, calls = request.get("delay_ms"), request.get("calls")
-    _pat_need(_pat_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
+    _pat_need(_js_int(delay) and 0 <= delay <= 60000, "delay_ms must be 0..60000")
     _pat_need(isinstance(calls, list) and len(calls) <= 1000, "calls must be array <=1000")
     last = 0
     for call in calls:
         _pat_need(isinstance(call, dict) and "at_ms" in call and (call.keys() == {"at_ms", "value"} or call.keys() == {"at_ms", "cancel"}), "call shape")
-        _pat_need(_pat_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
+        _pat_need(_js_int(call["at_ms"]) and last <= call["at_ms"] <= 60000, "sorted call time")
         _pat_need("value" in call or call["cancel"] is True, "call shape")
         last = call["at_ms"]
     clock = [0]
@@ -7823,15 +8843,8 @@ def pattern_run(family: str, request: Any) -> Any:
 
 def pattern_parse(text: str) -> Any:
     """Strict JSON for a pattern request: NaN, Infinity and a number beyond the float range are refused, and so is nesting deeper than the interpreter can hold."""
-    def constant(name: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {name}")
-    def number(raw: str) -> float:
-        value = float(raw)
-        if not math.isfinite(value):
-            raise ValueError("JSON number out of range")
-        return value
     try:
-        return json.loads(text, parse_constant=constant, parse_float=number)
+        return json.loads(text, parse_constant=_json_nonfinite, parse_float=_json_finite_float)
     except RecursionError:
         raise ValueError("JSON nested too deeply") from None
 
@@ -9327,7 +10340,7 @@ def _scr_state(state: Any) -> dict[str, Any]:
         raise ValueError("invalid state")
     if merged["submitted"] is not None and not isinstance(merged["submitted"], str):
         raise ValueError("invalid state")
-    if not _pat_js_int(merged["index"]) or not 0 <= merged["index"] <= 2 or not _pat_js_int(merged["elapsed"]) or not 0 <= merged["elapsed"] <= SCREEN_ASYNC_MS:
+    if not _js_int(merged["index"]) or not 0 <= merged["index"] <= 2 or not _js_int(merged["elapsed"]) or not 0 <= merged["elapsed"] <= SCREEN_ASYNC_MS:
         raise ValueError("invalid state")
     if type(merged["open"]) is not bool or type(merged["loading"]) is not bool or type(merged["enabled"]) is not bool:
         raise ValueError("invalid state")
@@ -9368,7 +10381,7 @@ def screen_step(screen_id: int, state: Any, event: Any) -> dict[str, Any]:
     elif kind == "submit":
         nxt["submitted"] = current["value"]
     elif kind == "select":
-        if not _pat_js_int(event.get("index")) or not 0 <= event["index"] <= 2:
+        if not _js_int(event.get("index")) or not 0 <= event["index"] <= 2:
             raise ValueError("index must be 0..2")
         nxt["index"] = int(event["index"])
     elif kind in ("open", "close"):
@@ -9377,7 +10390,7 @@ def screen_step(screen_id: int, state: Any, event: Any) -> dict[str, Any]:
         if not current["loading"]:
             nxt["loading"], nxt["elapsed"] = True, 0
     elif kind == "tick":
-        if not _pat_js_int(event.get("ms")) or not 0 <= event["ms"] <= 60000:
+        if not _js_int(event.get("ms")) or not 0 <= event["ms"] <= 60000:
             raise ValueError("ms must be 0..60000")
         if current["loading"]:
             nxt["elapsed"] = current["elapsed"] + int(event["ms"])
@@ -9513,7 +10526,7 @@ def _scr_run_screen(request: Any) -> dict[str, Any]:
     _pat_need(all(key == "operation" or key in allowed[operation] for key in request), "unknown request keys")
     screen = request.get("screen")
     if operation in ("view", "route", "links"):
-        _pat_need(_pat_js_int(screen), f"screen must be an integer 1..{SCREEN_COUNT}")
+        _pat_need(_js_int(screen), f"screen must be an integer 1..{SCREEN_COUNT}")
         screen = int(screen)
     if operation == "view":
         events = request.get("events", [])
@@ -9532,10 +10545,10 @@ def _scr_run_screen(request: Any) -> dict[str, Any]:
         key, arguments = request.get("key"), request.get("arguments", [])
         _pat_need(isinstance(key, str) and len(key) <= 200, "key must be text")
         _pat_need(isinstance(arguments, list) and len(arguments) <= 20 and all(isinstance(a, list) and len(a) == 2 and isinstance(a[0], str) and
-                                                                                  (a[1] is None or isinstance(a[1], str) or _pat_js_int(a[1]) and abs(a[1]) <= NATIVE_SAFE)
+                                                                                  (a[1] is None or isinstance(a[1], str) or _js_int(a[1]) and abs(a[1]) <= NATIVE_SAFE)
                                                                                   for a in arguments), "arguments must be [name, value] pairs")
         return {"schema": "screens/1", "operation": operation, "result": screen_text(request.get("locale", "eng"), key,
-                                                                                    [(a[0], int(a[1]) if _pat_js_int(a[1]) else a[1]) for a in arguments])}
+                                                                                    [(a[0], int(a[1]) if _js_int(a[1]) else a[1]) for a in arguments])}
     if operation == "route":
         return {"schema": "screens/1", "operation": operation, "result": screen_route(screen)}
     return {"schema": "screens/1", "operation": operation, "result": screen_links_view(screen, request.get("locale", "eng"))}
@@ -9586,7 +10599,7 @@ def native_step(number: int, state: dict[str, Any], action: Any) -> dict[str, An
     _pat_need(all(key in {"type", *{"reorder": ("old", "new"), "swap": ("a", "b"), "select": ("item", "value")}.get(kind, ())} for key in action), "unknown action keys")
     if kind == "reorder":
         old, target = action.get("old"), action.get("new")
-        _pat_need(_pat_js_int(old) and _pat_js_int(target) and 0 <= old < len(items) and 0 <= target <= len(items), "old must be 0..n-1 and new 0..n")
+        _pat_need(_js_int(old) and _js_int(target) and 0 <= old < len(items) and 0 <= target <= len(items), "old must be 0..n-1 and new 0..n")
         old, target = int(old), int(target)
         if target > old:
             target -= 1
@@ -9650,7 +10663,7 @@ def native_parallel(number: int, values: list[int] | None = None, engine: str = 
     if engine not in ("worker", "fallback"):
         raise ValueError("engine must be worker or fallback")
     values = [1, 2, 3, 4, 5] if values is None else values
-    if not isinstance(values, list) or len(values) > NATIVE_MAX_VALUES or not all(_pat_js_int(v) for v in values):
+    if not isinstance(values, list) or len(values) > NATIVE_MAX_VALUES or not all(_js_int(v) for v in values):
         raise ValueError(f"values must be an array of at most {NATIVE_MAX_VALUES} integers")
     total = 0
     for value in values:
@@ -9666,7 +10679,7 @@ def pattern_native(request: Any) -> dict[str, Any]:
     "engine": "worker" | "fallback"}`` for the sum of squares. The answer is the state and the lines and buttons the example shows."""
     _pat_need(isinstance(request, dict), "request object")
     number = request.get("pattern")
-    _pat_need(_pat_js_int(number) and int(number) in NATIVE_NUMBERS, "pattern must be one of " + ", ".join(map(str, NATIVE_NUMBERS)))
+    _pat_need(_js_int(number) and int(number) in NATIVE_NUMBERS, "pattern must be one of " + ", ".join(map(str, NATIVE_NUMBERS)))
     number = int(number)
     if number in NATIVE_PARALLEL:
         _pat_need(all(key in ("pattern", "values", "engine") for key in request), "unknown request keys")
@@ -9720,7 +10733,7 @@ def contract_screens(screens: Any, count: int = SCREEN_COUNT) -> dict[str, Any]:
     blocks of eighteen decides; one emoji and one ``useCaseKey`` for each screen; every pattern name a non-empty string; and a ``detail`` (a purpose, a time to use it, three design points,
     a pitfall and a snippet) for the integration and auth screens only."""
     _pat_need(isinstance(screens, list) and len(screens) <= CONTRACT_MAX_ROWS, f"screens must be an array of at most {CONTRACT_MAX_ROWS} rows")
-    _pat_need(_pat_js_int(count) and 1 <= count <= SCREEN_COUNT, f"count must be an integer from 1 to {SCREEN_COUNT}")
+    _pat_need(_js_int(count) and 1 <= count <= SCREEN_COUNT, f"count must be an integer from 1 to {SCREEN_COUNT}")
     count = int(count)
     failures: list[str] = []
     if len(screens) != count:
@@ -9816,7 +10829,7 @@ def contract_locales(locales: Any) -> dict[str, Any]:
 def _con_num(boxes: dict[str, Any], name: str, field: str) -> float:
     """One measurement of one box, read only when a rule needs it (a box a rule does not look at may lack the fields that rule does not use, as in the original)."""
     box = boxes[name]
-    _pat_need(isinstance(box, dict) and _pat_finite(box.get(field)), f"box {name!r} needs a numeric {field}")
+    _pat_need(isinstance(box, dict) and _js_num(box.get(field)), f"box {name!r} needs a numeric {field}")
     return box[field]
 
 
@@ -9833,7 +10846,7 @@ def contract_layout(request: Any) -> dict[str, Any]:
     ``y`` and ``height`` for the others); a number that is missing, not finite or a bool is a ``ValueError``."""
     _pat_need(isinstance(request, dict) and all(key in ("operation", "viewport", "boxes", "within", "aligned", "stacked") for key in request), "unknown request keys")
     viewport = request.get("viewport")
-    _pat_need(isinstance(viewport, dict) and _pat_finite(viewport.get("width")) and viewport["width"] > 0 and _pat_finite(viewport.get("height")) and viewport["height"] > 0,
+    _pat_need(isinstance(viewport, dict) and _js_num(viewport.get("width")) and viewport["width"] > 0 and _js_num(viewport.get("height")) and viewport["height"] > 0,
               "viewport needs a positive width and height")
     boxes = request.get("boxes")
     _pat_need(isinstance(boxes, dict) and len(boxes) <= CONTRACT_MAX_BOXES, f"boxes must be an object of at most {CONTRACT_MAX_BOXES} boxes")
@@ -9857,7 +10870,7 @@ def contract_layout(request: Any) -> dict[str, Any]:
         _pat_need(isinstance(entry, dict) and all(key in ("name", "below", "min_height") for key in entry) and isinstance(entry.get("name"), str) and entry["name"] in boxes, "stacked entries need a box name")
         floor = _con_names(entry, "below", boxes)
         minimum = entry.get("min_height", CONTRACT_MIN_ROW_HEIGHT)
-        _pat_need(_pat_finite(minimum) and minimum >= 0, "min_height must be a non-negative number")
+        _pat_need(_js_num(minimum) and minimum >= 0, "min_height must be a non-negative number")
         name = entry["name"]
         if floor and num(name, "y") < max(num(other, "y") + num(other, "height") for other in floor) - CONTRACT_EDGE:
             failures.append(f"{name}: overlaps the row above")
@@ -9908,15 +10921,15 @@ def contract_swap(request: Any) -> dict[str, Any]:
     before, after = _con_png(request.get("before"), "before"), _con_png(request.get("after"), "after")
     _pat_need(before[:2] == after[:2], "capture dimensions changed during the gesture")
     scale = geometry.get("device_scale_factor")
-    _pat_need(_pat_finite(scale) and scale > 0, "invalid device scale factor")
+    _pat_need(_js_num(scale) and scale > 0, "invalid device scale factor")
     viewport = geometry.get("viewport")
-    _pat_need(isinstance(viewport, dict) and all(_pat_finite(viewport.get(key)) for key in ("width", "height")), "viewport needs a width and height")
+    _pat_need(isinstance(viewport, dict) and all(_js_num(viewport.get(key)) for key in ("width", "height")), "viewport needs a width and height")
     _pat_need(all(abs(before[index] - viewport[key] * scale) <= 1 for index, key in enumerate(("width", "height"))), "PNG dimensions do not match the recorded viewport")
     slots = geometry.get("slots")
     _pat_need(isinstance(slots, list) and len(slots) == 2, "exactly two pre-drag slots are required")
     boxes = []
     for slot in slots:
-        _pat_need(isinstance(slot, dict) and all(_pat_finite(slot.get(key)) for key in ("x", "y", "width", "height")), "invalid card bounds")
+        _pat_need(isinstance(slot, dict) and all(_js_num(slot.get(key)) for key in ("x", "y", "width", "height")), "invalid card bounds")
         x, y, width, height = (slot[key] for key in ("x", "y", "width", "height"))
         _pat_need(width > 16 and height > 16, "card interior is too small")
         box = tuple(round(value * scale) for value in (x + 8, y + 8, x + width - 8, y + height - 8))
@@ -10570,6 +11583,7 @@ def patterns_html(bridge: str | None = None) -> str:
     categories = "".join(f'<option value="{key}">{letter} · {escape(label)}</option>' for key, letter, label in PATTERN_CATEGORIES)
     families = "".join(f'<option value="{name}">{name}</option>' for name in sorted(PATTERN_RUNNERS))
     run_families = "".join(f'<option value="{name}"{" selected" if name == "query" else ""}>{name}</option>' for name in sorted(PATTERN_RUNNERS))
+    auth_link = '<p><a href="/auth.html">Local authentication mock (loopback server)</a></p>' if bridge else ''
     return ('<section class="ui-panel ui-patterns" id="patterns" data-ui-patterns' + (f' data-patterns-bridge="{bridge}"' if bridge else "") + '><h2>792 patterns</h2>'
             '<p class="ui-muted">flutter_navigation_basic\'s catalogue, and the references behind its data-processing patterns.</p>'
             '<label for="patterns-query">Search (id, title or theme)</label>'
@@ -10578,7 +11592,7 @@ def patterns_html(bridge: str | None = None) -> str:
             f'<div class="ui-patterns-bar"><label for="patterns-category">Category</label><select class="ui-input" id="patterns-category" data-patterns-category><option value="">All four</option>{categories}</select>'
             f'<label for="patterns-family">Reference</label><select class="ui-input" id="patterns-family" data-patterns-family><option value="">Any</option>{families}</select></div>'
             '<ol class="ui-patterns-list" data-patterns-list></ol>'
-            '<h3 id="patterns-run-title">Run a reference</h3>'
+            f'{auth_link}<h3 id="patterns-run-title">Run a reference</h3>'
             f'<label for="patterns-run-family">Family</label><select class="ui-input" id="patterns-run-family" data-patterns-run-family>{run_families}</select>'
             '<label for="patterns-request">Request (JSON)</label><textarea class="ui-input" id="patterns-request" data-patterns-request spellcheck="false" rows="8"></textarea>'
             '<div class="ui-patterns-bar"><button class="ui-button" type="button" data-patterns-run>Run</button> <button class="ui-button" type="button" data-patterns-example>Example</button></div>'
@@ -10619,6 +11633,275 @@ def bridge_origin(value: Any) -> str:
         raise ValueError(f"not an origin: {value!r}")
     host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
     return f"{parts.scheme}://{host}{f':{port}' if port else ''}"
+
+
+# --- Local fixture authentication (Flutter mock_auth.dart; never sends requests) ---
+# These credentials are public fixtures. Digest MD5 is retained only for parity.
+AUTH_AUDIENCE = "https://api.example.test"
+AUTH_DIGEST_CHALLENGE = ('Digest realm="mock", qop="auth", nonce="demo-digest-nonce", '
+                         'opaque="demo-digest-opaque", algorithm=MD5')
+AUTH_SCENARIOS = ("none", "bearer", "bearerExpired", "bearerWrongAudience", "apiKeyHeader",
+                  "apiKeyQuery", "basic", "digestChallengeOnly", "digest", "hmac", "rateLimited")
+
+
+def digest_nc_parse(nc: str) -> int | None:
+    """Dart DigestNc.tryParse: exactly eight ASCII hex digits (zero parses)."""
+    return int(nc, 16) if isinstance(nc, str) and re.fullmatch(r"[0-9a-fA-F]{8}", nc) else None
+
+
+def digest_nc_format(value: int) -> str:
+    if type(value) is not int or not 1 <= value <= 0xffffffff:
+        raise ValueError("Digest nc out of range")
+    return f"{value:08x}"
+
+
+def auth_query_pairs(pairs: Any) -> str:
+    """Dart Uri.encodeQueryComponent: form encoding, preserving order/duplicates."""
+    from urllib.parse import quote_plus
+    return "&".join(quote_plus(k, safe="-._~") + "=" + quote_plus(v, safe="-._~") for k, v in pairs)
+
+
+def auth_digest_response(*, method: str, uri: str, username: str = "demo", password: str = "s3cret",
+                         realm: str = "mock", nonce: str = "demo-digest-nonce", nc: str, cnonce: str, qop: str = "auth") -> str:
+    def md5(text: str) -> str:
+        return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return md5(f"{md5(f'{username}:{realm}:{password}')}:{nonce}:{nc}:{cnonce}:{qop}:{md5(f'{method}:{uri}')}")
+
+
+def auth_hmac_signature(*, method: str, path: str, timestamp: str, nonce: str,
+                        query_string: str = "", body: str = "", secret: str = "demo-hmac-secret") -> str:
+    payload = f"{method.upper()}\n{path}\n{query_string}\n{body}\n{timestamp}\n{nonce}"
+    return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+class MockAuthHandler:
+    """In-memory local demo router. One instance per bridge, atomic replay checks.
+
+    handle returns {status, headers, body}, or None for paths outside the matrix.
+    The input is a simulated request, never a URL to fetch. clock returns epoch seconds.
+    No persistence, JWT verification, real credentials, or outbound transport.
+    """
+    def __init__(self, *, clock: Any = time.time) -> None:
+        import threading
+        self.clock = clock
+        self.seen_nonces: set[str] = set()
+        self.digest_counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def handle(self, request: Any) -> dict[str, Any] | None:
+        if not isinstance(request, dict) or set(request) - {"method", "path", "headers", "query", "query_pairs", "body", "request_target"}:
+            raise ValueError("expected a mock request object with method, path, headers, query_pairs and body")
+        method, path = request.get("method", "GET"), request.get("path", "")
+        headers, query, pairs = request.get("headers", {}), request.get("query", {}), request.get("query_pairs")
+        body, target = request.get("body", ""), request.get("request_target")
+        if not all(isinstance(v, str) for v in (method, path, body)) or not path.startswith("/") or "?" in path or "#" in path:
+            raise ValueError("mock method, path and body must be strings; path has no query or fragment")
+        for mapping in (headers, query):
+            if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+                raise ValueError("mock headers and query must be string maps")
+        if pairs is None:
+            pairs = list(query.items())
+        elif not isinstance(pairs, list) or not all(isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, str) for v in p) for p in pairs):
+            raise ValueError("query_pairs must be ordered string pairs")
+        if target is not None and not isinstance(target, str):
+            raise ValueError("request_target must be a string")
+        query_string = auth_query_pairs(pairs)
+        target = target if target is not None else path + ("?" + query_string if query_string else "")
+        # Match Dart's first case-insensitive header, rather than overwriting duplicates.
+        lowered: dict[str, str] = {}
+        for k, v in headers.items():
+            lowered.setdefault(k.lower(), v)
+        with self._lock:
+            return self._route(method, path, lowered, query, target, query_string, body)
+
+    @staticmethod
+    def _result(status: int, body: dict, headers: dict | None = None) -> dict:
+        return {"status": status, "headers": headers or {}, "body": body}
+
+    def _route(self, method: str, path: str, headers: dict, query: dict, target: str, query_string: str, body: str) -> dict | None:
+        route = path[:-1] if len(path) > 1 and path.endswith("/") else path
+        def ok(scheme: str, **extra: Any) -> dict:
+            return self._result(200, {"ok": True, "scheme": scheme, **extra})
+        def fail(reason: str, challenge: str | None = None, status: int = 401, **extra: Any) -> dict:
+            return self._result(status, {"ok": False, "error": "forbidden" if status == 403 else "unauthorized", "reason": reason, **extra},
+                                {"www-authenticate": challenge} if challenge else {})
+        raw = headers.get("authorization", "")
+        if route == "/auth/bearer":
+            challenge = 'Bearer realm="mock"'
+            if not raw:
+                return fail("missing_authorization", challenge)
+            parts = re.split(r"\s+", raw)
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return fail("malformed_authorization", challenge)
+            token = parts[1]
+            if token == "demo-wrong-aud-token":
+                return fail("wrong_audience", status=403, expectedAudience=AUTH_AUDIENCE)
+            if token != "demo-bearer-token":
+                return fail("expired" if token == "demo-expired-token" else "invalid_token", challenge + ', error="invalid_token"')
+            return ok("bearer", audience=AUTH_AUDIENCE)
+        if route == "/auth/api-key":
+            key = headers.get("x-api-key") or query.get("api_key")
+            if not key:
+                return fail("missing_api_key")
+            if key != "demo-api-key":
+                return fail("invalid_api_key", status=403)
+            return ok("api_key", via="header" if headers.get("x-api-key") else "query")
+        if route == "/auth/basic":
+            challenge = 'Basic realm="mock", charset="UTF-8"'
+            if not raw:
+                return fail("missing_authorization", challenge)
+            parts = re.split(r"\s+", raw)
+            if len(parts) != 2 or parts[0].lower() != "basic":
+                return fail("malformed_authorization", challenge)
+            try:
+                # Dart base64Decode accepts URL-safe/percent escapes, but requires padding.
+                from urllib.parse import unquote
+                encoded = unquote(parts[1]).replace("-", "+").replace("_", "/")
+                if not re.fullmatch(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?", encoded):
+                    raise ValueError("invalid base64 padding")
+                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeError):
+                return fail("malformed_authorization", challenge)
+            if ":" not in decoded or decoded.startswith(":"):
+                return fail("malformed_authorization", challenge)
+            if decoded.split(":", 1) != ["demo", "s3cret"]:
+                return fail("invalid_credentials", challenge)
+            return ok("basic", user="demo")
+        if route == "/auth/digest":
+            def bad(reason: str) -> dict:
+                return fail(reason, AUTH_DIGEST_CHALLENGE)
+            if not raw:
+                return bad("missing_authorization")
+            if not raw.lower().startswith("digest "):
+                return bad("malformed_authorization")
+            params = {m[0]: m[1] if m[1] is not None else m[2] for m in
+                      (match.groups() for match in re.finditer(r'(\w+)=(?:"([^"]*)"|([^\s,]+))', raw[7:], re.ASCII))}
+            if any(k not in params for k in ("username", "realm", "nonce", "uri", "response")):
+                return bad("malformed_authorization")
+            if params.get("qop") != "auth" or not params.get("nc") or not params.get("cnonce"):
+                return bad("missing_qop_params")
+            if params["uri"] != target:
+                return bad("uri_mismatch")
+            if params.get("algorithm", "MD5").upper() != "MD5":
+                return bad("unsupported_algorithm")
+            if params.get("opaque") != "demo-digest-opaque":
+                return bad("invalid_opaque")
+            if (params["username"], params["realm"], params["nonce"]) != ("demo", "mock", "demo-digest-nonce"):
+                return bad("invalid_credentials")
+            count = digest_nc_parse(params["nc"])
+            if count is None or count < 1:
+                return bad("invalid_nc")
+            expected = auth_digest_response(method=method, uri=target, nc=params["nc"], cnonce=params["cnonce"])
+            if params["response"].lower() != expected:
+                return bad("invalid_credentials")
+            key = params["nonce"] + "|" + params["cnonce"]
+            if count <= self.digest_counts.get(key, 0):
+                return bad("digest_replay")
+            self.digest_counts[key] = count
+            return ok("digest", user="demo")
+        if route == "/auth/hmac":
+            key, timestamp, nonce, signature = (headers.get(k, "") for k in ("x-key-id", "x-timestamp", "x-nonce", "x-signature"))
+            if not all((key, timestamp, nonce, signature)):
+                return fail("missing_hmac_headers", required=["X-Key-Id", "X-Timestamp", "X-Nonce", "X-Signature"])
+            if key != "demo-key":
+                return fail("unknown_key_id", status=403)
+            # Dart int.tryParse permits signed decimal and 0x-prefixed hex.
+            text = timestamp.strip()
+            if not re.fullmatch(r"[+-]?(?:[0-9]+|0[xX][0-9a-fA-F]+)", text):
+                return fail("malformed_timestamp")
+            digits = text.lstrip("+-")
+            is_hex = digits.lower().startswith("0x")
+            digits = digits[2:] if is_hex else digits
+            significant = digits.lstrip("0") or "0"
+            if len(significant) > (16 if is_hex else 19):
+                return fail("malformed_timestamp")
+            value = int(("-" if text.startswith("-") else "") + significant, 16 if is_hex else 10)
+            if is_hex and value > 0x7fffffffffffffff:
+                value -= 0x10000000000000000
+            if not -0x8000000000000000 <= value <= 0x7fffffffffffffff:
+                return fail("malformed_timestamp")
+            if abs(int(self.clock()) - value) > 300:
+                return fail("timestamp_skew")
+            if nonce in self.seen_nonces:
+                return fail("replay")
+            expected = auth_hmac_signature(method=method, path=path, timestamp=timestamp, nonce=nonce, query_string=query_string, body=body)
+            # Compare encoded bytes so malformed non-ASCII signatures fail, never raise.
+            if not hmac.compare_digest(signature.lower().encode("utf-8"), expected.encode("ascii")):
+                return fail("invalid_signature")
+            self.seen_nonces.add(nonce)
+            return ok("hmac", keyId="demo-key")
+        if route == "/auth/rate-limited":
+            return self._result(429, {"ok": False, "error": "rate_limited", "reason": "too_many_requests"}, {"retry-after": "1"})
+        return None
+
+
+def auth_matrix(scenario: str) -> dict[str, Any]:
+    """Dart auth_matrix.applyTo's reset draft, represented as a local request.
+
+    Digest and HMAC intentionally remain unsigned placeholders, as in Dart.
+    Clients complete those steps using the helpers after receiving a challenge.
+    """
+    if not isinstance(scenario, str) or scenario not in AUTH_SCENARIOS:
+        raise ValueError("unknown mock auth scenario")
+    paths = {"none": "/health", "apiKeyHeader": "/auth/api-key", "apiKeyQuery": "/auth/api-key",
+             "digestChallengeOnly": "/auth/digest", "rateLimited": "/auth/rate-limited"}
+    path = paths.get(scenario, "/auth/" + ("bearer" if scenario.startswith("bearer") else scenario))
+    request: dict[str, Any] = {"method": "GET", "path": path, "headers": {}, "query": {}, "body": ""}
+    tokens = {"bearer": "demo-bearer-token", "bearerExpired": "demo-expired-token", "bearerWrongAudience": "demo-wrong-aud-token"}
+    if scenario in tokens:
+        request["headers"] = {"Authorization": "Bearer " + tokens[scenario]}
+    elif scenario == "basic":
+        request["headers"] = {"Authorization": "Basic ZGVtbzpzM2NyZXQ="}
+    elif scenario == "apiKeyHeader":
+        request["headers"] = {"X-Api-Key": "demo-api-key"}
+    elif scenario == "apiKeyQuery":
+        request["query"] = {"api_key": "demo-api-key"}
+    elif scenario == "hmac":
+        request["headers"] = {"X-Key-Id": "demo-key", "X-Timestamp": "0", "X-Nonce": "pending", "X-Signature": "pending"}
+    return request
+
+
+def auth_prepare(scenario: str) -> dict[str, Any]:
+    """Fresh public fixture request for the demo; no outbound authentication."""
+    import secrets
+    request = auth_matrix(scenario)
+    nonce = secrets.token_hex(16)
+    if scenario == "digest":
+        response = auth_digest_response(method="GET", uri=request["path"], nc="00000001", cnonce=nonce)
+        request["headers"] = {"Authorization": 'Digest username="demo", realm="mock", nonce="demo-digest-nonce", '
+                              f'uri="/auth/digest", qop=auth, nc=00000001, cnonce="{nonce}", response="{response}", opaque="demo-digest-opaque"'}
+    elif scenario == "hmac":
+        timestamp = str(int(time.time()))
+        request["headers"] = {"X-Key-Id": "demo-key", "X-Timestamp": timestamp, "X-Nonce": nonce,
+                              "X-Signature": auth_hmac_signature(method="GET", path=request["path"], timestamp=timestamp, nonce=nonce)}
+    return request
+
+
+def auth_document() -> str:
+    """Same-origin local mock editor served by --pattern-serve at /auth.html."""
+    options = "".join(f'<option value="{name}">{name}</option>' for name in AUTH_SCENARIOS)
+    html = ('<main class="ui-page"><section class="ui-panel"><h1>Local auth mock</h1>'
+            '<p>Public demo credentials only. Requests run in memory on this loopback server. '
+            'Digest uses fixture MD5. Replay state lasts until the server restarts.</p>'
+            '<p><a href="/patterns.html">Patterns</a></p>'
+            f'<label for="auth-scenario">Scenario</label><select id="auth-scenario">{options}</select>'
+            '<button class="ui-button" id="auth-prepare" type="button">Prepare fresh demo</button>'
+            '<p>Digest starts with a signed response; digestChallengeOnly requests the challenge. '
+            'HMAC uses the current time. Edit the JSON to try failures. Run twice to check replay. '
+            'The none preset targets /health, which is outside the authentication router and returns 404 here.</p>'
+            '<label for="auth-request">Simulated request (JSON)</label>'
+            '<textarea class="ui-input" id="auth-request" rows="16" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>'
+            '<button class="ui-button" id="auth-run" type="button">Run local mock</button>'
+            '<pre id="auth-result" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></section></main>')
+    script = '''const field=document.getElementById("auth-request"),out=document.getElementById("auth-result"),
+select=document.getElementById("auth-scenario");let ticket=0;
+async function send(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body,
+credentials:"omit",cache:"no-store",referrerPolicy:"no-referrer"});return {status:r.status,headers:{"www-authenticate":r.headers.get("www-authenticate"),"retry-after":r.headers.get("retry-after")},body:await r.json()}}
+document.getElementById("auth-prepare").onclick=async()=>{const n=++ticket;try{const r=await send("/mock-auth/prepare",JSON.stringify({scenario:select.value}));
+if(n!==ticket)return;if(r.status!==200)throw Error(JSON.stringify(r.body));field.value=JSON.stringify(r.body,null,2);out.textContent="Fresh public demo request prepared."}catch(e){if(n===ticket)out.textContent=String(e)}};
+document.getElementById("auth-run").onclick=async()=>{const n=++ticket;try{JSON.parse(field.value);const r=await send("/mock-auth",field.value);if(n===ticket)out.textContent=JSON.stringify(r,null,2)}catch(e){if(n===ticket)out.textContent=String(e)}};
+select.value="bearer";document.getElementById("auth-prepare").click();'''
+    return render_document(trusted_html=html + module_script(script), title="Local authentication mock", css=bundled_css())
 
 
 class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
@@ -10670,6 +11953,8 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         if not self._trusted():
             return self._fail(403, "origin not allowed")
         path = self.path.split("?", 1)[0]
+        if path == "/auth.html":
+            return self._send(200, auth_document().encode("utf-8"), "text/html; charset=utf-8", extra=(("X-Frame-Options", "DENY"),))
         if path in PATTERN_BRIDGE_PAGES:
             return self._send(200, self.server.page, "text/html; charset=utf-8", extra=(("X-Frame-Options", "DENY"),))
         if path == PATTERN_BRIDGE_PREFIX:
@@ -10695,10 +11980,11 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not self._trusted():
             return self._fail(403, "origin not allowed")
-        if not path.startswith(PATTERN_BRIDGE_PREFIX):
+        is_auth = path in ("/mock-auth", "/mock-auth/prepare")
+        if not is_auth and not path.startswith(PATTERN_BRIDGE_PREFIX):
             return self._fail(404, "not found")
         family = path[len(PATTERN_BRIDGE_PREFIX):]
-        if family not in PATTERN_RUNNERS:
+        if not is_auth and family not in PATTERN_RUNNERS:
             return self._fail(404, "unknown pattern family", cors=True)
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
             return self._fail(415, "unsupported media type", cors=True)
@@ -10717,7 +12003,18 @@ class _PatternBridgeHandler(http.server.BaseHTTPRequestHandler):
         if len(raw) != length:
             return self._fail(400, "the request body ended early", cors=True)
         try:
-            answer = pattern_run(family, pattern_parse(raw.decode("utf-8")))
+            request = pattern_parse(raw.decode("utf-8"))
+            if is_auth:
+                if path == "/mock-auth/prepare":
+                    if not isinstance(request, dict) or set(request) != {"scenario"}:
+                        raise ValueError("expected a scenario object")
+                    answer = auth_prepare(request["scenario"])
+                    return self._json(200, answer, cors=True)
+                answer = self.server.mock_auth.handle(request)
+                if answer is None:
+                    return self._fail(404, "unknown mock auth path", cors=True)
+                return self._json(answer["status"], answer["body"], cors=True, extra=tuple(answer["headers"].items()))
+            answer = pattern_run(family, request)
             body = json.dumps(answer, ensure_ascii=False, sort_keys=True, allow_nan=False)
         except (ValueError, UnicodeError) as error:
             text = str(error)
@@ -10735,6 +12032,7 @@ def pattern_bridge(port: int = PATTERN_BRIDGE_PORT, allow_origins: Any = ()) -> 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _PatternBridgeHandler)
     server.daemon_threads = True
     server.allowed_origins = origins
+    server.mock_auth = MockAuthHandler()
     server.page = patterns_document(bridge=PATTERN_BRIDGE_PREFIX).encode("utf-8")
     return server
 
@@ -10777,30 +12075,17 @@ _STU_PNG_URI = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
 def studio_parse(text: str) -> Any:
     """JSON the way ``JSON.parse`` reads it: every number is a double (so ``9007199254740993`` is ``9007199254740992``), whole numbers up to 2**53 are integers, and NaN, Infinity or a
     number beyond the double range is refused."""
-    def constant(name: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {name}")
-
-    def number(raw: str) -> float:
-        value = float(raw)
-        if not math.isfinite(value):
-            raise ValueError("JSON number out of range")
-        return value
-
     def whole(raw: str) -> Any:
-        value = number(raw)
+        value = _json_finite_float(raw)
         return int(value) if abs(value) <= 2 ** 53 else value
     try:
-        return json.loads(text, parse_constant=constant, parse_float=number, parse_int=whole)
+        return json.loads(text, parse_constant=_json_nonfinite, parse_float=_json_finite_float, parse_int=whole)
     except RecursionError:
         raise ValueError("JSON nested too deeply") from None
 
 
 class StudioError(ValueError):
     """A scene, matrix or request the studio refuses; the text is core.js's (Japanese)."""
-
-
-def _stu_fail(message: str) -> None:
-    raise StudioError(message)
 
 
 def _stu_need(condition: Any, message: str) -> None:
@@ -10816,11 +12101,6 @@ def _stu_round(x: float) -> int:
 
 def _stu_num(value: Any, low: float, high: float) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
-
-
-def _stu_int(value: Any) -> bool:
-    """Number.isInteger of a JSON value (1.0 is the integer 1 in JavaScript)."""
-    return type(value) is int or (type(value) is float and math.isfinite(value) and value.is_integer())
 
 
 def _stu_color(value: Any) -> bool:
@@ -11022,7 +12302,7 @@ def studio_heat_color(value: Any, low: Any, high: Any, levels: Any = 0) -> str:
     if value is None:
         return "none"
     finite = lambda v: type(v) in (int, float) and math.isfinite(v)
-    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _stu_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
+    _stu_need(finite(value) and finite(low) and finite(high) and low <= high and _js_int(levels) and (levels == 0 or 2 <= levels <= 256), "色の範囲または段階数が不正です")
     levels = int(levels)
     t = 0.5 if high == low else max(0, min(1, (value - low) / (high - low)))
     if levels:
@@ -11093,7 +12373,7 @@ def studio_png_payload(data: Any) -> dict[str, Any]:
 def studio_validate(scene: Any) -> dict[str, Any]:
     """The scene if it is well formed (at most 100 layers and 4 MP), as a copy; otherwise a StudioError with core.js's text."""
     width, height = _stu_get(scene, "width"), _stu_get(scene, "height")
-    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _stu_int(width) and _stu_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
+    _stu_need(isinstance(scene, dict) and scene.get("schema") == STUDIO_SCHEMA and _js_int(width) and _js_int(height) and _stu_num(width, 64, 4096) and _stu_num(height, 64, 4096)
               and width * height <= 4194304 and _stu_color(scene.get("background")) and isinstance(scene.get("layers"), list) and len(scene["layers"]) <= 100,
               "シーンの形式・サイズが不正です（最大100レイヤー、4MP）")
     ids: set[str] = set()
@@ -11120,7 +12400,7 @@ def studio_validate(scene: Any) -> dict[str, Any]:
             _stu_need(isinstance(src, str) and _stu_len(src) <= 12000000 and _STU_PNG_URI.fullmatch(src) is not None, "画像は埋め込みPNGが必要です")
             image_bytes += len(src)
             _stu_need(image_bytes <= 20000000, "シーンの画像合計は20MB以下にしてください")
-            _stu_need(_stu_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _stu_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
+            _stu_need(_js_int(layer.get("cell")) and _stu_num(layer.get("cell"), 1, 512) and _js_int(layer.get("levels")) and _stu_num(layer.get("levels"), 2, 256), "モザイク設定が不正です")
             _stu_need(not _stu_defined(layer, "sampling") or layer["sampling"] in ("pixelated", "smooth"), "補間方式が不正です")
         elif kind == "heatmap":
             studio_matrix({"z": layer.get("z"), "x": layer.get("xlabels"), "y": layer.get("ylabels"), "zmin": layer.get("low"), "zmax": layer.get("high")})
@@ -11133,7 +12413,7 @@ def studio_validate(scene: Any) -> dict[str, Any]:
             studio_arrow_geometry(layer["w"], layer["h"], head, placement)
             _stu_need(not _stu_defined(layer, "headStyle") or layer["headStyle"] in ("triangle", "beginner"), "矢羽根の形が不正です")
         if kind == "clock":
-            _stu_need(_stu_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _stu_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
+            _stu_need(_js_int(layer.get("hour")) and _stu_num(layer.get("hour"), 0, 23) and _js_int(layer.get("minute")) and _stu_num(layer.get("minute"), 0, 59), "時計の時刻が不正です")
     return studio_clone(scene)
 
 
@@ -11141,8 +12421,8 @@ def studio_mosaic_rgba(data: Any, width: Any, height: Any, cell: Any, levels: An
     """Area means of the original's RGBA blocks (``cell`` pixels square, the partial blocks at the right and bottom kept): RGB weighted by alpha so hidden colors of transparent pixels do
     not tint opaque ones, then each channel cut into ``levels`` steps. Run it on the ORIGINAL each time: a mosaic of a mosaic does not give the detail back."""
     raw = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
-    _stu_need(_stu_int(width) and _stu_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
-              and _stu_int(cell) and 1 <= cell <= 512 and _stu_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
+    _stu_need(_js_int(width) and _js_int(height) and width >= 1 and height >= 1 and width * height <= 4194304 and len(raw) == width * height * 4
+              and _js_int(cell) and 1 <= cell <= 512 and _js_int(levels) and 2 <= levels <= 256, "モザイク入力が不正です")
     width, height, cell, levels = int(width), int(height), int(cell), int(levels)
     out = bytearray(len(raw))
     steps = levels - 1
@@ -11613,7 +12893,7 @@ def studio_workspace_history(text: Any) -> StudioHistory:
     _studio_workspace_size(text)
     record = studio_parse(text)
     _stu_need(isinstance(record, dict) and record.get("schema") == STUDIO_WORKSPACE_SCHEMA and isinstance(record.get("items"), list) and 1 <= len(record["items"]) <= 40
-              and _stu_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
+              and _js_int(record.get("index")) and 0 <= record["index"] < len(record["items"]), "作業履歴の形式が不正です")
     states = [studio_validate(item) for item in record["items"]]
     history = StudioHistory(states[0])
     history.items = states
@@ -11854,7 +13134,7 @@ def _studio_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> i
             payload = studio_png_payload(args.studio_base64.read_bytes())
             _studio_write(args.output, payload["dataUri"] if args.data_uri else payload["base64"], args.force)
     except (StudioError, ValueError, OSError, UnicodeError, ArithmeticError) as error:
-        print(f"invalid studio input: {error}", file=sys.stderr)
+        _say("⛔", f"invalid studio input: {error}")
         return 2
     return 0
 
@@ -14090,6 +15370,291 @@ export function bindCurl(root=document){return[...root.querySelectorAll("[data-u
 globalThis.webUiCurl={curlTokenize,parseCurl,maskCurl,bindCurl};
 if(typeof document!=="undefined")bindCurl();
 """
+CURL_SAMPLE = ('curl -X POST https://api.example.com/items -H "Authorization: Bearer abc" -H "Content-Type: application/json" '
+               '-d \'{"name":"demo"}\'')
+
+
+def curl_panel_html(sample: str = CURL_SAMPLE, *, heading_level: int = 2) -> str:
+    """The request-draft panel ``curl.js`` binds: a curl command is read in the page (never run or sent) and shown as JSON, credentials as ``***``."""
+    if not isinstance(sample, str) or len(sample) > 2000:
+        raise ValueError("the sample is a curl command of at most 2000 characters")
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 2
+    return (f'<section class="ui-panel" id="curl" data-ui-curl><h{level}>📋 Request draft (curl)</h{level}><p class="ui-muted">Paste a curl command: it is read in this '
+            'page and never run or sent. Credentials show as <code>***</code>; the body is shown as written, so do not paste real secrets. '
+            'Python reads it the same way (<code>web_ui.parse_curl</code>).</p>'
+            f'<textarea class="ui-input" data-curl-input rows="4" aria-label="curl command">{escape(sample)}</textarea> '
+            '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>')
+
+
+# --- Source panel: a name (one GET) or pasted JSON, read through a declarative spec into tables -----------------------------------
+SOURCE_LIMIT = 2 * 1024 * 1024
+_SOURCE_PLACEHOLDER = re.compile(r"\{([a-z0-9_.]+)\}")
+
+
+def source_spec(spec: Any) -> dict[str, Any]:
+    """Check a source-panel spec (a consumer's JSON) and return it. The consumer keeps the protocol: only the shape is checked here.
+
+    ``id`` (panel id), ``label``, ``name`` (regex a trimmed lower-cased name must match), ``url`` (https, one ``{name}``), ``title`` (``{key}`` takes a
+    top-level value), ``tables``: each ``{headers, rows: [[cell...]]}`` (one row) or ``{headers, each: path, sort?, cells: [cell...]}`` (one row per
+    list item). A cell is ``{key: path}`` (dot path, objects only) plus at most one of ``pick``/``sort``/``sep`` (a list: sort by number, pick a path,
+    join with ``sep``, default ``", "``), ``div`` (a number divided; one decimal when whole) or ``yes`` (a boolean shown as this text, else empty)."""
+    if not isinstance(spec, dict):
+        raise ValueError("a source spec is an object")
+    known = {"id", "label", "heading", "note", "placeholder", "name", "url", "title", "tables", "limit", "error", "missing"}
+    if set(spec) - known or not {"id", "label", "name", "url", "title", "tables"} <= set(spec):
+        raise ValueError("a source spec has id, label, name, url, title and tables (and heading, note, placeholder, limit, error, missing)")
+    text = lambda key, size: isinstance(spec.get(key, ""), str) and len(spec.get(key, "")) <= size  # noqa: E731
+    if not (isinstance(spec["id"], str) and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", spec["id"])):
+        raise ValueError("id is a lower-case token")
+    if not all(text(k, 400) for k in ("label", "heading", "note", "placeholder", "title", "error", "missing")):
+        raise ValueError("source spec texts are at most 400 characters")
+    pattern = spec["name"]
+    if not (isinstance(pattern, str) and 0 < len(pattern) <= 200 and pattern.isascii() and pattern.isprintable() and "(?" not in pattern):
+        raise ValueError("name is a plain ASCII pattern of at most 200 characters, without groups that start with (?")
+    try:
+        re.compile(pattern, re.ASCII)
+    except re.error:
+        raise ValueError("name is not a valid pattern") from None
+    url = spec["url"]
+    if not (isinstance(url, str) and url.startswith("https://") and url.count("{name}") == 1 and not re.search(r"[\s\\]", url)
+            and "@" not in url.split("/", 3)[2]):
+        raise ValueError("url is an https address with one {name} and no credentials")
+    limit = spec.get("limit", SOURCE_LIMIT)
+    if type(limit) is not int or not 1 <= limit <= SOURCE_LIMIT:
+        raise ValueError("limit is 1 to 2 MiB")
+    tables = spec["tables"]
+    if not (isinstance(tables, list) and 1 <= len(tables) <= 8):
+        raise ValueError("tables are one to eight")
+    for table in tables:
+        if not isinstance(table, dict) or not (isinstance(table.get("headers"), list) and 1 <= len(table["headers"]) <= 12
+                                               and all(isinstance(h, str) for h in table["headers"])):
+            raise ValueError("a table has one to twelve text headers")
+        each = "each" in table
+        if each == ("rows" in table) or set(table) - ({"headers", "each", "sort", "cells"} if each else {"headers", "rows"}):
+            raise ValueError("a table is {headers, rows} or {headers, each, sort?, cells}")
+        if each and not (isinstance(table["each"], str) and table["each"] and isinstance(table["cells"], list)):
+            raise ValueError("each is a path and cells a list")
+        rows = [table["cells"]] if each else table["rows"]
+        if not (isinstance(rows, list) and len(rows) <= 64 and all(isinstance(r, list) and len(r) == len(table["headers"]) for r in rows)):
+            raise ValueError("every row has one cell per header")
+        for row in rows:
+            for cell in row:
+                if not (isinstance(cell, dict) and isinstance(cell.get("key"), str) and cell["key"] and set(cell) <= {"key", "pick", "sort", "sep", "div", "yes"}):
+                    raise ValueError("a cell is {key, pick?, sort?, sep?, div?, yes?}")
+                if "div" in cell and (type(cell["div"]) not in (int, float) or cell["div"] == 0):
+                    raise ValueError("div is a nonzero number")
+    return spec
+
+
+def source_name(spec: Any, text: Any) -> str:
+    """The name to ask for: ASCII-blank-trimmed, lower-cased, and the whole of it must match ``spec["name"]`` (a pattern both Python and JavaScript read the same); else empty."""
+    value = str(text if text is not None else "").strip(" \t\n\r\f\v").lower()  # ASCII blanks only: JavaScript's trim() would differ
+    return value if re.fullmatch(source_spec(spec)["name"], value, re.ASCII) else ""
+
+
+def source_url(spec: Any, name: Any) -> str:
+    """The one address a name is read from, the name percent-encoded as encodeURIComponent does (empty for an invalid name)."""
+    clean = source_name(spec, name)
+    return source_spec(spec)["url"].replace("{name}", quote(clean, safe="!'()*")) if clean else ""  # as encodeURIComponent
+
+
+def _source_get(data: Any, path: str) -> Any:
+    for part in path.split("."):
+        if not (isinstance(data, dict) and part in data):
+            raise ValueError("missing " + path)
+        data = data[part]
+    return data
+
+
+def _source_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):  # a whole 1.0 reads as the integer 1, as JavaScript reads it
+        return str(int(value)) if value.is_integer() else str(value)
+    raise ValueError("not a scalar")
+
+
+def _source_number(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("not a number")
+    return value
+
+
+def _source_cell(cell: dict[str, Any], context: Any) -> str:
+    value = _source_get(context, cell["key"])
+    if isinstance(value, list):
+        if "sort" in cell:
+            value = sorted(value, key=lambda row: _source_number(_source_get(row, cell["sort"])))
+        return cell.get("sep", ", ").join(_source_scalar(_source_get(row, cell["pick"]) if "pick" in cell else row) for row in value)
+    if "yes" in cell:
+        if not isinstance(value, bool):
+            raise ValueError("not a boolean")
+        return cell["yes"] if value else ""
+    if "div" in cell:
+        result = _source_number(value) / cell["div"]
+        return f"{result:.1f}" if result == int(result) else str(result)
+    return _source_scalar(value)
+
+
+def source_extract(spec: Any, source: Any) -> dict[str, Any]:
+    """``{title, tables: [{headers, rows}]}`` from JSON text (or an object) through ``spec``; ValueError says what was wrong."""
+    spec = source_spec(spec)
+    data = source
+    if isinstance(source, str):
+        limit = spec.get("limit", SOURCE_LIMIT)
+        if len(source.encode("utf-8")) > limit:
+            raise ValueError(f"source exceeds {limit} bytes")
+        try:
+            data = json.loads(source)
+        except (ValueError, RecursionError):  # a pathologically deep document is refused like any non-JSON
+            raise ValueError("source is not JSON") from None
+    try:
+        title = _SOURCE_PLACEHOLDER.sub(lambda m: _source_scalar(_source_get(data, m.group(1))), spec["title"])
+        tables = []
+        for table in spec["tables"]:
+            if "each" in table:
+                items = _source_get(data, table["each"])
+                if not isinstance(items, list):
+                    raise ValueError("not a list")
+                if "sort" in table:
+                    items = sorted(items, key=lambda row: _source_number(_source_get(row, table["sort"])))
+                rows = [[_source_cell(cell, item) for cell in table["cells"]] for item in items]
+            else:
+                rows = [[_source_cell(cell, data) for cell in row] for row in table["rows"]]
+            tables.append({"headers": list(table["headers"]), "rows": rows})
+    except (ValueError, TypeError, RecursionError):
+        raise ValueError(spec.get("error") or "not the expected response") from None
+    return {"title": title, "tables": tables}
+
+
+def source_markdown(extract: dict[str, Any]) -> str:
+    """The Markdown of an extract: a ``#`` title, then one pipe table per table (``|`` escaped, line breaks flattened)."""
+    cell = lambda value: str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")  # noqa: E731
+    tables = ["| " + " | ".join(cell(h) for h in t["headers"]) + " |\n| " + " | ".join("---" for _ in t["headers"]) + " |\n"
+              + "".join("| " + " | ".join(cell(c) for c in row) + " |\n" for row in t["rows"]) for t in extract["tables"]]
+    return "# " + str(extract["title"]).replace("\r", " ").replace("\n", " ") + "\n\n" + "\n".join(tables)
+
+
+def source_panel_html(spec: Any, *, heading_level: int = 2) -> str:
+    """The panel ``source.js`` binds: Fetch asks one address once, Open shows it, and pasted JSON is read with no network. The spec rides in an attribute."""
+    spec = source_spec(spec)
+    level = heading_level if type(heading_level) is int and 1 <= heading_level <= 6 else 2
+    pid = spec["id"]
+    data = escape(json.dumps(spec, ensure_ascii=False, separators=(",", ":")), quote=True)
+    return (f'<section class="ui-panel ui-source" id="source-{pid}" data-ui-source data-source-spec="{data}">'
+            f'<h{level}>{escape(spec.get("heading") or spec["label"])}</h{level}>'
+            + (f'<p class="ui-muted">{escape(spec["note"])}</p>' if spec.get("note") else "")
+            + f'<label for="{pid}-name">{escape(spec["label"])}</label><div class="ui-source-row">'
+            f'<input class="ui-input" id="{pid}-name" data-source-name placeholder="{escape(spec.get("placeholder", ""), quote=True)}" autocomplete="off"> '
+            '<button class="ui-button" type="button" data-source-fetch>Fetch</button> '
+            '<button class="ui-button" type="button" data-source-open>Open JSON</button></div>'
+            f'<label for="{pid}-text">Pasted JSON</label><textarea class="ui-input" id="{pid}-text" data-source-text rows="8"></textarea>'
+            '<button class="ui-button" type="button" data-source-extract>Extract</button>'
+            '<p class="ui-muted" role="status" aria-live="polite" data-source-status></p>'
+            '<p class="ui-source-error" role="alert" data-source-error hidden></p><pre class="ui-output" data-source-output hidden></pre></section>')
+
+
+_CSS["source.css"] = ("@layer components{.ui-source label{display:block;margin:8px 0 4px}.ui-source-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}"
+                      ".ui-source-row .ui-input{flex:1 1 192px;min-width:0}.ui-source>textarea.ui-input{width:100%;box-sizing:border-box;margin-bottom:8px}"
+                      ".ui-source-error{margin:8px 0;color:var(--ui-danger);font-weight:600;overflow-wrap:anywhere}.ui-source-error[hidden],.ui-source .ui-output[hidden]{display:none}}")
+
+_JS["source.js"] = r"""/** web-ui source: read a name (one GET per press, never retried) or JSON you pasted, through a consumer's declarative spec, in the page. Nothing is stored. Python (web_ui.source_*) is the reference; this must agree. */
+(function(root,factory){
+  const api=factory();
+  if(typeof module==='object' && module.exports) module.exports=api;
+  else {root.webUiSource=api; if(root.document){const start=()=>api.bindSources(root);if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});else start();}}
+})(typeof globalThis==='undefined'?this:globalThis,function(){
+  'use strict';
+  const LIMIT=2*1024*1024,fail=m=>{throw Error(m);};
+  const bytes=t=>typeof TextEncoder==='function'?new TextEncoder().encode(t).length:t.length;
+  function sourceName(spec,text){const t=String(text??'').replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g,'').toLowerCase();return new RegExp('^(?:'+spec.name+')$').test(t)?t:'';}
+  function sourceUrl(spec,name){const n=sourceName(spec,name);return n?spec.url.replace('{name}',()=>encodeURIComponent(n)):'';}
+  const get=(data,path)=>{for(const part of path.split('.')){if(data!==null&&typeof data==='object'&&!Array.isArray(data)&&Object.prototype.hasOwnProperty.call(data,part))data=data[part];else fail('missing '+path);}return data;};
+  const scalar=v=>{if(typeof v==='string')return v;if(typeof v==='boolean')return v?'true':'false';if(v===null)return '';if(typeof v==='number')return String(v);return fail('not a scalar');};
+  const number=v=>typeof v==='number'?v:fail('not a number');
+  function cell(c,ctx){
+    let v=get(ctx,c.key);
+    if(Array.isArray(v)){if('sort' in c)v=v.slice().sort((a,b)=>number(get(a,c.sort))-number(get(b,c.sort)));return v.map(r=>scalar('pick' in c?get(r,c.pick):r)).join('sep' in c?c.sep:', ');}
+    if('yes' in c){if(typeof v!=='boolean')fail('not a boolean');return v?c.yes:'';}
+    if('div' in c){const r=number(v)/c.div;return Number.isInteger(r)?r.toFixed(1):String(r);}
+    return scalar(v);
+  }
+  function sourceExtract(spec,input){
+    let data=input;const limit=spec.limit||LIMIT;
+    if(typeof input==='string'){
+      if(bytes(input)>limit)fail('source exceeds '+limit+' bytes');
+      try{data=JSON.parse(input);}catch{fail('source is not JSON');}
+    }
+    try{
+      const title=spec.title.replace(/\{([a-z0-9_.]+)\}/g,(m,k)=>scalar(get(data,k)));
+      const tables=spec.tables.map(t=>{
+        let rows;
+        if(t.each){let items=get(data,t.each);if(!Array.isArray(items))fail('not a list');if('sort' in t)items=items.slice().sort((a,b)=>number(get(a,t.sort))-number(get(b,t.sort)));rows=items.map(i=>t.cells.map(c=>cell(c,i)));}
+        else rows=t.rows.map(r=>r.map(c=>cell(c,data)));
+        return {headers:t.headers.slice(),rows};
+      });
+      return {title,tables};
+    }catch{fail(spec.error||'not the expected response');}
+  }
+  const esc=s=>String(s).replace(/\|/g,'\\|').replace(/[\r\n]/g,' ');
+  function sourceMarkdown(x){
+    return '# '+String(x.title).replace(/[\r\n]/g,' ')+'\n\n'+x.tables.map(t=>'| '+t.headers.map(esc).join(' | ')+' |\n| '+t.headers.map(()=>'---').join(' | ')+' |\n'+t.rows.map(r=>'| '+r.map(esc).join(' | ')+' |\n').join('')).join('\n');
+  }
+  function loadSource(spec,name,fetchImpl){
+    const url=sourceUrl(spec,name);
+    if(!url)return Promise.resolve({ok:false,error:spec.missing||'Enter a valid name.'});
+    return Promise.resolve().then(()=>fetchImpl(url,{headers:{Accept:'application/json'},redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'})).then(r=>{
+      if(r.status===404)return {ok:false,error:'not found: '+sourceName(spec,name)};
+      if(!r.ok)return {ok:false,error:'HTTP '+r.status};
+      return r.text().then(t=>{try{return {ok:true,extract:sourceExtract(spec,t)};}catch(e){return {ok:false,error:e.message};}});
+    }).catch(e=>({ok:false,error:'could not fetch ('+((e&&e.message)||'network error')+'). Open the JSON, copy it and paste it below instead.'}));
+  }
+  const handles=new WeakMap();
+  function bindSource(panel,{window:win=globalThis.window,fetch:fetchImpl}={}){
+    if(handles.has(panel))return handles.get(panel);
+    const spec=JSON.parse(panel.getAttribute('data-source-spec'));
+    const q=n=>panel.querySelector('[data-source-'+n+']');
+    const els={name:q('name'),fetch:q('fetch'),open:q('open'),text:q('text'),extract:q('extract'),status:q('status'),error:q('error'),output:q('output')};
+    const send=fetchImpl||(win&&typeof win.fetch==='function'?win.fetch.bind(win):null);
+    const show=(result,origin)=>{
+      els.error.hidden=result.ok;els.output.hidden=!result.ok;
+      els.error.textContent=result.ok?'':result.error;
+      els.output.textContent=result.ok?sourceMarkdown(result.extract):'';
+      els.status.textContent=result.ok?result.extract.title+' — '+origin:'';
+      return result;
+    };
+    els.open.addEventListener('click',()=>{
+      const url=sourceUrl(spec,els.name.value);
+      if(!url)return show({ok:false,error:spec.missing||'Enter a valid name.'});
+      win.open(url,'_blank','noopener,noreferrer');els.status.textContent='Opened '+url+' — copy its JSON and paste it below.';return null;
+    });
+    els.fetch.addEventListener('click',()=>{
+      if(!send)return show({ok:false,error:'fetch is not available; paste the JSON instead'});
+      if(els.fetch.disabled)return null;
+      els.fetch.disabled=true;els.status.textContent='Fetching\u2026';
+      return loadSource(spec,els.name.value,send).then(r=>{els.fetch.disabled=false;return show(r,'fetched');});
+    });
+    els.extract.addEventListener('click',()=>{
+      const text=String(els.text.value||'').trim();
+      let result;
+      if(!text)result={ok:false,error:'Paste the JSON first.'};
+      else try{result={ok:true,extract:sourceExtract(spec,text)};}catch(e){result={ok:false,error:e.message};}
+      return show(result,'from pasted JSON');
+    });
+    const handle={spec,show};handles.set(panel,handle);return handle;
+  }
+  function bindSources(win){return [...win.document.querySelectorAll('[data-ui-source]')].map(p=>bindSource(p,{window:win}));}
+  return {sourceName,sourceUrl,sourceExtract,sourceMarkdown,loadSource,bindSource,bindSources};
+});
+"""
+
+
 _STUB_FILL_JS = ('const fill=(t,q)=>typeof t==="string"?t.replaceAll("$input",()=>q):Array.isArray(t)?t.map(x=>fill(x,q)):'
                  't&&typeof t==="object"?Object.fromEntries(Object.entries(t).map(([k,v])=>[k,fill(v,q)])):t;\n')
 
@@ -15030,12 +16595,6 @@ IRONY_CARDS = (
 )
 
 
-def _play_int(value: Any, label: str, low: int, high: int) -> int:
-    if type(value) is not int or not low <= value <= high:
-        raise ValueError(f"{label} must be an integer from {low} to {high}")
-    return value
-
-
 def play_random(state: int) -> int:
     """xorshift32 word, identical in Python and JS; zero is mapped to a fixed nonzero state."""
     x = state or 0x6D2B79F5
@@ -15052,7 +16611,7 @@ def counter_garden(seed: int, actions: list[int]) -> dict[str, Any]:
     farming); the resulting bit mask and specimens can be reused as test inputs.
     Undo is replay with the last action removed, reset is replay with no actions.
     """
-    _play_int(seed, "seed", 0, 0xFFFFFFFF)
+    _bounded_int(seed, "seed", 0, 0xFFFFFFFF)
     if not isinstance(actions, list) or len(actions) > 4096:
         raise ValueError("actions must be a list of at most 4096 steps")
     state, value, cells, history = seed, 0, {}, [0]
@@ -15076,8 +16635,8 @@ def counter_garden(seed: int, actions: list[int]) -> dict[str, Any]:
 
 def irony_round(seed: int, round_index: int) -> dict[str, Any]:
     """A shuffled six-card deck, three shuffled choices, no adjacent repeated cards across decks."""
-    _play_int(seed, "seed", 0, 0xFFFFFFFF)
-    _play_int(round_index, "round", 0, 4095)
+    _bounded_int(seed, "seed", 0, 0xFFFFFFFF)
+    _bounded_int(round_index, "round", 0, 4095)
     state, previous, order = seed, None, []
     for _ in range(round_index // len(IRONY_CARDS) + 1):
         order = list(range(len(IRONY_CARDS)))
@@ -15099,7 +16658,7 @@ def irony_round(seed: int, round_index: int) -> dict[str, Any]:
 
 def studio_audio_plan(text: str, bpm: int = 120, note_unit: int = 8) -> list[dict[str, Any]]:
     """Bounded monophonic score in integer microseconds; no audio dependency."""
-    _play_int(bpm, "bpm", 30, 300)
+    _bounded_int(bpm, "bpm", 30, 300)
     if type(note_unit) is not int or note_unit not in (4, 8):
         raise ValueError("note_unit must be 4 or 8")
     if not isinstance(text, str) or len(text) > 8192:
@@ -15122,7 +16681,7 @@ def studio_audio_plan(text: str, bpm: int = 120, note_unit: int = 8) -> list[dic
 
 def progression_notes(key: str, progression: str, *, minor: bool = False, octave: int = 4) -> list[str]:
     """Arpeggiate the studio's computed chords into explicit octave-bearing notes."""
-    _play_int(octave, "octave", 0, 7)
+    _bounded_int(octave, "octave", 0, 7)
     if not isinstance(progression, str) or len(progression) > 1024:
         raise ValueError("progression must be at most 1024 characters")
     chords = convert_progression(key, progression, minor=minor)
@@ -15163,7 +16722,7 @@ def timeline_events(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         zone = row["zone"]
         if not isinstance(zone, str) or not re.fullmatch(r"[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)*", zone):
             raise ValueError("zone must be an IANA name")
-        millis = _play_int(row["utc_ms"], "utc_ms", 1577836800000, 2208988799999)
+        millis = _bounded_int(row["utc_ms"], "utc_ms", 1577836800000, 2208988799999)
         try:
             local = dt.datetime.fromtimestamp(millis / 1000, dt.timezone.utc).astimezone(ZoneInfo(zone))
         except ZoneInfoNotFoundError as exc:
@@ -15194,7 +16753,7 @@ def timeline_wall_to_utc(wall: str, zone: str, *, fold: int | None = None) -> in
     if len(candidates) == 2 and fold is None:
         raise ValueError("this local time occurs twice; choose fold=0 or fold=1")
     millis = candidates[fold or 0] if len(candidates) == 2 else candidates[0]
-    _play_int(millis, "utc_ms", 1577836800000, 2208988799999)
+    _bounded_int(millis, "utc_ms", 1577836800000, 2208988799999)
     return millis
 
 
@@ -15582,7 +17141,204 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
 
 # Synthetic consumer data, not fetched research results or a second source of
 # repository metadata. Consumers adapt their existing source of truth to this.
+# Real places in miniature (the `place` floor): latitude and longitude in, tiles out. The coordinates are approximate (about 100 m, read off public
+# maps), which is all a miniature needs; the point is where things stand relative to each other, so nothing here is a facility's exact position.
+def _pt(id: str, label: str, lat: float, lon: float, category: str, body: str = "", flip: str = "", sign: str = "") -> dict[str, Any]:
+    return {"id": id, "label": label, "lat": lat, "lon": lon, "category": category, "body": body, **({"flip": flip} if flip else {}),
+            **({"sign": sign} if sign else {})}
+
+
+_TOKYO_POINTS = [
+    _pt("marunouchi-c", "丸の内中央口", 35.68134, 139.7665, "exit", "東京駅の丸の内側、ちょうど真ん中の出入口です。"),
+    _pt("marunouchi-n", "丸の内北口", 35.6824, 139.7664, "exit", "東京駅の丸の内側、北の出入口です。"),
+    _pt("marunouchi-s", "丸の内南口", 35.68025, 139.76625, "exit", "東京駅の丸の内側、南の出入口です。"),
+    _pt("yaesu-c", "八重洲中央口", 35.6813, 139.7686, "exit", "東京駅の八重洲側、ちょうど真ん中の出入口です。"),
+    _pt("yaesu-n", "八重洲北口", 35.6825, 139.7685, "exit", "東京駅の八重洲側、北の出入口です。"),
+    _pt("yaesu-s", "八重洲南口", 35.6801, 139.7684, "exit", "東京駅の八重洲側、南の出入口です。"),
+    _pt("otemachi", "大手町", 35.6867, 139.7631, "station", "東京駅の北西、歩いて行ける駅です。"),
+    _pt("nijubashimae", "二重橋前", 35.6804, 139.7612, "station", "東京駅の西、丸の内の駅です。"),
+    _pt("yurakucho", "有楽町", 35.6751, 139.7631, "station", "東京駅の南、ひと駅となりです。"),
+    _pt("hibiya", "日比谷", 35.674, 139.7598, "station", "有楽町の西にある駅です。"),
+    _pt("ginza", "銀座", 35.6719, 139.7639, "station", "有楽町の南にある駅です。"),
+    _pt("ginza-itchome", "銀座一丁目", 35.6745, 139.7672, "station", "銀座の北東にある駅です。"),
+    _pt("kyobashi", "京橋", 35.6768, 139.7702, "station", "東京駅の南東、八重洲のむこうの駅です。"),
+    _pt("nihombashi", "日本橋", 35.682, 139.7743, "station", "東京駅の東、八重洲のむこうの駅です。"),
+    _pt("mitsukoshimae", "三越前", 35.6868, 139.7737, "station", "日本橋の北にある駅です。"),
+    _pt("shin-nihombashi", "新日本橋", 35.6898, 139.7741, "station", "三越前の北にある駅です。"),
+    _pt("kanda", "神田", 35.6918, 139.7709, "station", "東京駅の北、ひと駅となりです。"),
+    _pt("takebashi", "竹橋", 35.6906, 139.7586, "station", "大手町の北西にある駅です。"),
+    _pt("shimbashi", "新橋", 35.6663, 139.7583, "station", "有楽町の南、ふた駅となりです。"),
+    _pt("concourse", "◀ 丸の内 | 八重洲 ▶", 35.68075, 139.76755, "sign", "東京駅の、丸の内口と八重洲口のあいだです。", "", "led"),
+    _pt("north-south", "▲ 神田 | 有楽町 ▼", 35.6838, 139.7676, "sign", "東京駅の北と南、となりの駅の方向です。", "", "led"),
+]
+_TOKYO_LINKS = [["marunouchi-n", "marunouchi-c"], ["marunouchi-c", "marunouchi-s"], ["yaesu-n", "yaesu-c"], ["yaesu-c", "yaesu-s"], ["marunouchi-c", "yaesu-c"],
+    ["otemachi", "marunouchi-n"], ["takebashi", "otemachi"], ["nijubashimae", "marunouchi-s"], ["yurakucho", "marunouchi-s"], ["hibiya", "yurakucho"],
+    ["ginza", "yurakucho"], ["shimbashi", "ginza"], ["ginza-itchome", "yaesu-s"], ["kyobashi", "yaesu-s"], ["nihombashi", "yaesu-c"],
+    ["mitsukoshimae", "nihombashi"], ["shin-nihombashi", "mitsukoshimae"], ["kanda", "shin-nihombashi"]]
+_LONDON_POINTS = [
+    _pt("kings-cross", "キングス・クロス", 51.5309, -0.1233, "terminus", "北へ向かう列車が出る大きな駅です。"),
+    _pt("st-pancras", "セント・パンクラス", 51.5322, -0.1269, "terminus", "海をわたる列車も出る、赤れんがの駅です。"),
+    _pt("euston", "ユーストン", 51.5282, -0.1337, "terminus", "北西へ向かう列車の駅です。"),
+    _pt("paddington", "パディントン", 51.5154, -0.1755, "terminus", "西へ向かう列車の駅です。"),
+    _pt("marylebone", "マリルボーン", 51.5225, -0.1631, "terminus", "こぢんまりとした北西の駅です。"),
+    _pt("liverpool-street", "リバプール・ストリート", 51.5178, -0.0823, "terminus", "東へ向かう列車の駅です。"),
+    _pt("fenchurch-street", "フェンチャーチ・ストリート", 51.5115, -0.0789, "terminus", "東の海辺へ向かう列車の駅です。"),
+    _pt("cannon-street", "キャノン・ストリート", 51.5113, -0.0904, "terminus", "川の北岸にある、南東へ向かう駅です。"),
+    _pt("london-bridge", "ロンドン・ブリッジ", 51.5052, -0.0864, "terminus", "川の南岸にある、南へ向かう駅です。"),
+    _pt("blackfriars", "ブラックフライアーズ", 51.512, -0.103, "terminus", "橋の上に駅がある、川をまたぐ駅です。"),
+    _pt("waterloo", "ウォータールー", 51.5031, -0.1132, "terminus", "川の南岸にある、いちばん大きな駅です。"),
+    _pt("charing-cross", "チャリング・クロス", 51.508, -0.1247, "terminus", "川の北岸にある、南東へ向かう駅です。"),
+    _pt("victoria", "ヴィクトリア", 51.4952, -0.1441, "terminus", "南へ向かう列車の駅です。"),
+    _pt("edgware-road", "エッジウェア・ロード", 51.5199, -0.1679, "station", "パディントンとマリルボーンの間の駅です。"),
+    _pt("baker-street", "ベイカー・ストリート", 51.5226, -0.1571, "station", "マリルボーンのとなりの駅です。"),
+    _pt("warren-street", "ウォーレン・ストリート", 51.5247, -0.1384, "station", "ユーストンのとなりの駅です。"),
+    _pt("angel", "エンジェル", 51.5322, -0.1058, "station", "キングス・クロスの東のとなりの駅です。"),
+    _pt("russell-square", "ラッセル・スクエア", 51.523, -0.1244, "station", "キングス・クロスの南のとなりの駅です。"),
+    _pt("farringdon", "ファリンドン", 51.5203, -0.1053, "station", "キングス・クロスの南東のとなりの駅です。"),
+    _pt("moorgate", "ムーアゲート", 51.5186, -0.0886, "station", "リバプール・ストリートの西のとなりの駅です。"),
+    _pt("aldgate", "オールドゲート", 51.5143, -0.0755, "station", "リバプール・ストリートの南東のとなりの駅です。"),
+    _pt("tower-hill", "タワー・ヒル", 51.5098, -0.0766, "station", "フェンチャーチ・ストリートのとなりの駅です。"),
+    _pt("bank", "バンク", 51.5133, -0.0886, "station", "キャノン・ストリートのとなりの駅です。"),
+    _pt("monument", "モニュメント", 51.5108, -0.0863, "station", "キャノン・ストリートの東のとなりの駅です。"),
+    _pt("borough", "ボロー", 51.5011, -0.0943, "station", "ロンドン・ブリッジの南西のとなりの駅です。"),
+    _pt("st-pauls", "セント・ポールズ", 51.5146, -0.0973, "station", "ブラックフライアーズの北東のとなりの駅です。"),
+    _pt("temple", "テンプル", 51.5111, -0.1141, "station", "ブラックフライアーズの西のとなりの駅です。"),
+    _pt("southwark", "サザーク", 51.504, -0.1052, "station", "川の南、ウォータールーの東のとなりの駅です。"),
+    _pt("lambeth-north", "ランベス・ノース", 51.4991, -0.1115, "station", "ウォータールーの南のとなりの駅です。"),
+    _pt("embankment", "エンバンクメント", 51.5074, -0.1223, "station", "チャリング・クロスのとなりの駅です。"),
+    _pt("westminster", "ウェストミンスター", 51.501, -0.1254, "station", "チャリング・クロスの南のとなりの駅です。"),
+    _pt("green-park", "グリーン・パーク", 51.5067, -0.1428, "station", "ヴィクトリアの北のとなりの駅です。"),
+    _pt("pimlico", "ピムリコ", 51.4893, -0.1334, "station", "ヴィクトリアの南東のとなりの駅です。"),
+    _pt("big-ben", "ビッグ・ベン", 51.5007, -0.1246, "sight", "川のほとりに立つ大きな時計塔です。"),
+    _pt("westminster-abbey", "ウェストミンスター寺院", 51.4994, -0.1273, "sight", "国の儀式が行われてきた大きな教会です。"),
+    _pt("london-eye", "ロンドン・アイ", 51.5033, -0.1195, "sight", "川のそばの大きな観覧車です。"),
+    _pt("buckingham", "バッキンガム宮殿", 51.5014, -0.1419, "sight", "王室の住まいの宮殿です。"),
+    _pt("trafalgar-square", "トラファルガー広場", 51.508, -0.1281, "sight", "噴水と像のある大きな広場です。"),
+    _pt("piccadilly-circus", "ピカデリー・サーカス", 51.51, -0.1347, "sight", "光る看板がならぶ交差点です。"),
+    _pt("british-museum", "大英博物館", 51.5194, -0.127, "sight", "世界中の品々を集めた博物館です。"),
+    _pt("st-pauls-cathedral", "セント・ポール大聖堂", 51.5138, -0.0984, "sight", "大きなドームをのせた大聖堂です。"),
+    _pt("the-shard", "ザ・シャード", 51.5045, -0.0865, "sight", "とがった形の高いビルです。"),
+    _pt("tower-bridge", "タワー・ブリッジ", 51.5055, -0.0754, "sight", "川にかかる、二つの塔のある橋です。"),
+    _pt("downing-street", "首相官邸", 51.5034, -0.1276, "famous", "首相の仕事場と住まいがある通りです。"),
+    _pt("scotland-yard", "警視庁", 51.5012, -0.1229, "famous", "ロンドンの警察の本部です。"),
+    _pt("bank-of-england", "イングランド銀行", 51.5142, -0.0885, "famous", "国の中央銀行です。"),
+    _pt("old-bailey", "中央刑事裁判所", 51.5156, -0.1021, "famous", "大きな裁判が開かれる裁判所です。"),
+    _pt("bbc", "BBC放送会館", 51.5185, -0.1439, "famous", "放送局の本拠地です。"),
+    _pt("nogard", "nogard", 51.5024, -0.1118, "sign", "うしろから読んでみて。", "🐉", "wood"),
+    _pt("mind-the-gap", "mind the gap", 51.4958, -0.1445, "sign", "駅のホームでよく聞く言葉です。", "", "led"),
+    _pt("platform", "◀ 北 | 南 ▶", 51.5290, -0.1270, "sign", "キングス・クロスとセント・パンクラスの前です。", "", "led"),
+]
+_LONDON_LINKS = [["paddington", "edgware-road"], ["marylebone", "edgware-road"], ["marylebone", "baker-street"], ["euston", "warren-street"], ["kings-cross",
+    "euston"], ["kings-cross", "st-pancras"], ["kings-cross", "russell-square"], ["kings-cross", "angel"], ["farringdon", "kings-cross"],
+    ["liverpool-street", "moorgate"], ["liverpool-street", "aldgate"], ["fenchurch-street", "tower-hill"], ["fenchurch-street", "aldgate"],
+    ["cannon-street", "bank"], ["cannon-street", "monument"], ["london-bridge", "borough"], ["london-bridge", "monument"], ["blackfriars", "temple"],
+    ["blackfriars", "st-pauls"], ["blackfriars", "southwark"], ["waterloo", "lambeth-north"], ["waterloo", "southwark"], ["waterloo",
+    "charing-cross"], ["charing-cross", "embankment"], ["charing-cross", "westminster"], ["victoria", "green-park"], ["victoria", "pimlico"],
+    ["moorgate", "bank"]]
+_THAMES = {"line": [[51.4852, -0.1495], [51.4875, -0.127], [51.4945, -0.123], [51.5008, -0.1219], [51.5062, -0.1198], [51.5086, -0.1169], [51.5099, -0.1043], [51.5095, -0.0985], [51.5088, -0.0937], [51.5079, -0.0877], [51.5055, -0.0754], [51.504, -0.06]], "width": 2}
+
+_PARIS_POINTS = [
+    _pt("gare-du-nord", "パリ北駅", 48.8809, 2.3553, "terminus", "北へ向かう列車の大きな駅です。"),
+    _pt("gare-de-lest", "パリ東駅", 48.8768, 2.3592, "terminus", "東へ向かう列車の駅です。"),
+    _pt("saint-lazare", "サン・ラザール駅", 48.8763, 2.3258, "terminus", "西へ向かう列車の駅です。"),
+    _pt("gare-de-lyon", "リヨン駅", 48.8443, 2.3736, "terminus", "南東へ向かう列車の駅です。"),
+    _pt("austerlitz", "オステルリッツ駅", 48.8421, 2.3652, "terminus", "川の南岸にある、南西へ向かう駅です。"),
+    _pt("montparnasse", "モンパルナス駅", 48.8412, 2.3203, "terminus", "川の南にある、西へ向かう駅です。"),
+    _pt("poissonniere", "ポワソニエール", 48.8772, 2.3492, "station", "北駅の西のとなりの駅です。"),
+    _pt("barbes", "バルベス・ロシュシュアール", 48.8838, 2.3498, "station", "北駅の北西のとなりの駅です。"),
+    _pt("chateau-deau", "シャトー・ドー", 48.8737, 2.3552, "station", "東駅の南のとなりの駅です。"),
+    _pt("louis-blanc", "ルイ・ブラン", 48.8812, 2.3649, "station", "東駅の北東のとなりの駅です。"),
+    _pt("havre-caumartin", "アーヴル・コーマルタン", 48.8737, 2.3282, "station", "サン・ラザール駅の南のとなりの駅です。"),
+    _pt("europe", "ヨーロッパ", 48.8788, 2.3225, "station", "サン・ラザール駅の北西のとなりの駅です。"),
+    _pt("bastille", "バスティーユ", 48.8531, 2.3692, "station", "リヨン駅の北西のとなりの駅です。"),
+    _pt("quai-de-la-rapee", "ケ・ド・ラ・ラペ", 48.8465, 2.366, "station", "リヨン駅とオステルリッツ駅のあいだの駅です。"),
+    _pt("saint-marcel", "サン・マルセル", 48.8383, 2.3603, "station", "オステルリッツ駅の南のとなりの駅です。"),
+    _pt("jussieu", "ジュシュー", 48.8463, 2.3548, "station", "オステルリッツ駅の北西のとなりの駅です。"),
+    _pt("edgar-quinet", "エドガー・キネ", 48.8409, 2.3252, "station", "モンパルナス駅の東のとなりの駅です。"),
+    _pt("vavin", "ヴァヴァン", 48.8421, 2.3282, "station", "モンパルナス駅の北東のとなりの駅です。"),
+    _pt("falguiere", "ファルギエール", 48.8444, 2.3098, "station", "モンパルナス駅の西のとなりの駅です。"),
+    _pt("eiffel", "エッフェル塔", 48.8584, 2.2945, "sight", "鉄でできた、パリでいちばん有名な塔です。"),
+    _pt("arc-de-triomphe", "凱旋門", 48.8738, 2.295, "sight", "大きな道が集まる円の真ん中の門です。"),
+    _pt("notre-dame", "ノートルダム大聖堂", 48.853, 2.3499, "sight", "川の中の島に立つ大きな教会です。"),
+    _pt("louvre", "ルーヴル美術館", 48.8606, 2.3376, "sight", "世界でいちばん人が来る美術館です。"),
+    _pt("sacre-coeur", "サクレ・クール寺院", 48.8867, 2.3431, "sight", "丘の上の白い教会です。"),
+    _pt("pompidou", "ポンピドゥー・センター", 48.8606, 2.3522, "sight", "配管が外に出ている、現代美術の建物です。"),
+    _pt("pantheon", "パンテオン", 48.8462, 2.3464, "sight", "ドームをのせた、偉人たちの霊廟です。"),
+    _pt("concorde", "コンコルド広場", 48.8656, 2.3212, "sight", "オベリスクが立つ大きな広場です。"),
+    _pt("opera-garnier", "オペラ座", 48.872, 2.3316, "sight", "金色の飾りが目立つ歌劇場です。"),
+    _pt("orsay", "オルセー美術館", 48.86, 2.3266, "sight", "古い駅舎を使った美術館です。"),
+    _pt("elysee", "エリゼ宮", 48.8704, 2.3167, "famous", "大統領の仕事場です。"),
+    _pt("assemblee", "国民議会", 48.8606, 2.3189, "famous", "国の法律を決める議会の建物です。"),
+    _pt("bourse", "ブルス", 48.8693, 2.3411, "famous", "むかし証券取引所だった建物です。"),
+    _pt("banque-de-france", "フランス銀行", 48.8614, 2.3416, "famous", "国の中央銀行です。"),
+    _pt("hotel-de-ville", "パリ市庁舎", 48.8566, 2.3522, "famous", "パリの市役所です。"),
+    _pt("to-lyon", "▶ Lyon", 48.8449, 2.3728, "sign", "リヨン駅から、リヨンへ向かう列車が出ます。", "", "led"),
+    _pt("rive-gauche", "rive gauche ▼", 48.8530, 2.3440, "sign", "川の南がわ、左岸という意味です。", "", "wood"),
+]
+_PARIS_LINKS = [["gare-du-nord", "poissonniere"], ["gare-du-nord", "barbes"], ["gare-de-lest", "chateau-deau"], ["gare-de-lest", "louis-blanc"], ["gare-du-nord",
+    "gare-de-lest"], ["saint-lazare", "havre-caumartin"], ["saint-lazare", "europe"], ["gare-de-lyon", "bastille"], ["gare-de-lyon",
+    "quai-de-la-rapee"], ["quai-de-la-rapee", "austerlitz"], ["austerlitz", "saint-marcel"], ["austerlitz", "jussieu"], ["montparnasse",
+    "edgar-quinet"], ["montparnasse", "vavin"], ["montparnasse", "falguiere"], ["jussieu", "pantheon"]]
+_SEINE = {"line": [[48.833, 2.38], [48.8372, 2.3737], [48.845, 2.3668], [48.8506, 2.3622], [48.8545, 2.354], [48.856, 2.349], [48.8573, 2.3413], [48.8585, 2.3377], [48.8609, 2.3306], [48.8637, 2.3203], [48.864, 2.3135], [48.8638, 2.3012], [48.8613, 2.2935], [48.855, 2.2877], [48.848, 2.276]], "width": 1}
+
+
 EXAMPLES.update({
+    "school": {
+        "schema": WORLD_SCHEMA, "id": "school", "title": "School (prototype)", "zoom_max": 4,
+        "avatars": ["🙂", "😎", "🤓", "🐱", "🐶", "🐰", "🦊", "🐼", "🐸", "🦄", "🐙", "🌸", "⭐", "🍎", "⚽", "🚀", "先生", "A"],
+        "tools": {"🗺️": {"label": "見どころ", "label_en": "Highlights", "spots": ["classroom-board", "flowers"]},
+                  "🏫": {"label": "学校", "label_en": "School", "body": "教室と校庭があります。フッターの🚪で行き来できます。"}},
+        "board": {"title": "INFO", "items": [
+            {"text": "朝の会", "at": "08:40"}, {"text": "1時間目", "at": "09:00"}, {"text": "給食", "at": "12:20"},
+            {"text": "下校", "at": "15:30"}, {"text": "今日の授業", "gauge": {"from": "09:00", "to": "15:30"}}]},
+        "floors": [
+            classroom_floor(),
+            {"id": "yard", "label": "校庭", "width": 640, "height": 448,
+             "spots": [{"id": "bar", "x": 160, "y": 128, "label": "鉄棒", "body": "ここで体を動かします。"},
+                       {"id": "flowers", "x": 480, "y": 96, "label": "花だん", "body": "季節の花が咲いています。"}],
+             "actors": [{"id": "kid", "emoji": "🧒", "label": "こども", "body": "走り回っています。", "speed": 48},
+                        {"id": "dog", "emoji": "🐕", "label": "いぬ", "body": "迷い込んだようです。", "speed": 64},
+                        {"id": "bird", "emoji": "🐦", "label": "とり", "body": "屋根にとまっています。", "speed": 32}],
+             "player": {"emoji": "🙂", "x": 320, "y": 320, "speed": 96}}],
+    },
+    # Lands side by side, like the countries of a Dragon Quest map: one line each (`land`), the footer's 🚪 pulldown travels between them.
+    # Swap `theme` (meadow, forest, mountain, desert, coast, castle) or the `seed` and the land is another place; spots/actors/player given
+    # beside `land` replace the generated ones.
+    "overworld": {
+        "schema": WORLD_SCHEMA, "id": "overworld", "title": "Overworld (prototype)", "zoom_max": 4,
+        "avatars": ["🙂", "🧙", "🧝", "🦸", "🐱", "🐶", "🦊", "🐉", "🦄", "⚔️", "🛡️", "🚀"],
+        "tools": {"🧭": {"label": "町", "label_en": "Towns", "labels": {"fr": "Villes", "es": "Pueblos", "de": "Orte", "zh": "城镇"},
+                         "spots": ["meadow-town", "forest-town", "desert-town", "coast-town", "castle-town"]}},
+        "board": {"title": "TRAVEL", "items": [{"text": "旅のはじまり"}, {"text": "🚪で土地をわたろう"}, {"text": "道をたどると町に着きます"}]},
+        "floors": [{"id": "meadow", "land": {"theme": "meadow", "seed": 1}},
+                   {"id": "forest", "land": {"theme": "forest", "seed": 2}},
+                   {"id": "mountain", "land": {"theme": "mountain", "seed": 3}},
+                   {"id": "desert", "land": {"theme": "desert", "seed": 4}},
+                   {"id": "coast", "land": {"theme": "coast", "seed": 5}},
+                   {"id": "castle", "land": {"theme": "castle", "seed": 6}},
+                   {"id": "real", "label": "実空間×仮想", "width": 384, "height": 384, "tile": 32, "real": True,
+                    "spots": [{"id": "real-gate", "label": "入口", "x": 192, "y": 96, "body": "⋯ の 🖼️📷 で、写真かカメラをうしろに映せます（ページの中だけ。保存も送信もしません）。"}],
+                    "player": {"emoji": "🙂", "x": 192, "y": 288, "speed": 96}}],
+    },
+    # The overworld's sequel in real space, as its other sides: Parallel Tokyo (Tokyo Station with its six exits and the stations around it, on foot),
+    # Reverse London (the main termini, the stations beside them and famous places, the Thames and its bridges; a sign, nogard, that turns into a dragon)
+    # and Fake Paris (the main stations, the metro beside them, the Seine; a fire in each block). `place` turns latitude/longitude into tiles.
+    "cities": {
+        "schema": WORLD_SCHEMA, "id": "cities", "title": "Parallel cities", "zoom_max": 4,
+        "avatars": ["🙂", "🧳", "🚶", "🎒", "🐱", "🐶", "🦊", "🐼", "🚃", "☂️", "🎩", "🗼"],
+        "tools": {"🗼": {"label": "パラレル東京", "label_en": "Parallel Tokyo", "floor": "tokyo"},
+                  "🎡": {"label": "リバースロンドン", "label_en": "Reverse London", "floor": "london"},
+                  "🥖": {"label": "フェイクパリ", "label_en": "Fake Paris", "floor": "paris"},
+                  "🚉": {"label": "東京駅", "label_en": "Tokyo Station",
+                         "spots": ["tokyo-marunouchi-n", "tokyo-marunouchi-c", "tokyo-marunouchi-s", "tokyo-yaesu-n", "tokyo-yaesu-c", "tokyo-yaesu-s"]}},
+        "board": {"title": "PARALLEL", "items": [{"text": "実在の街の、もうひとつの姿"}, {"text": "🚪で3つの街を行き来"}, {"text": "歩いて駅から駅へ"}]},
+        "floors": [{"id": "tokyo", "label": "Parallel Tokyo", "place": {"points": _TOKYO_POINTS, "meters": 32, "links": _TOKYO_LINKS}},
+                   {"id": "london", "label": "Reverse London",
+                    "place": {"points": _LONDON_POINTS, "meters": 150, "links": _LONDON_LINKS, "rivers": [_THAMES]}},
+                   {"id": "paris", "label": "Fake Paris",
+                    "place": {"points": _PARIS_POINTS, "meters": 150, "links": _PARIS_LINKS, "rivers": [_SEINE],
+                              "scatter": {"kind": "fire", "every": 8, "seed": 5}}}],
+    },
     "catalog-report": {
         "schema": "web-ui-catalog/1", "title": "Analysis report",
         "description": "Synthetic example: compare observations and inspect their evidence.",
@@ -15623,8 +17379,88 @@ _INDEX_LAYOUT_CANDIDATES = {"schema": "web-ui-layout-candidates/1", "presets": {
     name: {"passed": [320, 384, 768, 1280], "failed": []} for name in ("grid8", "compact", "device", "wide")}}
 
 
+# --- The front page as a generic layout: one main view and rooms behind 🚪 --------------------------------------------------------------------
+# GitHub Pages is not hand-built: index.html is front_document() over the library's own builders (see _index_page), kept equal by a test. To add something
+# to the page, add a room made from a builder; to improve the page, improve the builder. The main view fills one 48px-barred viewport; a room opens over it
+# through :target (no script; :has(:target) so a link to an anchor inside a room opens it too). Pixel values are multiples of 8.
+FRONT_RESERVED = "rooms"
+_FRONT_CSS = (
+    ".ui-front{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-front-bar,.ui-room-bar{display:flex;align-items:center;gap:8px;box-sizing:border-box;height:48px;padding:0 8px;border-bottom:1px solid var(--ui-border);"
+    "background:var(--ui-panel)}.ui-front-bar{flex:none}.ui-room-bar{position:sticky;top:0;z-index:2;justify-content:flex-end}"
+    ".ui-front-bar img{flex:none;width:32px;height:32px;border-radius:var(--ui-radius)}"
+    ".ui-front-title{flex:1;min-width:0;margin:0;font-size:1rem;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    ".ui-front-bar a,.ui-front-bar button,.ui-room-bar a{display:flex;align-items:center;justify-content:center;flex:none;width:40px;height:40px;box-sizing:border-box;"
+    "padding:0;font:inherit;font-size:1.25rem;line-height:1;text-decoration:none;color:var(--ui-fg);border:1px solid var(--ui-border);background:var(--ui-bg);"
+    "border-radius:var(--ui-radius);cursor:pointer}"
+    ".ui-front>.ui-world{flex:1;min-height:0;display:flex;flex-direction:column;margin:0;border:0;border-radius:0}"
+    ".ui-front>.ui-world .ui-world-body{flex:1;min-height:0}.ui-front>.ui-world .ui-world-view{height:auto}"
+    ".ui-room{position:fixed;inset:0;z-index:20;overflow:auto;scroll-padding-top:56px;visibility:hidden;background:var(--ui-bg);color:var(--ui-fg)}"
+    ".ui-room:is(:target,:has(:target)){visibility:visible}"
+    ".ui-seed{align-items:center}.ui-seed-dial{flex:1;min-width:8rem;accent-color:var(--ui-accent)}.ui-seed-out{min-width:3ch;text-align:center}"
+    ".ui-wall-cell[data-seed]{cursor:pointer}.ui-wall-cell[data-picked]{outline:2px solid var(--ui-accent);outline-offset:2px}"
+)
+
+
+def front_css() -> str:
+    """The rules of front_html(): the viewport-high main view, its bar, the rooms, and the seed dial and wall cells that ``bindSeed()`` drives."""
+    return _FRONT_CSS
+
+
+def front_rooms(rooms: Any) -> list[dict[str, str]]:
+    """Checked rooms: ``id`` (a lowercase token, not "rooms", unique), ``emoji``, ``title``, ``text``, optional ``link`` and ``html`` (trusted; it must hold the element with that id)."""
+    if not isinstance(rooms, (list, tuple)) or not 1 <= len(rooms) <= 24:
+        raise ValueError("a front page has 1..24 rooms")
+    seen, out = set(), []
+    for room in rooms:
+        if not isinstance(room, dict) or set(room) - {"id", "emoji", "title", "text", "link", "html"} or not {"id", "emoji", "title", "html"} <= set(room):
+            raise ValueError("a room has id, emoji, title, html and optionally text and link")
+        rid = room["id"]
+        if not isinstance(rid, str) or not _WORLD_TOKEN.fullmatch(rid) or rid == FRONT_RESERVED or rid in seen:
+            raise ValueError("a room id is a unique lowercase token, and not " + FRONT_RESERVED)
+        if not isinstance(room["html"], str) or f'id="{rid}"' not in room["html"]:
+            raise ValueError("a room's html holds the element whose id is the room's id")
+        seen.add(rid)
+        out.append({"id": rid, "emoji": _world_text(room["emoji"], "emoji", 16), "title": _world_text(room["title"], "title", 60),
+                    "text": _world_text(room.get("text", ""), "text", 200, required=False),
+                    "link": _world_text(room.get("link", "Open"), "link", 40), "html": room["html"]})
+    return out
+
+
+def front_html(main: str, rooms: Any, *, title: str, lead: str = "", tags: Any = (), icon: str | None = None, tools: str = "") -> str:
+    """A page that is one view and a door: ``main`` (trusted HTML) fills the viewport under a bar (``icon``, the ``title``, trusted ``tools`` such as seed_roll_html(),
+    and 🚪); 🚪 opens the menu of ``rooms`` and each room opens over the view, ✖️ closes it. The menu's cards and the bars are built here from the rooms' data."""
+    checked = front_rooms(rooms)
+    if not isinstance(main, str) or not isinstance(tools, str):
+        raise ValueError("main and tools are HTML strings")
+    if not isinstance(tags, (list, tuple)) or len(tags) > 6:
+        raise ValueError("tags list at most 6 entries")
+    if icon is not None:
+        _require_local_or_https(icon, label="icon", allow_query=False)
+    name = _world_text(title, "title", 80)
+    door = '<a href="#rooms" aria-label="Rooms" title="Rooms">🚪</a>'
+    close = '<a href="#" aria-label="Close" title="Close">✖️</a>'
+    room = lambda inner, bar, rid="": ('<section class="ui-room"' + (f' id="{rid}"' if rid else "") + f'><nav class="ui-room-bar" aria-label="Rooms">{bar}</nav>'
+                                       f'<div class="ui-page">{inner}</div></section>')
+    cards = "".join(f'<article class="ui-card"><h2>{escape(r["emoji"])} {escape(r["title"])}</h2><p>{escape(r["text"])}</p><a href="#{r["id"]}">{escape(r["link"])} →</a></article>'
+                    for r in checked)
+    menu = room(f'<header class="stub-header"><div><h2 class="ui-title">🚪 {escape(name)}</h2><p class="ui-muted">{escape(lead)}</p></div>'
+                f'<div class="stub-meta">{"".join(badge(_world_text(t, "tag", 24)) for t in tags)}</div></header><section class="ui-grid">{cards}</section>', close, FRONT_RESERVED)
+    picture = f'<img src="{escape(icon, quote=True)}" width="32" height="32" alt="{escape(name, quote=True)} icon">' if icon else ""
+    return (f'<main class="ui-front"><header class="ui-front-bar">{picture}<h1 class="ui-front-title">{escape(name)}</h1>{tools}{door}</header>{main}</main>'
+            + menu + "".join(room(r["html"], door + close) for r in checked))
+
+
+def front_document(main: str, rooms: Any, *, title: str, lead: str = "", tags: Any = (), icon: str | None = None, tools: str = "", css: str = "",
+                   scripts: str = "", document_title: str | None = None, favicon: str | None = None, theme: str = "modern") -> str:
+    """front_html() as a single-file page: the bundled CSS, front_css(), your ``css`` (trusted), and ``scripts`` (trusted module script tags, e.g. from module_script())."""
+    return render_document(trusted_html=front_html(main, rooms, title=title, lead=lead, tags=tags, icon=icon, tools=tools) + scripts,
+                           title=document_title or title, theme=theme, css=bundled_css() + front_css() + css, favicon=favicon, touch_icon=icon)
+
+
 def _index_page() -> str:
-    """The front page (index.html): one self-contained page holding every example. Needs a checkout (tool/layout_presets.py)."""
+    """The front page (index.html): front_document() over the library's own builders and the EXAMPLES specs; nothing in it is written for the page alone.
+    The overworld is the main view; every other example is a room. Needs a checkout (tool/layout_presets.py)."""
     import importlib
     root = Path(__file__).resolve().parent
     sys.path.insert(0, str(root / "tool"))
@@ -15632,53 +17468,52 @@ def _index_page() -> str:
         layout_presets = importlib.import_module("layout_presets")
     finally:
         sys.path.pop(0)
-    world, presets = example_data("world"), example_data("layout-presets")
-    css = bundled_css() + layout_presets.css(presets) + world_css(world) + _WALL_CSS
-    theme_radios = "".join(
-        f'<label><input type="radio" name="ui-theme" value="{t}"{" checked" if t == "modern" else ""}> {t}</label>'
-        for t in (*THEMES, *CANDIDATE_THEMES))
-    cards = "".join(
-        f'<article class="ui-card"><h2>{title}</h2><p>{text}</p><a href="#{anchor}">{link} →</a></article>'
-        for title, text, anchor, link in (
-            ("Try it", "Switch theme and layout live: no reload, no stylesheet swap.", "try", "Open the switches"),
-            ("MCP workspace", "Reusable MCP-style result/evidence/history structure, with a declarative mock.", "mcp", "Open MCP stub"),
-            ("API workspace", "Same semantic workspace with consumer-owned API behavior.", "api", "Open API stub"),
-            ("World (prototype)", "One page, a camera: scroll the shots, pan and zoom the map.", "world", "Open the world"),
-            ("Random themes", "Seeded palettes side by side; every text pair meets WCAG AA.", "wall", "Open the wall")))
+    world, school, overworld, presets = example_data("world"), example_data("school"), example_data("overworld"), example_data("layout-presets")
+    cities = example_data("cities")
     tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
-    body = (
-        '<main class="ui-page"><header class="stub-header"><div>'
-        '<img src="./docs/brand/icon.png" width="80" height="80" alt="PySaiyanWeBoo icon"><h1 class="ui-title">PySaiyanWeBoo</h1>'
-        '<p class="ui-muted">Shared static-first UI contract for myon-bioinformatics projects.</p></div>'
-        '<div class="stub-meta"><span class="ui-tag">v1</span><span class="ui-tag">build-free</span></div></header>'
-        f'<section class="ui-grid">{cards}</section>'
-        '<section class="ui-panel" id="try"><h2>Try it</h2><p class="ui-muted">Both switches act at once: no reload. The theme is saved in '
-        'this browser; the layout is plain CSS.</p>'
-        f'<fieldset class="ui-layout-switch"><legend>Theme</legend>{theme_radios}</fieldset>'
-        f'{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'
-        f'<section>{stub_html(EXAMPLE_STUBS["mcp"], heading_level=2)}</section>'
-        f'<section>{stub_html(EXAMPLE_STUBS["api"], heading_level=2)}</section>'
-        '<section class="ui-panel" id="curl" data-ui-curl><h2>Request draft (curl)</h2><p class="ui-muted">Paste a curl command: it is read in this '
-        'page and never run or sent. Credentials show as <code>***</code>; the body is shown as written, so do not paste real secrets. '
-        'Python reads it the same way (<code>web_ui.parse_curl</code>).</p>'
-        '<textarea class="ui-input" data-curl-input rows="4" aria-label="curl command">curl -X POST https://api.example.com/items -H '
-        '"Authorization: Bearer abc" -H "Content-Type: application/json" -d \'{"name":"demo"}\'</textarea> '
-        '<button class="ui-button" type="button" data-curl-run>Parse</button><pre class="ui-output" data-curl-output aria-live="polite"></pre></section>'
-        '<section class="ui-panel" id="world"><h2>World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
-        'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
-        f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'
-        '<section class="ui-panel" id="wall"><h2>Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; every text '
-        f'pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section></main>'
-        + module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
-    return ('<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n'
-            '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
-            '  <link rel="icon" type="image/png" href="./docs/brand/favicon.png">\n  <title>PySaiyanWeBoo — static UI contract</title>\n'
-            f'  <style>{css}</style>\n<link rel="apple-touch-icon" href="./docs/brand/icon.png"></head>\n'
-            f'<body data-ui-theme="modern">\n{body}\n</body>\n</html>\n')
+    section = lambda inner: f"<section>{inner}</section>"
+    rooms = [
+        {"id": "try", "emoji": "🎛️", "title": "Try it", "text": "Switch theme, layout and seed live: no reload, no stylesheet swap.", "link": "Open the switches",
+         "html": '<section class="ui-panel" id="try"><h2>🎛️ Try it</h2><p class="ui-muted">The switches act at once: no reload. The theme and the seed are saved in '
+                 'this browser; the layout is plain CSS. The seed is the same palette Python draws (<code>web_ui.random_theme</code>).</p>'
+                 f'{theme_switch_html()}{seed_dial_html()}{layout_presets.controls_html(presets, _INDEX_LAYOUT_CANDIDATES)}<ul class="ui-matrix-tiles">{tiles}</ul></section>'},
+        {"id": "mcp", "emoji": "🔌", "title": "MCP workspace", "text": "Reusable MCP-style result/evidence/history structure, with a declarative mock.",
+         "link": "Open MCP stub", "html": section(stub_html(EXAMPLE_STUBS["mcp"], heading_level=2))},
+        {"id": "api", "emoji": "🔗", "title": "API workspace", "text": "Same semantic workspace with consumer-owned API behavior.",
+         "link": "Open API stub", "html": section(stub_html(EXAMPLE_STUBS["api"], heading_level=2))},
+        {"id": "curl", "emoji": "📋", "title": "Request draft", "text": "Paste a curl command: it is read in the page and never run.",
+         "link": "Open the draft", "html": curl_panel_html()},
+        {"id": "world", "emoji": "🌍", "title": "World (prototype)", "text": "One page, a camera: scroll the shots, pan and zoom the map.", "link": "Open the world",
+         "html": '<section class="ui-panel" id="world"><h2>🌍 World (prototype)</h2><p class="ui-muted">One page, a camera, no page changes. Scroll the shots; '
+                 'drag, wheel or pinch the map and open a spot. Python writes this HTML, the CSS and the small script from '
+                 f'<code>EXAMPLES["world"]</code>.</p>{world_html(world)}</section>'},
+        {"id": "school", "emoji": "🏫", "title": "School (prototype)", "text": "Pick an emoji, then walk between desks by tap, keys or the pad.",
+         "link": "Open the school",
+         "html": '<section class="ui-panel" id="school"><h2>🏫 School (prototype)</h2><p class="ui-muted">The same world with a tile grid and props: pick an emoji, '
+                 'then walk by tap, arrow keys / WASD or the on-screen pad. Desks, the board and shelves are solid; chairs are not. '
+                 f'From <code>EXAMPLES["school"]</code>; Python plans the walk, the page only plays it.</p>{world_html(school)}</section>'},
+        {"id": "cities", "emoji": "🗼", "title": "Parallel cities", "text": "Parallel Tokyo, Reverse London and Fake Paris from latitude and longitude: walk from station to station.",
+         "link": "Open the cities",
+         "html": '<section class="ui-panel" id="cities"><h2>🗼 Parallel cities</h2><p class="ui-muted">The overworld\'s sequel: real places as tiles, each the other side of '
+                 'its city. Parallel Tokyo is Tokyo Station (six exits) and the stations within walking distance; Reverse London is the main termini, the stations '
+                 'beside them and famous places, with the Thames, its bridges and a sign that turns into a dragon; Fake Paris is the main stations, the metro beside '
+                 'them and the Seine, with a fire in each block. Use 🚪 to travel between them. '
+                 f'From <code>EXAMPLES["cities"]</code>: each floor is a list of latitude/longitude points (<code>place</code>).</p>{world_html(cities)}</section>'},
+        {"id": "wall", "emoji": "🎲", "title": "Random themes", "text": "Seeded palettes side by side; tap one to wear it. Every text pair meets WCAG AA.",
+         "link": "Open the wall",
+         "html": '<section class="ui-panel" id="wall"><h2>🎲 Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; tap one to wear it. '
+                 f'Every text pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section>'},
+    ]
+    css = layout_presets.css(presets) + world_css(world) + world_css(overworld, base=False) + world_css(school, base=False) + world_css(cities, base=False) + _WALL_CSS
+    scripts = (module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["theme.js"] + "bindSeed();\n")
+               + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
+    return front_document(world_html(overworld), rooms, title="PySaiyanWeBoo", lead="Shared static-first UI contract for myon-bioinformatics projects.",
+                          tags=("v1", "build-free"), icon="./docs/brand/icon.png", tools=seed_roll_html(), css=css, scripts=scripts,
+                          document_title="PySaiyanWeBoo — static UI contract", favicon="./docs/brand/favicon.png")
 
 
 def js_modules() -> dict[str, str]:
-    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, shelf.js, door.js, composition.js, coordinates.js, world.js)."""
+    """Every browser module by file name (ui.js, stub.js, controls.js, collection.js, navigation.js, repository-diagnostics.js, curl.js, theme.js, shelf.js, door.js, source.js, composition.js, coordinates.js, world.js)."""
     return {**_JS, "world.js": WORLD_JS}
 
 
@@ -15752,7 +17587,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                         raise ValueError("previous JUnit report is missing or not a regular file")
                     report["diff"] = junit_diff(text, previous.read_bytes().decode("utf-8"))
             except (OSError, ValueError) as error:
-                print(f"invalid JUnit: {error}", file=sys.stderr)
+                _say("⛔", f"invalid JUnit: {error}")
                 return 2
             out(report)
             status = max(status, 0 if report["ok"] else 1)
@@ -15765,7 +17600,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                 args.to.parent.mkdir(parents=True, exist_ok=True)
                 args.to.write_text(converted["xml"], encoding="utf-8")
         except (OSError, ValueError) as error:
-            print(f"invalid Flutter events: {error}", file=sys.stderr)
+            _say("⛔", f"invalid Flutter events: {error}")
             return 2
         summary = counts_summary(flutter_outcomes(text), source="flutter-json")
         print(counts_line(summary["counts"]))
@@ -15773,7 +17608,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         return 0 if summary["ok"] else 1
     if args.run_tests:
         if not args.test_file:
-            print("external runner requires --test-file", file=sys.stderr)
+            _say("⛔", "external runner requires --test-file")
             return 2
         root = Path.cwd()
         try:
@@ -15782,7 +17617,7 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
             return run_test_suite(args.run_tests, root=root, files=args.test_file, report=args.report, history=args.history, ledger=args.ledger, retry_failed=args.retry_failed,
                                   timeout=int(args.timeout))
         except (ValueError, OSError) as error:
-            print(f"external runner: {error}", file=sys.stderr)
+            _say("⛔", f"external runner: {error}")
             return 2
     command = list(args.command)
     if command and command[0] == "--":
@@ -15792,21 +17627,21 @@ def _reports_main(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     try:
         status, receipt = expected_child_failure(command, expect_exit=args.expect_exit, output_dir=args.output_dir, timeout=args.timeout)
     except ValueError as error:
-        print(f"--expect-exit: {error}", file=sys.stderr)
+        _say("⛔", f"--expect-exit: {error}")
         return 2
     out(receipt)
     return status
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--title", default="PySaiyanWeBoo")
-    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern")
+    parser = _IconParser(description=__doc__)
+    parser.add_argument("--title", default="PySaiyanWeBoo", help="page title (default %(default)s)")
+    parser.add_argument("--theme", choices=THEMES + CANDIDATE_THEMES, default="modern", help="theme (default %(default)s)")
     parser.add_argument("--css", type=Path, help="trusted CSS file to embed")
     parser.add_argument("--catalog", type=Path, metavar="FILE",
                         help="print a script-free page for a web-ui-catalog/1 JSON spec and exit")
     parser.add_argument("--world", type=Path, metavar="FILE",
-                        help="print a single-file page for a web-ui-world/1 JSON spec and exit")
+                        help="print a single-file page for a web-ui-world/1 JSON spec and exit; `-` reads the spec from stdin")
     parser.add_argument("--example", metavar="NAME", help="print one example spec as JSON and exit (including catalog-report, catalog-projects)")
     parser.add_argument("--btk-adapter", metavar="ID", help="print one browser-test-kit platform adapter (btk-platform-adapter/1) as JSON and exit; `list` names them")
     parser.add_argument("--pattern", metavar="FAMILY", help="run one pattern reference on the JSON request in stdin and print its JSON result (see PATTERN_RUNNERS); `list` names the families, `catalogue` prints the 792 patterns")
@@ -15834,11 +17669,11 @@ def main(argv: list[str] | None = None) -> int:
         help="opt-in HTTPS classic scripts from the documented allowlist (e.g. plotly.js, pptxgenjs)",
     )
     parser.add_argument("--embed-ui", action="store_true", help="embed the built-in ui.js ES module")
-    parser.add_argument("--module-mode", choices=("inline", "data"), default="inline")
+    parser.add_argument("--module-mode", choices=("inline", "data"), default="inline", help="how --embed-ui carries the module (default %(default)s)")
     parser.add_argument("--trusted-html", action="store_true", help="interpret stdin as authored HTML, not user text")
     parser.add_argument("--sri", type=Path, metavar="FILE",
                         help="print the sha384 SRI and SHA-256 hex of FILE (for pinning a new asset) and exit")
-    reports = parser.add_argument_group("test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
+    reports = parser.add_argument_group("🧾 test reports (see junit_report, flutter_machine_junit, run_test_suite, expected_child_failure)")
     reports.add_argument("--junit", nargs="+", type=Path, metavar="FILE", help="read JUnit XML reports (fail closed) and print one JSON report per file; exit 1 if a test failed, 2 if a report is invalid")
     reports.add_argument("--previous", type=Path, metavar="FILE", help="with --junit and one file: also say what is new, recurring or resolved against this earlier JUnit report")
     reports.add_argument("--flutter-events", type=Path, metavar="FILE", help="read Flutter machine JSON events: print the outcome counts (exit 1 unless ok); with --to also write the JUnit XML")
@@ -15854,7 +17689,7 @@ def main(argv: list[str] | None = None) -> int:
     reports.add_argument("--timeout", type=float, default=300, metavar="SECONDS", help="with --run-tests or --expect-exit: stop the child after this long")
     reports.add_argument("--expect-exit", type=int, action="append", metavar="CODE", help="run the command after -- that is meant to fail, expecting this nonzero exit code (repeat); keep its output in --output-dir")
     reports.add_argument("--output-dir", type=Path, metavar="DIR", help="with --expect-exit: where stdout.bin, stderr.bin and receipt.json go")
-    studio = parser.add_argument_group("image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
+    studio = parser.add_argument_group("🖌️ image studio (see studio_render, studio_heatmap_scene, studio_png_payload)")
     studio.add_argument("--studio-render", type=Path, metavar="FILE", help="check an ironmate-image-studio/1 scene and print it as SVG (or --format json); exit 2 on an invalid scene")
     studio.add_argument("--studio-heatmap", type=Path, metavar="FILE", help="turn a matrix JSON (rows, or a Plotly heatmap) into an editable scene and print it")
     studio.add_argument("--studio-base64", type=Path, metavar="FILE", help="print a PNG file as Base64 for hand-off (--data-uri for a data URI); a non-PNG is exit 2")
@@ -15864,6 +17699,10 @@ def main(argv: list[str] | None = None) -> int:
     studio.add_argument("-o", "--output", type=Path, metavar="FILE", help="with the --studio-* options: write here instead of stdout (refuses to overwrite)")
     studio.add_argument("--force", action="store_true", help="with --output: replace an existing file")
     parser.add_argument("command", nargs="*", help=argparse.SUPPRESS)
+    for action in parser._actions:                                           # the icon table above leads each option's help
+        glyph = CLI_ICONS.get(action.dest)
+        if glyph and action.help and action.help is not argparse.SUPPRESS:
+            action.help = _cli_glyph(glyph, sys.stdout) + action.help
     args = parser.parse_args(argv)
     if args.pattern_serve:
         return _bridge_main(parser, args)
@@ -15906,7 +17745,7 @@ def main(argv: list[str] | None = None) -> int:
             result = pattern_run(args.pattern, pattern_parse(raw.decode("utf-8")))
             sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
         except (ValueError, UnicodeError, OSError) as exc:
-            print(f"invalid pattern request: {exc}", file=sys.stderr)
+            _say("⛔", f"invalid pattern request: {exc}")
             return 2
         return 0
     if args.btk_adapter:
@@ -15935,7 +17774,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.world or args.theme_wall is not None:
         try:
-            sys.stdout.write(world_document(json.loads(args.world.read_text(encoding="utf-8")), theme=args.theme)
+            if args.world == Path("-"):
+                raw = sys.stdin.buffer.read(PATTERN_MAX_INPUT + 1)
+                if len(raw) > PATTERN_MAX_INPUT:
+                    raise ValueError(f"spec is larger than {PATTERN_MAX_INPUT} bytes")
+                text = raw.decode("utf-8")
+            else:
+                text = args.world.read_text(encoding="utf-8") if args.world else ""
+            sys.stdout.write(world_document(json.loads(text), theme=args.theme)
                              if args.world else theme_wall_document(args.theme_wall))
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
@@ -15970,3 +17816,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

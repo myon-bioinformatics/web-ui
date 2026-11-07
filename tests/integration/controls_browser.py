@@ -22,6 +22,8 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
+from support import flutter_case  # noqa: E402
 from web_ui import (EXAMPLE_STUBS, showcase_document, bundled_css, write_js, board_clock, clean_message, clock_label, gauge_cells, gauge_state, minutes_until, travel_seconds, board_seconds,
                     clamp_focus, contrast_ratio, fit_zoom, render_document, section_browser, shared_scripts, stub_response, theme_wall_document, utc_offset_label,
                     world_document, zone_offset, zone_rows)
@@ -45,6 +47,18 @@ def photo_device(playwright):
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+
+class PageCase(unittest.TestCase):
+    """A browser test whose ``setUp`` leaves ``self.browser``, ``self.playwright_manager``, ``self.server``, ``self.errors`` (page errors) and ``self.external`` (requests
+    beyond the page's own origin) behind; the tearDown that closes them in that order and requires both lists to be empty is shared."""
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
 
 
 class ControlsBrowserTests(unittest.TestCase):
@@ -712,6 +726,8 @@ class StubBrowserTests(unittest.TestCase):
                         page.on('pageerror', lambda error: errors.append(str(error)))
                         page.goto(f'{origin}/{name}')
                         for sid in ids:
+                            if name == 'index.html':
+                                page.goto(f'{origin}/{name}#{sid}')                   # on the front page each stub is a room behind the door
                             for query in ('tools/list', 'a$&b <x> "q"'):
                                 page.fill(f'#{sid}-query', query)
                                 page.click(f'#{sid}-run')
@@ -740,7 +756,7 @@ class StubBrowserTests(unittest.TestCase):
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     requests = []
-                    page.goto(origin + '/index.html')
+                    page.goto(origin + '/index.html#curl')
                     page.on('request', lambda request: requests.append(request.url))
                     # The flutter editor's 47 golden cases, then 1500 seeded inputs (odd whitespace, bad escapes, shell characters ...):
                     # the page's answer equals Python's, errors included.
@@ -782,6 +798,117 @@ class StubBrowserTests(unittest.TestCase):
             server.server_close()
 
 
+class FrontPageBrowserTests(unittest.TestCase):
+    """The front page: the overworld fills one viewport, everything else is a room behind 🚪, and the seed dial wears Python's palettes."""
+    ROOMS = ('try', 'mcp', 'api', 'curl', 'world', 'school', 'cities', 'wall')
+    TOKENS = ('--ui-bg', '--ui-panel', '--ui-fg', '--ui-muted', '--ui-border', '--ui-accent', '--ui-danger', '--ui-radius')
+
+    def setUp(self):
+        self.server, self.origin = WorldBrowserTests.serve({'index.html': (ROOT / 'index.html').read_text(encoding='utf-8')})
+        self.playwright_manager = sync_playwright()
+        self.playwright = self.playwright_manager.__enter__()
+        self.browser = self.playwright.chromium.launch()
+        self.errors, self.external = [], []
+
+    def tearDown(self):
+        self.browser.close()
+        self.playwright_manager.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.external, [])
+
+    def open(self, viewport=None, hash='', **options):
+        page = self.browser.new_page(viewport=viewport or {'width': 390, 'height': 844}, **options)
+        page.on('pageerror', lambda error: self.errors.append(str(error)))
+        page.on('request', lambda r: self.external.append(r.url) if not r.url.startswith(self.origin + '/') else None)
+        page.goto(f'{self.origin}/index.html{hash}')
+        return page
+
+    def tokens(self, page):
+        return page.evaluate('names => Object.fromEntries(names.map(n => [n, document.body.style.getPropertyValue(n)]))', list(self.TOKENS))
+
+    def test_the_world_fills_the_viewport_and_the_rooms_wait_behind_the_door(self):
+        for viewport in ({'width': 390, 'height': 844}, {'width': 1280, 'height': 800}):
+            page = self.open(viewport)
+            self.assertLessEqual(page.evaluate('document.documentElement.scrollHeight'), viewport['height'], viewport)   # one screen, no scrolling
+            world = page.locator('#overworld-map')
+            expect(world).to_be_visible()
+            expect(world).to_have_attribute('data-js', '')
+            box = world.bounding_box()
+            self.assertGreaterEqual(box['height'], viewport['height'] - 48, viewport)                                      # all but the 48px bar
+            self.assertGreaterEqual(box['width'], viewport['width'], viewport)
+            for room in self.ROOMS:
+                expect(page.locator(f'#{room}')).to_be_hidden()
+            page.click('.ui-front-bar a[href="#rooms"]')                                                                    # 🚪
+            expect(page.locator('#rooms')).to_be_visible()
+            for room in self.ROOMS:
+                page.goto(f'{self.origin}/index.html#rooms')
+                page.click(f'#rooms a[href="#{room}"]')
+                expect(page.locator(f'#{room}')).to_be_visible()
+                expect(page.locator('#rooms')).to_be_hidden()
+                self.assertLessEqual(page.evaluate('document.documentElement.scrollHeight'), viewport['height'])
+                page.click(f'.ui-room:has(#{room}) .ui-room-bar a[href="#"]')                                               # ✖️ back to the world
+                expect(page.locator(f'#{room}')).to_be_hidden()
+                self.assertEqual(page.evaluate('location.hash'), '')
+            page.close()
+
+    def test_every_room_opens_from_its_link_alone_and_without_script(self):
+        page = self.open(hash='#school', java_script_enabled=False)
+        for room in self.ROOMS:
+            page.goto(f'{self.origin}/index.html#{room}')
+            expect(page.locator(f'#{room}')).to_be_visible()
+        page.goto(f'{self.origin}/index.html')
+        expect(page.locator('#overworld-map')).to_be_visible()
+        expect(page.locator('#wall')).to_be_hidden()
+        page.close()
+
+    def test_the_seed_dial_wears_the_palette_python_draws_for_that_seed(self):
+        import web_ui
+        page = self.open(hash='#try')
+        expect(page.locator('[data-ui-seed-out]')).to_have_text('–')
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})                                          # no seed: the named theme rules
+        for seed in (7, 0, 99, 3):
+            page.locator('[data-ui-seed]').fill(str(seed))
+            self.assertEqual(self.tokens(page), web_ui.random_theme(seed), seed)
+            expect(page.locator('[data-ui-seed-out]')).to_have_text(str(seed))
+            expect(page.locator('body')).to_have_attribute('data-ui-seeded', str(seed))
+            bg = web_ui.random_theme(seed)['--ui-bg']
+            self.assertEqual(page.evaluate('getComputedStyle(document.body).backgroundColor'),
+                             'rgb(%d, %d, %d)' % tuple(int(bg[i:i + 2], 16) for i in (1, 3, 5)))                       # the page really repaints
+        page.reload()                                                                                                       # remembered in this browser
+        self.assertEqual(self.tokens(page), web_ui.random_theme(3))
+        expect(page.locator('[data-ui-seed]')).to_have_value('3')
+        page.check('input[name="ui-theme"][value="green"]')                                                                 # a named theme takes over
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})
+        expect(page.locator('[data-ui-seed-out]')).to_have_text('–')
+        self.assertIsNone(page.evaluate('localStorage.getItem("web-ui-seed")'))
+        expect(page.locator('body')).not_to_have_attribute('data-ui-seeded', re.compile('.'))
+        page.locator('[data-ui-seed]').fill('12')
+        page.click('[data-ui-seed-off]')                                                                                    # ✖️
+        self.assertEqual(self.tokens(page), {name: '' for name in self.TOKENS})
+        page.close()
+
+    def test_the_bar_dice_rolls_a_seed_on_the_world_and_a_wall_cell_is_picked_by_a_tap(self):
+        import web_ui
+        page = self.open()
+        page.evaluate('Math.random = () => 0.5')
+        page.click('.ui-front-bar [data-ui-seed-roll]')                                                                     # 🎲 on the main page: floor(0.5 * 100)
+        self.assertEqual(self.tokens(page), web_ui.random_theme(50))
+        bg = web_ui.random_theme(50)['--ui-bg']
+        self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("#overworld-map")).backgroundColor'),
+                         'rgb(%d, %d, %d)' % tuple(int(bg[i:i + 2], 16) for i in (1, 3, 5)))
+        page.goto(f'{self.origin}/index.html#wall')
+        page.click('.ui-wall-cell[data-seed="5"] h3')
+        self.assertEqual(self.tokens(page), web_ui.random_theme(5))
+        expect(page.locator('.ui-wall-cell[data-picked]')).to_have_count(1)
+        expect(page.locator('.ui-wall-cell[data-seed="5"]')).to_have_attribute('data-picked', '')
+        page.click('.ui-wall-cell[data-seed="11"] h3')
+        expect(page.locator('.ui-wall-cell[data-seed="11"]')).to_have_attribute('data-picked', '')
+        expect(page.locator('.ui-wall-cell[data-picked]')).to_have_count(1)
+        page.close()
+
+
 class GeneratedSiteBrowserTests(unittest.TestCase):
     def test_generated_front_page_works_offline_without_external_modules(self):
         from web_ui import write_site
@@ -793,9 +920,10 @@ class GeneratedSiteBrowserTests(unittest.TestCase):
                     page = browser.new_page()
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
-                    page.goto((Path(directory) / 'index.html').as_uri())
+                    page.goto((Path(directory) / 'index.html').as_uri() + '#try')
                     page.check('input[name="ui-theme"][value="green"]')
                     expect(page.locator('body')).to_have_attribute('data-ui-theme', 'green')
+                    page.goto((Path(directory) / 'index.html').as_uri() + '#api')
                     page.fill('#api-query', '/local/offline')
                     page.click('#api-run')
                     expect(page.locator('#api-output')).to_contain_text('/local/offline')
@@ -1919,7 +2047,7 @@ class PhotoBrowserTests(unittest.TestCase):
             w.photo_evidence(outcomes={'png': 'works'})
 
 
-class PhotoPageBrowserTests(unittest.TestCase):
+class PhotoPageBrowserTests(PageCase):
     """The photo studio page in Chromium: import outcomes, upright pixels, drawing, history, export, and keeping nothing."""
 
     def setUp(self):
@@ -1939,13 +2067,6 @@ class PhotoPageBrowserTests(unittest.TestCase):
         self.page.on('console', lambda message: self.errors.append('console: ' + message.text) if message.type == 'error' else None)
         self.page.on('request', lambda request: self.external.append(request.url) if request.url.startswith('http') and not request.url.startswith(self.origin + '/') else None)
         self.page.goto(self.origin + '/photo.html')
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def mime(self, case_id):
         return {'png': 'image/png', 'jpeg': 'image/jpeg', 'webp': 'image/webp', 'gif': 'image/gif', 'avif': 'image/avif', 'heic': 'image/heic'}.get(self.cases[case_id]['format'], 'image/png')
@@ -2300,7 +2421,7 @@ class BtkAdapterBrowserTests(unittest.TestCase):
             server.shutdown()
 
 
-class ClipboardBrowserTests(unittest.TestCase):
+class ClipboardBrowserTests(PageCase):
     """The clipboard loops in Chromium: the read order, error codes and text rules equal Python's (and so Ironmate's and Dart's), and the shelf, the temporary clipboard and the
     photo studio use them."""
 
@@ -2331,13 +2452,6 @@ class ClipboardBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 800, 'height': 900}, accept_downloads=True)
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, name):
         page = self.context.new_page()
@@ -2631,12 +2745,8 @@ def web_ui_module():
     return web_ui
 
 
-def flutter_case(tid, sid, name, result='success', **done):
-    return [{'type': 'testStart', 'test': {'id': tid, 'suiteID': sid, 'name': name}}, {'type': 'testDone', 'testID': tid, 'result': result, **done}]
 
-
-
-class PlaygroundBrowserTests(unittest.TestCase):
+class PlaygroundBrowserTests(PageCase):
     """The playground in a real browser: the counter, the hold-to-repeat button and the irony card equal Python's rules, and the page behaves like the Dart widgets did."""
 
     SEED = 7
@@ -2650,13 +2760,6 @@ class PlaygroundBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 800, 'height': 1700})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, clock=False):
         page = self.context.new_page()
@@ -2877,7 +2980,7 @@ class PlaygroundBrowserTests(unittest.TestCase):
         self.assertTrue(all(a != b for a, b in zip(seen, seen[1:])))
 
 
-class ReportBrowserTests(unittest.TestCase):
+class ReportBrowserTests(PageCase):
     """The test report in a real browser: SHA-256, the Flutter tally and conversion, JUnit reading and the failure history equal Python's on seeded fuzz, and the page works."""
 
     def setUp(self):
@@ -2888,13 +2991,6 @@ class ReportBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -3192,7 +3288,7 @@ class ReportBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('[data-report-input]').input_value(), self.JUNIT, 'a refused file leaves the text alone')
 
 
-class McpBrowserTests(unittest.TestCase):
+class McpBrowserTests(PageCase):
     """The MCP lab in a real browser: every request of seeded scripts gets the same answer from the page's server as from Python's, the client demos and the helpers agree, and the
     page works."""
 
@@ -3208,13 +3304,6 @@ class McpBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -4109,7 +4198,7 @@ def pat_request(family, r):
     raise AssertionError(family)
 
 
-class PatternBrowserTests(unittest.TestCase):
+class PatternBrowserTests(PageCase):
     """The patterns page in a real browser: its twins give Python's answer to every request (the recorded original outputs, and seeded random requests, including the refusals and their
     text), the catalogue and its search agree, and the page works."""
 
@@ -4123,13 +4212,6 @@ class PatternBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self):
         page = self.context.new_page()
@@ -4937,7 +5019,7 @@ class PatternBridgeBrowserTests(unittest.TestCase):
         self.assertEqual((answer['status'], json.loads(answer['text'])['families']), (200, options))
 
 
-class ScreensBrowserTests(unittest.TestCase):
+class ScreensBrowserTests(PageCase):
     """The screens page in a real browser: the Hub, every kind of screen in several languages, the native examples (a Web Worker, real mouse drags with a long press) and a phone-sized
     layout. What the page shows is what Python's `screen_*` and `native_*` say; the requests themselves are checked against Python in PatternBrowserTests."""
 
@@ -4949,13 +5031,6 @@ class ScreensBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1200})
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, hash_='', init=None, context=None):
         page = (context or self.context).new_page()
@@ -5401,7 +5476,7 @@ class ScreensBrowserTests(unittest.TestCase):
                 page.close()
 
 
-class ImageStudioBrowserTests(unittest.TestCase):
+class ImageStudioBrowserTests(PageCase):
     """The image studio page in a real browser: its twin gives Python's answer (the recorded core.js outputs, and seeded random scenes, layers, histories and refusals with their text), and the
     editor places, moves, edits, imports, exports and restores layers."""
 
@@ -5413,13 +5488,6 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.browser = photo_engine(self.playwright).launch()
         self.context = self.browser.new_context(viewport={'width': 900, 'height': 1400}, accept_downloads=True)
         self.errors, self.external = [], []
-
-    def tearDown(self):
-        self.browser.close()
-        self.playwright_manager.__exit__(None, None, None)
-        self.server.shutdown()
-        self.assertEqual(self.errors, [])
-        self.assertEqual(self.external, [])
 
     def page(self, size=None, accept=True):
         page = self.context.new_page()
@@ -6424,5 +6492,75 @@ class ImageStudioBrowserTests(unittest.TestCase):
         self.assertEqual(page.evaluate('getComputedStyle(document.querySelector("[data-is=board]")).touchAction'), 'none', 'placing needs the touch for itself')
 
 
+class MockAuthBrowserTests(unittest.TestCase):
+    """Real same-origin fetches, public fixtures, no external authentication."""
+    setUp = PatternBridgeBrowserTests.setUp
+    start_bridge = PatternBridgeBrowserTests.start_bridge
+    tearDown = PatternBridgeBrowserTests.tearDown
+
+    def page(self):
+        page = self.context.new_page()
+        page.on('pageerror', lambda e: self.errors.append(str(e)))
+        page.on('request', lambda r: self.external.append(r.url) if r.url.startswith('http') and not r.url.startswith(self.origin + '/') else None)
+        page.goto(self.origin + '/auth.html')
+        page.wait_for_function('document.getElementById("auth-request").value.includes("demo-bearer-token")')
+        return page
+
+    def prepare(self, page, scenario):
+        page.locator('#auth-scenario').select_option(scenario)
+        page.locator('#auth-result').evaluate('(el) => el.textContent = ""')
+        page.locator('#auth-prepare').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent === "Fresh public demo request prepared."')
+        return json.loads(page.locator('#auth-request').input_value())
+
+    def run_mock(self, page):
+        page.locator('#auth-result').evaluate('(el) => el.textContent = ""')
+        page.locator('#auth-run').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent.startsWith("{")')
+        return json.loads(page.locator('#auth-result').inner_text())
+
+    def test_all_demo_presets_and_actual_http_status_headers(self):
+        page = self.page()
+        statuses = dict(zip(self.web_ui.AUTH_SCENARIOS, [404,200,401,403,200,200,200,401,200,200,429]))
+        for scenario, status in statuses.items():
+            with self.subTest(scenario=scenario):
+                self.prepare(page, scenario)
+                result = self.run_mock(page)
+                self.assertEqual(result['status'], status)
+                if scenario == 'digestChallengeOnly':
+                    self.assertEqual(result['headers']['www-authenticate'], self.web_ui.AUTH_DIGEST_CHALLENGE)
+                if scenario == 'rateLimited':
+                    self.assertEqual(result['headers']['retry-after'], '1')
+                if scenario in ('digest', 'hmac'):
+                    replay = self.run_mock(page)
+                    self.assertEqual((replay['status'], replay['body']['reason']), (401, 'digest_replay' if scenario == 'digest' else 'replay'))
+
+    def test_edits_fail_without_consuming_nonce_and_json_is_text(self):
+        page = self.page()
+        original = self.prepare(page, 'hmac')
+        changed = {**original, 'body': '<img src=x onerror=alert(1)>'}
+        page.locator('#auth-request').fill(json.dumps(changed))
+        result = self.run_mock(page)
+        self.assertEqual((result['status'],result['body']['reason']), (401,'invalid_signature'))
+        page.locator('#auth-request').fill(json.dumps(original))
+        self.assertEqual(self.run_mock(page)['status'],200)
+        page.locator('#auth-request').fill('{')
+        page.locator('#auth-run').click()
+        page.wait_for_function('document.getElementById("auth-result").textContent.includes("SyntaxError")')
+        self.assertEqual(page.locator('#auth-result img').count(),0)
+
+    def test_controls_and_output_fit_320_pixels(self):
+        page = self.page()
+        page.set_viewport_size({'width':320,'height':900})
+        self.prepare(page,'digest')
+        self.assertEqual(self.run_mock(page)['status'],200)
+        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),320)
+        for selector in ('#auth-scenario','#auth-prepare','#auth-request','#auth-run','#auth-result'):
+            bounds=page.locator(selector).bounding_box()
+            self.assertGreaterEqual(bounds['x'],-0.5)
+            self.assertLessEqual(bounds['x']+bounds['width'],320.5)
+
+
 if __name__ == '__main__':
     unittest.main()
+

@@ -11,6 +11,7 @@ import zlib
 import unittest
 from pathlib import Path
 from unittest import mock
+from support import flutter_case, node26
 
 import json
 import math
@@ -21,17 +22,6 @@ import web_ui
 from web_ui import _node_launch_module, bundled_css, render_document, run_node, shared_scripts
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _node_at_least_26() -> bool:
-    if shutil.which("node") is None:
-        return False
-    try:
-        done = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    match = re.search(r"v?(\d+)", (done.stdout or "") + (done.stderr or ""))
-    return bool(match and int(match.group(1)) >= 26)
 
 
 class PythonWrapperTests(unittest.TestCase):
@@ -190,7 +180,7 @@ class PythonWrapperTests(unittest.TestCase):
         self.assertIn('<script type="module" src="./js/ui.js"></script>', linked.stdout)
 
     def test_run_node_wraps_diagnostics_script(self):
-        if not _node_at_least_26():
+        if not node26():
             self.skipTest('node 26+ not available')
         with tempfile.TemporaryDirectory() as out:
             web_ui.write_js(out)
@@ -263,7 +253,7 @@ class BundledCssTests(unittest.TestCase):
                         self.assertGreaterEqual(web_ui.contrast_ratio(theme[f"--ui-{text}"], theme[f"--ui-{ground}"]), minimum, (hue, dark, text))
         self.assertEqual(web_ui.theme_palette(0.3), web_ui.theme_palette(0.3))
 
-    @unittest.skipUnless(_node_at_least_26(), "Node 26+ not available")
+    @unittest.skipUnless(node26(), "Node 26+ not available")
     def test_node_reaches_the_bundle_through_the_shared_launcher(self):
         # No Node twin and no web_ui.cjs: Node runs web_ui.py via vendor/py_launch.cjs, so the bytes cannot differ.
         args = ["--css-bundle", "--theme", "green"]
@@ -375,6 +365,17 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(page, web_ui.example_pages()["index.html"])
         for fragment in (web_ui.world_html(WORLD), web_ui.theme_wall(range(12)), web_ui.world_css(WORLD), web_ui.WORLD_JS):
             self.assertIn(fragment, page)
+
+    def test_front_page_is_assembled_from_the_librarys_own_builders(self):
+        """Nothing in index.html is written for the page alone: every part is a public builder's output (or an EXAMPLES spec through one)."""
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        for fragment in (web_ui.world_html(web_ui.example_data("overworld")), web_ui.world_html(web_ui.example_data("school")),
+                         web_ui.world_html(web_ui.example_data("cities")), web_ui.stub_html(web_ui.EXAMPLE_STUBS["mcp"], heading_level=2), web_ui.stub_html(web_ui.EXAMPLE_STUBS["api"], heading_level=2),
+                         web_ui.curl_panel_html(), web_ui.theme_switch_html(), web_ui.seed_dial_html(), web_ui.seed_roll_html(), web_ui.front_css(),
+                         web_ui.module_script(web_ui.js_source("theme.js") + "bindSeed();\n"), web_ui.module_script(web_ui.js_source("curl.js"))):
+            self.assertIn(fragment, page)
+        self.assertEqual(page.count('class="ui-front"'), 1)
+        self.assertEqual(page.count('class="ui-room"'), 9)                                                       # the menu and eight rooms
 
     def test_villagers_walk_straight_at_constant_speed_pause_at_random_and_loop_seamlessly(self):
         for seed in range(60):
@@ -541,12 +542,22 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(html.count('class="ui-board-zones"'), 1)                                # the clocks share one row
         self.assertNotIn("ui-board-zone", web_ui.world_html({**WORLD, "board": {"title": "T", "items": [{"text": "x"}]}}))
 
-    def test_world_script_stores_nothing_and_requests_only_for_the_opt_in_shared_section(self):
-        # What a visitor writes stays in the page: no storage, cookies, beacons or sockets, no place names. The one network call is the
-        # shared section's refresh button (opt in with shared_issue): an anonymous GET without credentials, cache or referrer.
-        for word in ("localStorage", "sessionStorage", "indexedDB", "cookie", "XMLHttpRequest", "sendBeacon", "WebSocket",
-                     "caches", "Intl", "timeZone", "navigator", "geolocation", "pushState", "postMessage", "Worker"):
+    def test_world_script_caches_only_favorites_and_language_and_requests_only_for_the_opt_in_shared_section(self):
+        # What a visitor writes stays in the page: no cookies, beacons or sockets, no place names. The one thing kept is a small cache of the
+        # chosen language and starred places in this browser (localStorage, key "ui-world:<id>"; the emoji and board messages are never written).
+        # The one network call is the shared section's refresh button (opt in with shared_issue): an anonymous GET without credentials, cache or referrer.
+        for word in ("sessionStorage", "indexedDB", "cookie", "XMLHttpRequest", "sendBeacon", "WebSocket",
+                     "caches", "Intl", "timeZone", "geolocation", "pushState", "postMessage", "Worker"):
             self.assertTrue(word not in web_ui.WORLD_JS, word)                                # (replaceState only edits the #spot fragment)
+        # The one thing asked of the browser is a camera stream, shown on a <video> and nothing else: a chosen photo is an object URL on an <img>.
+        # Neither is drawn to a canvas, read back, recorded, stored or sent.
+        self.assertEqual(re.findall(r"navigator\.(\w+)", web_ui.WORLD_JS), ["mediaDevices"])
+        self.assertEqual(web_ui.WORLD_JS.count("getUserMedia"), 1)
+        for word in ("canvas", "drawImage", "FileReader", "ImageCapture", "MediaRecorder", "toDataURL", "toBlob", "createImageBitmap", "arrayBuffer", "readAsDataURL"):
+            self.assertTrue(word not in web_ui.WORLD_JS, word)
+        self.assertEqual(sorted(re.findall(r"localStorage\.(\w+)", web_ui.WORLD_JS)), ["getItem", "setItem"])
+        self.assertEqual(re.findall(r"save\(\{(\w+)", web_ui.WORLD_JS), ["lang", "fav"])        # the only two things written
+        self.assertIn("'ui-world:'+el.id", web_ui.WORLD_JS)
         self.assertEqual(web_ui.WORLD_JS.count("fetch("), 1)
         for needle in ('method:"GET"', 'credentials:"omit"', 'cache:"no-store"', 'referrerPolicy:"no-referrer"'):
             self.assertIn(needle, web_ui.WORLD_SHARED_JS)
@@ -566,7 +577,7 @@ class WorldTests(unittest.TestCase):
             {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": "gate"}]}]},                     # ids are shared with spots
             {**WORLD, "floors": [{**floor, "actors": [{**actor, "id": f"a{i}"} for i in range(17)]}]},
             {**WORLD, "floors": [{**floor, "player": {"emoji": "🧙", "x": 9999, "y": 0}}]},
-            {**WORLD, "floors": [{**floor, "player": {"emoji": "x", "x": 0, "y": 0}}]},
+            {**WORLD, "floors": [{**floor, "player": {"emoji": "x" * 17, "x": 0, "y": 0}}]},                # a visitor's label is at most 16 characters
             {**WORLD, "board": {"title": "T", "items": []}},
             {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "25:00"}]}},
             {**WORLD, "board": {"title": "T", "items": [{"text": "x", "at": "9:00"}]}},
@@ -2594,10 +2605,6 @@ class PlaygroundTests(unittest.TestCase):
         self.assertEqual(json.loads(re.search(r'data-play="([^"]*)"', html).group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["status"], web_ui.COUNTER_STATUS)
 
 
-def flutter_case(tid, sid, name, result="success", **done):
-    return [{"type": "testStart", "test": {"id": tid, "suiteID": sid, "name": name}}, {"type": "testDone", "testID": tid, "result": result, **done}]
-
-
 def ndjson(events):
     return "\n".join(json.dumps(e) for e in events)
 
@@ -2975,7 +2982,7 @@ class ReportTests(unittest.TestCase):
             with mock.patch("sys.stderr") as err:
                 self.assertEqual(self.suite(tmp, invoke, ledger=ledger), 1)
             self.assertEqual(ledger.read_text(), "{broken")
-            self.assertIn("warning: failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
+            self.assertIn("⚠️ failure ledger update skipped", "".join(c.args[0] for c in err.write.call_args_list))
 
     @unittest.skipUnless(shutil.which("node"), "Node unavailable")
     def test_real_node_success_failure_and_filters(self):
@@ -4173,7 +4180,7 @@ class PatternTests(unittest.TestCase):
         for stdin in (b'{"mode":"redux","initial":NaN,"actions":[]}', b"[1", b'{"mode":"x"}', "{\"a\":\"".encode() + b"\xff\"}", b" " * (web_ui.PATTERN_MAX_INPUT + 1)):
             done = run("--pattern", "reduce", input=stdin)
             self.assertEqual((done.returncode, done.stdout), (2, b""), stdin[:20])
-            self.assertTrue(done.stderr.startswith(b"invalid pattern request: "))
+            self.assertTrue(done.stderr.startswith("⛔ invalid pattern request: ".encode()))
         self.assertEqual(run("--pattern", "list").stdout.decode().split(), sorted(web_ui.PATTERN_RUNNERS))
         done = run("--pattern", "nonsense", input=b"{}")
         self.assertEqual(done.returncode, 2)
@@ -4968,7 +4975,7 @@ class ImageStudioTests(unittest.TestCase):
                     with self.subTest(text=text, option=option):
                         code, out, err = self.run_cli(option, bad)
                         self.assertEqual((code, out), (2, b""))
-                        self.assertTrue(err.startswith("invalid studio input: "))
+                        self.assertTrue(err.startswith("⛔ invalid studio input: "))
             self.assertEqual(self.run_cli("--studio-render", tmp / "missing.json")[0], 2)
             text = tmp / "t.png"
             text.write_bytes(b"not a png")
@@ -5770,7 +5777,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual((done.returncode, json.loads(done.stdout)), (0, {"failures": [], "ok": True, "operation": "layout", "truncated": 0}))
         done = subprocess.run([sys.executable, str(ROOT / "web_ui.py"), "--pattern", "contract"], input='{"operation":"layout"}', capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 2)
-        self.assertIn("invalid pattern request: viewport needs a positive width and height", done.stderr)
+        self.assertIn("⛔ invalid pattern request: viewport needs a positive width and height", done.stderr)
 
     @unittest.skipUnless(os.environ.get("FLUTTER_NAVIGATION_BASIC_CHECKOUT"), "set FLUTTER_NAVIGATION_BASIC_CHECKOUT to a checkout of the original to rebuild the golden")
     def test_the_golden_is_what_the_tool_builds_from_the_original(self):

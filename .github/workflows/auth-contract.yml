@@ -1,0 +1,53 @@
+name: Local auth contract
+
+on:
+  pull_request:
+    paths:
+      - 'web_ui.py'
+      - 'tests/test_mock_auth.py'
+      - 'tests/fixtures/mock_auth_contract.json'
+      - 'tool/auth_parity.py'
+      - '.github/workflows/auth-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web_ui.py'
+      - 'tests/test_mock_auth.py'
+      - 'tests/fixtures/mock_auth_contract.json'
+      - 'tool/auth_parity.py'
+      - '.github/workflows/auth-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Stdlib contracts and loopback HTTP
+        run: |
+          python3 -S -m unittest discover -s tests -p test_mock_auth.py -v
+          python3 -S -O -m unittest discover -s tests -p test_mock_auth.py -v
+  dart-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: myon-bioinformatics/flutter_navigation_basic
+          ref: ce66ae7198dbe74ed62f70180fbff260e4acd14d
+          path: .flutter-auth
+          persist-credentials: false
+          sparse-checkout: lib/shared/http
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
+        with:
+          sdk: stable
+      - name: Unmodified Dart auth sources versus Python (84 requests and helper vectors)
+        run: python3 -S tool/auth_parity.py .flutter-auth

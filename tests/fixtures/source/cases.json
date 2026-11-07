@@ -1,0 +1,657 @@
+{
+ "_note": "Shared by tests/test_source_panel.py (web_ui.source_extract / source_markdown) and tests/source.node.js (source.js): both must give the same Markdown or the same error text.",
+ "extract": [
+  {
+   "name": "scalars",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "s",
+       "i",
+       "f",
+       "w",
+       "b",
+       "n"
+      ],
+      "rows": [
+       [
+        {
+         "key": "s"
+        },
+        {
+         "key": "i"
+        },
+        {
+         "key": "f"
+        },
+        {
+         "key": "w"
+        },
+        {
+         "key": "b"
+        },
+        {
+         "key": "n"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"s\":\"x\",\"i\":3,\"f\":2.5,\"w\":1.0,\"b\":true,\"n\":null}",
+   "markdown": "# T\n\n| s | i | f | w | b | n |\n| --- | --- | --- | --- | --- | --- |\n| x | 3 | 2.5 | 1 | true |  |\n"
+  },
+  {
+   "name": "div",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "whole",
+       "fraction",
+       "third"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a",
+         "div": 10
+        },
+        {
+         "key": "b",
+         "div": 4
+        },
+        {
+         "key": "c",
+         "div": 3
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\":40,\"b\":2,\"c\":1}",
+   "markdown": "# T\n\n| whole | fraction | third |\n| --- | --- | --- |\n| 4.0 | 0.5 | 0.3333333333333333 |\n"
+  },
+  {
+   "name": "list-sort-pick-sep",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "x",
+       "y",
+       "z"
+      ],
+      "rows": [
+       [
+        {
+         "key": "l",
+         "sort": "o",
+         "pick": "v.n"
+        },
+        {
+         "key": "l",
+         "sort": "o",
+         "pick": "v.n",
+         "sep": " / "
+        },
+        {
+         "key": "p"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"l\": [{\"o\": 2, \"v\": {\"n\": \"b\"}}, {\"o\": 1, \"v\": {\"n\": \"a\"}}], \"p\": [\"q\", \"r\"]}",
+   "markdown": "# T\n\n| x | y | z |\n| --- | --- | --- |\n| a, b | a / b | q, r |\n"
+  },
+  {
+   "name": "each-sort-yes",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "n",
+       "h"
+      ],
+      "each": "items",
+      "sort": "slot",
+      "cells": [
+       {
+        "key": "name"
+       },
+       {
+        "key": "hid",
+        "yes": "yes"
+       }
+      ]
+     }
+    ]
+   },
+   "source": "{\"items\": [{\"slot\": 3, \"name\": \"two\", \"hid\": true}, {\"slot\": 1, \"name\": \"one\", \"hid\": false}]}",
+   "markdown": "# T\n\n| n | h |\n| --- | --- |\n| one |  |\n| two | yes |\n"
+  },
+  {
+   "name": "each-empty-list",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "n"
+      ],
+      "each": "items",
+      "cells": [
+       {
+        "key": "name"
+       }
+      ]
+     }
+    ]
+   },
+   "source": "{\"items\": []}",
+   "markdown": "# T\n\n| n |\n| --- |\n"
+  },
+  {
+   "name": "escape-pipe-and-newline",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "x|y",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a|b"
+      ],
+      "rows": [
+       [
+        {
+         "key": "s"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"s\": \"p|q\\nr\\r\\ns\"}",
+   "markdown": "# x|y\n\n| a\\|b |\n| --- |\n| p\\|q r  s |\n"
+  },
+  {
+   "name": "title-placeholders",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "{name} (#{id})",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "n"
+      ],
+      "rows": [
+       [
+        {
+         "key": "name"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"name\": \"ditto\", \"id\": 132}",
+   "markdown": "# ditto (#132)\n\n| n |\n| --- |\n| ditto |\n"
+  },
+  {
+   "name": "unicode",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "n"
+      ],
+      "rows": [
+       [
+        {
+         "key": "name"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"name\": \"ポケモンé\"}",
+   "markdown": "# T\n\n| n |\n| --- |\n| ポケモンé |\n"
+  },
+  {
+   "name": "missing-key",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "nope"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"x\": 1}",
+   "error": "bad response"
+  },
+  {
+   "name": "nested-missing",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a.b"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\": 1}",
+   "error": "bad response"
+  },
+  {
+   "name": "object-is-not-a-scalar",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\": {\"b\": 1}}",
+   "error": "bad response"
+  },
+  {
+   "name": "div-needs-a-number",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a",
+         "div": 2
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\": \"4\"}",
+   "error": "bad response"
+  },
+  {
+   "name": "div-refuses-a-boolean",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a",
+         "div": 2
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\": true}",
+   "error": "bad response"
+  },
+  {
+   "name": "yes-needs-a-boolean",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a",
+         "yes": "y"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"a\": 1}",
+   "error": "bad response"
+  },
+  {
+   "name": "sort-needs-numbers",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "l",
+         "sort": "o"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"l\": [{\"o\": \"1\"}]}",
+   "error": "bad response"
+  },
+  {
+   "name": "each-needs-a-list",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "each": "items",
+      "cells": [
+       {
+        "key": "x"
+       }
+      ]
+     }
+    ]
+   },
+   "source": "{\"items\": {\"x\": 1}}",
+   "error": "bad response"
+  },
+  {
+   "name": "list-of-objects-without-pick",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "l"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{\"l\": [{\"x\": 1}]}",
+   "error": "bad response"
+  },
+  {
+   "name": "top-level-array",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "[1,2]",
+   "error": "bad response"
+  },
+  {
+   "name": "not-json",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "{nope",
+   "error": "source is not JSON"
+  },
+  {
+   "name": "empty-text",
+   "spec": {
+    "id": "t",
+    "label": "Name",
+    "name": "[a-z ]+",
+    "url": "https://example.test/{name}",
+    "title": "T",
+    "error": "bad response",
+    "tables": [
+     {
+      "headers": [
+       "a"
+      ],
+      "rows": [
+       [
+        {
+         "key": "a"
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   "source": "",
+   "error": "source is not JSON"
+  }
+ ],
+ "names": {
+  "spec": {
+   "id": "t",
+   "label": "Name",
+   "name": "[a-z ]+",
+   "url": "https://example.test/{name}",
+   "title": "T",
+   "tables": [
+    {
+     "headers": [
+      "a"
+     ],
+     "rows": [
+      [
+       {
+        "key": "a"
+       }
+      ]
+     ]
+    }
+   ]
+  },
+  "valid": [
+   [
+    "ditto",
+    "ditto"
+   ],
+   [
+    "  Ditto \n",
+    "ditto"
+   ],
+   [
+    "a b",
+    "a b"
+   ],
+   [
+    "\tAB",
+    "ab"
+   ]
+  ],
+  "invalid": [
+   "",
+   "   ",
+   "dit0",
+   "ditto!",
+   " ditto",
+   "٠",
+   "a/b",
+   "﻿a"
+  ],
+  "urls": [
+   [
+    "a b",
+    "https://example.test/a%20b"
+   ],
+   [
+    "x",
+    "https://example.test/x"
+   ]
+  ]
+ }
+}

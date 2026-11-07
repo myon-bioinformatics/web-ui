@@ -36,7 +36,7 @@ TARGETS = {
     'irony_generator': ('successor', 'irony_round, play_document', 'New authored quiz deck; the original text corpus stays at the source'),
     'coordinate_tool': ('partial', 'coordinates_document', 'Network short-link expansion is excluded on purpose'),
     'clipboard_shelf': ('partial', 'shelf_document', 'Native clipboard platform behaviour is not equivalent'),
-    'http_request_draft': ('partial', 'parse_curl, stub_document', 'Real HTTP execution and authentication are not absorbed (web-ui sends nothing)'),
+    'http_request_draft': ('partial', 'parse_curl, stub_document', 'External HTTP execution is not absorbed; local fixture authentication is available via MockAuthHandler (web-ui sends nothing)'),
     'screen5': ('partial', 'screen_view (screen 5 as its generic screen, with a note)', "The URL-parameter tool's dedicated GetX controller is not absorbed"),
     'home': ('partial', 'door_document, page identities', 'Home cards are Flutter widgets; the Door selector and page identities are the web-ui pages'),
 }
@@ -61,9 +61,9 @@ PATH_RULES = (
     ('lib/screens/ui_showcase_screen.dart', 'successor', 'showcase_document', ''),
     ('lib/data/composer.dart', 'partial', 'progression_notes, studio_document, song_seed', 'The seeded generator differs from Dart Random on purpose'),
     ('lib/data/ironies.dart', 'successor', 'irony_round, play_document', 'New authored quiz deck; the original text corpus stays at the source'),
-    ('lib/shared/http/auth_matrix.dart', 'pending', 'Digest/HMAC auth matrix mock', 'Asked for; done after the screens and contracts'),
-    ('lib/shared/http/digest_nc.dart', 'pending', 'Digest/HMAC auth matrix mock', 'Asked for; done after the screens and contracts'),
-    ('lib/shared/http/mock_auth.dart', 'pending', 'Digest/HMAC auth matrix mock', 'Asked for; done after the screens and contracts'),
+    ('lib/shared/http/auth_matrix.dart', 'partial', 'auth_matrix, auth_prepare, auth_document (/auth.html)', 'All eleven local presets; RequestDraft sensitive-field metadata and Flutter draft UI are not migrated'),
+    ('lib/shared/http/digest_nc.dart', 'successor', 'digest_nc_parse, digest_nc_format', ''),
+    ('lib/shared/http/mock_auth.dart', 'successor', 'MockAuthHandler, auth_digest_response, auth_hmac_signature, auth_query_pairs', 'Local fixture router only; /mock-auth accepts simulated requests; no external authentication'),
     ('lib/shared/http/live_request_executor', 'not_absorbed', None, 'Sends real HTTP requests; web-ui tools send nothing'),
     ('lib/shared/http/request_executor.dart', 'not_absorbed', None, 'Sends real HTTP requests; web-ui tools send nothing'),
     ('lib/shared/http/curl_runtime_transport', 'not_absorbed', None, 'Sends real HTTP requests; web-ui tools send nothing'),
@@ -155,7 +155,7 @@ BUILD_TOOLS = {
     'dev.dart': ('proposed_retirement', None, 'Launcher that forwards to the other Dart build tools'),
     'export_pattern_contracts.dart': ('proposed_retirement', None, 'Exports the Dart pattern registry'),
     'inspect.dart': ('proposed_retirement', None, 'Counts and inspects the Dart files of the Flutter repository'),
-    'mock_http_server.dart': ('partial', 'MCP lab (MockMcpRoutes, PR #109)', 'It also mounts MockAuthHandler, the Digest/HMAC auth matrix, which is pending'),
+    'mock_http_server.dart': ('partial', 'MCP lab (MockMcpRoutes, PR #109)', 'Local auth now runs through POST /mock-auth on the existing loopback bridge; original standalone /auth/* HTTP server topology is not reproduced'),
 }
 WORKFLOWS = {
     'actionlint.yml': ('successor', '.github/workflows/actionlint.yml', ''),
@@ -370,3 +370,4 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

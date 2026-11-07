@@ -20,7 +20,9 @@ jobs:
         with:
           node-version: '26'
       - run: uv pip install pytest
-      - run: PYTHONPATH=. python -m pytest -q tests/test_world_motion.py tests/test_world_shared.py
+      - run: PYTHONPATH=. python -m pytest -q tests/test_world_motion.py tests/test_world_shared.py tests/test_world_classroom.py
       - run: npm install --prefix build/shared --no-save --package-lock=false --ignore-scripts playwright@1.63.0
       - run: build/shared/node_modules/.bin/playwright install --with-deps chromium
       - run: NODE_PATH=build/shared/node_modules node tests/world_shared.browser.cjs
+      - run: uv pip install playwright==1.63.0 "pillow>=13.0.0"
+      - run: python tests/integration/school_browser.py -v
