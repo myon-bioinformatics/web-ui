@@ -131,7 +131,7 @@ def test_public_vendor_ci_updates_without_repository_writes():
 
 def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     ci = _workflow()
-    job = ci["jobs"]["test-locked"]
+    job = ci["jobs"]["vendor-locked"]
     assert job["permissions"] == {"contents": "read"}
     assert "continue-on-error" not in job
     assert job.get("needs") == ci["jobs"]["resolve-vendor"].get("needs")
@@ -166,7 +166,7 @@ def test_locked_baseline_runs_automatically_without_candidate_snapshot():
     assert lock["with"]["path"] == "build/vendor-evidence-locked"
 
 
-@pytest.mark.parametrize("job_name", ["resolve-vendor", "tooling", "test-locked"])
+@pytest.mark.parametrize("job_name", ["resolve-vendor", "tooling", "vendor-locked"])
 def test_pinned_parent_staging_command_and_real_payload(tmp_path, job_name):
     """Execute the workflow staging command against real lock bytes."""
     parent_tool = ROOT / ".vendor-sync-tools/vendor_stage.py"
