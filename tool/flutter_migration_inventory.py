@@ -178,6 +178,10 @@ WORKFLOWS = {
     'claude.yml': ('proposed_retirement', None, 'Assistant workflow of that repository'),
 }
 
+# Flutter #244 renames these roles; retain historical names for pinned inventories.
+WORKFLOWS['ci.yml'] = WORKFLOWS['dart.yml']
+WORKFLOWS['pages.yml'] = WORKFLOWS['flutter-pages.yml']
+
 _TOKEN = re.compile(r'[A-Za-z_$][A-Za-z_0-9$]*|(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|>>>=|===|!==|>>>|<<=|>>=|\?\?=|\.\.\.|=>|==|!=|<=|>=|&&|\|\||\+\+|--|\+=|-=|\*=|/=|~/|%=|<<|>>|\?\?|\?\.|\.\.|[^\s]')
 
 
