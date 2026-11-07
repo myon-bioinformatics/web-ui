@@ -576,6 +576,12 @@ assert run_node("tests/repository_diagnostics.node.js").returncode == 0
 
 Existing `ui.js` text/clipboard helpers, `stub.js` form binding, and
 `repository-diagnostics.js` rendering remain in use by examples or consumers.
+
+🩺 The repository-diagnostics page itself is one function: `web_ui.repository_diagnostics_page("owner/repo")`
+returns the self-contained HTML (bundled CSS and `repository-diagnostics.js` embedded, nothing from a CDN) that
+reads `./repository-diagnostics.json` next to it via `RepositoryDiagnostics.mount`. Consumers (markdown,
+ascii_artist, mcp-toolcall-lab) write their own JSON/JSONL with gh_identity and call this for the page, pinning
+this repository as a git dependency (`uv lock --upgrade-package pysaiyanweboo` to move the pin).
 They remain optional browser utilities under the lightweight JS bar in
 [docs/lightweight-js.md](docs/lightweight-js.md). Python cannot replace
 browser-side interaction merely by generating HTML. Live DOM checks of published
