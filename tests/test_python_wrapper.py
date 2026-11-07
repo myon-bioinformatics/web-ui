@@ -370,12 +370,12 @@ class WorldTests(unittest.TestCase):
         """Nothing in index.html is written for the page alone: every part is a public builder's output (or an EXAMPLES spec through one)."""
         page = (ROOT / "index.html").read_text(encoding="utf-8")
         for fragment in (web_ui.world_html(web_ui.example_data("overworld")), web_ui.world_html(web_ui.example_data("school")),
-                         web_ui.stub_html(web_ui.EXAMPLE_STUBS["mcp"], heading_level=2), web_ui.stub_html(web_ui.EXAMPLE_STUBS["api"], heading_level=2),
+                         web_ui.world_html(web_ui.example_data("cities")), web_ui.stub_html(web_ui.EXAMPLE_STUBS["mcp"], heading_level=2), web_ui.stub_html(web_ui.EXAMPLE_STUBS["api"], heading_level=2),
                          web_ui.curl_panel_html(), web_ui.theme_switch_html(), web_ui.seed_dial_html(), web_ui.seed_roll_html(), web_ui.front_css(),
                          web_ui.module_script(web_ui.js_source("theme.js") + "bindSeed();\n"), web_ui.module_script(web_ui.js_source("curl.js"))):
             self.assertIn(fragment, page)
         self.assertEqual(page.count('class="ui-front"'), 1)
-        self.assertEqual(page.count('class="ui-room"'), 8)                                                       # the menu and seven rooms
+        self.assertEqual(page.count('class="ui-room"'), 9)                                                       # the menu and eight rooms
 
     def test_villagers_walk_straight_at_constant_speed_pause_at_random_and_loop_seamlessly(self):
         for seed in range(60):

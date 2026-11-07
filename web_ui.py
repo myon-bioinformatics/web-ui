@@ -2635,12 +2635,14 @@ def _floor_kit(tile: int, id: str) -> tuple[Any, Any]:
 
 
 def _expand_floor(floor: Any) -> Any:
-    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)`` and ``{"land": {theme, cols, rows, seed,
-    tile}}`` for ``land_floor(...)``, so JSON alone (no Python in the calling repository) can ask for a classroom or a land; ``spots``,
+    """``{"id", "label", "classroom": {rows, groups, per_group, tile}}`` stands for ``classroom_floor(...)``, ``{"land": {theme, cols, rows, seed,
+    tile}}`` for ``land_floor(...)`` and ``{"place": {points, meters, ...}}`` for ``place_floor(...)``, so JSON alone (no Python in the calling
+    repository) can ask for a classroom, a land or a real place; ``spots``,
     ``actors`` and ``player`` given beside it replace the generated ones, and ``real`` marks it as a floor with a photo or camera behind it."""
     if not isinstance(floor, dict):
         return floor
-    makers = {"classroom": (classroom_floor, {"rows", "groups", "per_group", "tile"}), "land": (land_floor, {"theme", "cols", "rows", "seed", "tile"})}
+    makers = {"classroom": (classroom_floor, {"rows", "groups", "per_group", "tile"}), "land": (land_floor, {"theme", "cols", "rows", "seed", "tile"}),
+              "place": (place_floor, _PLACE_KEYS)}
     kind = next((k for k in makers if k in floor), None)
     if kind is None:
         return floor
@@ -2771,6 +2773,159 @@ def land_floor(theme: str = "meadow", cols: int = 24, rows: int = 16, *, seed: i
     return {"id": id, "label": label or look["label"], "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [],
             "spots": [place("town", look["town"], (cx, cy)), place("landmark", look["landmark"], far)],
             "player": {"emoji": "🙂", "x": int((cx + .5) * tile), "y": int((rows - 1.5) * tile), "speed": 96}}
+
+
+# A real place in miniature: points with a latitude and longitude laid on the tile grid (``meters`` of ground per tile), roads between linked
+# points, and rivers as bands of water that roads cross as bridges. The projection and the box come from the coordinate tools below (the same
+# Earth radius and ``tolerance_area``), so a place is only data: a list of points, nothing drawn by hand.
+_PLACE_KEYS = {"points", "meters", "tile", "links", "rivers", "area", "start"}
+_PLACE_POINT_KEYS = {"id", "label", "lat", "lon", "maps", "category", "body"}
+
+
+def _place_point(point: Any, seen: set[str]) -> dict[str, Any]:
+    if not isinstance(point, dict) or set(point) - _PLACE_POINT_KEYS or ("maps" in point) == ("lat" in point or "lon" in point) \
+            or ("lat" in point) != ("lon" in point):
+        raise ValueError("a point has id, label, category, body and either lat and lon or maps (a Maps URL)")
+    if "maps" in point:
+        found = try_parse_maps_url(point["maps"]) if isinstance(point["maps"], str) else None
+        if found is None:
+            raise ValueError("maps has no coordinates in it")
+        lat, lon = found
+    else:
+        lat, lon = parse_coordinate(point["lat"], point["lon"])
+    category = point.get("category", "")
+    if category != "" and not (isinstance(category, str) and _WORLD_TOKEN.fullmatch(category)):
+        raise ValueError("category must be a lowercase token")
+    return {"id": _world_id(point.get("id"), "point id", seen), "label": _world_text(point.get("label"), "label", 40), "lat": lat, "lon": lon,
+            "category": category, "body": _world_text(point.get("body", ""), "body", 400, required=False)}
+
+
+def _place_meters(lat: float, lon: float, north: float, west: float, mid: float) -> tuple[float, float]:
+    """Metres east of ``west`` and south of ``north`` on a flat map whose scale is that of latitude ``mid`` (good for a few kilometres)."""
+    return ((lon - west) * math.cos(mid * math.pi / 180) * math.pi / 180 * EARTH_RADIUS_M, (north - lat) * math.pi / 180 * EARTH_RADIUS_M)
+
+
+def _place_rects(cells: set[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
+    """Tiles as rectangles ``(x, y, w, h)``: horizontal runs, then equal runs on the rows below stacked into one, so a road is a few props, not one per tile."""
+    open_rects: dict[tuple[int, int], list[int]] = {}                                       # (x, w) -> [y, h] of the rectangle still growing
+    done: list[tuple[int, int, int, int]] = []
+    for y in range(min((c[1] for c in cells), default=0), max((c[1] for c in cells), default=-1) + 1):
+        xs = sorted(x for x, cy in cells if cy == y)
+        runs, start = [], None
+        for i, x in enumerate(xs):
+            if start is None:
+                start = x
+            if i + 1 == len(xs) or xs[i + 1] != x + 1:
+                runs.append((start, x - start + 1))
+                start = None
+        for key in [k for k in open_rects if k not in runs]:
+            top, height = open_rects.pop(key)
+            done.append((key[0], top, key[1], height))
+        for run in runs:
+            if run in open_rects:
+                open_rects[run][1] += 1
+            else:
+                open_rects[run] = [y, 1]
+    done += [(key[0], top, key[1], height) for key, (top, height) in open_rects.items()]
+    return sorted(done, key=lambda r: (r[1], r[0]))
+
+
+def place_floor(points: list[dict[str, Any]], *, meters: int = 64, tile: int = 32, links: Any = (), rivers: Any = (), area: Any = None,
+                start: str | None = None, id: str = "place", label: str = "場所") -> dict[str, Any]:
+    """A real place as a floor: each point (``id``, ``label``, ``lat`` and ``lon``, or ``maps`` with a Maps URL; optional ``category`` and ``body``) becomes a
+    spot on the tile its position falls on, ``meters`` of ground per tile.
+
+    ``links`` are pairs of point ids joined by an L-shaped road; ``rivers`` are ``{"line": [[lat, lon], ...], "width": tiles}`` bands of water, and a road
+    that crosses one becomes a bridge. ``area`` is ``{"center": [lat, lon], "radius": metres}``, the box ``tolerance_area`` gives (without it the map is the
+    points' box and a margin of two tiles). Two points on one tile are moved to the nearest free tile (the earlier point keeps its tile), and a
+    point that is cut off from the player's start by water is an error, so every spot can be walked to. The player starts at ``start`` (a point id,
+    default the first point).
+    """
+    tile, meters = _world_tile(tile), _bounded_int(meters, "meters", 8, 2000)
+    if not isinstance(points, list) or not 1 <= len(points) <= 64:
+        raise ValueError("a place lists 1..64 points")
+    seen: set[str] = set()
+    pts = [_place_point(p, seen) for p in points]
+    if area is not None:
+        if not isinstance(area, dict) or set(area) != {"center", "radius"} or not isinstance(area["center"], list) or len(area["center"]) != 2 \
+                or type(area["radius"]) not in (int, float):
+            raise ValueError("area is {center: [lat, lon], radius: metres}")
+        clat, clon = parse_coordinate(area["center"][0], area["center"][1])
+        box = tolerance_area(clat, clon, area["radius"])
+        if box["wraps"] or box["full_longitude"]:
+            raise ValueError("the area must not cross the date line or reach a pole")
+        north, west, south, east = box["north"], box["west"], box["south"], box["east"]
+        margin = 0
+    else:
+        lats, lons = [p["lat"] for p in pts], [p["lon"] for p in pts]
+        north, west, south, east, margin = max(lats), min(lons), min(lats), max(lons), 2
+    mid = (north + south) / 2
+    extent_x, extent_y = _place_meters(south, east, north, west, mid)
+    cols, rows = int(extent_x // meters) + 1 + 2 * margin, int(extent_y // meters) + 1 + 2 * margin
+    cols, rows = max(cols, 12), max(rows, 12)
+    if cols * tile > 4096 or rows * tile > 4096:
+        raise ValueError("the place fits in 4096 units: raise meters or lower tile")
+    ox, oy = (cols - int(extent_x // meters) - 1) // 2, (rows - int(extent_y // meters) - 1) // 2    # centre the box on the grid
+    def cell(lat: float, lon: float) -> tuple[int, int]:
+        x, y = _place_meters(lat, lon, north, west, mid)
+        return int(x // meters) + ox, int(y // meters) + oy
+    for p in pts:
+        p["cell"] = cell(p["lat"], p["lon"])
+        if not (0 <= p["cell"][0] < cols and 0 <= p["cell"][1] < rows):
+            raise ValueError(f"{p['id']} lies outside the area")
+    water: set[tuple[int, int]] = set()
+    rivers = list(rivers or ())
+    for river in rivers:
+        if not isinstance(river, dict) or set(river) != {"line", "width"} or not isinstance(river["line"], list) or not 2 <= len(river["line"]) <= 32:
+            raise ValueError("a river is {line: [[lat, lon], ...] (2..32 points), width: tiles}")
+        width_tiles = _bounded_int(river["width"], "width", 1, 8)
+        line = [cell(*parse_coordinate(a, b)) for a, b in river["line"]]
+        for (x0, y0), (x1, y1) in zip(line, line[1:]):
+            steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+            for i in range(steps + 1):
+                x, y = x0 + round((x1 - x0) * i / steps), y0 + round((y1 - y0) * i / steps)
+                for dx in range(-(width_tiles // 2), width_tiles - width_tiles // 2):
+                    for dy in range(-(width_tiles // 2), width_tiles - width_tiles // 2):
+                        if 0 <= x + dx < cols and 0 <= y + dy < rows:
+                            water.add((x + dx, y + dy))
+    taken: set[tuple[int, int]] = set()
+    for p in pts:                                                                        # one spot per tile, none in the water
+        cx, cy = p["cell"]
+        for ring in range(max(cols, rows)):
+            near = sorted(((cx + dx, cy + dy) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1) if max(abs(dx), abs(dy)) == ring),
+                          key=lambda c: ((c[0] - cx) ** 2 + (c[1] - cy) ** 2, c[1], c[0]))
+            free = [c for c in near if 0 <= c[0] < cols and 0 <= c[1] < rows and c not in taken and c not in water]
+            if free:
+                p["cell"] = free[0]
+                break
+        taken.add(p["cell"])
+    by_id = {p["id"]: p for p in pts}
+    if start is not None and start not in by_id:
+        raise ValueError("start is the id of one of the points")
+    road: set[tuple[int, int]] = set()
+    if not isinstance(links, (list, tuple)) or len(links) > 128:
+        raise ValueError("links is a list of up to 128 pairs of point ids")
+    for pair in links:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2 or any(k not in by_id for k in pair) or pair[0] == pair[1]:
+            raise ValueError("a link joins two different point ids of the place")
+        (x0, y0), (x1, y1) = by_id[pair[0]]["cell"], by_id[pair[1]]["cell"]
+        road |= {(x, y0) for x in range(min(x0, x1), max(x0, x1) + 1)} | {(x1, y) for y in range(min(y0, y1), max(y0, y1) + 1)}
+    bridge = road & water
+    prop, spot = _floor_kit(tile, id)
+    props = [prop("grass", 0, 0, cols, rows)]
+    for kind, cells in (("water", water), ("road", road - water), ("bridge", bridge)):               # roads after water: a bridge opens its tiles
+        props += [prop(kind, *rect) for rect in _place_rects(cells)]
+    if len(props) > 512:
+        raise ValueError("the place has too many tiles of road and water: raise meters")
+    first = by_id[start or pts[0]["id"]]
+    reach = world_reach(world_blocked(cols * tile, rows * tile, tile, props), first["cell"])
+    lost = [p["id"] for p in pts if p["cell"] not in reach]
+    if lost:
+        raise ValueError(f"cut off by water from {first['id']}: {', '.join(lost)} (add a link across the river)")
+    spots = [{"id": f"{id}-{p['id']}", "x": int((p["cell"][0] + .5) * tile), "y": int((p["cell"][1] + .5) * tile), "label": p["label"],
+              "category": p["category"], "body": p["body"]} for p in pts]
+    return {"id": id, "label": label, "width": cols * tile, "height": rows * tile, "tile": tile, "props": props, "actors": [], "spots": spots,
+            "player": {"emoji": "🙂", "x": int((first["cell"][0] + .5) * tile), "y": int((first["cell"][1] + .5) * tile), "speed": 96}}
 
 
 def _shots_html(world: dict[str, Any]) -> str:
@@ -16929,6 +17084,97 @@ EXAMPLES: dict[str, Any] = {'flutter-pages': {'schema': 'web-ui-flutter-pages/1'
 
 # Synthetic consumer data, not fetched research results or a second source of
 # repository metadata. Consumers adapt their existing source of truth to this.
+# Real places in miniature (the `place` floor): latitude and longitude in, tiles out. The coordinates are approximate (about 100 m, read off public
+# maps), which is all a miniature needs; the point is where things stand relative to each other, so nothing here is a facility's exact position.
+def _pt(id: str, label: str, lat: float, lon: float, category: str, body: str = "") -> dict[str, Any]:
+    return {"id": id, "label": label, "lat": lat, "lon": lon, "category": category, "body": body}
+
+
+_TOKYO_POINTS = [
+    _pt("marunouchi-c", "丸の内中央口", 35.68134, 139.7665, "exit", "東京駅の丸の内側、ちょうど真ん中の出入口です。"),
+    _pt("marunouchi-n", "丸の内北口", 35.6824, 139.7664, "exit", "東京駅の丸の内側、北の出入口です。"),
+    _pt("marunouchi-s", "丸の内南口", 35.68025, 139.76625, "exit", "東京駅の丸の内側、南の出入口です。"),
+    _pt("yaesu-c", "八重洲中央口", 35.6813, 139.7686, "exit", "東京駅の八重洲側、ちょうど真ん中の出入口です。"),
+    _pt("yaesu-n", "八重洲北口", 35.6825, 139.7685, "exit", "東京駅の八重洲側、北の出入口です。"),
+    _pt("yaesu-s", "八重洲南口", 35.6801, 139.7684, "exit", "東京駅の八重洲側、南の出入口です。"),
+    _pt("otemachi", "大手町", 35.6867, 139.7631, "station", "東京駅の北西、歩いて行ける駅です。"),
+    _pt("nijubashimae", "二重橋前", 35.6804, 139.7612, "station", "東京駅の西、丸の内の駅です。"),
+    _pt("yurakucho", "有楽町", 35.6751, 139.7631, "station", "東京駅の南、ひと駅となりです。"),
+    _pt("hibiya", "日比谷", 35.674, 139.7598, "station", "有楽町の西にある駅です。"),
+    _pt("ginza", "銀座", 35.6719, 139.7639, "station", "有楽町の南にある駅です。"),
+    _pt("ginza-itchome", "銀座一丁目", 35.6745, 139.7672, "station", "銀座の北東にある駅です。"),
+    _pt("kyobashi", "京橋", 35.6768, 139.7702, "station", "東京駅の南東、八重洲のむこうの駅です。"),
+    _pt("nihombashi", "日本橋", 35.682, 139.7743, "station", "東京駅の東、八重洲のむこうの駅です。"),
+    _pt("mitsukoshimae", "三越前", 35.6868, 139.7737, "station", "日本橋の北にある駅です。"),
+    _pt("shin-nihombashi", "新日本橋", 35.6898, 139.7741, "station", "三越前の北にある駅です。"),
+    _pt("kanda", "神田", 35.6918, 139.7709, "station", "東京駅の北、ひと駅となりです。"),
+    _pt("takebashi", "竹橋", 35.6906, 139.7586, "station", "大手町の北西にある駅です。"),
+    _pt("shimbashi", "新橋", 35.6663, 139.7583, "station", "有楽町の南、ふた駅となりです。"),
+]
+_TOKYO_LINKS = [["marunouchi-n", "marunouchi-c"], ["marunouchi-c", "marunouchi-s"], ["yaesu-n", "yaesu-c"], ["yaesu-c", "yaesu-s"], ["marunouchi-c", "yaesu-c"],
+    ["otemachi", "marunouchi-n"], ["takebashi", "otemachi"], ["nijubashimae", "marunouchi-s"], ["yurakucho", "marunouchi-s"], ["hibiya", "yurakucho"],
+    ["ginza", "yurakucho"], ["shimbashi", "ginza"], ["ginza-itchome", "yaesu-s"], ["kyobashi", "yaesu-s"], ["nihombashi", "yaesu-c"],
+    ["mitsukoshimae", "nihombashi"], ["shin-nihombashi", "mitsukoshimae"], ["kanda", "shin-nihombashi"]]
+_LONDON_POINTS = [
+    _pt("kings-cross", "キングス・クロス", 51.5309, -0.1233, "terminus", "北へ向かう列車が出る大きな駅です。"),
+    _pt("st-pancras", "セント・パンクラス", 51.5322, -0.1269, "terminus", "海をわたる列車も出る、赤れんがの駅です。"),
+    _pt("euston", "ユーストン", 51.5282, -0.1337, "terminus", "北西へ向かう列車の駅です。"),
+    _pt("paddington", "パディントン", 51.5154, -0.1755, "terminus", "西へ向かう列車の駅です。"),
+    _pt("marylebone", "マリルボーン", 51.5225, -0.1631, "terminus", "こぢんまりとした北西の駅です。"),
+    _pt("liverpool-street", "リバプール・ストリート", 51.5178, -0.0823, "terminus", "東へ向かう列車の駅です。"),
+    _pt("fenchurch-street", "フェンチャーチ・ストリート", 51.5115, -0.0789, "terminus", "東の海辺へ向かう列車の駅です。"),
+    _pt("cannon-street", "キャノン・ストリート", 51.5113, -0.0904, "terminus", "川の北岸にある、南東へ向かう駅です。"),
+    _pt("london-bridge", "ロンドン・ブリッジ", 51.5052, -0.0864, "terminus", "川の南岸にある、南へ向かう駅です。"),
+    _pt("blackfriars", "ブラックフライアーズ", 51.512, -0.103, "terminus", "橋の上に駅がある、川をまたぐ駅です。"),
+    _pt("waterloo", "ウォータールー", 51.5031, -0.1132, "terminus", "川の南岸にある、いちばん大きな駅です。"),
+    _pt("charing-cross", "チャリング・クロス", 51.508, -0.1247, "terminus", "川の北岸にある、南東へ向かう駅です。"),
+    _pt("victoria", "ヴィクトリア", 51.4952, -0.1441, "terminus", "南へ向かう列車の駅です。"),
+    _pt("edgware-road", "エッジウェア・ロード", 51.5199, -0.1679, "station", "パディントンとマリルボーンの間の駅です。"),
+    _pt("baker-street", "ベイカー・ストリート", 51.5226, -0.1571, "station", "マリルボーンのとなりの駅です。"),
+    _pt("warren-street", "ウォーレン・ストリート", 51.5247, -0.1384, "station", "ユーストンのとなりの駅です。"),
+    _pt("angel", "エンジェル", 51.5322, -0.1058, "station", "キングス・クロスの東のとなりの駅です。"),
+    _pt("russell-square", "ラッセル・スクエア", 51.523, -0.1244, "station", "キングス・クロスの南のとなりの駅です。"),
+    _pt("farringdon", "ファリンドン", 51.5203, -0.1053, "station", "キングス・クロスの南東のとなりの駅です。"),
+    _pt("moorgate", "ムーアゲート", 51.5186, -0.0886, "station", "リバプール・ストリートの西のとなりの駅です。"),
+    _pt("aldgate", "オールドゲート", 51.5143, -0.0755, "station", "リバプール・ストリートの南東のとなりの駅です。"),
+    _pt("tower-hill", "タワー・ヒル", 51.5098, -0.0766, "station", "フェンチャーチ・ストリートのとなりの駅です。"),
+    _pt("bank", "バンク", 51.5133, -0.0886, "station", "キャノン・ストリートのとなりの駅です。"),
+    _pt("monument", "モニュメント", 51.5108, -0.0863, "station", "キャノン・ストリートの東のとなりの駅です。"),
+    _pt("borough", "ボロー", 51.5011, -0.0943, "station", "ロンドン・ブリッジの南西のとなりの駅です。"),
+    _pt("st-pauls", "セント・ポールズ", 51.5146, -0.0973, "station", "ブラックフライアーズの北東のとなりの駅です。"),
+    _pt("temple", "テンプル", 51.5111, -0.1141, "station", "ブラックフライアーズの西のとなりの駅です。"),
+    _pt("southwark", "サザーク", 51.504, -0.1052, "station", "川の南、ウォータールーの東のとなりの駅です。"),
+    _pt("lambeth-north", "ランベス・ノース", 51.4991, -0.1115, "station", "ウォータールーの南のとなりの駅です。"),
+    _pt("embankment", "エンバンクメント", 51.5074, -0.1223, "station", "チャリング・クロスのとなりの駅です。"),
+    _pt("westminster", "ウェストミンスター", 51.501, -0.1254, "station", "チャリング・クロスの南のとなりの駅です。"),
+    _pt("green-park", "グリーン・パーク", 51.5067, -0.1428, "station", "ヴィクトリアの北のとなりの駅です。"),
+    _pt("pimlico", "ピムリコ", 51.4893, -0.1334, "station", "ヴィクトリアの南東のとなりの駅です。"),
+    _pt("big-ben", "ビッグ・ベン", 51.5007, -0.1246, "sight", "川のほとりに立つ大きな時計塔です。"),
+    _pt("westminster-abbey", "ウェストミンスター寺院", 51.4994, -0.1273, "sight", "国の儀式が行われてきた大きな教会です。"),
+    _pt("london-eye", "ロンドン・アイ", 51.5033, -0.1195, "sight", "川のそばの大きな観覧車です。"),
+    _pt("buckingham", "バッキンガム宮殿", 51.5014, -0.1419, "sight", "王室の住まいの宮殿です。"),
+    _pt("trafalgar-square", "トラファルガー広場", 51.508, -0.1281, "sight", "噴水と像のある大きな広場です。"),
+    _pt("piccadilly-circus", "ピカデリー・サーカス", 51.51, -0.1347, "sight", "光る看板がならぶ交差点です。"),
+    _pt("british-museum", "大英博物館", 51.5194, -0.127, "sight", "世界中の品々を集めた博物館です。"),
+    _pt("st-pauls-cathedral", "セント・ポール大聖堂", 51.5138, -0.0984, "sight", "大きなドームをのせた大聖堂です。"),
+    _pt("the-shard", "ザ・シャード", 51.5045, -0.0865, "sight", "とがった形の高いビルです。"),
+    _pt("tower-bridge", "タワー・ブリッジ", 51.5055, -0.0754, "sight", "川にかかる、二つの塔のある橋です。"),
+    _pt("downing-street", "首相官邸", 51.5034, -0.1276, "famous", "首相の仕事場と住まいがある通りです。"),
+    _pt("scotland-yard", "警視庁", 51.5012, -0.1229, "famous", "ロンドンの警察の本部です。"),
+    _pt("bank-of-england", "イングランド銀行", 51.5142, -0.0885, "famous", "国の中央銀行です。"),
+    _pt("old-bailey", "中央刑事裁判所", 51.5156, -0.1021, "famous", "大きな裁判が開かれる裁判所です。"),
+    _pt("bbc", "BBC放送会館", 51.5185, -0.1439, "famous", "放送局の本拠地です。"),
+]
+_LONDON_LINKS = [["paddington", "edgware-road"], ["marylebone", "edgware-road"], ["marylebone", "baker-street"], ["euston", "warren-street"], ["kings-cross",
+    "euston"], ["kings-cross", "st-pancras"], ["kings-cross", "russell-square"], ["kings-cross", "angel"], ["farringdon", "kings-cross"],
+    ["liverpool-street", "moorgate"], ["liverpool-street", "aldgate"], ["fenchurch-street", "tower-hill"], ["fenchurch-street", "aldgate"],
+    ["cannon-street", "bank"], ["cannon-street", "monument"], ["london-bridge", "borough"], ["london-bridge", "monument"], ["blackfriars", "temple"],
+    ["blackfriars", "st-pauls"], ["blackfriars", "southwark"], ["waterloo", "lambeth-north"], ["waterloo", "southwark"], ["waterloo",
+    "charing-cross"], ["charing-cross", "embankment"], ["charing-cross", "westminster"], ["victoria", "green-park"], ["victoria", "pimlico"],
+    ["moorgate", "bank"]]
+_THAMES = {"line": [[51.4852, -0.1495], [51.4875, -0.127], [51.4945, -0.123], [51.5008, -0.1219], [51.5062, -0.1198], [51.5086, -0.1169], [51.5099, -0.1043], [51.5095, -0.0985], [51.5088, -0.0937], [51.5079, -0.0877], [51.5055, -0.0754], [51.504, -0.06]], "width": 2}
+
+
 EXAMPLES.update({
     "school": {
         "schema": WORLD_SCHEMA, "id": "school", "title": "School (prototype)", "zoom_max": 4,
@@ -16966,6 +17212,20 @@ EXAMPLES.update({
                    {"id": "real", "label": "実空間×仮想", "width": 384, "height": 384, "tile": 32, "real": True,
                     "spots": [{"id": "real-gate", "label": "入口", "x": 192, "y": 96, "body": "⋯ の 🖼️📷 で、写真かカメラをうしろに映せます（ページの中だけ。保存も送信もしません）。"}],
                     "player": {"emoji": "🙂", "x": 192, "y": 288, "speed": 96}}],
+    },
+    # The overworld's sequel in real space: TOKYO (Tokyo Station with its six exits and the stations around it, on foot) and Reverse London (the main
+    # termini, the stations beside them, and famous places, with the Thames and its bridges). `place` turns latitude/longitude into tiles.
+    "cities": {
+        "schema": WORLD_SCHEMA, "id": "cities", "title": "Real space (miniature)", "zoom_max": 4,
+        "avatars": ["🙂", "🧳", "🚶", "🎒", "🐱", "🐶", "🦊", "🐼", "🚃", "☂️", "🎩", "🗼"],
+        "tools": {"🗼": {"label": "TOKYO", "label_en": "Tokyo", "floor": "tokyo"},
+                  "🎡": {"label": "リバースロンドン", "label_en": "Reverse London", "floor": "london"},
+                  "🚉": {"label": "東京駅", "label_en": "Tokyo Station",
+                         "spots": ["tokyo-marunouchi-n", "tokyo-marunouchi-c", "tokyo-marunouchi-s", "tokyo-yaesu-n", "tokyo-yaesu-c", "tokyo-yaesu-s"]}},
+        "board": {"title": "REAL", "items": [{"text": "実在の場所をちいさく再現"}, {"text": "🚪で TOKYO とロンドンを行き来"}, {"text": "歩いて駅から駅へ"}]},
+        "floors": [{"id": "tokyo", "label": "TOKYO", "place": {"points": _TOKYO_POINTS, "meters": 32, "links": _TOKYO_LINKS}},
+                   {"id": "london", "label": "リバースロンドン",
+                    "place": {"points": _LONDON_POINTS, "meters": 150, "links": _LONDON_LINKS, "rivers": [_THAMES]}}],
     },
     "catalog-report": {
         "schema": "web-ui-catalog/1", "title": "Analysis report",
@@ -17097,6 +17357,7 @@ def _index_page() -> str:
     finally:
         sys.path.pop(0)
     world, school, overworld, presets = example_data("world"), example_data("school"), example_data("overworld"), example_data("layout-presets")
+    cities = example_data("cities")
     tiles = "".join(f"<li>tile {i}</li>" for i in range(1, 9))
     section = lambda inner: f"<section>{inner}</section>"
     rooms = [
@@ -17119,12 +17380,18 @@ def _index_page() -> str:
          "html": '<section class="ui-panel" id="school"><h2>🏫 School (prototype)</h2><p class="ui-muted">The same world with a tile grid and props: pick an emoji, '
                  'then walk by tap, arrow keys / WASD or the on-screen pad. Desks, the board and shelves are solid; chairs are not. '
                  f'From <code>EXAMPLES["school"]</code>; Python plans the walk, the page only plays it.</p>{world_html(school)}</section>'},
+        {"id": "cities", "emoji": "🗼", "title": "Real space (miniature)", "text": "TOKYO and Reverse London from latitude and longitude: walk from station to station.",
+         "link": "Open the cities",
+         "html": '<section class="ui-panel" id="cities"><h2>🗼 Real space (miniature)</h2><p class="ui-muted">The overworld\'s sequel: places that exist, as tiles. '
+                 'TOKYO is Tokyo Station (six exits) and the stations within walking distance; Reverse London is the main termini, the stations beside them and '
+                 'a few famous places, with the Thames and its bridges. Use 🚪 to travel between them. '
+                 f'From <code>EXAMPLES["cities"]</code>: each floor is a list of latitude/longitude points (<code>place</code>).</p>{world_html(cities)}</section>'},
         {"id": "wall", "emoji": "🎲", "title": "Random themes", "text": "Seeded palettes side by side; tap one to wear it. Every text pair meets WCAG AA.",
          "link": "Open the wall",
          "html": '<section class="ui-panel" id="wall"><h2>🎲 Random themes, side by side</h2><p class="ui-muted">Twelve seeded palettes at once; tap one to wear it. '
                  f'Every text pair meets WCAG AA by construction.</p>{theme_wall(range(12))}</section>'},
     ]
-    css = layout_presets.css(presets) + world_css(world) + world_css(overworld, base=False) + world_css(school, base=False) + _WALL_CSS
+    css = layout_presets.css(presets) + world_css(world) + world_css(overworld, base=False) + world_css(school, base=False) + world_css(cities, base=False) + _WALL_CSS
     scripts = (module_script(stub_script(EXAMPLE_STUBS["mcp"], EXAMPLE_STUBS["api"]) + "bindTheme();\n") + module_script(_JS["theme.js"] + "bindSeed();\n")
                + module_script(_JS["curl.js"]) + module_script(WORLD_JS))
     return front_document(world_html(overworld), rooms, title="PySaiyanWeBoo", lead="Shared static-first UI contract for myon-bioinformatics projects.",

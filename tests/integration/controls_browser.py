@@ -800,7 +800,7 @@ class StubBrowserTests(unittest.TestCase):
 
 class FrontPageBrowserTests(unittest.TestCase):
     """The front page: the overworld fills one viewport, everything else is a room behind 🚪, and the seed dial wears Python's palettes."""
-    ROOMS = ('try', 'mcp', 'api', 'curl', 'world', 'school', 'wall')
+    ROOMS = ('try', 'mcp', 'api', 'curl', 'world', 'school', 'cities', 'wall')
     TOKENS = ('--ui-bg', '--ui-panel', '--ui-fg', '--ui-muted', '--ui-border', '--ui-accent', '--ui-danger', '--ui-radius')
 
     def setUp(self):
