@@ -3317,7 +3317,7 @@ _WORLD_CSS = (
     "font-size:1.25rem;line-height:1;border:1px solid var(--ui-border);background:var(--ui-bg);border-radius:var(--ui-radius)}"
     ".ui-world-head{position:relative;z-index:3;display:flex;align-items:center;border-bottom:1px solid var(--ui-border);background:var(--ui-panel)}"
     ".ui-world-head .ui-board{flex:1;min-width:0;border-bottom:0}.ui-world-head .ui-board-track{flex:4 1 4rem}"
-    ".ui-world-tools{display:flex;gap:8px;padding:4px 8px}"
+    ".ui-world-tools{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding:4px 8px}"   # at 320px seven 40px tools wrap into two rows instead of leaving the window
     ".ui-world-tools .ui-world-home,.ui-world-tools .ui-world-tool,.ui-world-tools .ui-world-menu>summary{width:40px;height:40px}"
     ".ui-world-panel p{margin:0}.ui-world-panel>button{min-width:48px}.ui-world-panel button[aria-pressed=true]{background:var(--ui-accent);color:var(--ui-bg)}"
     ".ui-world-tools .ui-world-panel{top:100%;right:8px;width:min(320px,calc(100% - 16px));max-height:min(60vh,384px)}"

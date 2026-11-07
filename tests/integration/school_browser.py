@@ -567,7 +567,9 @@ def write_city_gallery(out, records, meta):
     if manifest.is_file():
         fresh = {(r["viewport"], r["floor"], r["kind"], r["id"]) for r in records}
         kept = [r for r in json.loads(manifest.read_text(encoding="utf-8")).get("records", []) if (r["viewport"], r["floor"], r["kind"], r["id"]) not in fresh]
-        records = sorted(kept + records, key=lambda r: (r["order"], r["file"]))
+        records = kept + records
+    kinds = ["overview", "sheet", "map", "sign", "tool", "category", "favorite", "key", "fire", "width", "lang", "nojs", "pick"]
+    records = sorted(records, key=lambda r: (kinds.index(r["kind"]) if r["kind"] in kinds else len(kinds), r["viewport"], r["floor"], r["order"]))
     ok = sum(1 for r in records if not r["notes"])
     (out / "manifest.json").write_text(json.dumps({"schema": "web-ui-cities-evidence/1", **meta, "shots": len(records), "clean": ok,
                                                    "noted": len(records) - ok, "records": records}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
